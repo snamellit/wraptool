@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pti/wraptool/internal/paths"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -90,9 +92,10 @@ func (c *Config) applyDefaults() {
 		c.Server.LogLevel = "info"
 	}
 	if c.Server.RequestLog == "" {
-		c.Server.RequestLog = "~/.wraptool/requests.jsonl"
+		c.Server.RequestLog = paths.DefaultRequestLog()
+	} else {
+		c.Server.RequestLog = expandPath(c.Server.RequestLog)
 	}
-	c.Server.RequestLog = expandPath(c.Server.RequestLog)
 	if c.Server.AuthTokenFile != "" {
 		c.Server.AuthTokenFile = expandPath(c.Server.AuthTokenFile)
 	}

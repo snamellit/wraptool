@@ -14,6 +14,7 @@ import (
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/mcptools"
+	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
 	"github.com/pti/wraptool/internal/whitelist"
 
@@ -46,7 +47,7 @@ This keeps credentials isolated in the wraptool process.`,
 		},
 	}
 
-	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: ~/.wraptool/config.yaml)")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 
 	return cmd
 }
@@ -56,7 +57,7 @@ func runServe(configPath string) error {
 		configPath = os.Getenv("WRAPTOOL_CONFIG")
 	}
 	if configPath == "" {
-		configPath = "~/.wraptool/config.yaml"
+		configPath = paths.DefaultConfigFile()
 	}
 
 	cfg, err := config.Load(configPath)

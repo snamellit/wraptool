@@ -7,6 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
 
 	"github.com/spf13/cobra"
@@ -35,7 +36,7 @@ func getStore(configPath *string) (*requestlog.Store, error) {
 		path = os.Getenv("WRAPTOOL_CONFIG")
 	}
 	if path == "" {
-		path = "~/.wraptool/config.yaml"
+		path = paths.DefaultConfigFile()
 	}
 
 	cfg, err := config.Load(path)

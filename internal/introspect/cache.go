@@ -6,14 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-)
 
-const cacheDir = "~/.wraptool/cache"
+	"github.com/pti/wraptool/internal/paths"
+)
 
 // LoadCache loads a cached schema for a tool, returning nil if
 // the cache doesn't exist or is expired.
 func LoadCache(toolName string, ttl time.Duration) *Schema {
-	path := cachePath(toolName)
+	path := paths.IntrospectionCacheFile(toolName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -33,7 +33,7 @@ func LoadCache(toolName string, ttl time.Duration) *Schema {
 
 // SaveCache writes a schema to the cache.
 func SaveCache(toolName string, schema *Schema) error {
-	path := cachePath(toolName)
+	path := paths.IntrospectionCacheFile(toolName)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("creating cache directory: %w", err)
 	}
@@ -44,17 +44,4 @@ func SaveCache(toolName string, schema *Schema) error {
 	}
 
 	return os.WriteFile(path, data, 0600)
-}
-
-func cachePath(toolName string) string {
-	dir := expandCacheDir()
-	return filepath.Join(dir, toolName+".json")
-}
-
-func expandCacheDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "/tmp/wraptool-cache"
-	}
-	return filepath.Join(home, ".wraptool", "cache")
 }
