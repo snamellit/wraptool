@@ -16,6 +16,7 @@ responses, and capability requests are collected for admin review.`,
 
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newRequestsCmd())
+	root.AddCommand(newInitCmd())
 
 	return root
 }
