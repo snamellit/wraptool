@@ -263,4 +263,4 @@ Override with `WRAPTOOL_CONFIG` or `--config`.
 
 ## License
 
-MIT
+GPLv3 -- see [LICENSE](LICENSE).
