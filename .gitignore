@@ -1,0 +1,5 @@
+# Compiled binary
+/wraptool
+
+# Wraptool runtime data
+/requests.jsonl
