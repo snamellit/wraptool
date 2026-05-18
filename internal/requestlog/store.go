@@ -82,6 +82,23 @@ func (s *Store) List(status Status) ([]CapabilityRequest, error) {
 	return requests, scanner.Err()
 }
 
+// Get returns the request with the given ID, or an error if not found.
+func (s *Store) Get(id string) (*CapabilityRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	requests, err := s.readAll()
+	if err != nil {
+		return nil, err
+	}
+	for i := range requests {
+		if requests[i].ID == id {
+			return &requests[i], nil
+		}
+	}
+	return nil, fmt.Errorf("request %q not found", id)
+}
+
 // UpdateStatus changes the status of a request by ID.
 // It rewrites the entire file (the log is small enough for this).
 func (s *Store) UpdateStatus(id string, status Status, reason string) error {

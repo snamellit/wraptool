@@ -95,7 +95,9 @@ func newRequestsListCmd(configPath *string) *cobra.Command {
 }
 
 func newRequestsApproveCmd(configPath *string) *cobra.Command {
-	return &cobra.Command{
+	var apply bool
+
+	cmd := &cobra.Command{
 		Use:   "approve <request-id>",
 		Short: "Approve a capability request",
 		Args:  cobra.ExactArgs(1),
@@ -105,15 +107,55 @@ func newRequestsApproveCmd(configPath *string) *cobra.Command {
 				return err
 			}
 
-			if err := store.UpdateStatus(args[0], requestlog.StatusApproved, ""); err != nil {
+			req, err := store.Get(args[0])
+			if err != nil {
 				return err
 			}
 
+			if err := store.UpdateStatus(args[0], requestlog.StatusApproved, ""); err != nil {
+				return err
+			}
 			fmt.Printf("Request %s approved.\n", args[0])
-			fmt.Println("Note: manually add the capability to your config.yaml and send SIGHUP to reload.")
+
+			if !apply {
+				fmt.Println("Note: manually add the capability to your config.yaml; a running wraptool will hot-reload on save (or send SIGHUP).")
+				return nil
+			}
+
+			resolvedPath := *configPath
+			if resolvedPath == "" {
+				resolvedPath = os.Getenv("WRAPTOOL_CONFIG")
+			}
+			if resolvedPath == "" {
+				resolvedPath = paths.DefaultConfigFile()
+			}
+
+			result, err := config.ApplyRequest(resolvedPath, req.Tool, req.Subcommand, req.Flags)
+			if err != nil {
+				return fmt.Errorf("applying to config: %w", err)
+			}
+
+			switch {
+			case result.NewRule:
+				fmt.Printf("Added new allow rule to %s for %s %s:\n", resolvedPath, req.Tool, strings.Join(req.Subcommand, " "))
+			case len(result.AddedFlags) > 0:
+				fmt.Printf("Extended existing allow rule in %s with flags %v:\n", resolvedPath, result.AddedFlags)
+			default:
+				fmt.Printf("No change required; %s %s with flags %v is already allowed.\n", req.Tool, strings.Join(req.Subcommand, " "), req.Flags)
+				return nil
+			}
+			if result.Snippet != "" {
+				fmt.Println()
+				fmt.Print(result.Snippet)
+			}
+			fmt.Println("\nA running wraptool will pick this up automatically via file-watch reload. Auto-added flags have no `flag_constraints` — tighten them if needed.")
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&apply, "apply", false, "write the approved capability into the config file (atomic; triggers hot-reload)")
+
+	return cmd
 }
 
 func newRequestsDenyCmd(configPath *string) *cobra.Command {

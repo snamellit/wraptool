@@ -25,7 +25,7 @@ cmd/
   init.go                       generates MCP config for coding harnesses
   root.go                       cobra root command
 internal/
-  config/                       YAML config types, loading, validation
+  config/                       YAML config types, loading, validation, in-place edits (edit.go preserves comments via yaml.Node)
   whitelist/                    policy engine — deny > allow > constraints
   executor/                     exec.CommandContext, sanitization, credential scrubbing
   mcptools/                     MCP tool registry, handler, request_capability tool
@@ -40,7 +40,8 @@ internal/
 - **Deny before allow** — deny rules are evaluated first and take absolute precedence
 - **Minimal child env** — child processes get only PATH/HOME/LANG plus configured vars
 - **Credential scrubbing** — output is scrubbed before returning to the AI context
-- **Hot-reload** — SIGHUP reloads policy config; in-flight requests use the old policy
+- **Hot-reload** — config file is watched via fsnotify (parent dir, 200ms debounce, survives editor atomic-rename saves); SIGHUP also triggers reload. Reload swaps policy, replaces MCP tools (`DeleteTools` + `RegisterAll`), and mcp-go emits `notifications/tools/list_changed`. In-flight requests use the old policy.
+- **`requests approve --apply`** — merges an approved capability into the YAML config via `config.ApplyRequest`. Uses `yaml.v3` Node API to preserve comments and ordering; rejects unknown tools and deny-rule conflicts; validates the result before atomic-renaming the new file into place. File-watch reload picks it up.
 
 ## Testing
 

@@ -16,9 +16,11 @@ import (
 
 // RegisterAll registers MCP tools for all configured CLI tools.
 // It runs introspection to enrich tool descriptions and flag metadata.
-func RegisterAll(s *server.MCPServer, cfg *config.Config, policy *whitelist.Policy) error {
+// Returns the list of MCP tool names registered, for later removal on reload.
+func RegisterAll(s *server.MCPServer, cfg *config.Config, policy *whitelist.Policy) ([]string, error) {
 	ctx := context.Background()
 
+	var registered []string
 	for toolName, toolCfg := range cfg.Tools {
 		tc := toolCfg // capture
 
@@ -28,14 +30,17 @@ func RegisterAll(s *server.MCPServer, cfg *config.Config, policy *whitelist.Poli
 			log.Printf("introspection failed for %s, using config-only metadata: %v", toolName, err)
 		}
 
-		if err := registerTool(s, toolName, &tc, policy, schema); err != nil {
-			return fmt.Errorf("registering tool %q: %w", toolName, err)
+		names, err := registerTool(s, toolName, &tc, policy, schema)
+		if err != nil {
+			return registered, fmt.Errorf("registering tool %q: %w", toolName, err)
 		}
+		registered = append(registered, names...)
 	}
-	return nil
+	return registered, nil
 }
 
-func registerTool(s *server.MCPServer, toolName string, tc *config.ToolConfig, policy *whitelist.Policy, schema *introspect.Schema) error {
+func registerTool(s *server.MCPServer, toolName string, tc *config.ToolConfig, policy *whitelist.Policy, schema *introspect.Schema) ([]string, error) {
+	var registered []string
 	for i := range tc.Allow {
 		rule := &tc.Allow[i]
 		mcpName := ToolName(toolName, rule.Subcommand)
@@ -129,7 +134,8 @@ func registerTool(s *server.MCPServer, toolName string, tc *config.ToolConfig, p
 		}
 
 		s.AddTool(tool, handler.Handle)
+		registered = append(registered, mcpName)
 	}
 
-	return nil
+	return registered, nil
 }
