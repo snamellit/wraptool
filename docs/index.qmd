@@ -1,0 +1,67 @@
+---
+title: "wraptool"
+subtitle: "Credential-isolated MCP gateway for CLI tools"
+---
+
+**wraptool** is a Go-based [Model Context Protocol](https://modelcontextprotocol.io/)
+server that wraps CLI tools (`git`, `gcloud`, `kubectl`, ...) behind a
+security whitelist, so AI coding assistants can use them without ever
+seeing the underlying credentials.
+
+## Why
+
+AI coding assistants need CLI tools to be productive, but giving them
+direct access exposes API keys, SSH keys, kubeconfigs, and service
+account credentials to the model context. wraptool sits between the
+assistant and the tools:
+
+- **Credentials stay isolated** — wraptool runs as a separate process
+  with its own environment; secrets never enter the AI context.
+- **Subcommand-level whitelisting** — allow `git commit` but deny
+  `git push --force`, with flag-level granularity and value
+  constraints.
+- **Auto-discovery** — wraptool parses `--help` output to generate
+  MCP tool schemas with real descriptions, so the AI knows what each
+  flag does.
+- **Structured denial workflow** — when a command is denied, the AI
+  can submit a capability request that an admin reviews and approves
+  from the command line.
+
+## High-level architecture
+
+```{mermaid}
+flowchart LR
+  ai[AI Coding<br/>Assistant]
+  mcp[MCP<br/>Transport]
+  wt[wraptool<br/>server]
+  policy[Policy<br/>Engine]
+  exec[Sandboxed<br/>Exec]
+  cli[CLI Tools<br/>git / gcloud / kubectl]
+  creds[(Credentials)]
+
+  ai -- "tool call" --> mcp
+  mcp --> wt
+  wt --> policy
+  policy -- "allowed" --> exec
+  exec --> cli
+  cli -.-> creds
+  exec -- "scrubbed output" --> wt
+  wt --> mcp --> ai
+
+  style creds fill:#fee,stroke:#E60028
+  style policy fill:#fef,stroke:#666
+```
+
+## Next steps
+
+- [Getting started](getting-started.qmd) — install, configure, connect.
+- [Configuration reference](configuration.qmd) — schema, allow/deny,
+  constraints, environment files.
+- [Security model](security.qmd) — threat model, sandboxing, scrubbing.
+- [Hot-reload & capability requests](hot-reload.qmd) — operational
+  workflow.
+- [Slides](presentation.qmd) — overview deck.
+
+## License
+
+GPLv3 — see [LICENSE](https://forge.snamellit.com/pti/wraptool/src/branch/main/LICENSE).

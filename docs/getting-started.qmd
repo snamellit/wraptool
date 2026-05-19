@@ -1,0 +1,106 @@
+---
+title: "Getting started"
+---
+
+## 1. Build
+
+```bash
+go build -o wraptool .
+```
+
+On Guix systems, the bundled manifest gives you a reproducible
+toolchain:
+
+```bash
+guix shell -m manifest.scm -- go build -o wraptool .
+```
+
+## 2. Create a config
+
+`wraptool` reads YAML from `~/.config/wraptool/config.yaml` (XDG, with
+`--config` / `WRAPTOOL_CONFIG` overrides).
+
+```yaml
+server:
+  transport: sse
+  listen: 127.0.0.1:8717
+
+tools:
+  git:
+    binary: /usr/bin/git
+    timeout: 30s
+    allow:
+      - subcommand: [status]
+        flags: ["--short", "--branch", "--porcelain"]
+      - subcommand: [log]
+        flags: ["--oneline", "-n", "--format", "--graph"]
+        flag_constraints:
+          "-n": { type: integer, max: 100 }
+      - subcommand: [diff]
+        flags: ["--stat", "--name-only", "--staged"]
+      - subcommand: [commit]
+        flags: ["--message", "--amend"]
+        flag_constraints:
+          "--message": { required: true }
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+    deny:
+      - subcommand: [remote, set-url]
+```
+
+See [Configuration reference](configuration.qmd) for every field.
+
+## 3. Start the server
+
+```bash
+wraptool serve
+```
+
+The available transports:
+
+| Transport | Config | Use case |
+|-----------|--------|----------|
+| `stdio`   | `transport: stdio` | Harness launches wraptool directly |
+| `sse`     | `transport: sse`, `listen: host:port` | Independent process, TCP |
+| `unix`    | `transport: unix`, `listen: /path/to.sock` | Independent process, Unix socket |
+
+For SSE and Unix transports, add an auth token:
+
+```yaml
+server:
+  transport: sse
+  listen: 127.0.0.1:8717
+  auth_token_file: ~/.config/wraptool/auth_token
+```
+
+```bash
+head -c 32 /dev/urandom | base64 > ~/.config/wraptool/auth_token
+```
+
+## 4. Connect your coding assistant
+
+```bash
+wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
+```
+
+This writes the MCP config block for each harness. Supported values:
+`claude`, `cursor`, `opencode`, `gemini`, `roo`, `windsurf`, or `all`.
+
+## 5. Smoke test
+
+```{mermaid}
+sequenceDiagram
+  participant AI as AI assistant
+  participant W  as wraptool
+  participant G  as git
+  AI->>W: tools/call git_status
+  W->>W: policy.Evaluate
+  W->>G: exec /usr/bin/git status
+  G-->>W: stdout
+  W->>W: scrub credentials
+  W-->>AI: ToolResult
+```
+
+Trigger any allowed subcommand from your assistant. The wraptool log
+prints one line per executed command with status and duration.

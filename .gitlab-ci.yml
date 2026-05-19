@@ -1,0 +1,40 @@
+# GitLab Pages pipeline for the wraptool documentation site.
+# The repository's canonical remote is Forgejo; this job assumes a
+# mirror to GitLab. Quarto renders docs/_site -> public/ which GitLab
+# Pages serves at https://<group>.gitlab.io/<project>/.
+
+stages:
+  - build
+  - deploy
+
+variables:
+  QUARTO_VERSION: "1.5.57"
+
+# Reusable build step: render docs/ into ./public.
+.render: &render
+  image: ghcr.io/quarto-dev/quarto:${QUARTO_VERSION}
+  before_script:
+    - quarto --version
+  script:
+    - quarto render docs --output-dir ../public
+  artifacts:
+    paths:
+      - public
+
+# Branch builds: render and keep artifact for review, do not publish.
+docs:build:
+  <<: *render
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+
+# Publish: only on the default branch (main).
+pages:
+  <<: *render
+  stage: deploy
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  artifacts:
+    paths:
+      - public
+    expire_in: 30 days

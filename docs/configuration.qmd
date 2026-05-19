@@ -1,0 +1,151 @@
+---
+title: "Configuration reference"
+---
+
+## Top-level shape
+
+```yaml
+server:    # how the MCP transport is exposed
+tools:     # one entry per wrapped CLI tool
+```
+
+## `server`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `transport` | `stdio` \| `sse` \| `unix` | `stdio` | MCP transport |
+| `listen`    | string | — | `host:port` (sse) or socket path (unix) |
+| `auth_token_file` | string | — | Bearer token file for sse/unix |
+| `log_level` | string | `info` | log verbosity |
+| `request_log` | string | XDG data dir | path to capability-request JSONL |
+
+## `tools.<name>`
+
+Each tool is keyed by the user-visible name (which becomes the MCP
+tool prefix: `git` → `git_status`, `git_commit`, ...).
+
+```yaml
+tools:
+  gcloud:
+    binary: /usr/bin/gcloud         # absolute path, validated at startup
+    working_dir: /var/lib/wraptool  # optional cwd for child processes
+    timeout: 30s                    # per-call timeout
+    env:                            # inline env vars (override env_files)
+      CLOUDSDK_CORE_PROJECT: my-project
+    env_files:                      # KEY=VALUE files, merged left-to-right
+      - /etc/wraptool/gcloud.env
+    introspection:
+      cache_ttl: 24h
+      overrides_file: ~/.config/wraptool/overrides/gcloud.yaml
+    allow:
+      - subcommand: [compute, instances, list]
+        flags: ["--format", "--filter"]
+        deny_flags: ["--quiet"]
+        flag_constraints:
+          "--filter": { pattern: "^[a-zA-Z0-9_ =.\"'-]+$" }
+        arg_constraints:
+          positional_max: 2
+    deny:
+      - subcommand: [auth]
+```
+
+### Allow rules
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `subcommand` | `[]string` | Token list; matched **exactly** (`[remote, set-url]` does not match `[remote]`) |
+| `flags` | `[]string` | Whitelist of permitted flags |
+| `deny_flags` | `[]string` | Flags blocked even though in `flags` |
+| `flag_constraints` | `map[flag]Constraint` | Value-level rules |
+| `arg_constraints.positional_max` | `int` | Max positional args |
+
+### Deny rules
+
+Evaluated **before** allow rules. Take absolute precedence.
+
+```yaml
+deny:
+  - subcommand: [exec]
+  - subcommand: [auth]
+```
+
+### Flag constraints
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `required` | bool | Flag must be provided |
+| `type` | string | `integer`, `boolean`, or `string` |
+| `min`, `max` | int | Range for integer values |
+| `pattern` | string | Regex the value must match |
+| `deny` | bool | Flag is always denied |
+
+## Evaluation order
+
+```{mermaid}
+flowchart TD
+  start[Tool call]
+  tool{Tool in config?}
+  deny{Any deny rule<br/>matches subcommand?}
+  allow{Matching allow rule?}
+  flags{All flags allowed<br/>and constraints pass?}
+  pargs{Positional args<br/>within limit?}
+  exec[Execute]
+  refuse[Refuse]
+
+  start --> tool
+  tool -- no --> refuse
+  tool -- yes --> deny
+  deny -- yes --> refuse
+  deny -- no --> allow
+  allow -- no --> refuse
+  allow -- yes --> flags
+  flags -- no --> refuse
+  flags -- yes --> pargs
+  pargs -- no --> refuse
+  pargs -- yes --> exec
+```
+
+## CLI introspection
+
+wraptool parses `--help` output at startup to enrich MCP tool schemas
+with real flag descriptions and types. Supported styles:
+
+- **Git/Cobra** (`git commit -h`, `kubectl get -h`)
+- **GNU** (`curl --help`, `wget --help`)
+- **Fallback** regex extraction
+
+Results cache to `~/.cache/wraptool/introspection/`. Override
+misparses with a YAML file referenced from the tool's `introspection`
+block:
+
+```yaml
+# ~/.config/wraptool/overrides/git.yaml
+subcommands:
+  commit:
+    description: "Record changes to the repository"
+    flags:
+      "--message":
+        short: "-m"
+        type: string
+        description: "Commit message"
+```
+
+## Environment isolation
+
+Each child process gets a minimal base environment:
+
+- `PATH`, `HOME`, `LANG`
+- Variables from `env_files` (merged in order)
+- Variables from inline `env` (override `env_files`)
+
+Nothing from the parent shell leaks unless explicitly listed.
+
+## Platform paths
+
+| Purpose | Linux | macOS |
+|---------|-------|-------|
+| Config  | `~/.config/wraptool/` | `~/Library/Application Support/wraptool/` |
+| Data    | `~/.local/share/wraptool/` | `~/Library/Application Support/wraptool/` |
+| Cache   | `~/.cache/wraptool/` | `~/Library/Caches/wraptool/` |
+
+Override with `WRAPTOOL_CONFIG` or `--config`.

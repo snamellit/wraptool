@@ -4,3 +4,8 @@
 # Wraptool runtime data
 /requests.jsonl
 .claude
+
+# Quarto build output
+/docs/_site/
+/docs/.quarto/
+/public/

@@ -1,0 +1,47 @@
+// Melexis brand overlay for zephyr.
+// TODO: replace placeholder values with exact tokens from the official
+// Melexis styleguide (logo SVG, exact hex codes, type stack).
+
+/*-- scss:defaults --*/
+
+$melexis-red:     #E60028;   // TODO: confirm exact brand red
+$melexis-black:   #1A1A1A;
+$melexis-grey:    #4A4A4A;
+$melexis-grey-2:  #E5E5E5;
+
+$primary:         $melexis-red;
+$body-color:      $melexis-black;
+$body-bg:         #FFFFFF;
+$link-color:      $melexis-red;
+$link-hover-color: darken($melexis-red, 10%);
+
+$font-family-sans-serif: "Source Sans 3", "Inter", "Helvetica Neue", Arial, sans-serif;
+$headings-font-weight:   600;
+$headings-color:         $melexis-black;
+
+$navbar-bg:              $melexis-black;
+$navbar-fg:              #FFFFFF;
+$navbar-hl:              $melexis-red;
+
+$code-color:             $melexis-red;
+$code-bg:                $melexis-grey-2;
+
+/*-- scss:rules --*/
+
+.navbar-brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.sidebar-title {
+  color: $melexis-red;
+}
+
+h1, h2 {
+  border-bottom: 2px solid $melexis-red;
+  padding-bottom: 0.2em;
+}
+
+a code {
+  color: inherit;
+}

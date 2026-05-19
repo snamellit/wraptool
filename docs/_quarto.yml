@@ -1,0 +1,52 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "wraptool"
+  description: "MCP server that wraps CLI tools behind a security whitelist."
+  repo-url: https://forge.snamellit.com/pti/wraptool
+  repo-actions: [source, issue]
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+      - href: getting-started.qmd
+        text: Getting Started
+      - href: configuration.qmd
+        text: Configuration
+      - href: security.qmd
+        text: Security
+      - href: hot-reload.qmd
+        text: Hot-Reload
+      - href: presentation.qmd
+        text: Slides
+    right:
+      - icon: git
+        href: https://forge.snamellit.com/pti/wraptool
+  sidebar:
+    style: docked
+    contents:
+      - index.qmd
+      - getting-started.qmd
+      - configuration.qmd
+      - security.qmd
+      - hot-reload.qmd
+      - isolated-environments.md
+      - text: "---"
+      - presentation.qmd
+
+format:
+  html:
+    theme:
+      light: [zephyr, melexis.scss]
+    toc: true
+    toc-depth: 3
+    code-copy: true
+    code-overflow: wrap
+    anchor-sections: true
+    smooth-scroll: true
+
+# Presentation slides use revealjs; declared in the file's own
+# frontmatter rather than at project level so the website pages do
+# not get rendered twice (once per project-level format).

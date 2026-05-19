@@ -1,0 +1,264 @@
+---
+title: "wraptool"
+subtitle: "Credential-isolated MCP gateway for CLI tools"
+author: "Peter Tillemans"
+format:
+  revealjs:
+    theme: [white, melexis-slides.scss]
+    slide-number: true
+    transition: fade
+    code-line-numbers: true
+    highlight-style: github
+    footer: "wraptool"
+---
+
+# The problem
+
+## AI coding assistants want CLI tools
+
+- `git`, `gcloud`, `kubectl`, `npm`, `terraform`, ...
+- They are essential for real productivity.
+- Giving them direct shell access means handing over **every secret
+  on the machine**.
+
+::: {.fragment}
+> "Just run `gcloud` for me." → the model now sees your service
+> account key file path, and every command it issues runs as you.
+:::
+
+## Threats in scope
+
+- Goal-directed model behaviour (intentional probing).
+- Prompt-injection into long-running sessions.
+- Output exfiltration via stdout / stderr.
+- Shell-metacharacter injection in command arguments.
+- Future supply-chain compromise of the harness itself.
+
+## What we want
+
+| Want | Today |
+|------|-------|
+| Allow `git commit` | ✅ shell access |
+| Deny `git push --force` | ❌ shell access |
+| Audit every command | ❌ shell access |
+| Never see `~/.ssh/id_*` | ❌ shell access |
+| Rotate credentials independently | ❌ shell access |
+
+---
+
+# The idea
+
+## A tiny MCP gateway in front of the CLI
+
+```{mermaid}
+flowchart LR
+  ai[AI assistant] -- MCP --> wt[wraptool] --> cli[CLI binary]
+  wt --- creds[(creds)]
+  style creds fill:#fee,stroke:#E60028
+```
+
+- wraptool is an **MCP server**: every harness already knows how to
+  talk to one.
+- It runs as a **separate process** with its own environment.
+- It enforces a **per-tool, per-subcommand, per-flag** whitelist.
+
+## Why not just `sudo` rules / SELinux / AppArmor?
+
+- Those constrain the **process tree**, not the **call**.
+- They cannot see "`git push --force`" as a structured object — only
+  bytes through exec.
+- They cannot send a structured denial back to the AI.
+- They cannot turn `--help` output into an MCP tool schema.
+
+# Architecture
+
+## One process per trust domain
+
+```{mermaid}
+flowchart LR
+  subgraph untrusted [Untrusted: AI sandbox]
+    ai[AI + harness]
+  end
+  subgraph trusted [Trusted: host]
+    wt[wraptool]
+    creds[(SSH / gcloud / kube)]
+    bins[/usr/bin/git, ...]
+  end
+  ai <-- SSE / Unix sock --> wt
+  wt --- creds
+  wt --> bins
+  style untrusted fill:#fee,stroke:#E60028
+  style trusted fill:#efe,stroke:#2a7
+```
+
+## Inside wraptool
+
+```
+main.go
+cmd/      serve · requests · init · root
+internal/
+  config/         YAML types + Validate + ApplyRequest
+  whitelist/      deny > allow > flag / arg constraints
+  executor/       exec.CommandContext, sanitization, scrubbing
+  mcptools/       MCP tool registry, handler, request_capability
+  introspect/     --help parsing (git / GNU / fallback), cache
+  requestlog/     JSONL store
+  paths/          XDG via adrg/xdg
+```
+
+## Evaluation flow
+
+```{mermaid}
+flowchart TD
+  call[Tool call] --> tool{Tool<br/>configured?}
+  tool -- no --> X[Refuse]
+  tool -- yes --> deny{Deny rule<br/>matches?}
+  deny -- yes --> X
+  deny -- no --> allow{Allow rule<br/>matches?}
+  allow -- no --> X
+  allow -- yes --> flags{Flags +<br/>constraints<br/>pass?}
+  flags -- no --> X
+  flags -- yes --> args{Positional<br/>args ok?}
+  args -- no --> X
+  args -- yes --> exec[Execute]
+```
+
+# Config
+
+## Whitelist by example
+
+```{.yaml code-line-numbers="|4|6|8|10|12-13|15"}
+tools:
+  git:
+    binary: /usr/bin/git
+    timeout: 30s
+    allow:
+      - subcommand: [status]
+        flags: ["--short", "--branch", "--porcelain"]
+      - subcommand: [commit]
+        flags: ["--message", "--amend"]
+        flag_constraints:
+          "--message": { required: true }
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+    deny:
+      - subcommand: [remote, set-url]
+```
+
+## Auto-discovery
+
+- wraptool runs `<tool> --help` at startup.
+- Parses git-style, GNU-style, fallback regex.
+- Generates MCP tool schemas with **real descriptions**, **types**,
+  **required flags**.
+- Cache in `~/.cache/wraptool/introspection/`.
+- YAML overrides for the inevitable misparses.
+
+# Security in depth
+
+## What the AI never sees
+
+- The wraptool config.
+- Any environment variable except those a tool's own output prints.
+- Anything that looks like a credential (Bearer tokens, AWS keys,
+  SSH key markers, configured env values — all scrubbed).
+- Stdout/stderr beyond 1 MB per call.
+
+## What we kill at the door
+
+- `sh -c` — **never used**. Always `exec.CommandContext` with an
+  explicit argv.
+- Shell metacharacters in positional args: `;|&$\`(){}` rejected.
+- Args starting with `-` in positional slots: rejected.
+- Long-running processes: per-tool `context.WithTimeout`.
+
+## Network transports
+
+- `stdio`, `sse`, `unix`.
+- `sse` + `unix` support `auth_token_file` with constant-time bearer
+  comparison.
+- Unix socket auto-`chmod 0600`.
+
+# Operations
+
+## Hot-reload
+
+- File watcher (`fsnotify`) on the **parent directory**, 200 ms
+  debounce.
+- SIGHUP still works (scripts, containers without inotify).
+- Atomic policy swap; in-flight commands keep the old policy.
+- `notifications/tools/list_changed` pushed to every connected client.
+
+## Capability requests
+
+```{mermaid}
+sequenceDiagram
+  AI ->> wraptool: denied call
+  wraptool -->> AI: structured refusal + hint
+  AI ->> wraptool: wraptool_request_capability(...)
+  wraptool ->> log: append (pending)
+  Operator ->> log: requests list
+  Operator ->> wraptool: requests approve --apply
+  wraptool ->> config: ApplyRequest (atomic)
+  config -->> wraptool: fsnotify event
+  wraptool -->> AI: list_changed
+```
+
+## `approve --apply`
+
+- Edits the YAML **node tree** (`yaml.v3`), so **comments and
+  ordering are preserved**.
+- Refuses unknown tools (no `binary`) and deny-rule conflicts.
+- Validates the result before atomic rename into place.
+- File-watch reload picks it up — no restart, no client reconnect.
+
+# Demo
+
+## Live walkthrough
+
+::: {.incremental}
+1. Start `wraptool serve` with SSE on `127.0.0.1:8717`.
+2. Connect Claude Code via `wraptool init --harness claude`.
+3. Allowed: `git_status`, `git_commit_message="..."`.
+4. Denied: `git_push --force` → structured refusal.
+5. AI calls `wraptool_request_capability` with rationale.
+6. Operator: `wraptool requests list`, then
+   `wraptool requests approve req_xxxx --apply`.
+7. fsnotify → reload → new tool registered → AI's next call
+   succeeds. **No restart.**
+:::
+
+# Where next
+
+## Roadmap
+
+- Per-tool output filters (jq-style projection before scrub).
+- Per-session quotas (calls/minute, bytes out).
+- Pluggable scrubbers for org-specific secret formats.
+- A "dry-run" mode that records what *would* be denied.
+- Web UI for the request-review workflow.
+
+## Try it
+
+::: {.columns}
+::: {.column width=50%}
+```bash
+git clone \
+  forgejo@forge.snamellit.com:pti/wraptool.git
+cd wraptool
+go build -o wraptool .
+./wraptool init --harness claude
+```
+:::
+::: {.column width=50%}
+- GPLv3
+- Go 1.26+
+- Docs: this site
+- Issues: forgejo project tracker
+:::
+:::
+
+## Thank you
+
+Questions?

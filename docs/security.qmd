@@ -1,0 +1,128 @@
+---
+title: "Security model"
+---
+
+## Threat model
+
+wraptool's adversary is **the AI assistant itself** (or its operator)
+treated as untrusted code with goal-directed behaviour. The assistant
+may:
+
+- Probe for any reachable secret in its process environment.
+- Send arbitrary tool calls hoping one slips through the policy.
+- Stuff shell metacharacters into arguments to escape command parsing.
+- Exfiltrate data via stdout/stderr.
+
+wraptool's job is to make the **set of reachable commands** finite,
+audited, and credential-free from the AI's point of view.
+
+## Trust boundary
+
+```{mermaid}
+flowchart LR
+  subgraph untrusted[Untrusted]
+    ai[AI assistant<br/>+ harness]
+  end
+  subgraph trusted[Trusted host]
+    wt[wraptool<br/>process]
+    creds[(Credentials<br/>SSH / gcloud / kubeconfig)]
+    cli[CLI binaries]
+  end
+  ai <-- MCP / SSE --> wt
+  wt --- creds
+  wt --> cli
+
+  style untrusted fill:#fee,stroke:#E60028
+  style trusted   fill:#efe,stroke:#2a7
+```
+
+The MCP transport (stdio / SSE / Unix socket) is the only path across
+the boundary. The AI sees:
+
+- The schema of allowed tools (subcommand + flags + descriptions).
+- Stdout/stderr of executed commands, **after scrubbing**.
+- Structured error messages on denial.
+
+It never sees:
+
+- Any environment variable except those a tool explicitly exposes via
+  its own output.
+- Filesystem paths outside what tools print.
+- The wraptool config file.
+
+## Defenses
+
+### No shell execution
+
+Every command runs via `exec.CommandContext` with an **explicit
+argument array**. There is no `sh -c`, `bash -c`, or string template
+that an attacker could inject into.
+
+### Argument sanitization
+
+Positional arguments are rejected if they contain `;|&$\`(){}` or
+start with `-` (which would otherwise be parsed as an unintended
+flag).
+
+### Credential scrubbing
+
+Output is filtered before being returned to the AI:
+
+- Bearer tokens (`Authorization: Bearer ...`)
+- API keys with common prefixes (`sk-...`, `pk_...`, AWS access key
+  ID format)
+- AWS secret access keys
+- SSH key block markers (`-----BEGIN ... PRIVATE KEY-----`)
+- Any value listed in the tool's resolved `env`
+
+False negatives are still possible — never put unscrubbable secrets
+in stdout of a wrapped command.
+
+### Output limits
+
+stdout/stderr are capped at **1 MB per command**. Excess is dropped
+with a marker so the AI can't drain memory by issuing a single
+unbounded request.
+
+### Timeout enforcement
+
+Every call uses `context.WithTimeout` based on the tool's `timeout`
+(default 30s). Hung processes are killed.
+
+### Minimal child environment
+
+Child processes inherit only `PATH`, `HOME`, `LANG` plus the
+configured `env` / `env_files`. The parent shell's environment is
+**not** propagated.
+
+### Auth on network transports
+
+`sse` and `unix` transports support `auth_token_file`. Requests
+without a matching `Authorization: Bearer ...` header are rejected
+with 401 (no header) or 403 (bad token), using constant-time
+comparison.
+
+### Hot-reload safety
+
+In-flight commands keep using the policy they started with. The
+swap is atomic; partially-applied policy is never observable.
+
+### Capability requests
+
+Denied commands return a structured error pointing the AI at
+`wraptool_request_capability`. The AI submits a rationale; an
+operator reviews and approves out-of-band. This makes the policy
+**evolvable** without giving the AI a path to bypass it.
+
+## Deployment patterns
+
+For maximum isolation, run the AI assistant in a container or VM
+without credentials, with wraptool on the host or a separate
+container that holds the secrets. See
+[isolated environments](isolated-environments.md) for Guix, Docker,
+Podman, and systemd recipes.
+
+## Reporting
+
+Security issues: file a confidential issue at
+[forge.snamellit.com/pti/wraptool](https://forge.snamellit.com/pti/wraptool).

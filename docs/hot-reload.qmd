@@ -1,0 +1,123 @@
+---
+title: "Hot-reload & capability requests"
+---
+
+## Hot-reload
+
+wraptool watches the config file and reloads automatically. The
+reload steps:
+
+1. Parse and validate the new config (rejected reloads leave the
+   running policy untouched and log the error).
+2. Atomically swap the policy used for new evaluations. In-flight
+   commands keep running against the policy they started with.
+3. Remove the previously registered MCP tools and register a fresh
+   set from the new config.
+4. Send `notifications/tools/list_changed` to every connected MCP
+   client. Clients that honour the notification refresh their tool
+   list without reconnecting.
+
+```{mermaid}
+sequenceDiagram
+  participant Op as Operator
+  participant FS as filesystem
+  participant W  as wraptool
+  participant MCP as MCP client
+  Op->>FS: save config.yaml
+  FS-->>W: fsnotify event(s)
+  W->>W: debounce 200ms
+  W->>W: Load + Validate
+  alt valid
+    W->>W: policy.Reload (atomic)
+    W->>W: DeleteTools(old) + RegisterAll(new)
+    W-->>MCP: notifications/tools/list_changed
+    MCP->>W: tools/list
+    W-->>MCP: new tool set
+  else invalid
+    W-->>Op: log error, keep old policy
+  end
+```
+
+### Triggers
+
+- **File save** — parent directory is watched via
+  [fsnotify](https://github.com/fsnotify/fsnotify); editors that save
+  via atomic rename (vim, helix, ...) are handled. CREATE+WRITE+CHMOD
+  bursts are coalesced with a 200 ms debounce.
+- **SIGHUP** — still supported for scripted reloads:
+
+  ```bash
+  kill -HUP $(pidof wraptool)
+  ```
+
+If `fsnotify` fails to initialise (no inotify available, etc.)
+wraptool logs a warning and falls back to SIGHUP-only mode.
+
+## Capability requests
+
+When the AI hits a denied command, wraptool returns a structured
+refusal:
+
+```
+DENIED: 'git push --force origin main' is not permitted.
+
+Policy: flag '--force' is not in the allowlist for 'git push'.
+Allowed flags for 'git push': --set-upstream
+
+To request this capability, call the 'wraptool_request_capability' tool.
+```
+
+The AI calls `wraptool_request_capability` with `tool`,
+`subcommand`, `flags`, `rationale`, and optional `enables`. The
+request is appended to a JSONL log.
+
+### Operator workflow
+
+```bash
+wraptool requests list                          # pending requests
+wraptool requests approve req_23ae3793 --apply  # accept + merge into config
+wraptool requests deny  req_01a2b3c4 \
+    --reason "use --force-with-lease instead"
+```
+
+### `--apply`
+
+`wraptool requests approve <id> --apply` merges the approved
+capability into the config in place:
+
+- The tool must already exist in `tools:` (binary path must be set).
+  Unknown tools are refused — operator must add the binary manually
+  first.
+- If a deny rule covers the same subcommand, the apply is refused.
+- An existing allow rule with the same subcommand gains the new
+  flags; duplicates are dropped.
+- Otherwise a new allow rule is appended.
+- Comments and key ordering are preserved (the YAML node tree is
+  edited; the file is not re-marshaled from typed structs).
+- The edited config is validated before being written; on failure
+  the original file is left untouched.
+- The write is atomic (temp file + rename) and the running server
+  picks the change up via the file watcher.
+
+Auto-added flags have no `flag_constraints` — tighten them by hand
+if you want to bound their values.
+
+```{mermaid}
+sequenceDiagram
+  participant AI
+  participant W as wraptool
+  participant Log as request log
+  participant Op as Operator
+  participant Cfg as config.yaml
+
+  AI->>W: denied tool call
+  W-->>AI: denial + hint
+  AI->>W: wraptool_request_capability(...)
+  W->>Log: append (status=pending)
+  Op->>Log: requests list
+  Op->>W: requests approve <id> --apply
+  W->>Cfg: ApplyRequest (atomic, preserves comments)
+  Cfg-->>W: fsnotify event
+  W->>W: reload policy + tools
+  W-->>AI: notifications/tools/list_changed
+```
