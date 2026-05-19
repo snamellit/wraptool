@@ -1,0 +1,346 @@
+---
+title: "Hardening `git` as a wrapped tool"
+subtitle: "Operator notes for safely exposing `git` through wraptool"
+---
+
+::: {.callout-note}
+This page describes git-specific concerns that affect any operator
+wrapping `git` through wraptool. The configuration knobs discussed
+here live in `gitconfig` and the environment given to the wrapped
+`git` process; wraptool itself does not interpret them today.
+:::
+
+## Why `git` deserves its own page
+
+Most tools wraptool exposes are essentially a verb plus arguments.
+`git` is different on three axes:
+
+1. **Repos contain executable configuration.** A repository's
+   `.git/config`, `.gitattributes`, and `.gitmodules` can configure
+   programs that `git` will execute on routine commands such as
+   `status`, `checkout`, `add`, or `commit`. Cloning, opening, or
+   even auto-discovering an untrusted tree therefore yields
+   arbitrary code execution unless the surrounding environment is
+   hardened.
+2. **Auto-discovery walks parent directories.** Running `git` from
+   anywhere inside a working tree causes it to walk up the directory
+   hierarchy looking for `.git`. A hostile parent dir (or a "buried
+   bare repo" anywhere on that path) can capture the invocation.
+3. **Hooks fire on many local-looking operations.** `post-checkout`,
+   `post-merge`, `post-rewrite`, filter drivers, diff drivers, and
+   merge drivers are **not** suppressed by `--no-verify`. Hooks run
+   in the environment of the calling process.
+
+For a tool wrapper that may run in a host environment holding SSH
+keys, GPG keys, kubeconfigs, and cloud credentials, those three
+properties combine into a serious threat surface.
+
+## Split execution model
+
+You do not need wraptool to mediate every `git` invocation. Many
+operations are local-only and can run perfectly well inside the AI
+assistant's unprivileged container (which holds no secrets).
+Restrict wraptool's surface to the operations that actually need
+host credentials.
+
+### Run in the container (no wraptool needed)
+
+These touch only the local working tree. They are still affected by
+hostile repo configuration (see below), but the blast radius is
+limited to the container.
+
+::: {.callout-tip title="Generally safe inside the container"}
+`status` · `log` · `show` · `diff` · `add` · `rm` · `mv` ·
+`commit` (unsigned) · `branch` · `tag` (lightweight) · `reset` ·
+`stash` · `cherry-pick` · `revert` · `rebase` (non-interactive,
+no `--exec`) · `format-patch` · `apply` · `bisect` · `reflog` ·
+`gc` · `fsck` · `cat-file` · `rev-parse` · `ls-files` · `ls-tree`
+:::
+
+### Run on the host through wraptool (need credentials)
+
+These need `ssh`, `gcloud`, GitHub tokens, or other host-only secrets.
+
+::: {.callout-warning title="Wrap these through wraptool"}
+`clone` · `fetch` · `pull` · `push` · `ls-remote` ·
+`remote update` · `submodule update --remote` · `submodule sync` ·
+`archive --remote=...` · `bundle fetch` · `lfs fetch|pull|push`
+:::
+
+### "Local-only" — but with caveats
+
+These look local but can still execute attacker-controlled commands
+through `.gitattributes` filters, hooks, signature programs, or the
+configured editor/pager. Treat them with the same caution as any
+other code-execution path:
+
+| Operation | Vector |
+|-----------|--------|
+| `checkout`, `switch`, `restore`, `read-tree`, `merge`, `apply`, `add`, `archive` | `filter.<driver>.{clean,smudge,process}` and `diff.<driver>.textconv` via `.gitattributes` |
+| `commit`, `merge`, `rebase`, `checkout`, `am` | `post-*` hooks (not blocked by `--no-verify`) |
+| `commit -S`, `tag -s`, `log --show-signature`, `merge --verify-signatures` | `gpg.program`, `gpg.ssh.program` |
+| `rebase -i`, `commit --amend`, `tag -a`, `git config --edit` | `core.editor`, `sequence.editor` |
+| `log`, `diff`, `show`, `blame` | `core.pager` |
+| `submodule init` / `update` | `submodule.<name>.update = !cmd` (gated by `submodule.update.command` policy) |
+| `fetch` from a partial clone | lazy fetches honour the **source** repo's config and hooks |
+| `help` | `man.viewer`, `help.browser` |
+
+## Threats from a hostile working tree
+
+### Buried bare repositories
+
+A repository can contain another bare repository as a subdirectory.
+Default-configured `git` discovers it during parent-walking and
+honours its `config` --- including `core.fsmonitor`, hooks, and
+filter drivers. The attack vector and its mitigation are described
+in detail by Justin Steven's
+[2022 advisory on buried bare repos](https://github.com/justinsteven/advisories/blob/main/2022_git_buried_bare_repos_and_fsmonitor_various_abuses.md).
+
+**Mitigation:** Set `safe.bareRepository = explicit`. `git` will then
+refuse to operate on bare repos discovered via traversal; only repos
+named explicitly via `--git-dir` or `GIT_DIR` are honoured. Available
+since Git **2.38** (2022-10-03). See
+[`git-config(1)`](https://git-scm.com/docs/git-config) under
+`safe.bareRepository`.
+
+### `core.fsmonitor` as a code-execution trigger
+
+When `core.fsmonitor` is set to a string, `git` executes it on
+`status`, `add`, `commit`, `diff`, and other working-tree-touching
+commands. A hostile `.git/config` setting this value yields
+immediate RCE on the next `git status` --- which IDEs and shell
+prompts often run automatically.
+
+There is no CVE against upstream Git for this --- the project
+considers the configuration "working as intended". Several CVEs have
+been filed against downstream tools that auto-invoke `git` on
+untrusted paths (VS Code: CVE-2021-43891; JetBrains: CVE-2022-24345;
+fish: CVE-2022-20001).
+
+**Mitigation:** Set `core.fsmonitor = ""` in the hardened global
+config. Override on the command line with
+`git -c core.fsmonitor= <cmd>` for one-off invocations.
+
+### Hook execution
+
+`core.hooksPath` overrides the default `$GIT_DIR/hooks` directory. A
+hostile repo can point it at a path it controls. Conversely, a
+hardened global config can point it at an empty read-only directory,
+and `git` will silently find no executables there. There is no
+`GIT_HOOKS_PATH` environment variable; the supported override is
+`-c core.hooksPath=...` or a config entry.
+
+Note that `--no-verify` only suppresses `pre-commit`, `commit-msg`,
+`pre-merge-commit`, `pre-push`, and `p4-changelist`. It does **not**
+suppress `post-checkout`, `post-merge`, `post-rewrite`, filter
+drivers, or any of the diff/merge drivers.
+
+**Mitigation:**
+
+```ini
+# /etc/gitconfig  -or-  a curated GIT_CONFIG_GLOBAL
+[core]
+    hooksPath = /var/empty
+```
+
+For full effect, combine with `GIT_CONFIG_NOSYSTEM=1` and a curated
+`GIT_CONFIG_GLOBAL` so a per-repo override of `core.hooksPath` cannot
+silently reach back into a writable hooks directory.
+
+See [`githooks(5)`](https://git-scm.com/docs/githooks) and
+[`git-config(1)`](https://git-scm.com/docs/git-config).
+
+### `safe.directory` ownership check
+
+Since Git 2.35.2 (the fix for **CVE-2022-24765**), `git` refuses to
+operate on a repository whose directory is not owned by the current
+effective UID, unless the path is listed in `safe.directory`. The
+literal `*` disables the check globally. `safe.directory` is only
+honoured from system or global config (never from a per-repo
+`.git/config`), so a hostile repo cannot whitelist itself.
+
+For wraptool deployments that run `git` as a service user against
+repositories owned by a different UID, you must whitelist the
+working tree paths explicitly in the hardened global config.
+
+References:
+[NVD CVE-2022-24765](https://nvd.nist.gov/vuln/detail/CVE-2022-24765),
+[GHSA-j342-m5hw-rr3v (CVE-2022-29187 bypass)](https://github.com/git/git/security/advisories/GHSA-j342-m5hw-rr3v).
+
+### Protocol allowlist
+
+The `git-remote-ext` helper runs arbitrary shell when a URL of the
+form `ext::sh -c "..."` is fetched. Default-deny is in place since
+the CVE-2017-1000117 family of submodule URL exploits, gated by:
+
+- `protocol.allow` --- default policy.
+- `protocol.<name>.allow` --- per-protocol override.
+- The `GIT_PROTOCOL_FROM_USER=1` distinction: for indirect operations
+  (submodule init, recursive fetch) the protocol must be explicitly
+  allow-listed; user-typed top-level commands implicitly carry user
+  trust.
+
+**Do not relax** `protocol.ext.allow=always` or
+`protocol.file.allow=always`. See
+[`git-remote-ext(1)`](https://git-scm.com/docs/git-remote-ext) and
+the `protocol.allow` entry in `git-config(1)`.
+
+## Config keys that can execute code
+
+Treat any of these as a code-execution channel when present in
+`.git/config` of an untrusted repository:
+
+| Key | Triggered by |
+|-----|--------------|
+| `core.sshCommand` | any remote op over ssh |
+| `core.editor`, `sequence.editor` | `commit`, `rebase -i`, `tag -a`, `config --edit` |
+| `core.pager`, `pager.<cmd>` | any pager-using command |
+| `core.askPass` (and `GIT_ASKPASS`) | credential prompt |
+| `core.fsmonitor` | `status`, `add`, `commit`, ... |
+| `credential.helper` | credential prompt; `!cmd` runs shell |
+| `alias.<name>` (when value starts with `!`) | the alias |
+| `gpg.program`, `gpg.ssh.program`, `gpg.<format>.program` | signing / verification |
+| `diff.<driver>.command`, `diff.<driver>.textconv`, `diff.external` | gated by `.gitattributes` |
+| `merge.<driver>.driver` | gated by `.gitattributes` |
+| `filter.<driver>.clean`, `filter.<driver>.smudge`, `filter.<driver>.process` | gated by `.gitattributes`; fires on **`checkout`, `add`, `archive`** |
+| `submodule.<name>.update = !cmd` | `submodule update` (constrained by `submodule.update.command` policy since 2018) |
+| `url.<base>.insteadOf` | not direct exec; can redirect to `ext::` if protocol allow permits |
+| `include.path`, `includeIf.*.path` | not direct exec; pulls in additional config from arbitrary paths |
+| `uploadpack.packObjectsHook` | server-side only; modern git ignores it when read from per-repo config |
+
+This list is not exhaustive but covers the high-value surface. Cross-
+reference [`git-config(1)`](https://git-scm.com/docs/git-config)
+before relying on any individual entry.
+
+## Hardened environment for wraptool
+
+If you wrap `git` through wraptool, point it at a curated
+configuration and strip whatever the host's user-global config
+might add. Example layout:
+
+```bash
+# /etc/wraptool/git-home/.gitconfig   (curated, read-only, owned by root)
+[safe]
+    bareRepository = explicit
+    directory      = /var/lib/wraptool/work
+[core]
+    fsmonitor = ""
+    hooksPath = /var/empty
+    sshCommand = "/usr/bin/ssh -F /etc/wraptool/ssh_config"
+[protocol]
+    allow             = user
+    ext.allow         = never
+    file.allow        = user
+[transfer]
+    fsckObjects = true
+[fetch]
+    fsckObjects = true
+[receive]
+    fsckObjects = true
+```
+
+Then in `wraptool` config:
+
+```yaml
+tools:
+  git:
+    binary: /usr/bin/git
+    timeout: 60s
+    env:
+      HOME: /etc/wraptool/git-home
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL:  /etc/wraptool/git-home/.gitconfig
+      GIT_TERMINAL_PROMPT: "0"
+      GIT_AUTHOR_NAME:  wraptool
+      GIT_AUTHOR_EMAIL: wraptool@example.invalid
+    allow:
+      - subcommand: [clone]
+        flags: ["--depth", "--branch", "--no-recurse-submodules"]
+        flag_constraints:
+          "--depth":  { type: integer, min: 1, max: 50 }
+          "--branch": { pattern: "^[A-Za-z0-9._/-]{1,128}$" }
+        arg_constraints:
+          positional_max: 2
+      - subcommand: [fetch]
+        flags: ["--prune"]
+        deny_flags: ["--upload-pack", "--exec"]
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease", "--receive-pack", "--exec"]
+    deny:
+      - subcommand: [submodule]            # remove if you actually need it
+      - subcommand: [config]
+      - subcommand: [credential]
+      - subcommand: [remote, set-url]
+      - subcommand: [remote, add]
+```
+
+Notes:
+
+- `GIT_CONFIG_NOSYSTEM=1` skips `/etc/gitconfig`.
+- `GIT_CONFIG_GLOBAL=<path>` skips both `~/.gitconfig` and
+  `$XDG_CONFIG_HOME/git/config` in favour of the curated file. Setting
+  it to `/dev/null` skips global config entirely.
+- `GIT_TERMINAL_PROMPT=0` prevents `git` from blocking on a credential
+  prompt; failed auth becomes a fast error instead of a hang.
+- `--upload-pack` and `--receive-pack` are explicit denies because
+  they let the client name an arbitrary executable on the server side
+  --- harmless for typical clients, but unnecessary attack surface.
+
+## CVE awareness
+
+Wrappers do not make `git` itself secure. Keep the wrapped `git`
+binary patched. The advisories below are worth tracking because
+each one ends in code execution on a clone or local operation
+against a hostile tree:
+
+| CVE | Fixed in | One-liner |
+|-----|----------|-----------|
+| [CVE-2022-24765](https://nvd.nist.gov/vuln/detail/CVE-2022-24765) | 2.35.2 | Bare-repo discovery in foreign-owned dir; introduced `safe.directory`. |
+| [CVE-2022-29187](https://github.com/git/git/security/advisories/GHSA-j342-m5hw-rr3v) | 2.30.5 / 2.37.1 | Bypass of CVE-2022-24765 for root in self-owned dir. |
+| [CVE-2022-39253](https://github.com/git/git/security/advisories/GHSA-mvxm-9j2h-qjx7) | 2.30.6 / 2.38.1 | Symlinks in `--local` clone leak files into clone. |
+| [CVE-2024-32002](https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv) | 2.39.4 / 2.40.2 / 2.41.1 / 2.42.2 / 2.43.4 / 2.44.1 / 2.45.1 | Submodule writes into `.git/hooks` via symlink on case-insensitive FS → RCE on recursive clone. |
+| [CVE-2024-32004](https://nvd.nist.gov/vuln/detail/CVE-2024-32004) | same fixed set | Crafted local clone triggers hooks → RCE on multi-user host. |
+| [CVE-2024-32020](https://nvd.nist.gov/vuln/detail/CVE-2024-32020) | same fixed set | Local clone hardlinks across UIDs → other user can rewrite objects. |
+| [CVE-2024-32021](https://nvd.nist.gov/vuln/detail/CVE-2024-32021) | same fixed set | Local-clone symlink TOCTOU hardlinks arbitrary readable files. |
+| [CVE-2024-32465](https://nvd.nist.gov/vuln/detail/CVE-2024-32465) | same fixed set | `.zip`-archived clone bypasses CVE-2024-32002/4 fixes. |
+| CVE-2024-50349 / 52006 | 2.48.1 | Credential-helper ANSI/CR injection. |
+| [CVE-2025-48384](https://github.blog/open-source/git/git-security-vulnerabilities-announced-6/) | 2.43.7 / 2.44.4 / 2.45.4 / 2.46.4 / 2.47.3 / 2.48.2 / 2.49.1 / 2.50.1 | CR-mismatch in config read vs write → checkout to wrong path → RCE on recursive clone. **Listed in CISA KEV (Aug 2025), actively exploited.** |
+| CVE-2025-48385 / 48386 | same fixed set | Bundle URI validation bypass; Wincred buffer overflow (Windows). |
+| CVE-2023-25652 / 29007 | 2.40.1 | `git apply --reject` arbitrary write; submodule URL config injection → RCE. |
+
+Aggregated upstream announcements live at the
+[GitHub blog "Git security vulnerabilities announced" series](https://github.blog/open-source/git/).
+
+## Scope: what wraptool does and does not enforce
+
+Today, wraptool enforces **whitelisting and credential isolation at
+the command boundary**. It does not:
+
+- inspect repository configuration before launching `git`,
+- reject `.git/config` containing `core.fsmonitor`,
+- run static analysis on `.gitattributes`,
+- prevent `git` from auto-discovering a bare repository in a parent
+  directory of the working tree.
+
+All of the above are properties of the environment in which the
+wrapped `git` runs --- the `HOME`, the curated `gitconfig`, the
+filesystem layout, and the version of the `git` binary itself.
+
+The recipes on this page are the recommended way to close those
+gaps until / unless wraptool grows tool-specific policy modules
+(an open design question; see the wraptool issue tracker).
+
+## References
+
+- [`git-config(1)`](https://git-scm.com/docs/git-config) ---
+  authoritative reference for every setting named on this page.
+- [`githooks(5)`](https://git-scm.com/docs/githooks) --- which
+  events fire which hooks and when.
+- [`git-remote-ext(1)`](https://git-scm.com/docs/git-remote-ext) ---
+  why `protocol.ext.allow` matters.
+- [Justin Steven, "Buried bare repos and `core.fsmonitor` various abuses" (2022)](https://github.com/justinsteven/advisories/blob/main/2022_git_buried_bare_repos_and_fsmonitor_various_abuses.md)
+  --- in-depth writeup of the bare-repo + `fsmonitor` attack chain.
+- [GitHub Blog: Git security vulnerabilities announced (series)](https://github.blog/open-source/git/)
+  --- upstream advisories for each batch of CVEs.
+- NVD CVE lookups: `https://nvd.nist.gov/vuln/detail/CVE-YYYY-NNNNN`.

@@ -19,6 +19,8 @@ website:
         text: Security
       - href: hot-reload.qmd
         text: Hot-Reload
+      - href: git-hardening.qmd
+        text: Git hardening
       - href: presentation.qmd
         text: Slides
     right:
@@ -32,6 +34,7 @@ website:
       - configuration.qmd
       - security.qmd
       - hot-reload.qmd
+      - git-hardening.qmd
       - isolated-environments.md
       - text: "---"
       - presentation.qmd
