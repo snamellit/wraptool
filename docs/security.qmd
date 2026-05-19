@@ -20,15 +20,15 @@ audited, and credential-free from the AI's point of view.
 
 ```{mermaid}
 flowchart LR
-  subgraph untrusted[Untrusted]
-    ai[AI assistant<br/>+ harness]
+  subgraph untrusted ["Untrusted"]
+    ai["AI assistant<br/>+ harness"]
   end
-  subgraph trusted[Trusted host]
-    wt[wraptool<br/>process]
-    creds[(Credentials<br/>SSH / gcloud / kubeconfig)]
-    cli[CLI binaries]
+  subgraph trusted ["Trusted host"]
+    wt["wraptool<br/>process"]
+    creds[("Credentials<br/>SSH / gcloud / kubeconfig")]
+    cli["CLI binaries"]
   end
-  ai <-- MCP / SSE --> wt
+  ai <-- "MCP / SSE" --> wt
   wt --- creds
   wt --> cli
 

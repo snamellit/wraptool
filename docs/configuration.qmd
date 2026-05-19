@@ -82,27 +82,25 @@ deny:
 ## Evaluation order
 
 ```{mermaid}
-flowchart TD
-  start[Tool call]
-  tool{Tool in config?}
-  deny{Any deny rule<br/>matches subcommand?}
-  allow{Matching allow rule?}
-  flags{All flags allowed<br/>and constraints pass?}
-  pargs{Positional args<br/>within limit?}
-  exec[Execute]
-  refuse[Refuse]
+%%| fig-width: 11
+flowchart LR
+  start([Tool call]) --> tool{Tool<br/>configured?}
+  tool  -- yes --> deny{Deny rule<br/>matches?}
+  deny  -- no  --> allow{Allow rule<br/>matches?}
+  allow -- yes --> flags{Flags +<br/>constraints<br/>pass?}
+  flags -- yes --> pargs{Positional args<br/>within limit?}
+  pargs -- yes --> exec([Execute])
 
-  start --> tool
-  tool -- no --> refuse
-  tool -- yes --> deny
-  deny -- yes --> refuse
-  deny -- no --> allow
-  allow -- no --> refuse
-  allow -- yes --> flags
-  flags -- no --> refuse
-  flags -- yes --> pargs
-  pargs -- no --> refuse
-  pargs -- yes --> exec
+  tool  -- no  --> refuse([Refuse])
+  deny  -- yes --> refuse
+  allow -- no  --> refuse
+  flags -- no  --> refuse
+  pargs -- no  --> refuse
+
+  classDef ok fill:#efe,stroke:#2a7
+  classDef no fill:#fee,stroke:#E60028
+  class exec ok
+  class refuse no
 ```
 
 ## CLI introspection

@@ -76,15 +76,15 @@ flowchart LR
 
 ```{mermaid}
 flowchart LR
-  subgraph untrusted [Untrusted: AI sandbox]
-    ai[AI + harness]
+  subgraph untrusted ["Untrusted: AI sandbox"]
+    ai["AI + harness"]
   end
-  subgraph trusted [Trusted: host]
-    wt[wraptool]
-    creds[(SSH / gcloud / kube)]
-    bins[/usr/bin/git, ...]
+  subgraph trusted ["Trusted: host"]
+    wt["wraptool"]
+    creds[("SSH / gcloud / kube")]
+    bins["/usr/bin/git, ..."]
   end
-  ai <-- SSE / Unix sock --> wt
+  ai <-- "SSE / Unix sock" --> wt
   wt --- creds
   wt --> bins
   style untrusted fill:#fee,stroke:#E60028
@@ -109,18 +109,25 @@ internal/
 ## Evaluation flow
 
 ```{mermaid}
-flowchart TD
-  call[Tool call] --> tool{Tool<br/>configured?}
-  tool -- no --> X[Refuse]
-  tool -- yes --> deny{Deny rule<br/>matches?}
-  deny -- yes --> X
-  deny -- no --> allow{Allow rule<br/>matches?}
-  allow -- no --> X
-  allow -- yes --> flags{Flags +<br/>constraints<br/>pass?}
-  flags -- no --> X
-  flags -- yes --> args{Positional<br/>args ok?}
-  args -- no --> X
-  args -- yes --> exec[Execute]
+%%| fig-width: 11
+flowchart LR
+  call([Tool call]) --> tool{Tool<br/>configured?}
+  tool -- yes --> deny{Deny<br/>match?}
+  deny -- no --> allow{Allow<br/>match?}
+  allow -- yes --> flags{Flags +<br/>constraints?}
+  flags -- yes --> args{Args<br/>ok?}
+  args -- yes --> exec([Execute])
+
+  tool  -- no  --> X([Refuse])
+  deny  -- yes --> X
+  allow -- no  --> X
+  flags -- no  --> X
+  args  -- no  --> X
+
+  classDef ok fill:#efe,stroke:#2a7
+  classDef no fill:#fee,stroke:#E60028
+  class exec ok
+  class X no
 ```
 
 # Config
