@@ -8,6 +8,7 @@ import (
 	"os/exec"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/paths"
 )
 
 const defaultMaxOutput = 1 << 20 // 1MB
@@ -56,8 +57,9 @@ func Run(ctx context.Context, tc *config.ToolConfig, subcommand []string, flags 
 	}
 	cmd.Env = envSlice
 
-	if tc.WorkingDir != "" {
-		cmd.Dir = tc.WorkingDir
+	cwd := paths.ResolveCWD(ctx, tc.WorkingDir)
+	if cwd != "" {
+		cmd.Dir = cwd
 	}
 
 	var stdout, stderr bytes.Buffer

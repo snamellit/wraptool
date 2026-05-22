@@ -128,7 +128,15 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("server.listen is required for sse transport (e.g. 127.0.0.1:8717)")
 	}
 
-	sseServer := server.NewSSEServer(s)
+	sseServer := server.NewSSEServer(s,
+		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
+				ctx = paths.WithClientCWD(ctx, cwd)
+			}
+			return ctx
+		}),
+		server.WithAppendQueryToMessageEndpoint(),
+	)
 
 	// Wrap with auth middleware if configured.
 	var handler http.Handler = sseServer
@@ -177,6 +185,13 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 
 	sseServer := server.NewSSEServer(s,
 		server.WithBaseURL("http://localhost"),
+		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
+				ctx = paths.WithClientCWD(ctx, cwd)
+			}
+			return ctx
+		}),
+		server.WithAppendQueryToMessageEndpoint(),
 	)
 
 	// Wrap with auth middleware if configured.
@@ -192,7 +207,8 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 	log.Printf("wraptool MCP server starting on unix:%s", sockPath)
 
 	srv := &http.Server{
-		Handler: handler,
+		Handler:     handler,
+		ConnContext: connContextWithPeerPID,
 	}
 
 	// Clean up socket on shutdown signals.

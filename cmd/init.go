@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -124,10 +125,10 @@ func generateClaude(transport, url, socketPath, wraptoolBin, configFile string, 
 		server["args"] = []string{"serve", "--config", configFile}
 	case "sse":
 		server["type"] = "sse"
-		server["url"] = url
+		server["url"] = appendCWD(url, global)
 	case "unix":
 		server["type"] = "sse"
-		server["url"] = "http://localhost/sse"
+		server["url"] = appendCWD("http://localhost/sse", global)
 		// Claude Code doesn't natively support Unix sockets in MCP config;
 		// document the socat bridge approach.
 	}
@@ -154,7 +155,7 @@ func generateCursor(transport, url, socketPath, wraptoolBin, configFile string, 
 		server["command"] = wraptoolBin
 		server["args"] = []string{"serve", "--config", configFile}
 	case "sse", "unix":
-		server["url"] = effectiveURL(transport, url, socketPath)
+		server["url"] = appendCWD(effectiveURL(transport, url, socketPath), global)
 	}
 
 	cfg := map[string]interface{}{
@@ -181,7 +182,7 @@ func generateOpenCode(transport, url, socketPath, wraptoolBin, configFile string
 		server["args"] = []string{"serve", "--config", configFile}
 	case "sse", "unix":
 		server["type"] = "remote"
-		server["url"] = effectiveURL(transport, url, socketPath)
+		server["url"] = appendCWD(effectiveURL(transport, url, socketPath), global)
 	}
 	server["enabled"] = true
 
@@ -207,7 +208,7 @@ func generateGemini(transport, url, socketPath, wraptoolBin, configFile string, 
 		server["command"] = wraptoolBin
 		server["args"] = []string{"serve", "--config", configFile}
 	case "sse", "unix":
-		server["httpUrl"] = effectiveURL(transport, url, socketPath)
+		server["httpUrl"] = appendCWD(effectiveURL(transport, url, socketPath), global)
 	}
 
 	cfg := map[string]interface{}{
@@ -232,7 +233,7 @@ func generateRoo(transport, url, socketPath, wraptoolBin, configFile string, glo
 		server["args"] = []string{"serve", "--config", configFile}
 	case "sse", "unix":
 		server["type"] = "sse"
-		server["url"] = effectiveURL(transport, url, socketPath)
+		server["url"] = appendCWD(effectiveURL(transport, url, socketPath), global)
 	}
 
 	cfg := map[string]interface{}{
@@ -255,7 +256,7 @@ func generateWindsurf(transport, url, socketPath, wraptoolBin, configFile string
 		server["command"] = wraptoolBin
 		server["args"] = []string{"serve", "--config", configFile}
 	case "sse", "unix":
-		server["serverUrl"] = effectiveURL(transport, url, socketPath)
+		server["serverUrl"] = appendCWD(effectiveURL(transport, url, socketPath), global)
 	}
 
 	cfg := map[string]interface{}{
@@ -344,4 +345,22 @@ func mergeJSONConfig(existing, newContent []byte) ([]byte, error) {
 	}
 
 	return mustJSON(existingMap), nil
+}
+
+func appendCWD(rawURL string, global bool) string {
+	if global || rawURL == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	q.Set("cwd", cwd)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
