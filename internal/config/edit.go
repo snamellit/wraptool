@@ -32,83 +32,60 @@ type ApplyResult struct {
 //   - A deny rule for the same subcommand exists (conflict).
 //   - The post-edit config fails validation.
 func ApplyRequest(path, toolName string, subcommand, flags []string) (*ApplyResult, error) {
-	path = expandPath(path)
+	result := &ApplyResult{}
+	var ruleNode *yaml.Node
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
-	}
+	err := editConfig(path, func(doc *yaml.Node) error {
+		toolNode, err := docToolNode(doc, toolName)
+		if err != nil {
+			return err
+		}
 
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return nil, fmt.Errorf("config is not a YAML document")
-	}
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("config root is not a mapping")
-	}
+		if denyNode := mapGet(toolNode, "deny"); denyNode != nil && denyNode.Kind == yaml.SequenceNode {
+			for _, rule := range denyNode.Content {
+				if rule.Kind != yaml.MappingNode {
+					continue
+				}
+				sub := mapGet(rule, "subcommand")
+				if sub != nil && stringSeqEqual(sub, subcommand) {
+					return fmt.Errorf("subcommand %v is denied for tool %q; remove the deny rule first", subcommand, toolName)
+				}
+			}
+		}
 
-	toolsNode := mapGet(doc, "tools")
-	if toolsNode == nil || toolsNode.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("no `tools` mapping in config")
-	}
+		allowNode := mapGet(toolNode, "allow")
+		if allowNode == nil {
+			allowNode = &yaml.Node{Kind: yaml.SequenceNode}
+			mapSet(toolNode, "allow", allowNode)
+		} else if allowNode.Kind != yaml.SequenceNode {
+			return fmt.Errorf("tool %q `allow` is not a sequence", toolName)
+		}
 
-	toolNode := mapGet(toolsNode, toolName)
-	if toolNode == nil {
-		return nil, fmt.Errorf("tool %q is not configured; add it to the config first (binary path is required)", toolName)
-	}
-	if toolNode.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("tool %q entry is not a mapping", toolName)
-	}
-
-	if denyNode := mapGet(toolNode, "deny"); denyNode != nil && denyNode.Kind == yaml.SequenceNode {
-		for _, rule := range denyNode.Content {
+		for _, rule := range allowNode.Content {
 			if rule.Kind != yaml.MappingNode {
 				continue
 			}
 			sub := mapGet(rule, "subcommand")
 			if sub != nil && stringSeqEqual(sub, subcommand) {
-				return nil, fmt.Errorf("subcommand %v is denied for tool %q; remove the deny rule first", subcommand, toolName)
+				ruleNode = rule
+				break
 			}
 		}
-	}
 
-	allowNode := mapGet(toolNode, "allow")
-	if allowNode == nil {
-		allowNode = &yaml.Node{Kind: yaml.SequenceNode}
-		mapSet(toolNode, "allow", allowNode)
-	} else if allowNode.Kind != yaml.SequenceNode {
-		return nil, fmt.Errorf("tool %q `allow` is not a sequence", toolName)
-	}
-
-	result := &ApplyResult{}
-	var ruleNode *yaml.Node
-	for _, rule := range allowNode.Content {
-		if rule.Kind != yaml.MappingNode {
-			continue
+		if ruleNode == nil {
+			ruleNode = newAllowRule(subcommand, flags)
+			allowNode.Content = append(allowNode.Content, ruleNode)
+			result.NewRule = true
+			result.AddedFlags = append([]string(nil), flags...)
+			return nil
 		}
-		sub := mapGet(rule, "subcommand")
-		if sub != nil && stringSeqEqual(sub, subcommand) {
-			ruleNode = rule
-			break
-		}
-	}
 
-	if ruleNode == nil {
-		ruleNode = newAllowRule(subcommand, flags)
-		allowNode.Content = append(allowNode.Content, ruleNode)
-		result.NewRule = true
-		result.AddedFlags = append([]string(nil), flags...)
-	} else {
 		flagsNode := mapGet(ruleNode, "flags")
 		if flagsNode == nil {
 			flagsNode = &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
 			mapSet(ruleNode, "flags", flagsNode)
 		} else if flagsNode.Kind != yaml.SequenceNode {
-			return nil, fmt.Errorf("tool %q allow rule `flags` is not a sequence", toolName)
+			return fmt.Errorf("tool %q allow rule `flags` is not a sequence", toolName)
 		}
 		existing := make(map[string]bool, len(flagsNode.Content))
 		for _, f := range flagsNode.Content {
@@ -122,37 +99,84 @@ func ApplyRequest(path, toolName string, subcommand, flags []string) (*ApplyResu
 			existing[f] = true
 			result.AddedFlags = append(result.AddedFlags, f)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if snippet, err := marshalNode(ruleNode); err == nil {
+		result.Snippet = snippet
+	}
+	return result, nil
+}
+
+// editConfig reads the config at path, parses it into a YAML node tree
+// (preserving comments and ordering), hands the document's root mapping node
+// to mutate, then re-encodes, round-trip validates through the typed loader,
+// and writes the result atomically. The file is left untouched if mutate or
+// validation returns an error.
+func editConfig(path string, mutate func(doc *yaml.Node) error) error {
+	path = expandPath(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return fmt.Errorf("config is not a YAML document")
+	}
+	doc := root.Content[0]
+	if doc.Kind != yaml.MappingNode {
+		return fmt.Errorf("config root is not a mapping")
+	}
+
+	if err := mutate(doc); err != nil {
+		return err
 	}
 
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
 	if err := enc.Encode(&root); err != nil {
-		return nil, fmt.Errorf("re-encoding config: %w", err)
+		return fmt.Errorf("re-encoding config: %w", err)
 	}
 	if err := enc.Close(); err != nil {
-		return nil, fmt.Errorf("re-encoding config: %w", err)
+		return fmt.Errorf("re-encoding config: %w", err)
 	}
 
 	// Validate by round-tripping through the typed loader.
 	var newCfg Config
 	if err := yaml.Unmarshal(out.Bytes(), &newCfg); err != nil {
-		return nil, fmt.Errorf("validating edited config: %w", err)
+		return fmt.Errorf("validating edited config: %w", err)
 	}
 	newCfg.applyDefaults()
 	if err := newCfg.Validate(); err != nil {
-		return nil, fmt.Errorf("edited config failed validation: %w", err)
+		return fmt.Errorf("edited config failed validation: %w", err)
 	}
 
-	if err := writeAtomic(path, out.Bytes()); err != nil {
-		return nil, err
-	}
+	return writeAtomic(path, out.Bytes())
+}
 
-	snippet, err := marshalNode(ruleNode)
-	if err == nil {
-		result.Snippet = snippet
+// docToolNode returns the mapping node for the named tool under `tools`.
+func docToolNode(doc *yaml.Node, toolName string) (*yaml.Node, error) {
+	toolsNode := mapGet(doc, "tools")
+	if toolsNode == nil || toolsNode.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("no `tools` mapping in config")
 	}
-	return result, nil
+	toolNode := mapGet(toolsNode, toolName)
+	if toolNode == nil {
+		return nil, fmt.Errorf("tool %q is not configured; add it to the config first (binary path is required)", toolName)
+	}
+	if toolNode.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("tool %q entry is not a mapping", toolName)
+	}
+	return toolNode, nil
 }
 
 func mapGet(m *yaml.Node, key string) *yaml.Node {

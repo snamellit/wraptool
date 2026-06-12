@@ -1,0 +1,126 @@
+---
+title: "Request-Review Web UI"
+---
+
+The Web UI is an operator-facing dashboard for reviewing capability
+requests — the same approve / deny / apply workflow as the
+[`wraptool requests`](hot-reload.qmd#operator-workflow) CLI, in the
+browser.
+
+It runs **inside the `serve` process** on its own listener,
+independent of the MCP transport, so it works even under `stdio`. It
+reads the JSONL request log and applies approvals to the YAML config
+via the same merge as `requests approve --apply`; the running server
+then [hot-reloads](hot-reload.qmd) the change.
+
+::: {.callout-important}
+The Web UI is **operator-facing, not AI-facing**. Bind it to
+`127.0.0.1` only. It is a separate listener from the MCP transport by
+design — the AI never reaches it.
+:::
+
+## Enabling it
+
+Add a `web` block under `server`:
+
+```yaml
+server:
+  transport: sse
+  listen: 127.0.0.1:8717          # AI-facing MCP transport
+  web:
+    listen: 127.0.0.1:8718        # operator-facing UI — localhost only
+    auth_token_file: ~/.config/wraptool/auth_token
+```
+
+Leave `web.listen` empty (or omit the block) to disable the UI. The
+`auth_token_file` may be the **same token file** used by the MCP
+transport's `auth_token_file` — there is no need for a second secret.
+
+On startup wraptool logs a click-through URL with the token embedded:
+
+```
+wraptool web ui: http://127.0.0.1:8718/requests?token=…
+```
+
+A wildcard bind (`0.0.0.0` / `::`) is rewritten to `127.0.0.1` in that
+URL so the link is followable from the operator's machine.
+
+## Authentication
+
+When `web.auth_token_file` is set, access is granted from any of:
+
+| Method | Use |
+|--------|-----|
+| **Session cookie** | set automatically after the first authenticated request |
+| **`?token=…` query** | the click-through URL; validates, sets the cookie, then redirects to a clean URL (token stripped) |
+| **Login form** | shown on any unauthenticated request; submit the token to sign in |
+| **`Authorization: Bearer …`** | for scripts / `curl` |
+
+All comparisons are constant-time. The session cookie is `HttpOnly`,
+`SameSite=Lax`. Static assets (CSS) are served without auth so the
+login page renders styled.
+
+With **no** `auth_token_file`, the UI runs unauthenticated and relies
+solely on the localhost bind for access control — acceptable on a
+single-operator workstation, but prefer a token otherwise.
+
+::: {.callout-note}
+The token is written to the server log as part of the click-through
+URL. Fine for local development; avoid shipping those logs anywhere.
+:::
+
+## Reviewing requests
+
+- **`GET /requests`** lists requests newest-first, filterable by status
+  (Pending / Approved / Denied / All). Pending requests show inline
+  **Approve** and **Deny** controls.
+- **Approve** with *apply to config* checked runs
+  [`config.ApplyRequest`](hot-reload.qmd#apply) — the same merge as
+  `requests approve --apply`. Unchecked, it marks the request approved
+  and leaves the config for you to edit by hand.
+- **Deny** records an optional reason.
+
+Applied approvals trigger the config file-watch reload, so the new
+capability is live without restarting the server. If an apply fails
+(unknown tool, deny-rule conflict, validation error) the request is
+still marked approved and the UI surfaces the error so you can edit
+the config manually.
+
+## Managing rules
+
+**`GET /rules`** lists every configured tool with its allow and deny
+rules and provides full CRUD, built on the same primitives as
+request-apply — the YAML node-tree editor (`config.AddRule` /
+`UpdateRule` / `DeleteRule`), round-trip validation, atomic write, and
+file-watch hot-reload.
+
+- **Add** a rule: fill the *new subcommand* (and, for allow rules,
+  *flags*) row under a tool and submit. Subcommand and flags are
+  space-separated.
+- **Save** edits a rule's subcommand and flags in place. Other keys on
+  the rule — `flag_constraints`, `arg_constraints`, `deny_flags`,
+  comments — are preserved; rules carrying them are marked
+  `adv` (edit those parts in the YAML directly). Removing a flag also
+  prunes its now-orphaned `flag_constraints` entry.
+- **Delete** removes the rule.
+
+Every edit is validated before it is written, so the UI refuses changes
+that would break the config — an invalid flag name, a deny/allow
+conflict, or deleting a tool's last allow rule (a tool must keep at
+least one). Save and Delete carry the rule's original subcommand as a
+hidden field; if the on-disk config changed since the page loaded, the
+edit is refused rather than clobbering the newer version — reload and
+retry.
+
+::: {.callout-note}
+The `adv` marker means a rule has constraints the UI does not edit. It
+still lets you change that rule's subcommand and flags; only the
+constraint blocks themselves require a YAML edit.
+:::
+
+## Restart to enable
+
+The Web UI listener is bound once at startup. Adding or changing the
+`web` block requires a **restart** of `wraptool serve` — config
+hot-reload swaps tools and policy but does not start or move the web
+listener.

@@ -1,0 +1,59 @@
+{{define "rules"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wraptool — rules</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>wraptool</h1>
+  <nav class="tabs">
+    <a href="/requests">Requests</a>
+    <a href="/rules" class="active">Rules</a>
+  </nav>
+</header>
+<main>
+  {{with .Flash}}<div class="flash {{.Kind}}">{{.Message}}{{if .Detail}}<pre>{{.Detail}}</pre>{{end}}</div>{{end}}
+  <p class="hint">Subcommand and flags are space-separated. Edits validate and
+  hot-reload the running server. Rules marked <span class="tag">adv</span> carry
+  flag_constraints / arg_constraints — edit those in the YAML directly.</p>
+
+  {{range .Tools}}
+  <div class="card tool">
+    <div class="top">
+      <span class="cmd"><span class="tool">{{.Name}}</span></span>
+      <span class="meta">{{.Binary}}</span>
+    </div>
+
+    {{template "ruleset" dict "Tool" .Name "Kind" "allow" "Label" "Allow" "Rules" .Allow "HasFlags" true}}
+    {{template "ruleset" dict "Tool" .Name "Kind" "deny" "Label" "Deny" "Rules" .Deny "HasFlags" false}}
+  </div>
+  {{end}}
+</main>
+</body>
+</html>{{end}}
+
+{{define "ruleset"}}
+<div class="ruleset">
+  <div class="ruleset-label">{{.Label}}</div>
+  {{range .Rules}}
+  <form class="rule" method="post" action="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/update">
+    <input type="hidden" name="expect" value="{{.Subcommand}}">
+    <input type="text" name="subcommand" value="{{.Subcommand}}" placeholder="subcommand" class="sub-in">
+    {{if $.HasFlags}}<input type="text" name="flags" value="{{.Flags}}" placeholder="flags" class="flags-in">{{end}}
+    {{if .Advanced}}<span class="tag" title="has flag_constraints / arg_constraints">adv</span>{{end}}
+    <button type="submit">Save</button>
+    <button type="submit" class="deny" formaction="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/delete" formnovalidate>Delete</button>
+  </form>
+  {{else}}
+  <div class="rule-empty">none</div>
+  {{end}}
+  <form class="rule add" method="post" action="/rules/{{.Tool}}/{{.Kind}}/add">
+    <input type="text" name="subcommand" placeholder="new subcommand" class="sub-in">
+    {{if .HasFlags}}<input type="text" name="flags" placeholder="flags" class="flags-in">{{end}}
+    <button type="submit" class="approve">Add {{.Label}}</button>
+  </form>
+</div>
+{{end}}

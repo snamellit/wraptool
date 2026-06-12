@@ -4,7 +4,23 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 )
+
+// paramNamePattern is the property-key pattern the Anthropic API enforces on
+// tool input schemas. A flag whose derived parameter name violates it would
+// be rejected with a 400 mid-session, so reject it at config-load time.
+const paramNamePattern = `^[a-zA-Z0-9_.-]{1,64}$`
+
+var paramNameRe = regexp.MustCompile(paramNamePattern)
+
+// flagParamName mirrors mcptools.FlagToParam — the schema property key derived
+// from a flag. Duplicated here rather than imported to avoid a
+// config → mcptools import cycle.
+func flagParamName(flag string) string {
+	return strings.ReplaceAll(strings.TrimLeft(flag, "-"), "-", "_")
+}
 
 func (c *Config) Validate() error {
 	switch c.Server.Transport {
@@ -69,6 +85,11 @@ func validateTool(name string, tc *ToolConfig) error {
 	for i, rule := range tc.Allow {
 		if len(rule.Subcommand) == 0 {
 			return fmt.Errorf("allow rule %d: subcommand is required", i)
+		}
+		for _, flag := range rule.Flags {
+			if p := flagParamName(flag); !paramNameRe.MatchString(p) {
+				return fmt.Errorf("allow rule %d: flag %q yields invalid schema property %q (must match %s) — %q is not a flag; drop it (positional args go through `args`)", i, flag, p, paramNamePattern, flag)
+			}
 		}
 	}
 

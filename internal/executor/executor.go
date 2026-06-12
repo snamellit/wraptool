@@ -6,12 +6,30 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/paths"
 )
 
 const defaultMaxOutput = 1 << 20 // 1MB
+
+// defaultPath is the minimal base PATH for child processes.
+const defaultPath = "/usr/bin:/bin"
+
+// childPath returns the PATH for a child process: the tool binary's own
+// directory prepended to the minimal base, so helper executables that ship
+// alongside the tool (credential plugins, components) resolve. The binary's
+// directory is omitted when it is empty or already part of the base.
+func childPath(binary string) string {
+	dir := filepath.Dir(binary)
+	switch dir {
+	case "", ".", "/usr/bin", "/bin":
+		return defaultPath
+	default:
+		return dir + ":" + defaultPath
+	}
+}
 
 // Result holds the output of a command execution.
 type Result struct {
@@ -47,8 +65,14 @@ func Run(ctx context.Context, tc *config.ToolConfig, subcommand []string, flags 
 	// Set environment: always start with a minimal clean environment.
 	// Never inherit the parent process environment — this prevents
 	// credential leakage from the wraptool process to child commands.
+	//
+	// Prepend the tool binary's own directory to PATH so co-located helper
+	// executables resolve — e.g. kubectl invoking its kubeconfig exec
+	// credential plugin (gke-gcloud-auth-plugin), or gcloud components that
+	// shell out to siblings. This adds only the directory the trusted binary
+	// already lives in, so it leaks nothing.
 	envSlice := []string{
-		"PATH=/usr/bin:/bin",
+		"PATH=" + childPath(tc.Binary),
 		"HOME=" + os.Getenv("HOME"),
 		"LANG=C.UTF-8",
 	}

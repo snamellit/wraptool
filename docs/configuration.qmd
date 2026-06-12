@@ -18,6 +18,31 @@ tools:     # one entry per wrapped CLI tool
 | `auth_token_file` | string | — | Bearer token file for sse/unix |
 | `log_level` | string | `info` | log verbosity |
 | `request_log` | string | XDG data dir | path to capability-request JSONL |
+| `web` | map | — | operator request-review Web UI (see below) |
+
+### `server.web`
+
+Starts an operator-facing Web UI for reviewing capability requests inside
+the `serve` process, on its own listener — independent of the MCP
+transport, so it works even under `stdio`. Leave `listen` empty to disable.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `listen` | string | — | `host:port` for the UI; **bind `127.0.0.1`** — it is not AI-facing |
+| `auth_token_file` | string | — | optional; HTTP Basic password (browser prompt) or `Bearer` token (scripts). Empty ⇒ localhost-trust, no auth |
+
+```yaml
+server:
+  transport: sse
+  listen: 127.0.0.1:8717
+  web:
+    listen: 127.0.0.1:8718
+    auth_token_file: ~/.config/wraptool/web-token
+```
+
+Approving with *apply to config* runs the same `config.ApplyRequest` merge
+as `requests approve --apply`; the running server hot-reloads via the config
+file-watch.
 
 ## `tools.<name>`
 
@@ -132,7 +157,10 @@ subcommands:
 
 Each child process gets a minimal base environment:
 
-- `PATH`, `HOME`, `LANG`
+- `PATH` — the tool binary's own directory prepended to `/usr/bin:/bin`,
+  so co-located helper executables resolve (e.g. `kubectl` →
+  `gke-gcloud-auth-plugin`)
+- `HOME`, `LANG`
 - Variables from `env_files` (merged in order)
 - Variables from inline `env` (override `env_files`)
 

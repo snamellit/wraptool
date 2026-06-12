@@ -244,7 +244,10 @@ sequenceDiagram
 - Per-session quotas (calls/minute, bytes out).
 - Pluggable scrubbers for org-specific secret formats.
 - A "dry-run" mode that records what *would* be denied.
-- Web UI for the request-review workflow.
+
+::: {.fragment}
+*Shipped: a browser-based Web UI for the request-review workflow.*
+:::
 
 ## Try it
 

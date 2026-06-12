@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
+	"github.com/pti/wraptool/internal/webui"
 	"github.com/pti/wraptool/internal/whitelist"
 
 	"github.com/fsnotify/fsnotify"
@@ -103,6 +105,15 @@ func runServe(configPath string) error {
 	state := &reloadState{registered: registered}
 	go handleSIGHUP(s, configPath, policy, state)
 	go watchConfigFile(s, configPath, policy, state)
+
+	// Start the operator-facing Web UI on its own listener, if configured.
+	// It runs in this process but is independent of the MCP transport, so
+	// it works even under stdio.
+	if cfg.Server.Web.Listen != "" {
+		if err := startWebUI(cfg, store, configPath); err != nil {
+			return fmt.Errorf("starting web ui: %w", err)
+		}
+	}
 
 	// Start the appropriate transport.
 	switch cfg.Server.Transport {
@@ -222,6 +233,61 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 	}()
 
 	return srv.Serve(listener)
+}
+
+// startWebUI launches the operator-facing request-review Web UI on its own
+// listener in a background goroutine. configPath must be the resolved path
+// already loaded by the serve process so that applied approvals trigger the
+// file-watch reload.
+func startWebUI(cfg *config.Config, store *requestlog.Store, configPath string) error {
+	srv, err := webui.New(store, configPath)
+	if err != nil {
+		return err
+	}
+
+	var handler http.Handler = srv.Handler()
+	var token string
+	if cfg.Server.Web.AuthTokenFile != "" {
+		token, err = webui.LoadToken(cfg.Server.Web.AuthTokenFile)
+		if err != nil {
+			return err
+		}
+		handler = srv.AuthMiddleware(token, handler)
+	} else {
+		log.Printf("web ui: no auth_token_file set — relying on localhost bind for access control")
+	}
+
+	httpSrv := &http.Server{Addr: cfg.Server.Web.Listen, Handler: handler}
+	log.Printf("wraptool web ui: %s", webURL(cfg.Server.Web.Listen, token))
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("web ui server stopped: %s", err)
+		}
+	}()
+	return nil
+}
+
+// webURL builds a clickable terminal URL for the Web UI. A wildcard bind
+// (0.0.0.0 / [::]) is rewritten to 127.0.0.1 so the link is followable from
+// the operator's machine. When a token is set it is embedded as a query
+// param so the first click establishes the session cookie.
+func webURL(listen, token string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		host, port = listen, ""
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	hostport := host
+	if port != "" {
+		hostport = net.JoinHostPort(host, port)
+	}
+	u := "http://" + hostport + "/requests"
+	if token != "" {
+		u += "?token=" + url.QueryEscape(token)
+	}
+	return u
 }
 
 // newAuthMiddleware creates an HTTP middleware that validates a Bearer token.

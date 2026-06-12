@@ -1,0 +1,22 @@
+{{define "login"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wraptool — sign in</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="login">
+  <h1>wraptool</h1>
+  <p class="sub">Enter the access token to review capability requests.</p>
+  {{if .Error}}<div class="flash err">Invalid token.</div>{{end}}
+  <form method="post" action="/login">
+    <input type="hidden" name="next" value="{{.Next}}">
+    <input type="password" name="token" placeholder="access token" autofocus autocomplete="current-password">
+    <button type="submit">Enter</button>
+  </form>
+  <p class="hint">Tip: append <code>?token=…</code> to any URL to sign in directly.</p>
+</main>
+</body>
+</html>{{end}}

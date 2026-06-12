@@ -95,6 +95,13 @@ Child processes inherit only `PATH`, `HOME`, `LANG` plus the
 configured `env` / `env_files`. The parent shell's environment is
 **not** propagated.
 
+`PATH` is the tool binary's own directory prepended to `/usr/bin:/bin`,
+so helper executables that ship alongside a tool resolve — e.g.
+`kubectl` invoking its kubeconfig exec credential plugin
+`gke-gcloud-auth-plugin`, or `gcloud` components shelling out to
+siblings. This adds only the directory the trusted binary already lives
+in; nothing else from the host PATH leaks.
+
 ### Auth on network transports
 
 `sse` and `unix` transports support `auth_token_file`. Requests

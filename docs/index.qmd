@@ -60,6 +60,7 @@ flowchart LR
 - [Security model](security.qmd) — threat model, sandboxing, scrubbing.
 - [Hot-reload & capability requests](hot-reload.qmd) — operational
   workflow.
+- [Web UI](web-ui.qmd) — browser-based request review.
 - [Slides](presentation.qmd) — overview deck.
 
 ## License

@@ -80,6 +80,9 @@ wraptool requests deny  req_01a2b3c4 \
     --reason "use --force-with-lease instead"
 ```
 
+The same review workflow is available in the browser via the
+[Web UI](web-ui.qmd) — enable it with a `server.web` block.
+
 ### `--apply`
 
 `wraptool requests approve <id> --apply` merges the approved

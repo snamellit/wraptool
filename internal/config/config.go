@@ -18,11 +18,20 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Transport     string `yaml:"transport"`
-	Listen        string `yaml:"listen"`
-	AuthTokenFile string `yaml:"auth_token_file"`
-	LogLevel      string `yaml:"log_level"`
-	RequestLog    string `yaml:"request_log"`
+	Transport     string    `yaml:"transport"`
+	Listen        string    `yaml:"listen"`
+	AuthTokenFile string    `yaml:"auth_token_file"`
+	LogLevel      string    `yaml:"log_level"`
+	RequestLog    string    `yaml:"request_log"`
+	Web           WebConfig `yaml:"web"`
+}
+
+// WebConfig configures the operator-facing request-review Web UI. It runs
+// in the serve process on its own listener, independent of the AI-facing
+// MCP transport. Leave Listen empty to disable the Web UI.
+type WebConfig struct {
+	Listen        string `yaml:"listen"`          // e.g. 127.0.0.1:8718 (bind localhost only)
+	AuthTokenFile string `yaml:"auth_token_file"` // optional; Basic-auth password or Bearer token
 }
 
 type ToolConfig struct {
@@ -42,11 +51,11 @@ type IntrospectConfig struct {
 }
 
 type AllowRule struct {
-	Subcommand      []string                   `yaml:"subcommand"`
-	Flags           []string                   `yaml:"flags"`
-	DenyFlags       []string                   `yaml:"deny_flags"`
-	FlagConstraints map[string]FlagConstraint  `yaml:"flag_constraints"`
-	ArgConstraints  *ArgConstraints            `yaml:"arg_constraints"`
+	Subcommand      []string                  `yaml:"subcommand"`
+	Flags           []string                  `yaml:"flags"`
+	DenyFlags       []string                  `yaml:"deny_flags"`
+	FlagConstraints map[string]FlagConstraint `yaml:"flag_constraints"`
+	ArgConstraints  *ArgConstraints           `yaml:"arg_constraints"`
 }
 
 type FlagConstraint struct {
@@ -98,6 +107,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.AuthTokenFile != "" {
 		c.Server.AuthTokenFile = expandPath(c.Server.AuthTokenFile)
+	}
+	if c.Server.Web.AuthTokenFile != "" {
+		c.Server.Web.AuthTokenFile = expandPath(c.Server.Web.AuthTokenFile)
 	}
 
 	for name, tool := range c.Tools {
