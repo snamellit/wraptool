@@ -1,0 +1,31 @@
+{
+  "id": "wraptool-connect",
+  "version": "0.1.0",
+  "name": "wraptool connect",
+  "description": "Wire a dev container to a host-side wraptool MCP server (credential-isolated CLI tools). Image-agnostic: adds no tools of its own, only the MCP connection config. Auto-detects the host via the container's default-route gateway.",
+  "documentationURL": "https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool-connect",
+  "options": {
+    "harness": {
+      "type": "string",
+      "enum": ["claude"],
+      "default": "claude",
+      "description": "Which MCP client config to write. Currently Claude Code (.mcp.json); more harnesses to follow."
+    },
+    "port": {
+      "type": "string",
+      "proposals": ["8717"],
+      "default": "8717",
+      "description": "Host wraptool port, used when the URL is auto-detected."
+    },
+    "url": {
+      "type": "string",
+      "default": "",
+      "description": "Explicit wraptool base URL (e.g. http://172.18.0.1:8717). Empty = auto-detect the host as the container's default-route gateway."
+    }
+  },
+  "containerEnv": {
+    "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}",
+    "WRAPTOOL_CWD": "${localEnv:WRAPTOOL_CWD}"
+  },
+  "postCreateCommand": "/usr/local/share/wraptool-connect/connect.sh"
+}
