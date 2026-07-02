@@ -23,9 +23,5 @@
       "description": "Explicit wraptool base URL (e.g. http://172.18.0.1:8717). Empty = auto-detect the host as the container's default-route gateway."
     }
   },
-  "containerEnv": {
-    "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}",
-    "WRAPTOOL_CWD": "${localEnv:WRAPTOOL_CWD}"
-  },
   "postCreateCommand": "/usr/local/share/wraptool-connect/connect.sh"
 }

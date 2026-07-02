@@ -10,3 +10,5 @@
 /docs/.quarto/
 /public/
 .gemini/
+.mcp.json
+.devcontainer/devcontainer-lock.json

@@ -16,11 +16,14 @@
     "./wraptool-connect": {}
   },
 
-  // Connection info the feature consumes. WRAPTOOL_CWD is the HOST workspace
-  // path (so the server scopes tools to this worktree); WRAPTOOL_TOKEN is
-  // inherited from the host env (`wraptool up` sets it, or export it manually).
+  // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.
   "containerEnv": {
-    "WRAPTOOL_CWD": "${localWorkspaceFolder}",
+    "WRAPTOOL_CWD": "${localWorkspaceFolder}"
+  },
+  // The token is a secret: use remoteEnv so it is applied at runtime and to
+  // lifecycle hooks (postCreate) rather than baked into an image layer.
+  // Inherited from the host env — `wraptool up` sets it, or export it manually.
+  "remoteEnv": {
     "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
   }
 }

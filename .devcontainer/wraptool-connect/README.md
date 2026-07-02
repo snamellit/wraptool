@@ -24,9 +24,16 @@ multiple worktrees on different networks just work).
     // local path today; OCI reference once published (see below)
     "./wraptool-connect": {}
   },
-  // Give the server the HOST path of this workspace so it scopes tools to it.
+  // REQUIRED: the feature reads these at postCreate but cannot inject them
+  // itself (feature-level containerEnv is not variable-substituted). Set them at
+  // the top level, where ${localWorkspaceFolder}/${localEnv:...} resolve.
   "containerEnv": {
     "WRAPTOOL_CWD": "${localWorkspaceFolder}"
+  },
+  // The token is a secret — use remoteEnv (runtime, reaches postCreate) so it is
+  // NOT baked into an image layer as containerEnv would be.
+  "remoteEnv": {
+    "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
   }
 }
 ```
@@ -51,10 +58,14 @@ the top-level `WRAPTOOL_CWD` line above is only needed for the plain VS Code flo
 
 ## Inputs (environment)
 
-| Var | Source | Purpose |
-|-----|--------|---------|
-| `WRAPTOOL_TOKEN` | `${localEnv:WRAPTOOL_TOKEN}` | Bearer token; omit if the server trusts localhost. |
-| `WRAPTOOL_CWD` | `${localEnv:WRAPTOOL_CWD}` or top-level `${localWorkspaceFolder}` | Host workspace path, sent to the server as `?cwd=`. |
+Set these in the consumer's **top-level** config (the feature reads them at
+postCreate but cannot inject them — feature-level `containerEnv` is not
+variable-substituted):
+
+| Var | Where | Set to | Purpose |
+|-----|-------|--------|---------|
+| `WRAPTOOL_TOKEN` | `remoteEnv` | `${localEnv:WRAPTOOL_TOKEN}` | Bearer token (secret → remoteEnv, not baked); omit if the server trusts localhost. |
+| `WRAPTOOL_CWD` | `containerEnv` | `${localWorkspaceFolder}` | Host workspace path, sent to the server as `?cwd=`. |
 
 If `WRAPTOOL_TOKEN`/`WRAPTOOL_CWD` are empty the feature still writes a config and
 warns; the server then can't authenticate or scope tools to this worktree.
