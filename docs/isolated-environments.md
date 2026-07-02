@@ -265,6 +265,31 @@ socat TCP-LISTEN:8717,fork,reuseaddr \
 # Then configure MCP to connect to http://127.0.0.1:8717/sse
 ```
 
+## Option 4: VS Code Dev Container
+
+A ready-made Dev Container template lives in
+[`examples/devcontainer/`](../examples/devcontainer/). Copy it into your project
+as `.devcontainer/` and it builds a minimal client image (no git, no
+credentials), points Claude Code at the host wraptool, and ships a
+`test-connection.sh` smoke test.
+
+```bash
+cp -r examples/devcontainer /path/to/your-project/.devcontainer
+
+# Host: start wraptool on a container-reachable address (see note below).
+export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
+# VS Code: "Reopen in Container"  — or:  devcontainer up --workspace-folder .
+
+# Inside the container, verify isolation + connectivity:
+.devcontainer/test-connection.sh
+```
+
+The container reaches the host at `host.docker.internal` (mapped to the host
+gateway). Because it lives in its own network namespace, host `127.0.0.1` is not
+reachable — wraptool must listen on the docker gateway or `0.0.0.0`. Override
+`WRAPTOOL_URL` in `devcontainer.json` to target a specific gateway. See
+`examples/devcontainer/README.md` for details.
+
 ## Security Checklist
 
 Before using this setup in production:

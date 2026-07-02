@@ -51,6 +51,7 @@ internal/
 - Unit tests in `*_test.go` files next to the code they test
 - `testdata/` has captured `--help` outputs for parser tests
 - `test-container.sh` runs the full isolation test in a Guix container
+- `examples/devcontainer/` is a copy-into-your-project Dev Container template (client-side); `test-connection.sh` there is its isolation + MCP-reachability smoke test (targets host wraptool over the docker bridge, Bearer auth)
 - Run integration test: start `wraptool serve` with SSE, then run `test-container.sh`
 
 ## Config Location

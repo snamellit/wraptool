@@ -1,0 +1,24 @@
+{
+  "name": "wraptool-isolated-client",
+  "build": { "dockerfile": "Dockerfile" },
+
+  // Reach the host-side wraptool over the docker bridge. On Linux this maps
+  // host.docker.internal to the host gateway; Docker Desktop provides it
+  // natively. wraptool must listen on that gateway (or 0.0.0.0) — 127.0.0.1
+  // on the host is NOT reachable from inside the container.
+  "runArgs": ["--add-host=host.docker.internal:host-gateway"],
+
+  // MCP endpoint + auth token. Override WRAPTOOL_URL if wraptool listens on a
+  // specific docker-network gateway instead of host.docker.internal. Export
+  // WRAPTOOL_TOKEN on the host before opening the container:
+  //   export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
+  "containerEnv": {
+    "WRAPTOOL_URL": "http://host.docker.internal:8717",
+    "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
+  },
+
+  // Write the MCP client config (points Claude Code at host wraptool) once the
+  // container is created. Path is relative to the workspace folder, so this
+  // file belongs at <your-project>/.devcontainer/.
+  "postCreateCommand": ".devcontainer/setup-mcp.sh"
+}
