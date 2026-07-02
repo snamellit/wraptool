@@ -16,7 +16,7 @@ on:
 
 jobs:
   publish:
-    runs-on: guix
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -25,15 +25,8 @@ jobs:
         run: sh features/test/wraptool-connect/selftest.sh
 
       - name: Install devcontainers CLI
-        run: |
-          # NPM packages in homedir
-          export NPM_PACKAGES="$HOME/.npm-packages"
-          # Tell our environment about user-installed node tools
-          PATH="$NPM_PACKAGES/bin:$PATH"
-          # Tell Node about these packages
-          NODE_PATH="$NPM_PACKAGES/lib/node_modules:$NODE_PATH"
-          npm install -g @devcontainers/cli
-          
+        run: npm install -g @devcontainers/cli
+
       # Auth for the OCI registry. The automatic token is tried first; if it
       # lacks package:write, create a repo/org secret REGISTRY_TOKEN (a Forgejo
       # access token with write:package) and it will be used instead.
