@@ -12,15 +12,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var supportedHarnesses = []string{"claude", "cursor", "opencode", "gemini", "roo", "windsurf"}
+var supportedHarnesses = []string{"agy", "claude", "cursor", "opencode", "gemini", "roo", "windsurf"}
 
 func newInitCmd() *cobra.Command {
 	var (
-		transport string
-		url       string
+		transport  string
+		url        string
 		socketPath string
-		harnesses []string
-		global    bool
+		harnesses  []string
+		global     bool
 	)
 
 	cmd := &cobra.Command{
@@ -29,6 +29,7 @@ func newInitCmd() *cobra.Command {
 		Long: `Generate MCP server configuration for AI coding tools in the current project.
 
 Supported harnesses:
+  agy       - Antigravity CLI (.agents/mcp_config.json)
   claude    - Claude Code (.mcp.json)
   cursor    - Cursor IDE (.cursor/mcp.json)
   opencode  - OpenCode (opencode.json)
@@ -50,7 +51,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (claude, cursor, opencode, gemini, roo, windsurf, all)")
+	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, cursor, opencode, gemini, roo, windsurf, all)")
 	cmd.Flags().StringVar(&transport, "transport", "sse", "transport type (stdio, sse, unix)")
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8717/sse", "SSE URL for the wraptool server")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (for unix transport)")
@@ -103,12 +104,38 @@ func expandHarnesses(harnesses []string) []string {
 type harnessGenerator func(transport, url, socketPath, wraptoolBin, configFile string, global bool) (path string, content []byte, err error)
 
 var harnessGenerators = map[string]harnessGenerator{
+	"agy":      generateAgy,
 	"claude":   generateClaude,
 	"cursor":   generateCursor,
 	"opencode": generateOpenCode,
 	"gemini":   generateGemini,
 	"roo":      generateRoo,
 	"windsurf": generateWindsurf,
+}
+
+func generateAgy(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
+	path := ".agents/mcp_config.json"
+	if global {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json")
+	}
+
+	server := make(map[string]interface{})
+	switch transport {
+	case "stdio":
+		server["command"] = wraptoolBin
+		server["args"] = []string{"serve", "--config", configFile}
+	case "sse", "unix":
+		server["serverUrl"] = appendCWD(effectiveURL(transport, url, socketPath), global)
+	}
+
+	cfg := map[string]interface{}{
+		"mcpServers": map[string]interface{}{
+			"wraptool": server,
+		},
+	}
+
+	return path, mustJSON(cfg), nil
 }
 
 func generateClaude(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
