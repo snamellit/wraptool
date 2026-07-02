@@ -85,10 +85,18 @@ listen where that gateway can reach it — bind the docker gateway or `0.0.0.0`,
 sh features/test/wraptool-connect/selftest.sh   # no docker / devcontainer CLI needed
 ```
 
-## Publishing (later)
+## Publishing
 
-The `features/` tree follows the standard `src/<id>` layout, so it can be pushed
-to Forgejo's OCI registry on forge.snamellit.com:
+The `features/` tree follows the standard `src/<id>` layout and is published to
+Forgejo's OCI registry by `.forgejo/workflows/publish-feature.yml`. To release,
+bump `version` in `devcontainer-feature.json` and push a matching tag:
+
+```bash
+git tag wraptool-connect-v0.1.1 && git push origin wraptool-connect-v0.1.1
+```
+
+The CI runs the selftest, logs in to `forge.snamellit.com`, and runs
+`devcontainer features publish` (equivalent to running it locally):
 
 ```bash
 devcontainer features publish ./features/src \

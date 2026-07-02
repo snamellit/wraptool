@@ -1,0 +1,42 @@
+name: Publish dev container feature
+
+# Publishes the wraptool-connect Dev Container Feature to the Forgejo OCI
+# registry as forge.snamellit.com/pti/wraptool/wraptool-connect (tagged from the
+# version in features/src/wraptool-connect/devcontainer-feature.json — :X, :X.Y,
+# :X.Y.Z, :latest).
+#
+# To release: bump `version` in devcontainer-feature.json, then push a tag
+#   git tag wraptool-connect-v0.1.1 && git push origin wraptool-connect-v0.1.1
+# or run this workflow manually.
+on:
+  push:
+    tags:
+      - 'wraptool-connect-v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Fail fast if the feature is broken (also checks the vendored copy match).
+      - name: Test feature
+        run: sh features/test/wraptool-connect/selftest.sh
+
+      - name: Install devcontainers CLI
+        run: npm install -g @devcontainers/cli
+
+      # Auth for the OCI registry. The automatic token is tried first; if it
+      # lacks package:write, create a repo/org secret REGISTRY_TOKEN (a Forgejo
+      # access token with write:package) and it will be used instead.
+      - name: Log in to the Forgejo container registry
+        run: |
+          echo "${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}" \
+            | docker login forge.snamellit.com -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish
+        run: |
+          devcontainer features publish ./features/src \
+            --namespace "${{ github.repository }}" \
+            --registry forge.snamellit.com
