@@ -43,7 +43,9 @@ jobs:
       # access token with write:package) and it will be used instead.
       - name: Configure registry auth
         env:
-          REGISTRY_USER: ${{ github.actor }}
+          # Username must own REGISTRY_TOKEN. Defaults to the dispatch actor;
+          # set a REGISTRY_USER secret if the token belongs to another account.
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER || github.actor }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p "$HOME/.docker"
