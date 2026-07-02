@@ -16,7 +16,11 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Native (host-mode) Guix runner: runs directly on the host, no per-job
+    # container — avoids the act-in-docker networking/tar-copy issues. The job is
+    # docker-less (auth written to ~/.docker/config.json; publish pushes over
+    # HTTP), so it needs only node/npm/git.
+    runs-on: guix
     steps:
       - uses: actions/checkout@v4
 
@@ -25,15 +29,27 @@ jobs:
         run: sh features/test/wraptool-connect/selftest.sh
 
       - name: Install devcontainers CLI
-        run: npm install -g @devcontainers/cli
+        run: |
+          # Install to a writable homedir prefix (avoids a root-owned global dir
+          # on a host runner) and expose the bin dir to later steps.
+          export npm_config_prefix="$HOME/.npm-global"
+          mkdir -p "$npm_config_prefix"
+          npm install -g @devcontainers/cli
+          echo "$npm_config_prefix/bin" >> "$GITHUB_PATH"
 
-      # Auth for the OCI registry. The automatic token is tried first; if it
+      # Auth for the OCI registry, written directly to the docker config so no
+      # docker CLI/daemon is needed. The automatic token is tried first; if it
       # lacks package:write, create a repo/org secret REGISTRY_TOKEN (a Forgejo
       # access token with write:package) and it will be used instead.
-      - name: Log in to the Forgejo container registry
+      - name: Configure registry auth
+        env:
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          echo "${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}" \
-            | docker login forge.snamellit.com -u "${{ github.actor }}" --password-stdin
+          mkdir -p "$HOME/.docker"
+          auth=$(printf '%s:%s' "$REGISTRY_USER" "$REGISTRY_TOKEN" | base64 -w0)
+          printf '{"auths":{"forge.snamellit.com":{"auth":"%s"}}}\n' "$auth" \
+            > "$HOME/.docker/config.json"
 
       - name: Publish
         run: |
