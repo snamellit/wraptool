@@ -1,0 +1,26 @@
+{
+  "name": "wraptool-dev",
+
+  // A Go-capable client box for coding on wraptool from inside a container.
+  // NOTE: this repo's own build env is Guix (.envrc → `use guix`); this dev
+  // container is a client dogfood of the wraptool-connect feature + `wraptool
+  // up`, not a replacement for the Guix flow. Credentials stay on the host and
+  // are reached through the wrapped MCP tools.
+  "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
+
+  "features": {
+    // Local features must live under .devcontainer/, so this is a vendored copy
+    // of features/src/wraptool-connect (the canonical source). Replace with the
+    // OCI ref (forge.snamellit.com/pti/wraptool/wraptool-connect:0) once
+    // published. Wires the MCP client to the host wraptool; writes .mcp.json.
+    "./wraptool-connect": {}
+  },
+
+  // Connection info the feature consumes. WRAPTOOL_CWD is the HOST workspace
+  // path (so the server scopes tools to this worktree); WRAPTOOL_TOKEN is
+  // inherited from the host env (`wraptool up` sets it, or export it manually).
+  "containerEnv": {
+    "WRAPTOOL_CWD": "${localWorkspaceFolder}",
+    "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
+  }
+}
