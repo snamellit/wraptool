@@ -72,6 +72,41 @@ func TestHandleListRendersPending(t *testing.T) {
 	}
 }
 
+func TestHandleCallsRenders(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	if err := store.AppendToolCall(&requestlog.ToolCallEvent{
+		Tool: "git", Subcommand: []string{"push"}, Flags: map[string]string{"--force": ""},
+		Allowed: false, DenyReason: "not whitelisted", ClientName: "claude",
+	}); err != nil {
+		t.Fatalf("AppendToolCall: %v", err)
+	}
+	if err := store.AppendToolCall(&requestlog.ToolCallEvent{
+		Tool: "kubectl", Subcommand: []string{"get", "pods"}, Allowed: true, ExitCode: 0,
+	}); err != nil {
+		t.Fatalf("AppendToolCall: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"git push", "kubectl get pods", "not whitelisted", "claude", "allowed", "denied"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+
+	// The denied filter shows only the denied call.
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls?status=denied", nil))
+	body = rr.Body.String()
+	if !strings.Contains(body, "git push") || strings.Contains(body, "kubectl get pods") {
+		t.Errorf("denied filter wrong; got: %s", body)
+	}
+}
+
 func TestRootRedirects(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	rr := httptest.NewRecorder()

@@ -12,6 +12,7 @@
   <nav class="tabs">
     <a href="/requests" class="active">Requests</a>
     <a href="/rules">Rules</a>
+    <a href="/calls">Calls</a>
   </nav>
   <nav>
     {{range .Filters}}<a href="/requests?status={{.Value}}" class="{{if .Active}}active{{end}}">{{.Label}}</a>{{end}}

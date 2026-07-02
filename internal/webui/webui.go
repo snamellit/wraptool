@@ -84,6 +84,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /requests", s.handleList)
 	mux.HandleFunc("POST /requests/{id}/approve", s.handleApprove)
 	mux.HandleFunc("POST /requests/{id}/deny", s.handleDeny)
+	mux.HandleFunc("GET /calls", s.handleCalls)
 	mux.HandleFunc("GET /rules", s.handleRules)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/add", s.handleRuleAdd)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/update", s.handleRuleUpdate)
@@ -116,6 +117,19 @@ type listView struct {
 	Requests    []requestView
 	StatusLabel string
 	Flash       *flashView
+}
+
+type callView struct {
+	requestlog.ToolCallEvent
+	When    string
+	Command string
+}
+
+type callsView struct {
+	Filters    []filterView
+	Calls      []callView
+	StatusOnly string // "allowed" | "denied" | "" (all)
+	Flash      *flashView
 }
 
 var filters = []struct{ Label, Value string }{
@@ -170,6 +184,76 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	if err := s.tmpl.ExecuteTemplate(w, "page", data); err != nil {
 		log.Printf("webui: render: %s", err)
 	}
+}
+
+// callFilters mirror the request filters but partition on the allow decision.
+var callFilters = []struct{ Label, Value string }{
+	{"All", ""},
+	{"Allowed", "allowed"},
+	{"Denied", "denied"},
+}
+
+func (s *Server) handleCalls(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	only := q.Get("status") // "allowed" | "denied" | "" (all)
+
+	calls, err := s.store.ListToolCalls()
+	if err != nil {
+		http.Error(w, "reading tool calls: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	views := make([]callView, 0, len(calls))
+	for _, c := range calls {
+		if only == "allowed" && !c.Allowed {
+			continue
+		}
+		if only == "denied" && c.Allowed {
+			continue
+		}
+		views = append(views, callView{
+			ToolCallEvent: c,
+			When:          c.Timestamp.Format("2006-01-02 15:04:05 MST"),
+			Command:       formatCommand(c),
+		})
+	}
+	slices.Reverse(views) // newest first
+
+	fviews := make([]filterView, len(callFilters))
+	for i, f := range callFilters {
+		fviews[i] = filterView{Label: f.Label, Value: f.Value, Active: f.Value == only}
+	}
+
+	data := callsView{
+		Filters:    fviews,
+		Calls:      views,
+		StatusOnly: only,
+		Flash:      flashFromQuery(q),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.tmpl.ExecuteTemplate(w, "calls", data); err != nil {
+		log.Printf("webui: render calls: %s", err)
+	}
+}
+
+// formatCommand renders a tool call as an approximate command line for display.
+func formatCommand(c requestlog.ToolCallEvent) string {
+	parts := append([]string{c.Tool}, c.Subcommand...)
+	// Flags is a map; sort keys for stable output.
+	keys := make([]string, 0, len(c.Flags))
+	for k := range c.Flags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if v := c.Flags[k]; v != "" {
+			parts = append(parts, k, v)
+		} else {
+			parts = append(parts, k)
+		}
+	}
+	parts = append(parts, c.PositionalArgs...)
+	return strings.Join(parts, " ")
 }
 
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {

@@ -1,0 +1,43 @@
+{{define "calls"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wraptool — tool calls</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>wraptool</h1>
+  <nav class="tabs">
+    <a href="/requests">Requests</a>
+    <a href="/rules">Rules</a>
+    <a href="/calls" class="active">Calls</a>
+  </nav>
+  <nav>
+    {{range .Filters}}<a href="/calls?status={{.Value}}" class="{{if .Active}}active{{end}}">{{.Label}}</a>{{end}}
+  </nav>
+</header>
+<main>
+  {{with .Flash}}<div class="flash {{.Kind}}">{{.Message}}{{if .Detail}}<pre>{{.Detail}}</pre>{{end}}</div>{{end}}
+  {{if not .Calls}}
+    <div class="empty">No tool calls recorded.</div>
+  {{else}}
+    {{range .Calls}}
+    <div class="card">
+      <div class="top">
+        <span class="cmd"><code>{{.Command}}</code></span>
+        <span class="badge {{if .Allowed}}approved{{else}}denied{{end}}">{{if .Allowed}}allowed{{else}}denied{{end}}</span>
+        <span class="meta">{{.ID}} · {{.When}}</span>
+      </div>
+      <div class="kv">
+        {{if .Allowed}}exit: <code>{{.ExitCode}}</code>{{if .Duration}} · {{.Duration}}{{end}}{{if .Truncated}} · <span class="flag">truncated</span>{{end}}{{end}}
+        {{if .DenyReason}}deny reason: <code>{{.DenyReason}}</code>{{end}}
+      </div>
+      {{if or .ClientName .SessionID}}<div class="kv">{{if .ClientName}}client: <code>{{.ClientName}}{{if .ClientVersion}} {{.ClientVersion}}{{end}}</code>{{end}}{{if .SessionID}} · session: <code>{{.SessionID}}</code>{{end}}</div>{{end}}
+    </div>
+    {{end}}
+  {{end}}
+</main>
+</body>
+</html>{{end}}

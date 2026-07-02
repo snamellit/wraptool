@@ -93,7 +93,7 @@ func runServe(configPath string) error {
 	)
 
 	// Register tools from config.
-	registered, err := mcptools.RegisterAll(s, cfg, policy)
+	registered, err := mcptools.RegisterAll(s, cfg, policy, store)
 	if err != nil {
 		return fmt.Errorf("registering tools: %w", err)
 	}
@@ -103,8 +103,8 @@ func runServe(configPath string) error {
 
 	// Set up SIGHUP and file-watch for hot-reload.
 	state := &reloadState{registered: registered}
-	go handleSIGHUP(s, configPath, policy, state)
-	go watchConfigFile(s, configPath, policy, state)
+	go handleSIGHUP(s, configPath, policy, state, store)
+	go watchConfigFile(s, configPath, policy, state, store)
 
 	// Start the operator-facing Web UI on its own listener, if configured.
 	// It runs in this process but is independent of the MCP transport, so
@@ -323,18 +323,18 @@ type reloadState struct {
 	registered []string
 }
 
-func handleSIGHUP(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState) {
+func handleSIGHUP(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, store *requestlog.Store) {
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	for range sighup {
-		reloadConfig(s, configPath, policy, state, "SIGHUP")
+		reloadConfig(s, configPath, policy, state, store, "SIGHUP")
 	}
 }
 
 // watchConfigFile watches the config file's parent directory for changes
 // and triggers a reload. Watching the directory (not the file) survives
 // editor save patterns that replace the file via rename.
-func watchConfigFile(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState) {
+func watchConfigFile(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, store *requestlog.Store) {
 	absPath, err := filepath.Abs(configPath)
 	if err != nil {
 		log.Printf("config watch: resolving %s: %s", configPath, err)
@@ -378,7 +378,7 @@ func watchConfigFile(s *server.MCPServer, configPath string, policy *whitelist.P
 				debounce.Stop()
 			}
 			debounce = time.AfterFunc(debounceDelay, func() {
-				reloadConfig(s, configPath, policy, state, "file change")
+				reloadConfig(s, configPath, policy, state, store, "file change")
 			})
 		case err, ok := <-w.Errors:
 			if !ok {
@@ -389,7 +389,7 @@ func watchConfigFile(s *server.MCPServer, configPath string, policy *whitelist.P
 	}
 }
 
-func reloadConfig(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, trigger string) {
+func reloadConfig(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, store *requestlog.Store, trigger string) {
 	log.Printf("reloading config (%s)...", trigger)
 	newCfg, err := config.Load(configPath)
 	if err != nil {
@@ -415,7 +415,7 @@ func reloadConfig(s *server.MCPServer, configPath string, policy *whitelist.Poli
 	if len(state.registered) > 0 {
 		s.DeleteTools(state.registered...)
 	}
-	names, err := mcptools.RegisterAll(s, newCfg, policy)
+	names, err := mcptools.RegisterAll(s, newCfg, policy, store)
 	state.registered = names
 	state.mu.Unlock()
 	if err != nil {
