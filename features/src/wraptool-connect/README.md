@@ -21,8 +21,7 @@ multiple worktrees on different networks just work).
 {
   "image": "mcr.microsoft.com/devcontainers/base:bookworm",
   "features": {
-    // local path today; OCI reference once published (see below)
-    "./wraptool-connect": {}
+    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
   },
   // REQUIRED: the feature reads these at postCreate but cannot inject them
   // itself (feature-level containerEnv is not variable-substituted). Set them at
@@ -103,5 +102,6 @@ devcontainer features publish ./features/src \
   --namespace pti/wraptool --registry forge.snamellit.com
 ```
 
-Then consumers reference `forge.snamellit.com/pti/wraptool/wraptool-connect:0`
-instead of the local `./wraptool-connect` path.
+Consumers then reference `forge.snamellit.com/pti/wraptool/wraptool-connect:0`.
+The package is public (anonymous `read:package`), so no registry login is needed
+to consume it.

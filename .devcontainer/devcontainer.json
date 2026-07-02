@@ -9,11 +9,9 @@
   "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
 
   "features": {
-    // Local features must live under .devcontainer/, so this is a vendored copy
-    // of features/src/wraptool-connect (the canonical source). Replace with the
-    // OCI ref (forge.snamellit.com/pti/wraptool/wraptool-connect:0) once
-    // published. Wires the MCP client to the host wraptool; writes .mcp.json.
-    "./wraptool-connect": {}
+    // Published feature from Forgejo's OCI registry. Wires the MCP client to the
+    // host wraptool; writes .mcp.json at postCreate. `:0` tracks the 0.x line.
+    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
   },
 
   // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.

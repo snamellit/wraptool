@@ -61,19 +61,6 @@ else
   echo "  SKIP: jq not installed (merge path)"
 fi
 
-echo "4. Vendored copy under .devcontainer/ must not drift from canonical source"
-CANON="$HERE/../../src/wraptool-connect"
-VENDOR="$HERE/../../../.devcontainer/wraptool-connect"
-if [ -d "$VENDOR" ]; then
-  if diff -r "$CANON" "$VENDOR" >/dev/null 2>&1; then
-    pass ".devcontainer/wraptool-connect matches features/src/wraptool-connect"
-  else
-    fail ".devcontainer/wraptool-connect has drifted; re-copy from features/src/wraptool-connect"
-  fi
-else
-  echo "  SKIP: no vendored copy"
-fi
-
 echo
 echo "RESULT: $FAIL failed"
 [ "$FAIL" -eq 0 ]
