@@ -11,12 +11,25 @@ func NewRootCmd() *cobra.Command {
 		Long: `wraptool is an MCP server that wraps CLI tools (git, gcloud, kubectl, etc.)
 behind a security whitelist. AI coding assistants discover and use wrapped tools
 via MCP, but never see credentials. Unapproved commands are denied with structured
-responses, and capability requests are collected for admin review.`,
+responses, and capability requests are collected for admin review.
+
+Run with no arguments in a git repository to bring up an isolated coding
+environment (equivalent to 'wraptool up').`,
+		SilenceUsage: true,
+		// Bare `wraptool` in a repo → `up`; otherwise show help.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := gitToplevel(); err != nil {
+				return cmd.Help()
+			}
+			return runUp(upOptions{})
+		},
 	}
 
 	root.AddCommand(newServeCmd())
 	root.AddCommand(newRequestsCmd())
 	root.AddCommand(newInitCmd())
+	root.AddCommand(newUpCmd())
+	root.AddCommand(newServerCmd())
 
 	return root
 }

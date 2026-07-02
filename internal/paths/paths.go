@@ -42,6 +42,16 @@ func DefaultRequestLog() string {
 	return filepath.Join(DataDir(), "requests.jsonl")
 }
 
+// RuntimeDir returns a per-user runtime directory for transient state such as
+// pidfiles and locks (Linux: $XDG_RUNTIME_DIR/wraptool). Falls back to the
+// cache dir when no runtime dir is defined (e.g. macOS).
+func RuntimeDir() string {
+	if xdg.RuntimeDir != "" {
+		return filepath.Join(xdg.RuntimeDir, appName)
+	}
+	return filepath.Join(CacheDir(), "run")
+}
+
 // IntrospectionCacheFile returns the cache file path for a tool's introspection data.
 func IntrospectionCacheFile(toolName string) string {
 	return filepath.Join(CacheDir(), "introspection", toolName+".json")

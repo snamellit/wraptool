@@ -21,6 +21,8 @@ go vet ./...
 main.go                         entrypoint
 cmd/
   serve.go                      MCP server (stdio/SSE/unix transports)
+  up.go                         `wraptool up` orchestrator: ensure shared server (detached, pidfile+flock in XDG runtime dir), then `devcontainer up` wired with token + worktree cwd. Bare `wraptool` in a repo runs this.
+  server.go                     `wraptool server status|stop` — lifecycle of the `up`-started detached server
   requests.go                   admin CLI for capability request review
   init.go                       generates MCP config for coding harnesses
   root.go                       cobra root command
