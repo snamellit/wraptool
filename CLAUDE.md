@@ -22,6 +22,7 @@ main.go                         entrypoint
 cmd/
   serve.go                      MCP server (stdio/SSE/unix transports)
   up.go                         `wraptool up` orchestrator: ensure shared server (detached, pidfile+flock in XDG runtime dir), then `devcontainer up` wired with token + worktree cwd, then drop into a shell (`--shell=auto|always|never`; auto = when stdin/stdout are a TTY). Bare `wraptool` in a repo runs this.
+  down.go                       `wraptool down` — stop this project's dev container (by devcontainer workspace label); `--rm` removes it. Leaves the shared server running.
   server.go                     `wraptool server status|stop` — lifecycle of the `up`-started detached server
   requests.go                   admin CLI for capability request review
   init.go                       generates MCP config for coding harnesses

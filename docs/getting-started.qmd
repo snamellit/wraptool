@@ -137,7 +137,15 @@ wraptool up --shell=never    # just bring the container up (e.g. in scripts/CI)
 One shared server serves every project and worktree; each container is scoped to
 its own path, so parallel branches (git worktrees) just work.
 
-Manage the server it started:
+Shut the project's container down again with the counterpart command:
+
+```bash
+wraptool down          # stop this worktree's dev container
+wraptool down --rm     # ...and remove it (next `up` recreates it fresh)
+```
+
+Manage the shared server (left running by `down`, since it serves other
+projects):
 
 ```bash
 wraptool server status

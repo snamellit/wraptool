@@ -29,6 +29,7 @@ environment (equivalent to 'wraptool up').`,
 	root.AddCommand(newRequestsCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newUpCmd())
+	root.AddCommand(newDownCmd())
 	root.AddCommand(newServerCmd())
 
 	return root
