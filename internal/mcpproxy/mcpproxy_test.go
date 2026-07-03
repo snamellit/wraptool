@@ -262,6 +262,28 @@ func TestHandlerDeniesUnallowedTool(t *testing.T) {
 	}
 }
 
+// TestIsolatedCommandEnv proves the credential-isolation guarantee at the point
+// that actually spawns the child: the stdio command factory must set the child's
+// env to *exactly* executor.ChildEnv output, with no inherited parent variables.
+// (mcp-go's default transport does append(os.Environ(), env...), which would
+// leak wraptool's own environment — this factory overrides that.)
+func TestIsolatedCommandEnv(t *testing.T) {
+	t.Setenv("WRAPTOOL_LEAK_CANARY", "must-not-reach-child")
+
+	env := executor.ChildEnv("/usr/bin/git", map[string]string{"TOKEN": "s3cret"})
+	cmd, err := isolatedCommand(context.Background(), "/usr/bin/git", env, []string{"status"})
+	if err != nil {
+		t.Fatalf("isolatedCommand: %v", err)
+	}
+
+	if !slices.Equal(cmd.Env, env) {
+		t.Errorf("cmd.Env = %v, want exactly ChildEnv output %v", cmd.Env, env)
+	}
+	if containsPrefix(cmd.Env, "WRAPTOOL_LEAK_CANARY=") {
+		t.Error("child inherited a parent env var (WRAPTOOL_LEAK_CANARY leaked)")
+	}
+}
+
 func containsKV(env []string, kv string) bool {
 	return slices.Contains(env, kv)
 }
