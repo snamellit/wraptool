@@ -168,9 +168,8 @@ func (c *Config) applyDefaults() {
 		if srv.NamePrefix == "" {
 			srv.NamePrefix = name
 		}
-		for i, f := range srv.EnvFiles {
-			srv.EnvFiles[i] = expandPath(f)
-		}
+		// EnvFiles paths are expanded in resolveEnv at read time (same as CLI
+		// ToolConfig), so no pre-expansion here.
 		c.MCPServers[name] = srv
 	}
 }

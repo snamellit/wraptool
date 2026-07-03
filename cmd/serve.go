@@ -84,25 +84,28 @@ func runServe(configPath string) error {
 	)
 
 	// Register tools from every source (CLI tools + one proxy per MCP server).
+	// buildSources is lazy; RegisterAll spawns the MCP-server children as it
+	// enumerates each source's tools. Wire up teardown BEFORE that call so any
+	// early return — a mid-registration failure, a later startup error, or the
+	// normal transport exit (e.g. stdin EOF under stdio) — closes every child
+	// that was started. reload may swap the set, so closeSources closes whatever
+	// is current in state, under its lock.
 	sources := buildSources(cfg, policy, mcpPolicy, store)
+	state := &reloadState{sources: sources}
+	defer state.closeSources()
+
 	registered, err := mcptools.RegisterAll(s, sources)
 	if err != nil {
 		return fmt.Errorf("registering tools: %w", err)
 	}
+	state.registered = registered
 
 	// Register the capability request tool.
 	mcptools.RegisterRequestCapabilityTool(s, store)
 
 	// Set up SIGHUP and file-watch for hot-reload.
-	state := &reloadState{registered: registered, sources: sources}
 	go handleSIGHUP(s, configPath, policy, mcpPolicy, state, store)
 	go watchConfigFile(s, configPath, policy, mcpPolicy, state, store)
-
-	// Close the live sources when the transport returns (e.g. stdin EOF under
-	// stdio), tearing down any spawned MCP-server child processes so they do
-	// not leak past wraptool's own exit. reload may have swapped the set, so
-	// close whatever is current in state, under its lock.
-	defer state.closeSources()
 
 	// Start the operator-facing Web UI on its own listener, if configured.
 	// It runs in this process but is independent of the MCP transport, so
