@@ -575,8 +575,9 @@ Two conventions settled during implementation:
 
 With §10 pinned, **Phase 0 and Phase 1 are ready to delegate.** Phase 2
 (supervisor: `OnNotification` re-list, crash/backoff, reload reconciliation,
-`Close`) and Phase 3 (`request_capability`/Web UI/`ApplyRequest` MCP branch)
-remain design-level and should get the same spike treatment before hand-off.
+`Close`) is now pinned in **§11**. Phase 3 (`request_capability`/Web UI/
+`ApplyRequest` MCP branch) remains design-level and should get the same spike
+treatment before hand-off.
 
 ### 10.7 Config & validation clarifications (settled in Phase 1)
 
@@ -604,3 +605,138 @@ Points the spec left implicit, resolved by the implementation:
   tool-name charsets, a charset check (`^[a-zA-Z0-9_-]+$`) is a cheap future add.
 - **Audit `ExitCode`/`Arguments` conventions** — see §10.5 (`-1` = N/A; arguments
   stored as sent).
+
+## 11. Phase 2 execution spec (supervision, reconciliation, list_changed)
+
+Phase 2 makes the MCP-server integration robust and long-lived: survive upstream
+crashes, react to `tools/list_changed`, and reconcile the running server set on
+reload instead of the Phase-1 close-all/rebuild-all. As with §10, everything
+below is verified against **mcp-go v0.54.0**.
+
+### 11.0 Prerequisite landed out-of-band
+
+The Phase-2 spike surfaced a Phase-1 isolation defect (the default stdio
+transport does `cmd.Env = append(os.Environ(), env...)`, leaking wraptool's env
+into the child). Fixed ahead of Phase 2 via `transport.WithCommandFunc`
+(`mcpproxy.isolatedCommand` sets `cmd.Env = env` exactly). Phase 2 builds on that.
+
+### 11.1 Verified mcp-go APIs
+
+- `(*client.Client).Ping(ctx) error` — active liveness probe (JSON-RPC `ping`).
+- `transport.ErrTransportClosed` — returned by `SendRequest` (hence
+  `CallTool`/`ListTools`/`Ping`) once the child has exited: `SendRequest` selects
+  on the transport's `done` channel first. A broken pipe instead yields a
+  `"failed to write request"` error. **So any call against a dead child errors** —
+  this is what makes reactive respawn work without a liveness goroutine.
+- `(*client.Client).OnNotification(func(mcp.JSONRPCNotification))` +
+  `mcp.MethodNotificationToolsListChanged` (`"notifications/tools/list_changed"`)
+  — the hook for upstream tool-list changes. The handler inspects
+  `notification.Method`.
+- `client.GetStderr(*client.Client) (io.Reader, bool)` — the child's stderr, for
+  logging *why* a server died on respawn.
+- `(*client.Client).GetTransport()` / `IsInitialized()` — available but not
+  needed by the plan below.
+
+There is **no public child-exit signal** (the transport's `done` channel is
+unexported), which is why liveness is inferred from call failures, not observed.
+
+### 11.2 Crash supervision — reactive respawn
+
+No per-server background goroutine. Wrap the upstream call so a dead-transport
+error triggers a bounded respawn-and-retry:
+
+```go
+// in mcpproxy: callWithRespawn wraps one upstream operation.
+func (c *Client) call(ctx, ...) (..., error) {
+    res, err := c.do(ctx, ...)          // CallTool/ListTools
+    if err == nil || !isDead(err) { return res, err }
+    if !c.restart() {                    // Close old, NewClient, backoff+cap
+        return res, err                  // still down → surface the error
+    }
+    return c.do(ctx, ...)                // one retry on the fresh child
+}
+func isDead(err error) bool {
+    return errors.Is(err, transport.ErrTransportClosed) ||
+        strings.Contains(err.Error(), "failed to write request")
+}
+```
+
+- **Backoff + cap:** track consecutive restarts and the last restart time; refuse
+  to respawn more than N times within a window (crashloop guard), logging the
+  child's `GetStderr` tail each time. A crashlooping server contributes no tools
+  until it recovers — non-fatal, like a broken command at startup (§10.7).
+- **Respawn may change the tool list** → funnel through the same re-registration
+  path as §11.4 (a fresh child re-`ListTools` + re-register).
+- Time-based backoff needs a clock; inject one (the workflow/runtime forbids
+  `time.Now()` in some contexts but not in the server binary — use `time.Now`
+  here, it's ordinary runtime code, unlike the workflow scripts).
+
+### 11.3 Reload reconciliation
+
+Replace `buildSources`'s wholesale rebuild with a **name-keyed reconcile** so
+unchanged servers are never restarted:
+
+- Keep the live sources in a `map[string]*mcpproxy.Source` (by `mcp_servers` key),
+  owned by the registrar (§11.4), surviving reloads.
+- On reload, for each server compute a **spawn fingerprint** =
+  hash(Command, Args, WorkingDir, resolved Env, EnvFiles) and a **policy
+  fingerprint** = hash(allow/deny, name_prefix):
+  - **added** → create source, register.
+  - **removed** → deregister + `Close`.
+  - **spawn fingerprint changed** → `Close` old + recreate + register (the child
+    must restart because its command/env changed).
+  - **policy fingerprint changed only** → keep the live child; re-run `Tools()`
+    and swap registrations (newly-allowed upstream tools appear, removed ones go).
+  - **unchanged** → leave entirely alone.
+- CLI tools keep their existing swap (they're cheap and stateless); only the MCP
+  sources need the diff.
+
+### 11.4 Re-registration coordinator
+
+Both list_changed (§11.1) and respawn (§11.2) and policy-only reload (§11.3) need
+to **re-register one source's tools** on the live `*server.MCPServer`, off the
+one-shot `RegisterAll` path — and that must be serialized against reload, which
+also mutates the tool set. Introduce a small registrar:
+
+```go
+type registrar struct {
+    mu         sync.Mutex
+    server     *server.MCPServer
+    registered map[string][]string   // source name -> current tool names
+    sources    map[string]mcptools.Source
+}
+// reregister re-lists one source and swaps ONLY its tools (DeleteTools(old) +
+// AddTool(new)), under mu. Called from the notification handler, the respawn
+// path, and policy-only reload.
+func (r *registrar) reregister(name string) { ... }
+```
+
+- The `Source` gets an `onToolsChanged func()` callback (set by the registrar to
+  `func(){ r.reregister(name) }`); the mcpproxy `Client`'s `OnNotification`
+  handler and the respawn path invoke it.
+- `reloadState` folds into / wraps the registrar so reload's `DeleteTools` +
+  reconcile take the same `mu`. Serve's shutdown closes all sources via it.
+- mcp-go emits `notifications/tools/list_changed` to *our* clients on each
+  `AddTool`/`DeleteTools`, so downstream (the AI's client) refreshes
+  automatically — same as Phase 1 reload.
+
+### 11.5 Per-task acceptance tests
+
+| Task | Done when |
+|---|---|
+| reactive respawn | a stub whose child "dies" (transport returns `ErrTransportClosed`) is respawned and the retried call succeeds; crashloop cap stops after N and logs. |
+| respawn re-register | after respawn with a changed tool set, the registered tools match the new list. |
+| reconcile: unchanged | reload with an identical `mcp_servers` entry does **not** restart its child (assert same client instance / no re-spawn). |
+| reconcile: spawn change | changing `command`/`args`/`env` restarts the child and re-registers. |
+| reconcile: policy change | expanding a server's `allow` exposes the newly-allowed tool without restarting the child. |
+| reconcile: add/remove | adding/removing a server registers/deregisters and (on remove) closes the child. |
+| list_changed | firing `notifications/tools/list_changed` from a stub re-lists and swaps that source's registrations. |
+| coordinator safety | `-race` clean with concurrent reload + list_changed re-registration. |
+
+### 11.6 Deferred to Phase 3 / later
+
+- `request_capability` MCP branch + Web UI `/calls` source column + `ApplyRequest`
+  MCP rule merge (Phase 3, unchanged from earlier plan).
+- Active health pinging (only if a use-case needs proactive detection of an idle
+  dead server before its next call).
+- Eager `command` path validation and `name_prefix` charset check (§10.7).
