@@ -14,12 +14,14 @@ package mcpproxy
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/executor"
 
 	"github.com/mark3labs/mcp-go/client"
+	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -46,9 +48,14 @@ func NewClient(ctx context.Context, serverName string, cfg *config.MCPServerConf
 	}
 
 	// Full replacement environment — same builder as CLI tools, so isolation is
-	// identical. NewStdioMCPClient takes this []string as the child's whole env.
+	// identical. NOTE: the default mcp-go stdio transport sets
+	// cmd.Env = append(os.Environ(), env...), which would leak wraptool's own
+	// environment into the child. We pass a custom command factory
+	// (isolatedCommand) so the child gets *exactly* this curated env and nothing
+	// inherited — otherwise the credential-isolation guarantee is void.
 	env := executor.ChildEnv(cfg.Command, resolvedEnv)
-	up, err := client.NewStdioMCPClient(cfg.Command, env, cfg.Args...)
+	up, err := client.NewStdioMCPClientWithOptions(cfg.Command, env, cfg.Args,
+		transport.WithCommandFunc(isolatedCommand))
 	if err != nil {
 		return nil, fmt.Errorf("spawning mcp server %q: %w", serverName, err)
 	}
@@ -86,6 +93,16 @@ func NewClient(ctx context.Context, serverName string, cfg *config.MCPServerConf
 		resolvedEnv: resolvedEnv,
 		timeout:     timeout,
 	}, nil
+}
+
+// isolatedCommand is the stdio-transport command factory that gives a spawned
+// MCP server exactly the curated env passed to it — no os.Environ() inheritance.
+// It replaces the transport's default (append(os.Environ(), env...)), which
+// would leak wraptool's own environment into the child.
+func isolatedCommand(ctx context.Context, command string, env []string, args []string) (*exec.Cmd, error) {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Env = env
+	return cmd, nil
 }
 
 // ListTools returns the upstream tool list. mcp-go follows NextCursor
