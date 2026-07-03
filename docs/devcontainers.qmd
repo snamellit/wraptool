@@ -1,0 +1,261 @@
+---
+title: "Dev containers for AI harnesses"
+---
+
+A [dev container](https://containers.dev) is a description of a throwaway
+development environment — a base image plus a list of *features* — that your
+editor builds and drops you into. Your project source is bind-mounted in; the
+toolchain, the AI harness, and everything else live in the container and can be
+rebuilt from scratch at any time.
+
+For AI-assisted development this is exactly the shape you want:
+
+- **The harness runs in the container**, not on your laptop. Claude Code,
+  Antigravity, or whatever agent you use only ever sees the container's
+  filesystem and the container's tools.
+- **Compile and test happen in the container too**, so the agent's edits are
+  validated against the same toolchain your editor uses — no "works on my
+  machine" gap between the human and the AI.
+- **Credentials stay on the host.** Paired with the [`wraptool-connect`
+  feature](#the-wraptool-connect-feature), the agent reaches git, gcloud, and
+  kubectl through wraptool over MCP — it never holds a token or an SSH key.
+
+This page is a short tour of how to assemble such a container. If you just want
+to get coding, `wraptool up` builds and enters one for you — see
+[Getting started](getting-started.qmd#one-command-per-project-wraptool-up).
+
+## Anatomy of a `devcontainer.json`
+
+A dev container is one JSON file at `.devcontainer/devcontainer.json` in your
+repo. The two fields that matter most:
+
+```jsonc
+{
+  "name": "myproject",
+  // The base image: an OS + maybe a preinstalled runtime.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  // Composable add-ons, each pulled from an OCI registry.
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {}
+  }
+}
+```
+
+Open it with **VS Code → "Reopen in Container"**, the JetBrains dev container
+support, or the CLI:
+
+```bash
+devcontainer up --workspace-folder .
+```
+
+The image is built once and cached; features layer on top of it.
+
+## Prefer a base image + language features
+
+You *can* pick a fat, batteries-included image (`.../devcontainers/go:1-bookworm`
+ships Go preinstalled). But the pattern that scales better across projects is:
+
+> **Start from `mcr.microsoft.com/devcontainers/base:ubuntu` and add the
+> languages you need as features.**
+
+```jsonc
+{
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
+      "jdkDistro": "tem"
+    }
+  }
+}
+```
+
+Why this way:
+
+- **One base, many stacks.** A polyglot repo (a Go service with a Java client,
+  say) is just two feature lines — no hunting for an image that happens to bundle
+  both.
+- **Pinned, explicit versions.** `"version": "1.22"` in the feature options is
+  clearer and easier to bump than a buried image tag.
+- **Consistent tooling.** Every project starts from the same well-maintained
+  Ubuntu base, so shell, user, and `common-utils` behave the same everywhere.
+
+The [devcontainers/features](https://github.com/devcontainers/features)
+collection maintains language features for Go, Java, Node, Python, Rust, and
+more. Each feature's `README` lists its options (version, distribution, extra
+tools):
+
+- Go — <https://github.com/devcontainers/features/tree/main/src/go>
+- Java — <https://github.com/devcontainers/features/tree/main/src/java>
+
+::: {.callout-tip}
+Features are ordered by their dependencies, not by their position in the file.
+If you need a specific install order, use the `overrideFeatureInstallOrder`
+property. For most language + tool combinations the defaults are fine.
+:::
+
+## Adding the AI harness as a feature
+
+The same mechanism installs your agent. Instead of scripting `npm install -g`
+in a `postCreate` hook, drop in a feature and let it handle the install, PATH,
+and updates.
+
+### Claude Code
+
+```jsonc
+"features": {
+  "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+}
+```
+
+Installs the Claude Code CLI into the container. Combined with
+`wraptool-connect` (below), Claude starts already wired to the host's wrapped
+tools — it discovers `git_status`, `git_push`, `kubectl_get`, and friends over
+MCP the moment you launch it.
+
+### Antigravity (`agy`)
+
+```jsonc
+"features": {
+  "ghcr.io/aqua/devcontainer-antigravity-cli/antigravity-cli:1": {}
+}
+```
+
+Installs the Antigravity CLI (`agy`). It coexists with Claude Code — you can
+list several harness features and pick whichever agent you want inside the
+container; they all edit the same bind-mounted source and, via wraptool, share
+the same credential-isolated toolset.
+
+## The `wraptool-connect` feature
+
+This is the feature that makes the whole setup safe. It wires the container's
+AI client to a **host-side wraptool** MCP server, so the agent's git/gcloud/kubectl
+calls execute on the host — where the credentials live — while the container
+itself stays credential-free.
+
+```jsonc
+{
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    // Language toolchains
+    "ghcr.io/devcontainers/features/go:1": {},
+    // AI harness
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    // Credential-isolated tool access (this one)
+    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
+  },
+  // Host workspace path, so the server scopes tools to this worktree.
+  "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
+  // The token is a secret → remoteEnv keeps it out of image layers.
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" }
+}
+```
+
+It is **image-agnostic**: it adds no tools of its own, only the MCP client
+config. At container-create it writes `.mcp.json` pointing at wraptool,
+auto-detecting the host as the container's default-route gateway — so there's no
+`host.docker.internal` or `--add-host` to manage, and it works across docker
+networks and git worktrees.
+
+The feature reads two environment variables from the top-level config (it can't
+inject them itself, because feature-level `containerEnv` is not
+variable-substituted):
+
+| Var | Where | Set to | Purpose |
+|-----|-------|--------|---------|
+| `WRAPTOOL_TOKEN` | `remoteEnv` | `${localEnv:WRAPTOOL_TOKEN}` | Bearer token (secret → `remoteEnv`, not baked into the image). |
+| `WRAPTOOL_CWD` | `containerEnv` | `${localWorkspaceFolder}` | Host workspace path, sent to the server as `?cwd=` so it scopes tools to this worktree. |
+
+See the [feature README](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool-connect)
+for every option, and [Isolated environments](isolated-environments.md) for the
+threat model.
+
+::: {.callout-important}
+For container use the server must listen where the container can reach it — bind
+the docker gateway or `0.0.0.0` (e.g. `listen: 0.0.0.0:8717`), **not**
+`127.0.0.1`.
+:::
+
+## A complete example
+
+Putting the pieces together — an Ubuntu base, Go and Java toolchains, both AI
+harnesses, and credential-isolated tools:
+
+```jsonc
+{
+  "name": "polyglot-agent-box",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/java:1": { "version": "21" },
+
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+    "ghcr.io/aqua/devcontainer-antigravity-cli/antigravity-cli:1": {},
+
+    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
+  },
+
+  "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+
+  // Editor integration: install the language extensions in the container.
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go", "redhat.java"]
+    }
+  }
+}
+```
+
+Bring it up — the easy way, which also starts the shared wraptool server for
+you:
+
+```bash
+wraptool up
+```
+
+Or the plain dev container flow (export the token first so the feature picks it
+up):
+
+```bash
+export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
+# VS Code: "Reopen in Container"  — or:
+devcontainer up --workspace-folder .
+```
+
+## Compile, test, and edit — inside the container
+
+Once you're in, your editor's language servers, build tasks, and test runners
+all use the container's toolchain. The `go` and `java` features put compilers on
+`PATH`, and the `customizations.vscode.extensions` list installs the matching
+editor extensions in the container so IntelliSense, debugging, and test
+gutters work out of the box:
+
+```bash
+go build ./...        # the container's Go, not your laptop's
+go test ./...
+```
+
+The AI harness runs beside them:
+
+```bash
+claude                # or:  agy
+```
+
+When the agent needs to touch a credential-guarded tool — commit and push,
+inspect a cluster — it calls wraptool over MCP and the command executes on the
+host. Confirm the isolation any time from inside the container:
+
+```bash
+cat ~/.ssh/id_ed25519       # fails — no keys in the container
+git push                    # only works via the wrapped MCP tool
+```
+
+## Where to go next
+
+- [Getting started](getting-started.qmd) — configure and run the host server.
+- [Isolated environments](isolated-environments.md) — Guix, Docker, Podman, and
+  Unix-socket variants, plus the full security checklist.
+- [Configuration reference](configuration.qmd) — every whitelist field.

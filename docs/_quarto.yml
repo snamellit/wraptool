@@ -13,6 +13,8 @@ website:
         text: Home
       - href: getting-started.qmd
         text: Getting Started
+      - href: devcontainers.qmd
+        text: Dev Containers
       - href: configuration.qmd
         text: Configuration
       - href: security.qmd
@@ -33,6 +35,7 @@ website:
     contents:
       - index.qmd
       - getting-started.qmd
+      - devcontainers.qmd
       - configuration.qmd
       - security.qmd
       - hot-reload.qmd
