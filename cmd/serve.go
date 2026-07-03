@@ -82,7 +82,8 @@ func runServe(configPath string) error {
 	)
 
 	// Register tools from config.
-	registered, err := mcptools.RegisterAll(s, cfg, policy, store)
+	sources := []mcptools.Source{mcptools.NewCLISource(cfg, policy, store)}
+	registered, err := mcptools.RegisterAll(s, sources)
 	if err != nil {
 		return fmt.Errorf("registering tools: %w", err)
 	}
@@ -118,12 +119,11 @@ func runServe(configPath string) error {
 }
 
 // toolConfigPointers adapts the config's value map into the pointer map the
-// policy engine expects, copying each entry so the pointers stay independent
-// of the range variable.
+// policy engine expects. Each &tc is a distinct per-iteration variable
+// (Go 1.22+ loop semantics), so the pointers stay independent.
 func toolConfigPointers(tools map[string]config.ToolConfig) map[string]*config.ToolConfig {
 	m := make(map[string]*config.ToolConfig, len(tools))
 	for name, tc := range tools {
-		tc := tc
 		m[name] = &tc
 	}
 	return m

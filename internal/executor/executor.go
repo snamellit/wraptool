@@ -31,6 +31,31 @@ func childPath(binary string) string {
 	}
 }
 
+// ChildEnv builds the minimal, clean environment for a wrapped child process:
+// PATH (the binary's own dir prepended to the base, see childPath), HOME, LANG,
+// plus the tool's resolved env vars. It never inherits wraptool's own
+// environment, so credentials cannot leak from the parent. Both CLI tools and
+// spawned stdio MCP servers use this, keeping their env isolation identical.
+func ChildEnv(binary string, resolved map[string]string) []string {
+	envSlice := []string{
+		"PATH=" + childPath(binary),
+		"HOME=" + os.Getenv("HOME"),
+		"LANG=C.UTF-8",
+	}
+	for k, v := range resolved {
+		envSlice = append(envSlice, k+"="+v)
+	}
+	return envSlice
+}
+
+// Scrub removes credentials and the configured env-var values from a piece of
+// output before it is returned to the AI context.
+func Scrub(s string, env map[string]string) string {
+	s = ScrubCredentials(s)
+	s = ScrubEnvVars(s, env)
+	return s
+}
+
 // Result holds the output of a command execution.
 type Result struct {
 	Stdout    string
@@ -62,24 +87,10 @@ func Run(ctx context.Context, tc *config.ToolConfig, subcommand []string, flags 
 
 	cmd := exec.CommandContext(ctx, tc.Binary, args...)
 
-	// Set environment: always start with a minimal clean environment.
-	// Never inherit the parent process environment — this prevents
-	// credential leakage from the wraptool process to child commands.
-	//
-	// Prepend the tool binary's own directory to PATH so co-located helper
-	// executables resolve — e.g. kubectl invoking its kubeconfig exec
-	// credential plugin (gke-gcloud-auth-plugin), or gcloud components that
-	// shell out to siblings. This adds only the directory the trusted binary
-	// already lives in, so it leaks nothing.
-	envSlice := []string{
-		"PATH=" + childPath(tc.Binary),
-		"HOME=" + os.Getenv("HOME"),
-		"LANG=C.UTF-8",
-	}
-	for k, v := range env {
-		envSlice = append(envSlice, k+"="+v)
-	}
-	cmd.Env = envSlice
+	// Minimal clean environment — never inherit wraptool's own env (prevents
+	// credential leakage to child commands). See ChildEnv for the PATH rationale
+	// (co-located helper executables like gke-gcloud-auth-plugin must resolve).
+	cmd.Env = ChildEnv(tc.Binary, env)
 
 	cwd := paths.ResolveCWD(ctx, tc.WorkingDir)
 	if cwd != "" {
@@ -95,15 +106,9 @@ func Run(ctx context.Context, tc *config.ToolConfig, subcommand []string, flags 
 	err = cmd.Run()
 
 	// Scrub credentials from output before returning.
-	scrubbed := func(s string) string {
-		s = ScrubCredentials(s)
-		s = ScrubEnvVars(s, env)
-		return s
-	}
-
 	result := &Result{
-		Stdout:    scrubbed(stdout.String()),
-		Stderr:    scrubbed(stderr.String()),
+		Stdout:    Scrub(stdout.String(), env),
+		Stderr:    Scrub(stderr.String(), env),
 		Truncated: stdoutW.truncated || stderrW.truncated,
 	}
 

@@ -112,7 +112,8 @@ func reloadConfig(s *server.MCPServer, configPath string, policy *whitelist.Poli
 	if len(state.registered) > 0 {
 		s.DeleteTools(state.registered...)
 	}
-	names, err := mcptools.RegisterAll(s, newCfg, policy, store)
+	sources := []mcptools.Source{mcptools.NewCLISource(newCfg, policy, store)}
+	names, err := mcptools.RegisterAll(s, sources)
 	state.registered = names
 	state.mu.Unlock()
 	if err != nil {
