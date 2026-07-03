@@ -13,6 +13,8 @@ variables:
 # Reusable build step: render docs/ into ./public.
 .render: &render
   image: ghcr.io/quarto-dev/quarto:${QUARTO_VERSION}
+  # Let a newer pipeline auto-cancel a superseded one still in flight.
+  interruptible: true
   before_script:
     - quarto --version
   script:
@@ -27,11 +29,18 @@ docs:build:
   stage: build
   rules:
     - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+  artifacts:
+    paths:
+      - public
+    expire_in: 1 week
 
 # Publish: only on the default branch (main).
 pages:
   <<: *render
   stage: deploy
+  # Explicitly flag this as a Pages deployment (GitLab 17.4+), rather than
+  # relying on the magic "pages" job name.
+  pages: true
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   artifacts:
