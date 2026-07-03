@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/mcpproxy"
 	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
@@ -72,17 +73,18 @@ func runServe(configPath string) error {
 	}
 
 	policy := whitelist.NewPolicy(toolConfigPointers(cfg.Tools))
+	mcpPolicy := whitelist.NewMCPPolicy(mcpServerConfigPointers(cfg.MCPServers))
 	store := requestlog.NewStore(cfg.Server.RequestLog)
 
 	// Create MCP server.
 	s := server.NewMCPServer(
 		"wraptool",
-		"0.1.0",
+		serverVersion,
 		server.WithToolCapabilities(true),
 	)
 
-	// Register tools from config.
-	sources := []mcptools.Source{mcptools.NewCLISource(cfg, policy, store)}
+	// Register tools from every source (CLI tools + one proxy per MCP server).
+	sources := buildSources(cfg, policy, mcpPolicy, store)
 	registered, err := mcptools.RegisterAll(s, sources)
 	if err != nil {
 		return fmt.Errorf("registering tools: %w", err)
@@ -92,9 +94,15 @@ func runServe(configPath string) error {
 	mcptools.RegisterRequestCapabilityTool(s, store)
 
 	// Set up SIGHUP and file-watch for hot-reload.
-	state := &reloadState{registered: registered}
-	go handleSIGHUP(s, configPath, policy, state, store)
-	go watchConfigFile(s, configPath, policy, state, store)
+	state := &reloadState{registered: registered, sources: sources}
+	go handleSIGHUP(s, configPath, policy, mcpPolicy, state, store)
+	go watchConfigFile(s, configPath, policy, mcpPolicy, state, store)
+
+	// Close the live sources when the transport returns (e.g. stdin EOF under
+	// stdio), tearing down any spawned MCP-server child processes so they do
+	// not leak past wraptool's own exit. reload may have swapped the set, so
+	// close whatever is current in state, under its lock.
+	defer state.closeSources()
 
 	// Start the operator-facing Web UI on its own listener, if configured.
 	// It runs in this process but is independent of the MCP transport, so
@@ -118,6 +126,22 @@ func runServe(configPath string) error {
 	}
 }
 
+// serverVersion is reported to MCP clients and forwarded to upstream MCP
+// servers as wraptool's ClientInfo version.
+const serverVersion = "0.1.0"
+
+// buildSources assembles the tool sources registered on the MCP server: the CLI
+// tool source plus one mcpproxy source per configured MCP server. It is shared
+// by initial startup and hot-reload so both build the identical set.
+func buildSources(cfg *config.Config, policy *whitelist.Policy, mcpPolicy *whitelist.MCPPolicy, store *requestlog.Store) []mcptools.Source {
+	sources := []mcptools.Source{mcptools.NewCLISource(cfg, policy, store)}
+	for name := range cfg.MCPServers {
+		srv := cfg.MCPServers[name] // fresh copy; handler holds &srv
+		sources = append(sources, mcpproxy.NewSource(name, &srv, mcpPolicy, store, serverVersion))
+	}
+	return sources
+}
+
 // toolConfigPointers adapts the config's value map into the pointer map the
 // policy engine expects. Each &tc is a distinct per-iteration variable
 // (Go 1.22+ loop semantics), so the pointers stay independent.
@@ -125,6 +149,17 @@ func toolConfigPointers(tools map[string]config.ToolConfig) map[string]*config.T
 	m := make(map[string]*config.ToolConfig, len(tools))
 	for name, tc := range tools {
 		m[name] = &tc
+	}
+	return m
+}
+
+// mcpServerConfigPointers adapts the config's value map into the pointer map
+// the MCP policy engine expects, mirroring toolConfigPointers.
+func mcpServerConfigPointers(servers map[string]config.MCPServerConfig) map[string]*config.MCPServerConfig {
+	m := make(map[string]*config.MCPServerConfig, len(servers))
+	for name := range servers {
+		srv := servers[name]
+		m[name] = &srv
 	}
 	return m
 }
