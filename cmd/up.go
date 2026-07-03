@@ -23,7 +23,7 @@ type upOptions struct {
 	configPath  string
 	noServer    bool
 	noContainer bool
-	shell       bool
+	shell       string // "auto" | "always" | "never"
 	workspace   string
 }
 
@@ -51,7 +51,7 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 	cmd.Flags().BoolVar(&opts.noServer, "no-server", false, "do not start the server (assume it is already running)")
 	cmd.Flags().BoolVar(&opts.noContainer, "no-container", false, "only ensure the server; do not touch the container")
-	cmd.Flags().BoolVar(&opts.shell, "shell", false, "open a shell in the container after it is up")
+	cmd.Flags().StringVar(&opts.shell, "shell", "auto", "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
 
 	return cmd
@@ -91,7 +91,26 @@ func runUp(opts upOptions) error {
 	if err != nil {
 		return err
 	}
-	return bringUpContainer(root, token, opts.shell)
+	return bringUpContainer(root, token, wantShell(opts.shell))
+}
+
+// wantShell resolves the --shell mode. "auto" opens a shell only when stdin and
+// stdout are a terminal, so interactive runs drop the dev straight in while CI /
+// piped runs just bring the container up.
+func wantShell(mode string) bool {
+	switch mode {
+	case "always":
+		return true
+	case "never":
+		return false
+	default: // "auto"
+		return isTTY(os.Stdin) && isTTY(os.Stdout)
+	}
+}
+
+func isTTY(f *os.File) bool {
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func configOrDefault(p string) string {
@@ -302,7 +321,8 @@ func bringUpContainer(root, token string, shell bool) error {
 		return nil
 	}
 
-	sh := exec.Command("devcontainer", "exec", "--workspace-folder", root, "bash")
+	fmt.Printf("\nopening a shell in the dev container (exit leaves it running; re-enter with `wraptool up`)...\n")
+	sh := exec.Command("devcontainer", "exec", "--workspace-folder", root, "bash", "-l")
 	sh.Env = env
 	sh.Stdin = os.Stdin
 	sh.Stdout = os.Stdout

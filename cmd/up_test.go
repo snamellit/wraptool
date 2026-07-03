@@ -40,6 +40,19 @@ func TestExpandTilde(t *testing.T) {
 	}
 }
 
+func TestWantShell(t *testing.T) {
+	if !wantShell("always") {
+		t.Error(`wantShell("always") = false, want true`)
+	}
+	if wantShell("never") {
+		t.Error(`wantShell("never") = true, want false`)
+	}
+	// "auto" depends on the terminal; under `go test` stdin is not a TTY.
+	if wantShell("auto") {
+		t.Error(`wantShell("auto") = true with non-TTY stdin, want false`)
+	}
+}
+
 func TestHasDevcontainer(t *testing.T) {
 	dir := t.TempDir()
 	if hasDevcontainer(dir) {
