@@ -94,6 +94,8 @@ request-apply — the YAML node-tree editor (`config.AddRule` /
 `UpdateRule` / `DeleteRule`), round-trip validation, atomic write, and
 file-watch hot-reload.
 
+![The Rules view: one card per tool (here `acli` and `git`) with its binary path, an ALLOW section of editable subcommand + flags rows, a DENY section, inline Save / Delete, and Add Allow / Add Deny. Rules carrying `flag_constraints` / `arg_constraints` show an `ADV` badge.](rules_view.png){fig-alt="wraptool Web UI Rules page showing acli and git tool cards with allow and deny rules and edit controls"}
+
 - **Add** a rule: fill the *new subcommand* (and, for allow rules,
   *flags*) row under a tool and submit. Subcommand and flags are
   space-separated.

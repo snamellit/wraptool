@@ -29,6 +29,15 @@ wraptool init --harness claude --url http://127.0.0.1:8717/sse
 wraptool serve
 ```
 
+## Web UI
+
+An optional operator-facing dashboard (bound to `127.0.0.1`, **not**
+AI-facing) reviews capability requests and provides full rule CRUD —
+edit a tool's allow/deny rules in the browser and the running server
+hot-reloads the change. See [`docs/web-ui.qmd`](docs/web-ui.qmd).
+
+![wraptool Web UI — the Rules view, with per-tool allow/deny rules and inline edit controls](docs/rules_view.png)
+
 ## Documentation
 
 Full documentation lives in `docs/` and is rendered with
@@ -41,6 +50,7 @@ Pages):
 | Configuration reference | [`docs/configuration.qmd`](docs/configuration.qmd) |
 | Security model | [`docs/security.qmd`](docs/security.qmd) |
 | Hot-reload & capability requests | [`docs/hot-reload.qmd`](docs/hot-reload.qmd) |
+| Request-review Web UI | [`docs/web-ui.qmd`](docs/web-ui.qmd) |
 | Isolated environments | [`docs/isolated-environments.md`](docs/isolated-environments.md) |
 | Overview slides | [`docs/presentation.qmd`](docs/presentation.qmd) |
 
