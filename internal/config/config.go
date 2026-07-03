@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -210,7 +211,7 @@ func resolveEnv(envFiles []string, inline map[string]string) (map[string]string,
 		if err != nil {
 			return nil, fmt.Errorf("reading env file %s: %w", envFile, err)
 		}
-		for _, line := range strings.Split(string(data), "\n") {
+		for line := range strings.SplitSeq(string(data), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
@@ -222,9 +223,7 @@ func resolveEnv(envFiles []string, inline map[string]string) (map[string]string,
 		}
 	}
 
-	for k, v := range inline {
-		env[k] = v
-	}
+	maps.Copy(env, inline)
 
 	return env, nil
 }

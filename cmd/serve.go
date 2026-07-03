@@ -270,7 +270,7 @@ func startWebUI(cfg *config.Config, store *requestlog.Store, configPath string) 
 		return err
 	}
 
-	var handler http.Handler = srv.Handler()
+	handler := srv.Handler()
 	var token string
 	if cfg.Server.Web.AuthTokenFile != "" {
 		token, err = webui.LoadToken(cfg.Server.Web.AuthTokenFile)

@@ -48,7 +48,7 @@ func (c *Config) Validate() error {
 	}
 
 	for name, tool := range c.Tools {
-		if err := validateTool(name, &tool); err != nil {
+		if err := validateTool(&tool); err != nil {
 			return fmt.Errorf("tool %q: %w", name, err)
 		}
 	}
@@ -123,7 +123,7 @@ func validateMCPServers(c *Config) error {
 	return nil
 }
 
-func validateTool(name string, tc *ToolConfig) error {
+func validateTool(tc *ToolConfig) error {
 	if tc.Binary == "" {
 		return fmt.Errorf("binary path is required")
 	}

@@ -296,7 +296,7 @@ func expandTilde(p string) string {
 
 func bringUpContainer(root, token string, shell bool) error {
 	if !hasDevcontainer(root) {
-		return fmt.Errorf("no dev container found under %s/.devcontainer\n\nScaffold one (see examples/devcontainer) and add the wraptool-connect feature, then re-run `wraptool up`.", root)
+		return fmt.Errorf("no dev container found under %s/.devcontainer\n\nScaffold one (see examples/devcontainer) and add the wraptool-connect feature, then re-run `wraptool up`", root)
 	}
 	if _, err := exec.LookPath("devcontainer"); err != nil {
 		return fmt.Errorf("the devcontainer CLI is not installed (npm i -g @devcontainers/cli); needed to bring up %s", root)

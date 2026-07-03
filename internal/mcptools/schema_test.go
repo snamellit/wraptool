@@ -4,9 +4,9 @@ import "testing"
 
 func TestToolName(t *testing.T) {
 	tests := []struct {
-		tool    string
-		subcmd  []string
-		want    string
+		tool   string
+		subcmd []string
+		want   string
 	}{
 		{"git", []string{"commit"}, "git_commit"},
 		{"git", []string{"log"}, "git_log"},

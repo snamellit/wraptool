@@ -28,12 +28,12 @@ func TestPolicy_AllowedCommand(t *testing.T) {
 	p := NewPolicy(tools)
 
 	tests := []struct {
-		name     string
-		tool     string
-		subcmd   []string
-		flags    map[string]string
-		args     []string
-		wantOk   bool
+		name   string
+		tool   string
+		subcmd []string
+		flags  map[string]string
+		args   []string
+		wantOk bool
 	}{
 		{
 			name:   "allowed: git status",

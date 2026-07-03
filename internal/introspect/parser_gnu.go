@@ -9,8 +9,9 @@ import (
 // coreutils, and many other tools.
 //
 // Pattern: " -f, --flag[=VALUE]  description"
-//          " -f, --flag <value>  description"
-//          "     --long-only     description"
+//
+//	" -f, --flag <value>  description"
+//	"     --long-only     description"
 type GNUParser struct{}
 
 func (p *GNUParser) Name() string { return "gnu" }

@@ -38,7 +38,7 @@ func (h *Handler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp
 	for param, value := range request.GetArguments() {
 		if param == "args" {
 			// Positional arguments array.
-			if arr, ok := value.([]interface{}); ok {
+			if arr, ok := value.([]any); ok {
 				for _, v := range arr {
 					if s, ok := v.(string); ok {
 						positionalArgs = append(positionalArgs, s)
@@ -67,7 +67,7 @@ func (h *Handler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp
 	// Evaluate against the whitelist policy.
 	decision := h.Policy.Evaluate(h.ToolName, h.Subcommand, flags, positionalArgs)
 	if !decision.Allowed {
-		h.logCall(ctx, sessionID, clientName, clientVer, flags, positionalArgs, false, decision.Reason, 0, false, time.Since(start))
+		h.logCall(sessionID, clientName, clientVer, flags, positionalArgs, false, decision.Reason, 0, false, time.Since(start))
 		return denialResult(h.ToolName, h.Subcommand, flags, positionalArgs, decision), nil
 	}
 
@@ -81,11 +81,11 @@ func (h *Handler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp
 
 	result, err := executor.Run(execCtx, h.ToolConfig, h.Subcommand, flags, positionalArgs)
 	if err != nil {
-		h.logCall(ctx, sessionID, clientName, clientVer, flags, positionalArgs, true, "", -1, false, time.Since(start))
+		h.logCall(sessionID, clientName, clientVer, flags, positionalArgs, true, "", -1, false, time.Since(start))
 		return mcp.NewToolResultError(fmt.Sprintf("execution error: %s", err)), nil
 	}
 
-	h.logCall(ctx, sessionID, clientName, clientVer, flags, positionalArgs, true, "", result.ExitCode, result.Truncated, time.Since(start))
+	h.logCall(sessionID, clientName, clientVer, flags, positionalArgs, true, "", result.ExitCode, result.Truncated, time.Since(start))
 
 	// Build response.
 	output := result.Stdout
@@ -100,7 +100,7 @@ func (h *Handler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp
 	return mcp.NewToolResultText(output), nil
 }
 
-func (h *Handler) logCall(ctx context.Context, sessionID, clientName, clientVer string, flags map[string]string, positionalArgs []string, allowed bool, denyReason string, exitCode int, truncated bool, dur time.Duration) {
+func (h *Handler) logCall(sessionID, clientName, clientVer string, flags map[string]string, positionalArgs []string, allowed bool, denyReason string, exitCode int, truncated bool, dur time.Duration) {
 	if h.Store == nil {
 		return
 	}

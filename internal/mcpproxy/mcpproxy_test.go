@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -262,12 +263,7 @@ func TestHandlerDeniesUnallowedTool(t *testing.T) {
 }
 
 func containsKV(env []string, kv string) bool {
-	for _, e := range env {
-		if e == kv {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(env, kv)
 }
 
 func containsPrefix(env []string, prefix string) bool {

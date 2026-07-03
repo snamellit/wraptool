@@ -41,7 +41,7 @@ func RegisterRequestCapabilityTool(s *server.MCPServer, store *requestlog.Store)
 		enables, _ := args["enables"].(string)
 
 		var subcommand []string
-		if arr, ok := args["subcommand"].([]interface{}); ok {
+		if arr, ok := args["subcommand"].([]any); ok {
 			for _, v := range arr {
 				if s, ok := v.(string); ok {
 					subcommand = append(subcommand, s)
@@ -50,7 +50,7 @@ func RegisterRequestCapabilityTool(s *server.MCPServer, store *requestlog.Store)
 		}
 
 		var flags []string
-		if arr, ok := args["flags"].([]interface{}); ok {
+		if arr, ok := args["flags"].([]any); ok {
 			for _, v := range arr {
 				if s, ok := v.(string); ok {
 					flags = append(flags, s)
