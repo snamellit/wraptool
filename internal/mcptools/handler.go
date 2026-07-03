@@ -29,7 +29,7 @@ type Handler struct {
 func (h *Handler) Handle(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	start := time.Now()
 
-	sessionID, clientName, clientVer := sessionInfo(ctx)
+	sessionID, clientName, clientVer := SessionInfo(ctx)
 
 	// Extract flags and positional args from the MCP request arguments.
 	flags := make(map[string]string)
@@ -151,7 +151,10 @@ func denialResult(toolName string, subcommand []string, flags map[string]string,
 	return mcp.NewToolResultText(sb.String())
 }
 
-func sessionInfo(ctx context.Context) (sessionID, clientName, clientVersion string) {
+// SessionInfo extracts the MCP session ID and client name/version from the
+// request context. Exported so other tool sources (e.g. the mcpproxy handler)
+// record the same identity without duplicating the extraction.
+func SessionInfo(ctx context.Context) (sessionID, clientName, clientVersion string) {
 	session := server.ClientSessionFromContext(ctx)
 	if session == nil {
 		return "", "", ""

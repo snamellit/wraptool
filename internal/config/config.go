@@ -189,40 +189,23 @@ func expandPath(path string) string {
 // loading env_files and merging with inline env vars.
 // Inline env takes precedence over env_files.
 func (tc *ToolConfig) ResolvedEnv() (map[string]string, error) {
-	env := make(map[string]string)
-
-	for _, envFile := range tc.EnvFiles {
-		envFile = expandPath(envFile)
-		data, err := os.ReadFile(envFile)
-		if err != nil {
-			return nil, fmt.Errorf("reading env file %s: %w", envFile, err)
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			k, v, ok := strings.Cut(line, "=")
-			if ok {
-				env[k] = v
-			}
-		}
-	}
-
-	for k, v := range tc.Env {
-		env[k] = v
-	}
-
-	return env, nil
+	return resolveEnv(tc.EnvFiles, tc.Env)
 }
 
 // ResolvedEnv returns the combined environment for an MCP server, loading
 // env_files and merging with inline env vars. Inline env takes precedence over
-// env_files. Mirrors ToolConfig.ResolvedEnv.
+// env_files.
 func (mc *MCPServerConfig) ResolvedEnv() (map[string]string, error) {
+	return resolveEnv(mc.EnvFiles, mc.Env)
+}
+
+// resolveEnv loads each env file (KEY=VALUE lines; blanks and # comments
+// skipped) then overlays the inline env, which takes precedence. Shared by the
+// CLI-tool and MCP-server config so both resolve credentials identically.
+func resolveEnv(envFiles []string, inline map[string]string) (map[string]string, error) {
 	env := make(map[string]string)
 
-	for _, envFile := range mc.EnvFiles {
+	for _, envFile := range envFiles {
 		envFile = expandPath(envFile)
 		data, err := os.ReadFile(envFile)
 		if err != nil {
@@ -240,7 +223,7 @@ func (mc *MCPServerConfig) ResolvedEnv() (map[string]string, error) {
 		}
 	}
 
-	for k, v := range mc.Env {
+	for k, v := range inline {
 		env[k] = v
 	}
 

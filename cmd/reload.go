@@ -118,8 +118,8 @@ func reloadConfig(s *server.MCPServer, configPath string, policy *whitelist.Poli
 		log.Printf("reload validation failed: %s", err)
 		return
 	}
-	policy.Reload(toolConfigPointers(newCfg.Tools))
-	mcpPolicy.Reload(mcpServerConfigPointers(newCfg.MCPServers))
+	policy.Reload(configPointers(newCfg.Tools))
+	mcpPolicy.Reload(configPointers(newCfg.MCPServers))
 
 	// Swap MCP tool registrations: remove the previously registered set, close
 	// the old sources (tearing down any spawned MCP-server children), then

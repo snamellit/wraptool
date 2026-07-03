@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/pti/wraptool/internal/executor"
+	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/requestlog"
 	"github.com/pti/wraptool/internal/whitelist"
 
 	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 // handler services calls to one wrapped upstream MCP tool. It is deliberately
@@ -41,15 +41,14 @@ func (h *handler) Handle(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 	}
 
 	res, err := h.client.CallTool(ctx, h.toolName, args)
+	h.audit(ctx, args, true, "", time.Since(start)) // allowed either way; result differs
 	if err != nil {
-		h.audit(ctx, args, true, "", time.Since(start))
 		// Scrub the error too: a JSON-RPC/transport error message can echo
 		// upstream data, so give it the same secret-hiding as a normal result.
 		return mcp.NewToolResultError(executor.Scrub(fmt.Sprintf("upstream error: %s", err), h.client.resolvedEnv)), nil
 	}
 
 	scrubContent(res.Content, h.client.resolvedEnv)
-	h.audit(ctx, args, true, "", time.Since(start))
 	return res, nil
 }
 
@@ -59,24 +58,8 @@ func (h *handler) audit(ctx context.Context, args map[string]any, allowed bool, 
 	if h.store == nil {
 		return
 	}
-	sessionID, clientName, clientVer := sessionInfo(ctx)
+	sessionID, clientName, clientVer := mcptools.SessionInfo(ctx)
 	if err := h.store.AppendMCPToolCall(h.serverName, h.toolName, args, allowed, denyReason, dur, sessionID, clientName, clientVer); err != nil {
 		_ = err // non-fatal
 	}
-}
-
-// sessionInfo extracts the MCP session/client identity from the request
-// context, mirroring mcptools.sessionInfo (kept local to avoid exporting it).
-func sessionInfo(ctx context.Context) (sessionID, clientName, clientVersion string) {
-	session := server.ClientSessionFromContext(ctx)
-	if session == nil {
-		return "", "", ""
-	}
-	sessionID = session.SessionID()
-	if ci, ok := session.(server.SessionWithClientInfo); ok {
-		info := ci.GetClientInfo()
-		clientName = info.Name
-		clientVersion = info.Version
-	}
-	return
 }

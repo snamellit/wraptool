@@ -72,8 +72,8 @@ func runServe(configPath string) error {
 		return fmt.Errorf("validating config: %w", err)
 	}
 
-	policy := whitelist.NewPolicy(toolConfigPointers(cfg.Tools))
-	mcpPolicy := whitelist.NewMCPPolicy(mcpServerConfigPointers(cfg.MCPServers))
+	policy := whitelist.NewPolicy(configPointers(cfg.Tools))
+	mcpPolicy := whitelist.NewMCPPolicy(configPointers(cfg.MCPServers))
 	store := requestlog.NewStore(cfg.Server.RequestLog)
 
 	// Create MCP server.
@@ -142,26 +142,15 @@ func buildSources(cfg *config.Config, policy *whitelist.Policy, mcpPolicy *white
 	return sources
 }
 
-// toolConfigPointers adapts the config's value map into the pointer map the
-// policy engine expects. Each &tc is a distinct per-iteration variable
-// (Go 1.22+ loop semantics), so the pointers stay independent.
-func toolConfigPointers(tools map[string]config.ToolConfig) map[string]*config.ToolConfig {
-	m := make(map[string]*config.ToolConfig, len(tools))
-	for name, tc := range tools {
-		m[name] = &tc
+// configPointers adapts a config's value map into the pointer map the policy
+// engines expect. Each &v is a distinct per-iteration variable (Go 1.22+ loop
+// semantics), so the pointers stay independent.
+func configPointers[T any](m map[string]T) map[string]*T {
+	out := make(map[string]*T, len(m))
+	for name, v := range m {
+		out[name] = &v
 	}
-	return m
-}
-
-// mcpServerConfigPointers adapts the config's value map into the pointer map
-// the MCP policy engine expects, mirroring toolConfigPointers.
-func mcpServerConfigPointers(servers map[string]config.MCPServerConfig) map[string]*config.MCPServerConfig {
-	m := make(map[string]*config.MCPServerConfig, len(servers))
-	for name := range servers {
-		srv := servers[name]
-		m[name] = &srv
-	}
-	return m
+	return out
 }
 
 // newSSEServer builds the SSE server shared by the sse and unix transports,
