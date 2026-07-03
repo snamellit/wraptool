@@ -1,40 +1,40 @@
-// Reveal.js Melexis overlay for the `white` base theme.
+// Reveal.js wraptool overlay for the `white` base theme.
 // TODO: confirm tokens against the official styleguide.
 
 /*-- scss:defaults --*/
 
-$melexis-red:    #E60028;
-$melexis-black:  #1A1A1A;
+$wraptool-red:    #E60028;
+$wraptool-black:  #1A1A1A;
 
-$body-color:     $melexis-black;
+$body-color:     $wraptool-black;
 $body-bg:        #FFFFFF;
-$link-color:     $melexis-red;
-$selection-bg:   $melexis-red;
+$link-color:     $wraptool-red;
+$selection-bg:   $wraptool-red;
 
 $main-font:      "Source Sans 3", "Inter", "Helvetica Neue", Arial, sans-serif;
 $heading-font:   $main-font;
-$heading-color:  $melexis-black;
+$heading-color:  $wraptool-black;
 $heading-text-shadow: none;
 $heading-font-weight: 600;
 
 /*-- scss:rules --*/
 
 .reveal h1, .reveal h2 {
-  border-bottom: 3px solid $melexis-red;
+  border-bottom: 3px solid $wraptool-red;
   padding-bottom: 0.15em;
 }
 
 .reveal .slide-number {
-  color: $melexis-red;
+  color: $wraptool-red;
 }
 
 .reveal pre code {
-  border-left: 3px solid $melexis-red;
+  border-left: 3px solid $wraptool-red;
   padding-left: 1em;
 }
 
 .reveal a {
-  color: $melexis-red;
+  color: $wraptool-red;
   text-decoration: none;
   border-bottom: 1px dashed currentColor;
 }

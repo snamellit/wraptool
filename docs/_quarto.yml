@@ -45,7 +45,7 @@ website:
 format:
   html:
     theme:
-      light: [zephyr, melexis.scss]
+      light: [zephyr, wraptool.scss]
     toc: true
     toc-depth: 3
     code-copy: true

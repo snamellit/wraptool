@@ -1,30 +1,30 @@
-// Melexis brand overlay for zephyr.
+// wraptool brand overlay for zephyr.
 // TODO: replace placeholder values with exact tokens from the official
-// Melexis styleguide (logo SVG, exact hex codes, type stack).
+// wraptool styleguide (logo SVG, exact hex codes, type stack).
 
 /*-- scss:defaults --*/
 
-$melexis-red:     #E60028;   // TODO: confirm exact brand red
-$melexis-black:   #1A1A1A;
-$melexis-grey:    #4A4A4A;
-$melexis-grey-2:  #E5E5E5;
+$wraptool-red:     #E60028;   // TODO: confirm exact brand red
+$wraptool-black:   #1A1A1A;
+$wraptool-grey:    #4A4A4A;
+$wraptool-grey-2:  #E5E5E5;
 
-$primary:         $melexis-red;
-$body-color:      $melexis-black;
+$primary:         $wraptool-red;
+$body-color:      $wraptool-black;
 $body-bg:         #FFFFFF;
-$link-color:      $melexis-red;
-$link-hover-color: darken($melexis-red, 10%);
+$link-color:      $wraptool-red;
+$link-hover-color: darken($wraptool-red, 10%);
 
 $font-family-sans-serif: "Source Sans 3", "Inter", "Helvetica Neue", Arial, sans-serif;
 $headings-font-weight:   600;
-$headings-color:         $melexis-black;
+$headings-color:         $wraptool-black;
 
-$navbar-bg:              $melexis-black;
+$navbar-bg:              $wraptool-black;
 $navbar-fg:              #FFFFFF;
-$navbar-hl:              $melexis-red;
+$navbar-hl:              $wraptool-red;
 
-$code-color:             $melexis-red;
-$code-bg:                $melexis-grey-2;
+$code-color:             $wraptool-red;
+$code-bg:                $wraptool-grey-2;
 
 /*-- scss:rules --*/
 
@@ -34,11 +34,11 @@ $code-bg:                $melexis-grey-2;
 }
 
 .sidebar-title {
-  color: $melexis-red;
+  color: $wraptool-red;
 }
 
 h1, h2 {
-  border-bottom: 2px solid $melexis-red;
+  border-bottom: 2px solid $wraptool-red;
   padding-bottom: 0.2em;
 }
 

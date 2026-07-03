@@ -104,3 +104,73 @@ sequenceDiagram
 
 Trigger any allowed subcommand from your assistant. The wraptool log
 prints one line per executed command with status and duration.
+
+## 6. One command per project: `wraptool up`
+
+Once the config exists you don't start things by hand. In any git repository
+(or worktree) root:
+
+```bash
+wraptool up
+```
+
+Running bare `wraptool` in a repository does the same thing. `up` is idempotent
+and does three things:
+
+1. **Ensures the shared server is running** — if it isn't, it starts `wraptool
+   serve` detached (pidfile + lock under `$XDG_RUNTIME_DIR`, auto-generating the
+   auth token), and waits for it to become reachable.
+2. **Brings up the project's dev container** via `devcontainer up`, injecting the
+   connection info: the auth token and this worktree's host path.
+3. **Drops you into a shell** in the container so you can start developing
+   immediately. Exiting the shell leaves the container running; re-enter with
+   `wraptool up`.
+
+The shell opens automatically when you run `up` from a terminal. Control it with
+`--shell`:
+
+```bash
+wraptool up --shell=always   # always open a shell
+wraptool up --shell=never    # just bring the container up (e.g. in scripts/CI)
+```
+
+One shared server serves every project and worktree; each container is scoped to
+its own path, so parallel branches (git worktrees) just work.
+
+Manage the server it started:
+
+```bash
+wraptool server status
+wraptool server stop
+```
+
+### Wiring the container: the `wraptool-connect` feature
+
+The container side is handled by the **wraptool-connect** dev container feature,
+published to the Forgejo OCI registry. Add it to the project's
+`.devcontainer/devcontainer.json` — it layers onto any base image and adds no
+tools of its own, only the MCP connection:
+
+```jsonc
+{
+  "image": "your-base-image",
+  "features": {
+    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
+  },
+  // Host workspace path (so the server scopes tools to this worktree).
+  "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
+  // Token is a secret → remoteEnv keeps it out of image layers.
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" }
+}
+```
+
+At container create the feature writes the MCP client config pointing at the host
+wraptool, auto-detecting the host as the container's default-route gateway — so
+it works across docker networks and worktrees with no `host.docker.internal` or
+`--add-host`.
+
+::: {.callout-important}
+For container use the server must listen where the container can reach it — bind
+the docker gateway or `0.0.0.0` (e.g. `listen: 0.0.0.0:8717`), **not**
+`127.0.0.1`. See [Isolated environments](isolated-environments.md).
+:::
