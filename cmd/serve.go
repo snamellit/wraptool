@@ -10,11 +10,8 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
-	"time"
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/mcptools"
@@ -23,7 +20,6 @@ import (
 	"github.com/pti/wraptool/internal/webui"
 	"github.com/pti/wraptool/internal/whitelist"
 
-	"github.com/fsnotify/fsnotify"
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/spf13/cobra"
@@ -75,14 +71,7 @@ func runServe(configPath string) error {
 		return fmt.Errorf("validating config: %w", err)
 	}
 
-	// Build tool config map for the policy engine.
-	toolConfigs := make(map[string]*config.ToolConfig, len(cfg.Tools))
-	for name, tc := range cfg.Tools {
-		tc := tc
-		toolConfigs[name] = &tc
-	}
-
-	policy := whitelist.NewPolicy(toolConfigs)
+	policy := whitelist.NewPolicy(toolConfigPointers(cfg.Tools))
 	store := requestlog.NewStore(cfg.Server.RequestLog)
 
 	// Create MCP server.
@@ -128,6 +117,44 @@ func runServe(configPath string) error {
 	}
 }
 
+// toolConfigPointers adapts the config's value map into the pointer map the
+// policy engine expects, copying each entry so the pointers stay independent
+// of the range variable.
+func toolConfigPointers(tools map[string]config.ToolConfig) map[string]*config.ToolConfig {
+	m := make(map[string]*config.ToolConfig, len(tools))
+	for name, tc := range tools {
+		tc := tc
+		m[name] = &tc
+	}
+	return m
+}
+
+// newSSEServer builds the SSE server shared by the sse and unix transports,
+// wiring the client-CWD context func and appending query params to the message
+// endpoint. Callers may pass extra transport-specific options.
+func newSSEServer(s *server.MCPServer, extra ...server.SSEOption) *server.SSEServer {
+	opts := []server.SSEOption{
+		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
+				ctx = paths.WithClientCWD(ctx, cwd)
+			}
+			return ctx
+		}),
+		server.WithAppendQueryToMessageEndpoint(),
+	}
+	opts = append(opts, extra...)
+	return server.NewSSEServer(s, opts...)
+}
+
+// authWrapped wraps handler with Bearer-token auth when tokenFile is set,
+// returning the handler unchanged otherwise.
+func authWrapped(handler http.Handler, tokenFile string) (http.Handler, error) {
+	if tokenFile == "" {
+		return handler, nil
+	}
+	return newAuthMiddleware(tokenFile, handler)
+}
+
 func serveStdio(s *server.MCPServer) error {
 	log.Println("wraptool MCP server starting on stdio")
 	stdio := server.NewStdioServer(s)
@@ -139,24 +166,9 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("server.listen is required for sse transport (e.g. 127.0.0.1:8717)")
 	}
 
-	sseServer := server.NewSSEServer(s,
-		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
-				ctx = paths.WithClientCWD(ctx, cwd)
-			}
-			return ctx
-		}),
-		server.WithAppendQueryToMessageEndpoint(),
-	)
-
-	// Wrap with auth middleware if configured.
-	var handler http.Handler = sseServer
-	if cfg.Server.AuthTokenFile != "" {
-		authHandler, err := newAuthMiddleware(cfg.Server.AuthTokenFile, handler)
-		if err != nil {
-			return err
-		}
-		handler = authHandler
+	handler, err := authWrapped(newSSEServer(s), cfg.Server.AuthTokenFile)
+	if err != nil {
+		return err
 	}
 
 	log.Printf("wraptool MCP server starting on %s (SSE)", cfg.Server.Listen)
@@ -194,25 +206,11 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("setting socket permissions: %w", err)
 	}
 
-	sseServer := server.NewSSEServer(s,
-		server.WithBaseURL("http://localhost"),
-		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
-				ctx = paths.WithClientCWD(ctx, cwd)
-			}
-			return ctx
-		}),
-		server.WithAppendQueryToMessageEndpoint(),
-	)
+	sseServer := newSSEServer(s, server.WithBaseURL("http://localhost"))
 
-	// Wrap with auth middleware if configured.
-	var handler http.Handler = sseServer
-	if cfg.Server.AuthTokenFile != "" {
-		authHandler, err := newAuthMiddleware(cfg.Server.AuthTokenFile, handler)
-		if err != nil {
-			return err
-		}
-		handler = authHandler
+	handler, err := authWrapped(sseServer, cfg.Server.AuthTokenFile)
+	if err != nil {
+		return err
 	}
 
 	log.Printf("wraptool MCP server starting on unix:%s", sockPath)
@@ -314,113 +312,4 @@ func newAuthMiddleware(tokenFile string, next http.Handler) (http.Handler, error
 		}
 		next.ServeHTTP(w, r)
 	}), nil
-}
-
-// reloadState tracks MCP tool names registered from config so SIGHUP
-// can replace them atomically.
-type reloadState struct {
-	mu         sync.Mutex
-	registered []string
-}
-
-func handleSIGHUP(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, store *requestlog.Store) {
-	sighup := make(chan os.Signal, 1)
-	signal.Notify(sighup, syscall.SIGHUP)
-	for range sighup {
-		reloadConfig(s, configPath, policy, state, store, "SIGHUP")
-	}
-}
-
-// watchConfigFile watches the config file's parent directory for changes
-// and triggers a reload. Watching the directory (not the file) survives
-// editor save patterns that replace the file via rename.
-func watchConfigFile(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, store *requestlog.Store) {
-	absPath, err := filepath.Abs(configPath)
-	if err != nil {
-		log.Printf("config watch: resolving %s: %s", configPath, err)
-		return
-	}
-	dir := filepath.Dir(absPath)
-	name := filepath.Base(absPath)
-
-	w, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Printf("config watch: %s (file-based reload disabled, SIGHUP still works)", err)
-		return
-	}
-	defer w.Close()
-
-	if err := w.Add(dir); err != nil {
-		log.Printf("config watch: adding %s: %s (file-based reload disabled)", dir, err)
-		return
-	}
-	log.Printf("watching %s for changes", absPath)
-
-	// Debounce: a single save can emit CREATE+WRITE+CHMOD; coalesce
-	// rapid events into one reload.
-	var debounce *time.Timer
-	const debounceDelay = 200 * time.Millisecond
-
-	for {
-		select {
-		case ev, ok := <-w.Events:
-			if !ok {
-				return
-			}
-			if filepath.Base(ev.Name) != name {
-				continue
-			}
-			// Ignore pure CHMOD; reload on write/create/rename.
-			if ev.Op&(fsnotify.Write|fsnotify.Create|fsnotify.Rename) == 0 {
-				continue
-			}
-			if debounce != nil {
-				debounce.Stop()
-			}
-			debounce = time.AfterFunc(debounceDelay, func() {
-				reloadConfig(s, configPath, policy, state, store, "file change")
-			})
-		case err, ok := <-w.Errors:
-			if !ok {
-				return
-			}
-			log.Printf("config watch error: %s", err)
-		}
-	}
-}
-
-func reloadConfig(s *server.MCPServer, configPath string, policy *whitelist.Policy, state *reloadState, store *requestlog.Store, trigger string) {
-	log.Printf("reloading config (%s)...", trigger)
-	newCfg, err := config.Load(configPath)
-	if err != nil {
-		log.Printf("reload failed: %s", err)
-		return
-	}
-	if err := newCfg.Validate(); err != nil {
-		log.Printf("reload validation failed: %s", err)
-		return
-	}
-	newToolConfigs := make(map[string]*config.ToolConfig, len(newCfg.Tools))
-	for name, tc := range newCfg.Tools {
-		tc := tc
-		newToolConfigs[name] = &tc
-	}
-	policy.Reload(newToolConfigs)
-
-	// Swap MCP tool registrations: remove the previously registered
-	// set, then register fresh from the new config. mcp-go sends
-	// notifications/tools/list_changed on both calls, so connected
-	// clients refresh their tool lists without needing to reconnect.
-	state.mu.Lock()
-	if len(state.registered) > 0 {
-		s.DeleteTools(state.registered...)
-	}
-	names, err := mcptools.RegisterAll(s, newCfg, policy, store)
-	state.registered = names
-	state.mu.Unlock()
-	if err != nil {
-		log.Printf("reload tool registration failed: %s", err)
-		return
-	}
-	log.Println("config reloaded successfully")
 }
