@@ -209,21 +209,65 @@ harnesses, and credential-isolated tools:
 }
 ```
 
-Bring it up — the easy way, which also starts the shared wraptool server for
-you:
+## Bringing it up and down with `wraptool`
+
+You *can* drive the container with the raw dev container tooling — but that means
+starting the host server, minting a token, exporting it, and running
+`devcontainer up` yourself. wraptool bundles the whole dance into two commands.
+
+### `wraptool up`
+
+Run it from the repository root (or any git worktree):
 
 ```bash
-wraptool up
+wraptool up          # running bare `wraptool` in a repo does the same
 ```
 
-Or the plain dev container flow (export the token first so the feature picks it
-up):
+It is idempotent and does three things:
+
+1. **Ensures the shared host server is running.** If `wraptool serve` isn't up,
+   it starts it detached (pidfile + lock under `$XDG_RUNTIME_DIR`, auto-generating
+   the auth token) and waits for it to become reachable.
+2. **Brings up this project's dev container** via `devcontainer up`, injecting the
+   connection info the `wraptool-connect` feature needs — the auth token
+   (`WRAPTOOL_TOKEN`) and this worktree's host path (`WRAPTOOL_CWD`) — so
+   `.mcp.json` is wired correctly without you exporting anything.
+3. **Drops you into a shell** in the container, ready to code. Exiting the shell
+   leaves the container running; re-enter any time by running `wraptool up` again.
+
+Control the shell behaviour with `--shell`:
 
 ```bash
-export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
-# VS Code: "Reopen in Container"  — or:
-devcontainer up --workspace-folder .
+wraptool up --shell=always   # always open a shell
+wraptool up --shell=never    # just bring the container up (scripts / CI)
 ```
+
+### `wraptool down`
+
+Stop this worktree's container when you're finished:
+
+```bash
+wraptool down          # stop this project's dev container
+wraptool down --rm     # ...and remove it (next `up` recreates it fresh)
+```
+
+`down` deliberately **leaves the shared server running**, since one server backs
+every project and worktree. Manage that server directly when you need to:
+
+```bash
+wraptool server status
+wraptool server stop
+```
+
+Because the server scopes each container to its own host path, several worktrees
+(parallel branches) can each `wraptool up` independently and stay isolated.
+
+::: {.callout-note}
+`wraptool up` is the recommended path — the raw `export WRAPTOOL_TOKEN=… &&
+devcontainer up` / VS Code "Reopen in Container" flow still works and is covered
+in [Getting started](getting-started.qmd#one-command-per-project-wraptool-up)
+for when you want to drive the container yourself.
+:::
 
 ## Compile, test, and edit — inside the container
 
