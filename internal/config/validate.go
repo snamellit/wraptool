@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -42,7 +43,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if len(c.Tools) == 0 {
+	if len(c.Tools) == 0 && len(c.MCPServers) == 0 {
 		return fmt.Errorf("no tools configured")
 	}
 
@@ -51,6 +52,74 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tool %q: %w", name, err)
 		}
 	}
+
+	if err := validateMCPServers(c); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateMCPServers checks each mcp_servers entry has a command, non-empty
+// allow/deny tool names, and that effective name prefixes are unique across all
+// mcp_servers and collision-free with CLI tool names. Upstream tool names are
+// not known at config-load time, so only prefix uniqueness is enforced here;
+// full final-name uniqueness against discovered tools is checked at spawn time.
+func validateMCPServers(c *Config) error {
+	// Seed the prefix set with CLI tool names so an MCP prefix cannot collide
+	// with a CLI tool's namespace.
+	prefixOwner := make(map[string]string, len(c.Tools)+len(c.MCPServers))
+	for name := range c.Tools {
+		prefixOwner[name] = fmt.Sprintf("tools.%s", name)
+	}
+
+	// Deterministic iteration for stable error messages.
+	names := make([]string, 0, len(c.MCPServers))
+	for name := range c.MCPServers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Track final registered names (prefix_tool) of allow-listed tools to catch
+	// the one underscore clash vector: one server's prefix equalling another's
+	// prefix_<leading-tool-segment> (e.g. github+create_issue vs
+	// github_create+issue, both → github_create_issue).
+	finalOwner := make(map[string]string)
+
+	for _, name := range names {
+		srv := c.MCPServers[name]
+		if srv.Command == "" {
+			return fmt.Errorf("mcp_servers.%s: command is required", name)
+		}
+
+		for i, rule := range srv.Deny {
+			if strings.TrimSpace(rule.Tool) == "" {
+				return fmt.Errorf("mcp_servers.%s: deny rule %d: tool name is required", name, i)
+			}
+		}
+
+		// applyDefaults sets NamePrefix to the map key when empty, but guard
+		// against callers that construct Config directly without defaults.
+		prefix := srv.NamePrefix
+		if prefix == "" {
+			prefix = name
+		}
+		if owner, ok := prefixOwner[prefix]; ok {
+			return fmt.Errorf("mcp_servers.%s: name prefix %q collides with %s", name, prefix, owner)
+		}
+		prefixOwner[prefix] = fmt.Sprintf("mcp_servers.%s", name)
+
+		for i, rule := range srv.Allow {
+			if strings.TrimSpace(rule.Tool) == "" {
+				return fmt.Errorf("mcp_servers.%s: allow rule %d: tool name is required", name, i)
+			}
+			final := prefix + "_" + rule.Tool
+			if owner, ok := finalOwner[final]; ok {
+				return fmt.Errorf("mcp_servers.%s: tool %q resolves to registered name %q, which collides with %s", name, rule.Tool, final, owner)
+			}
+			finalOwner[final] = fmt.Sprintf("mcp_servers.%s", name)
+		}
+	}
+
 	return nil
 }
 

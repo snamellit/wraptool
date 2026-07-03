@@ -58,7 +58,7 @@ func RegisterRequestCapabilityTool(s *server.MCPServer, store *requestlog.Store)
 			}
 		}
 
-		sessionID, _, _ := sessionInfo(ctx)
+		sessionID, _, _ := SessionInfo(ctx)
 		req := &requestlog.CapabilityRequest{
 			Tool:       toolName,
 			Subcommand: subcommand,

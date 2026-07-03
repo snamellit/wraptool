@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/mcpproxy"
 	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
@@ -71,30 +72,40 @@ func runServe(configPath string) error {
 		return fmt.Errorf("validating config: %w", err)
 	}
 
-	policy := whitelist.NewPolicy(toolConfigPointers(cfg.Tools))
+	policy := whitelist.NewPolicy(configPointers(cfg.Tools))
+	mcpPolicy := whitelist.NewMCPPolicy(configPointers(cfg.MCPServers))
 	store := requestlog.NewStore(cfg.Server.RequestLog)
 
 	// Create MCP server.
 	s := server.NewMCPServer(
 		"wraptool",
-		"0.1.0",
+		serverVersion,
 		server.WithToolCapabilities(true),
 	)
 
-	// Register tools from config.
-	sources := []mcptools.Source{mcptools.NewCLISource(cfg, policy, store)}
+	// Register tools from every source (CLI tools + one proxy per MCP server).
+	// buildSources is lazy; RegisterAll spawns the MCP-server children as it
+	// enumerates each source's tools. Wire up teardown BEFORE that call so any
+	// early return — a mid-registration failure, a later startup error, or the
+	// normal transport exit (e.g. stdin EOF under stdio) — closes every child
+	// that was started. reload may swap the set, so closeSources closes whatever
+	// is current in state, under its lock.
+	sources := buildSources(cfg, policy, mcpPolicy, store)
+	state := &reloadState{sources: sources}
+	defer state.closeSources()
+
 	registered, err := mcptools.RegisterAll(s, sources)
 	if err != nil {
 		return fmt.Errorf("registering tools: %w", err)
 	}
+	state.registered = registered
 
 	// Register the capability request tool.
 	mcptools.RegisterRequestCapabilityTool(s, store)
 
 	// Set up SIGHUP and file-watch for hot-reload.
-	state := &reloadState{registered: registered}
-	go handleSIGHUP(s, configPath, policy, state, store)
-	go watchConfigFile(s, configPath, policy, state, store)
+	go handleSIGHUP(s, configPath, policy, mcpPolicy, state, store)
+	go watchConfigFile(s, configPath, policy, mcpPolicy, state, store)
 
 	// Start the operator-facing Web UI on its own listener, if configured.
 	// It runs in this process but is independent of the MCP transport, so
@@ -118,15 +129,31 @@ func runServe(configPath string) error {
 	}
 }
 
-// toolConfigPointers adapts the config's value map into the pointer map the
-// policy engine expects. Each &tc is a distinct per-iteration variable
-// (Go 1.22+ loop semantics), so the pointers stay independent.
-func toolConfigPointers(tools map[string]config.ToolConfig) map[string]*config.ToolConfig {
-	m := make(map[string]*config.ToolConfig, len(tools))
-	for name, tc := range tools {
-		m[name] = &tc
+// serverVersion is reported to MCP clients and forwarded to upstream MCP
+// servers as wraptool's ClientInfo version.
+const serverVersion = "0.1.0"
+
+// buildSources assembles the tool sources registered on the MCP server: the CLI
+// tool source plus one mcpproxy source per configured MCP server. It is shared
+// by initial startup and hot-reload so both build the identical set.
+func buildSources(cfg *config.Config, policy *whitelist.Policy, mcpPolicy *whitelist.MCPPolicy, store *requestlog.Store) []mcptools.Source {
+	sources := []mcptools.Source{mcptools.NewCLISource(cfg, policy, store)}
+	for name := range cfg.MCPServers {
+		srv := cfg.MCPServers[name] // fresh copy; handler holds &srv
+		sources = append(sources, mcpproxy.NewSource(name, &srv, mcpPolicy, store, serverVersion))
 	}
-	return m
+	return sources
+}
+
+// configPointers adapts a config's value map into the pointer map the policy
+// engines expect. Each &v is a distinct per-iteration variable (Go 1.22+ loop
+// semantics), so the pointers stay independent.
+func configPointers[T any](m map[string]T) map[string]*T {
+	out := make(map[string]*T, len(m))
+	for name, v := range m {
+		out[name] = &v
+	}
+	return out
 }
 
 // newSSEServer builds the SSE server shared by the sse and unix transports,

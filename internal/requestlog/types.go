@@ -60,6 +60,13 @@ type ToolCallEvent struct {
 	ExitCode       int               `json:"exit_code"`
 	Truncated      bool              `json:"truncated,omitempty"`
 	Duration       string            `json:"duration,omitempty"`
+
+	// MCP source fields. Additive and omitempty so pre-MCP CLI event lines
+	// still unmarshal and existing projections keep working. Readers treat an
+	// empty Source as "cli".
+	Source    string         `json:"source,omitempty"`    // "cli" | "mcp"; empty => cli
+	Server    string         `json:"server,omitempty"`    // mcp_servers.<name>, only set when Source=="mcp"
+	Arguments map[string]any `json:"arguments,omitempty"` // raw MCP call arguments; empty for CLI
 }
 
 // CapabilityRequest represents a request to add a new capability to the whitelist.

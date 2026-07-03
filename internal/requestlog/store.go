@@ -73,6 +73,28 @@ func (s *Store) AppendToolCall(evt *ToolCallEvent) error {
 	return s.appendEvent(EventToolCall, evt.Timestamp, evt)
 }
 
+// AppendMCPToolCall records an upstream MCP tool invocation as a tool_call
+// event with Source="mcp". The caller extracts sessionID/clientName/
+// clientVersion from its MCP request context and passes them in, so this
+// package stays decoupled from the MCP transport. MCP calls have no Unix exit
+// code, so ExitCode is recorded as -1 (N/A). denyReason is empty when allowed.
+func (s *Store) AppendMCPToolCall(serverName, toolName string, arguments map[string]any, allowed bool, denyReason string, duration time.Duration, sessionID, clientName, clientVersion string) error {
+	evt := &ToolCallEvent{
+		SessionID:     sessionID,
+		ClientName:    clientName,
+		ClientVersion: clientVersion,
+		Tool:          toolName,
+		Allowed:       allowed,
+		DenyReason:    denyReason,
+		ExitCode:      -1,
+		Duration:      duration.Round(time.Millisecond).String(),
+		Source:        "mcp",
+		Server:        serverName,
+		Arguments:     arguments,
+	}
+	return s.AppendToolCall(evt)
+}
+
 // UpdateStatus records an approval or denial as a new event. The request must
 // already exist. The log is not rewritten; List/Get fold the decision in.
 func (s *Store) UpdateStatus(id string, status Status, reason string) error {

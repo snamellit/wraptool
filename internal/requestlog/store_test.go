@@ -1,8 +1,10 @@
 package requestlog
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -90,6 +92,70 @@ func TestToolCallsSurviveApproval(t *testing.T) {
 	got, _ := s.Get(req.ID)
 	if got.Status != StatusApproved {
 		t.Fatalf("request status = %q, want approved", got.Status)
+	}
+}
+
+// TestMCPToolCallRoundTrip asserts an MCP-shaped ToolCallEvent (with the new
+// Source/Server/Arguments fields) survives a write→read projection cycle.
+func TestMCPToolCallRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+
+	args := map[string]any{"title": "test", "body": "desc"}
+	if err := s.AppendMCPToolCall("github", "create_issue", args, true, "", 42*time.Millisecond, "sess_123", "claude", "1.0"); err != nil {
+		t.Fatalf("AppendMCPToolCall: %v", err)
+	}
+
+	calls, err := s.ListToolCalls()
+	if err != nil {
+		t.Fatalf("ListToolCalls: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+
+	got := calls[0]
+	if got.Source != "mcp" || got.Server != "github" || got.Tool != "create_issue" {
+		t.Fatalf("MCP fields not preserved: %+v", got)
+	}
+	if got.Allowed != true || got.DenyReason != "" || got.ExitCode != -1 {
+		t.Fatalf("outcome fields not preserved: %+v", got)
+	}
+	if got.SessionID != "sess_123" || got.ClientName != "claude" || got.ClientVersion != "1.0" {
+		t.Fatalf("session fields not preserved: %+v", got)
+	}
+	if len(got.Arguments) != 2 || got.Arguments["title"] != "test" || got.Arguments["body"] != "desc" {
+		t.Fatalf("Arguments not preserved: %v", got.Arguments)
+	}
+}
+
+// TestCLILegacyLineStillParses asserts a pre-MCP CLI-shaped JSONL line (with no
+// Source/Server/Arguments fields) still parses and appears in ListToolCalls,
+// with the new MCP fields zero-valued.
+func TestCLILegacyLineStillParses(t *testing.T) {
+	s := newTestStore(t)
+
+	legacyLine := []byte(`{"type":"tool_call","timestamp":"2026-01-01T00:00:00Z","data":{"id":"call_abc","timestamp":"2026-01-01T00:00:00Z","tool":"git","subcommand":["status"],"allowed":true,"exit_code":0,"duration":"100ms"}}` + "\n")
+	if err := os.WriteFile(s.path, legacyLine, 0600); err != nil {
+		t.Fatalf("write legacy line: %v", err)
+	}
+
+	calls, err := s.ListToolCalls()
+	if err != nil {
+		t.Fatalf("ListToolCalls: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+
+	got := calls[0]
+	if got.Tool != "git" || !got.Allowed || got.ExitCode != 0 {
+		t.Fatalf("CLI fields not parsed: %+v", got)
+	}
+	if len(got.Subcommand) != 1 || got.Subcommand[0] != "status" {
+		t.Fatalf("CLI subcommand not parsed: %+v", got)
+	}
+	if got.Source != "" || got.Server != "" || got.Arguments != nil {
+		t.Fatalf("legacy line should have zero-valued MCP fields: Source=%q Server=%q Arguments=%v", got.Source, got.Server, got.Arguments)
 	}
 }
 

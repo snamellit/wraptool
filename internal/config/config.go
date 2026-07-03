@@ -13,8 +13,9 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig          `yaml:"server"`
-	Tools  map[string]ToolConfig `yaml:"tools"`
+	Server     ServerConfig               `yaml:"server"`
+	Tools      map[string]ToolConfig      `yaml:"tools"`
+	MCPServers map[string]MCPServerConfig `yaml:"mcp_servers"`
 }
 
 type ServerConfig struct {
@@ -43,6 +44,38 @@ type ToolConfig struct {
 	Introspection IntrospectConfig  `yaml:"introspection"`
 	Allow         []AllowRule       `yaml:"allow"`
 	Deny          []DenyRule        `yaml:"deny"`
+}
+
+// MCPServerConfig describes a local stdio MCP server that wraptool spawns and
+// polices, deliberately parallel to ToolConfig. command/args/working_dir/env/
+// env_files/timeout mirror ToolConfig so the shared env builder and mental
+// model carry over. Policy is expressed as allow/deny lists of upstream tool
+// names (default-deny, deny wins), not subcommands/flags.
+type MCPServerConfig struct {
+	Command     string            `yaml:"command"`
+	Args        []string          `yaml:"args"`
+	WorkingDir  string            `yaml:"working_dir"`
+	Env         map[string]string `yaml:"env"`
+	EnvFiles    []string          `yaml:"env_files"`
+	Timeout     time.Duration     `yaml:"timeout"`      // per-call timeout
+	InitTimeout time.Duration     `yaml:"init_timeout"` // handshake/startup budget
+	NamePrefix  string            `yaml:"name_prefix"`  // optional; default = server key
+	Allow       []MCPAllowRule    `yaml:"allow"`
+	Deny        []MCPDenyRule     `yaml:"deny"`
+}
+
+// MCPAllowRule allow-lists a single upstream MCP tool by name. It is a distinct
+// type from AllowRule (which is subcommand/flag shaped for CLI tools); the
+// policy engine, config editors, and rule CRUD do not operate on it until
+// extended in a later phase.
+type MCPAllowRule struct {
+	Tool string `yaml:"tool"`
+}
+
+// MCPDenyRule deny-lists a single upstream MCP tool by name. Deny takes
+// precedence over allow. See MCPAllowRule for the type-distinction note.
+type MCPDenyRule struct {
+	Tool string `yaml:"tool"`
 }
 
 type IntrospectConfig struct {
@@ -124,6 +157,21 @@ func (c *Config) applyDefaults() {
 		}
 		c.Tools[name] = tool
 	}
+
+	for name, srv := range c.MCPServers {
+		if srv.Timeout == 0 {
+			srv.Timeout = 30 * time.Second
+		}
+		if srv.InitTimeout == 0 {
+			srv.InitTimeout = 10 * time.Second
+		}
+		if srv.NamePrefix == "" {
+			srv.NamePrefix = name
+		}
+		// EnvFiles paths are expanded in resolveEnv at read time (same as CLI
+		// ToolConfig), so no pre-expansion here.
+		c.MCPServers[name] = srv
+	}
 }
 
 func expandPath(path string) string {
@@ -140,9 +188,23 @@ func expandPath(path string) string {
 // loading env_files and merging with inline env vars.
 // Inline env takes precedence over env_files.
 func (tc *ToolConfig) ResolvedEnv() (map[string]string, error) {
+	return resolveEnv(tc.EnvFiles, tc.Env)
+}
+
+// ResolvedEnv returns the combined environment for an MCP server, loading
+// env_files and merging with inline env vars. Inline env takes precedence over
+// env_files.
+func (mc *MCPServerConfig) ResolvedEnv() (map[string]string, error) {
+	return resolveEnv(mc.EnvFiles, mc.Env)
+}
+
+// resolveEnv loads each env file (KEY=VALUE lines; blanks and # comments
+// skipped) then overlays the inline env, which takes precedence. Shared by the
+// CLI-tool and MCP-server config so both resolve credentials identically.
+func resolveEnv(envFiles []string, inline map[string]string) (map[string]string, error) {
 	env := make(map[string]string)
 
-	for _, envFile := range tc.EnvFiles {
+	for _, envFile := range envFiles {
 		envFile = expandPath(envFile)
 		data, err := os.ReadFile(envFile)
 		if err != nil {
@@ -160,7 +222,7 @@ func (tc *ToolConfig) ResolvedEnv() (map[string]string, error) {
 		}
 	}
 
-	for k, v := range tc.Env {
+	for k, v := range inline {
 		env[k] = v
 	}
 
