@@ -1,27 +1,31 @@
 {
-  "name": "wraptool-dev",
+    "name": "wraptool-dev",
 
-  // A Go-capable client box for coding on wraptool from inside a container.
-  // NOTE: this repo's own build env is Guix (.envrc → `use guix`); this dev
-  // container is a client dogfood of the wraptool-connect feature + `wraptool
-  // up`, not a replacement for the Guix flow. Credentials stay on the host and
-  // are reached through the wrapped MCP tools.
-  "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
+    // A Go-capable client box for coding on wraptool from inside a container.
+    // NOTE: this repo's own build env is Guix (.envrc → `use guix`); this dev
+    // container is a client dogfood of the wraptool-connect feature + `wraptool
+    // up`, not a replacement for the Guix flow. Credentials stay on the host and
+    // are reached through the wrapped MCP tools.
+    "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
 
-  "features": {
-    // Published feature from Forgejo's OCI registry. Wires the MCP client to the
-    // host wraptool; writes .mcp.json at postCreate. `:0` tracks the 0.x line.
-    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
-  },
+    "features": {
+	// Published feature from Forgejo's OCI registry. Wires the MCP client to the
+	// host wraptool; writes .mcp.json at postCreate. `:0` tracks the 0.x line.
+	"forge.snamellit.com/pti/wraptool/wraptool-connect:0": {},
 
-  // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.
-  "containerEnv": {
-    "WRAPTOOL_CWD": "${localWorkspaceFolder}"
-  },
-  // The token is a secret: use remoteEnv so it is applied at runtime and to
-  // lifecycle hooks (postCreate) rather than baked into an image layer.
-  // Inherited from the host env — `wraptool up` sets it, or export it manually.
-  "remoteEnv": {
-    "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
-  }
+	// add Claude Code
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+
+    },
+
+    // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.
+    "containerEnv": {
+	"WRAPTOOL_CWD": "${localWorkspaceFolder}"
+    },
+    // The token is a secret: use remoteEnv so it is applied at runtime and to
+    // lifecycle hooks (postCreate) rather than baked into an image layer.
+    // Inherited from the host env — `wraptool up` sets it, or export it manually.
+    "remoteEnv": {
+	"WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
+    }
 }
