@@ -26,6 +26,18 @@ $navbar-hl:              $wraptool-red;
 $code-color:             $wraptool-red;
 $code-bg:                $wraptool-grey-2;
 
+// Mermaid diagram theming. Without an explicit $mermaid-edge-color the
+// flowchart edge lines resolve to an (effectively invisible) stroke on
+// the white background, leaving only the arrowheads visible. Setting the
+// full set keeps nodes/labels/edges legible and on-brand.
+$mermaid-bg-color:        #FFFFFF;
+$mermaid-fg-color:        $wraptool-black;
+$mermaid-edge-color:      $wraptool-grey;
+$mermaid-node-bg-color:   $wraptool-grey-2;
+$mermaid-node-fg-color:   $wraptool-black;
+$mermaid-label-bg-color:  #FFFFFF;
+$mermaid-label-fg-color:  $wraptool-black;
+
 /*-- scss:rules --*/
 
 .navbar-brand {
