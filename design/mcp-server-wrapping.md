@@ -111,7 +111,7 @@ tools and invokes them. Two implementations:
 - `mcpSource` — wraps one supervised upstream stdio client.
 
 ```go
-// conceptual — exact shape TBD during implementation
+// sketch — the pinned, implementation-ready shape is in §10.2.
 type Source interface {
     // Tools the source currently offers, already policy-filtered.
     Tools() []RegisteredTool
@@ -281,10 +281,12 @@ supervisor so it can diff old vs new.
 
 ### 4.8 Policy + audit integration
 
+*(Pinned to concrete types in §10.4–10.5.)*
+
 - **Policy.** Add MCP evaluation — MVP is tool-name allow/deny with deny
-  precedence. Could live as a sibling to `whitelist.Policy` (e.g.
-  `whitelist.MCPPolicy`) or as a method that takes a tool name. Denied calls
-  return the same structured denial result and can drive `request_capability`.
+  precedence, as a new sibling `whitelist.MCPPolicy` (leaves the CLI engine
+  untouched). Denied calls return the same structured denial result and can
+  drive `request_capability`.
 - **Capability requests.** `request_capability` and the Web UI review flow
   generalize: a request references an `mcp_servers.<name>` + tool instead of a
   tool + subcommand. `config.ApplyRequest` gains an MCP branch that appends an
@@ -372,4 +374,189 @@ supervisor so it can diff old vs new.
    retained). Per-argument JSON-path constraints are a deliberate later
    extension, not part of v1. See §1 (scope) / §4.8. *(resolved)*
 
-All planning questions resolved; ready to implement per the Phase 0→3 plan in §5.
+All planning questions resolved. The grounding spike (§10) pins the concrete
+APIs and acceptance tests, so Phase 0/1 are ready to delegate.
+
+## 10. Execution spec (grounding spike results)
+
+The design questions above are decided; this section pins the concrete APIs,
+signatures, and acceptance tests so Phase 0/1 can be handed to execution agents
+without further design decisions. All facts below are verified against
+**mcp-go v0.54.0** (the pinned dependency) and the current internal code.
+
+### 10.1 Verified mcp-go client API
+
+- `client.NewStdioMCPClient(command string, env []string, args ...string)
+  (*client.Client, error)` — spawns the child. **`env` is a full replacement
+  environment** (`[]string` of `K=V`), so it takes `executor.ChildEnv(...)`
+  output directly. This is the mechanical guarantee of CLI-parity env (§4.6).
+- `(*Client).Start(ctx)` — idempotent; wires the notification handler. Call it
+  before `Initialize` so `tools/list_changed` can be observed.
+- `(*Client).Initialize(ctx, mcp.InitializeRequest) (*mcp.InitializeResult,
+  error)` — leave `Params.Capabilities` zero to **declare no client
+  capabilities** (no sampling/roots/elicitation — matches §2). Empty
+  `ProtocolVersion` defaults to `mcp.LATEST_PROTOCOL_VERSION` (`"2025-11-25"`).
+- `(*Client).ListTools(ctx, mcp.ListToolsRequest) (*mcp.ListToolsResult, error)`
+  — **auto-paginates internally** (follows `NextCursor`); one call returns all
+  `Tools []mcp.Tool`. No cursor loop needed on our side.
+- `(*Client).CallTool(ctx, mcp.CallToolRequest) (*mcp.CallToolResult, error)` —
+  `Params` is `mcp.CallToolParams{Name string, Arguments any}`. `Arguments` is
+  `any`, so the AI's arguments object is **forwarded verbatim** (payload
+  transparency, §4.8).
+- `(*Client).OnNotification(func(mcp.JSONRPCNotification))` — for upstream
+  `notifications/tools/list_changed` (Phase 2).
+- `(*Client).Close() error` — child shutdown (Phase 2 supervisor).
+
+### 10.2 Pinned `Source` interface (resolves §4.1 "TBD")
+
+New file `internal/mcptools/source.go`:
+
+```go
+// Source produces registrable MCP tools and their handlers. Implementations:
+// cliSource (this package) and mcpSource (internal/mcpproxy).
+type Source interface {
+    // Tools returns the tools to register, already policy-filtered. Called at
+    // registration and on reload. ctx bounds any upstream I/O.
+    Tools(ctx context.Context) ([]RegisteredTool, error)
+    // Close releases resources (stops upstream child processes). CLI: no-op.
+    Close() error
+}
+
+type RegisteredTool struct {
+    Name    string                 // final (namespaced for MCP) tool name
+    Tool    mcp.Tool               // fully built (flag opts, or raw schema)
+    Handler server.ToolHandlerFunc // per-tool invocation handler
+}
+```
+
+`RegisterAll(s *server.MCPServer, sources []Source, store) ([]string, error)`
+iterates sources, calls `Tools(ctx)`, `s.AddTool(rt.Tool, rt.Handler)`, and
+collects names. `cmd/serve` builds a `cliSource` (from `cfg.Tools` + policy +
+introspect, reproducing today's `registerTool` output byte-for-byte) plus one
+`mcpSource` per `cfg.MCPServers`, and passes the slice. Import direction:
+`mcpproxy` → `mcptools` (for `Source`/`RegisteredTool`); `mcptools` never imports
+`mcpproxy`, so no cycle.
+
+### 10.3 Reference snippet — connect, discover, register (Phase 1)
+
+```go
+env := executor.ChildEnv(cfg.Command, resolvedEnv)          // == CLI env builder
+c, err := client.NewStdioMCPClient(cfg.Command, env, cfg.Args...)
+if err != nil { return err }                                // spawn failed
+if err := c.Start(ctx); err != nil { return err }
+
+initReq := mcp.InitializeRequest{}
+initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+initReq.Params.ClientInfo = mcp.Implementation{Name: "wraptool", Version: ver}
+// Capabilities left zero → declare none.
+initCtx, cancel := context.WithTimeout(ctx, cfg.InitTimeout); defer cancel()
+if _, err := c.Initialize(initCtx, initReq); err != nil { return err }
+
+lt, err := c.ListTools(ctx, mcp.ListToolsRequest{})         // auto-paginates
+for _, ut := range lt.Tools {
+    if !policy.Allowed(serverName, ut.Name) { continue }    // default-deny
+    raw, err := json.Marshal(ut.InputSchema)                // schema passthrough
+    if err != nil { log.Printf("skip %s: %v", ut.Name, err); continue }
+    final := prefix + "_" + ut.Name                         // namespacing (§4.4)
+    tool := mcp.NewToolWithRawSchema(final, ut.Description, raw)
+    // → RegisteredTool{Name: final, Tool: tool, Handler: mcpHandler{...}.Handle}
+}
+```
+
+### 10.4 Invoke + scrub handler (resolves §4.8 "sibling" hand-wave)
+
+A dedicated handler type (do **not** overload `mcptools.Handler`, which is
+CLI-shaped with subcommand/flag parsing):
+
+```go
+type mcpHandler struct {
+    client     *client.Client
+    serverName string
+    toolName   string            // upstream (un-prefixed) name
+    env        map[string]string // resolved env → scrub secret set
+    timeout    time.Duration
+    policy     *whitelist.MCPPolicy
+    store      *requestlog.Store
+}
+
+func (h *mcpHandler) Handle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+    start := time.Now()
+    if d := h.policy.Evaluate(h.serverName, h.toolName); !d.Allowed {
+        h.audit(ctx, false, d.Reason, time.Since(start))
+        return mcp.NewToolResultError(d.Reason), nil
+    }
+    up := mcp.CallToolRequest{}
+    up.Params.Name = h.toolName
+    up.Params.Arguments = req.GetArguments()                // forward verbatim
+    cctx, cancel := context.WithTimeout(ctx, h.timeout); defer cancel()
+    res, err := h.client.CallTool(cctx, up)
+    if err != nil {
+        h.audit(ctx, true, "", time.Since(start))
+        return mcp.NewToolResultError(fmt.Sprintf("upstream error: %s", err)), nil
+    }
+    scrubContent(res.Content, h.env)                        // scrub in place
+    h.audit(ctx, true, "", time.Since(start))
+    return res, nil
+}
+```
+
+`whitelist.MCPPolicy` is a **new sibling** to `whitelist.Policy` (leaves the CLI
+engine untouched): `Evaluate(server, tool string) Decision`, deny-before-allow,
+default-deny. Denials reuse the existing structured denial + `request_capability`
+path.
+
+Scrub over content (verified against `mcp.AsTextContent` + `TextContent`):
+
+```go
+func scrubContent(content []mcp.Content, env map[string]string) {
+    for i, c := range content {
+        if tc, ok := mcp.AsTextContent(c); ok {             // *mcp.TextContent
+            tc.Text = executor.Scrub(tc.Text, env)          // ScrubCredentials+ScrubEnvVars
+            content[i] = *tc
+        }
+        // ImageContent/AudioContent/EmbeddedResource pass through; log presence.
+    }
+}
+```
+
+(`executor.Scrub(s string, env map[string]string) string` is the extracted
+shared helper from §4.6 wrapping `ScrubCredentials` + `ScrubEnvVars`.)
+
+### 10.5 Audit schema delta (backward-compatible)
+
+`ToolCallEvent` (`internal/requestlog/types.go`) gains three `omitempty` fields —
+purely additive, so existing JSONL lines still unmarshal and current projections
+(`Store.ListToolCalls`) keep working:
+
+```go
+type ToolCallEvent struct {
+    // ... existing CLI fields unchanged ...
+    Source    string         `json:"source,omitempty"`    // "cli" | "mcp"; empty ⇒ cli
+    Server    string         `json:"server,omitempty"`    // mcp_servers.<name>
+    Arguments map[string]any `json:"arguments,omitempty"` // redacted arg summary
+}
+```
+
+Readers (CLI `requests`, Web UI `/calls`) treat empty `Source` as `cli`. For MCP
+events, `Tool` holds the upstream tool name and `Subcommand`/`Flags`/
+`PositionalArgs` stay empty.
+
+### 10.6 Per-task acceptance tests
+
+| Phase | Task | Done when |
+|---|---|---|
+| 0 | `executor.ChildEnv` extraction | `executor.Run` routes through it; existing executor env test still green; `ChildEnv` unit test covers the `childPath` cases. |
+| 0 | `executor.Scrub` helper | `Run` uses it; existing scrub tests unchanged. |
+| 0 | `Source` seam | `RegisterAll([]Source)`; `cliSource` registers the **same tool names + schemas** as before (golden test over a sample config). No behaviour change. |
+| 1 | `config.MCPServers` | parse/defaults/validate tests: missing `command` rejected; prefix uniqueness across `tools`+`mcp_servers` enforced; `ResolvedEnv` reused. |
+| 1 | `mcpproxy` connect+list+call | against an in-process stub server (`client.NewInProcessClient` or a `testdata/` stub): discovers tools, forwards a call, returns result. |
+| 1 | passthrough + namespacing | registered tool's raw schema equals `json.Marshal(upstream.InputSchema)`; name is `prefix_tool`. |
+| 1 | policy | default-deny (un-allow-listed tool not registered / refused); `deny` overrides `allow`. |
+| 1 | scrub | a secret in the server's `env` echoed in a tool result is scrubbed from the returned content. |
+| 1 | env isolation | spawned child's env equals `ChildEnv(...)` and contains **none** of wraptool's own environment (mirror the existing executor env test). |
+| 1 | audit | an MCP call appends a `ToolCallEvent{Source:"mcp",Server:…,Tool:…}`; an old CLI event line still parses. |
+
+With §10 pinned, **Phase 0 and Phase 1 are ready to delegate.** Phase 2
+(supervisor: `OnNotification` re-list, crash/backoff, reload reconciliation,
+`Close`) and Phase 3 (`request_capability`/Web UI/`ApplyRequest` MCP branch)
+remain design-level and should get the same spike treatment before hand-off.
