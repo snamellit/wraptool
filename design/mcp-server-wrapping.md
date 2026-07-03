@@ -492,13 +492,18 @@ func (h *mcpHandler) Handle(ctx context.Context, req mcp.CallToolRequest) (*mcp.
     res, err := h.client.CallTool(cctx, up)
     if err != nil {
         h.audit(ctx, true, "", time.Since(start))
-        return mcp.NewToolResultError(fmt.Sprintf("upstream error: %s", err)), nil
+        // Scrub the error too — a JSON-RPC/transport error can echo upstream data.
+        return mcp.NewToolResultError(executor.Scrub(fmt.Sprintf("upstream error: %s", err), h.env)), nil
     }
     scrubContent(res.Content, h.env)                        // scrub in place
     h.audit(ctx, true, "", time.Since(start))
     return res, nil
 }
 ```
+
+The denial path returns a wraptool-generated message (policy reason + a
+`wraptool_request_capability` hint) and needs no scrubbing; only upstream-derived
+text — results **and** the error path — is scrubbed.
 
 `whitelist.MCPPolicy` is a **new sibling** to `whitelist.Policy` (leaves the CLI
 engine untouched): `Evaluate(server, tool string) Decision`, deny-before-allow,
@@ -533,13 +538,25 @@ type ToolCallEvent struct {
     // ... existing CLI fields unchanged ...
     Source    string         `json:"source,omitempty"`    // "cli" | "mcp"; empty ⇒ cli
     Server    string         `json:"server,omitempty"`    // mcp_servers.<name>
-    Arguments map[string]any `json:"arguments,omitempty"` // redacted arg summary
+    Arguments map[string]any `json:"arguments,omitempty"` // the call's arguments
 }
 ```
 
 Readers (CLI `requests`, Web UI `/calls`) treat empty `Source` as `cli`. For MCP
 events, `Tool` holds the upstream tool name and `Subcommand`/`Flags`/
 `PositionalArgs` stay empty.
+
+Two conventions settled during implementation:
+
+- **`ExitCode` = `-1`** for MCP calls — there is no Unix exit code; a structured
+  `CallToolResult` carries success/error instead. `-1` reads as "not
+  applicable"; readers should not treat it as a failing CLI exit.
+- **`Arguments` is stored as sent, not scrubbed.** Scrubbing targets *output*
+  returned to the AI (§4.5), not audit inputs, and this matches the CLI path,
+  which already records `Flags`/`PositionalArgs` verbatim in the same
+  operator-facing log. (So "redacted arg summary" in earlier drafts was wrong:
+  it's the raw arguments object.) `Truncated` is always false for MCP — wraptool
+  applies no output-size cap to upstream results.
 
 ### 10.6 Per-task acceptance tests
 
@@ -560,3 +577,30 @@ With §10 pinned, **Phase 0 and Phase 1 are ready to delegate.** Phase 2
 (supervisor: `OnNotification` re-list, crash/backoff, reload reconciliation,
 `Close`) and Phase 3 (`request_capability`/Web UI/`ApplyRequest` MCP branch)
 remain design-level and should get the same spike treatment before hand-off.
+
+### 10.7 Config & validation clarifications (settled in Phase 1)
+
+Points the spec left implicit, resolved by the implementation:
+
+- **At least one source, either kind.** A config `Validate`s when it has ≥1 CLI
+  tool **or** ≥1 `mcp_servers` entry; `mcp_servers`-only (no `tools:`) is valid.
+  The former "no tools configured" error now fires only when *both* are empty.
+- **`command` is required but not path-validated at load** — unlike CLI `binary`
+  (absolute + symlink-resolved + `stat`ed), an `mcp_servers.command` is only
+  checked non-empty. A missing/bad command surfaces at spawn time, where it is
+  **non-fatal**: the server is logged and contributes no tools (mirroring how CLI
+  introspection failures are tolerated), so one broken upstream never fails
+  startup or a reload. Validating the path eagerly is a possible future
+  hardening.
+- **Load-time uniqueness covers what's known at load.** `Validate` enforces (a)
+  effective-prefix uniqueness across `tools` + `mcp_servers`, and (b)
+  final-name (`prefix_tool`) uniqueness for the **allow-listed** tools (which are
+  known from config), catching the underscore-collision vector from §4.4.
+  Collisions involving tool names only discovered from a live `tools/list` are
+  the residual not covered at load — a Phase 2 concern (dedupe/skip at
+  registration, alongside `list_changed`).
+- **`name_prefix` charset is not validated in v1** — only collisions are. Since
+  the default prefix is the operator-chosen map key and finals must match client
+  tool-name charsets, a charset check (`^[a-zA-Z0-9_-]+$`) is a cheap future add.
+- **Audit `ExitCode`/`Arguments` conventions** — see §10.5 (`-1` = N/A; arguments
+  stored as sent).
