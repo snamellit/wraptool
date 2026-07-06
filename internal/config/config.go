@@ -137,6 +137,37 @@ func (t *ConstraintType) UnmarshalYAML(n *yaml.Node) error {
 	}
 }
 
+// ConstraintKind is the derived semantics of a ConstraintType. It keeps the two
+// axes separate: JSONSchema is presentation (read only by mcptools), while
+// Valueless and Numeric are enforcement (read only by whitelist). Both layers
+// derive from this single definition, so they cannot drift — the failure mode
+// that let a boolean constraint render one way and be enforced another — and no
+// consumer ever infers one axis from the other's field.
+type ConstraintKind struct {
+	JSONSchema string // presentation: MCP tool-schema type ("string"|"integer"|"boolean")
+	Valueless  bool   // enforcement: bare switch, no value to validate
+	Numeric    bool   // enforcement: value is parsed as an integer and range-checked
+}
+
+// Kind returns the semantics of the constraint type. The switch is exhaustive
+// over the ConstraintType enum, so adding a member without giving it a Kind
+// fails the exhaustive linter — that is the single-source-of-truth guarantee,
+// enforced at build time with no shared mutable table. ok is false only for a
+// value outside the enum, which UnmarshalYAML already prevents in a loaded
+// config.
+func (t ConstraintType) Kind() (ConstraintKind, bool) {
+	switch t {
+	case ConstraintInteger:
+		return ConstraintKind{JSONSchema: "integer", Numeric: true}, true
+	case ConstraintBoolean:
+		return ConstraintKind{JSONSchema: "boolean", Valueless: true}, true
+	case ConstraintString, ConstraintUntyped:
+		return ConstraintKind{JSONSchema: "string"}, true
+	default:
+		return ConstraintKind{}, false
+	}
+}
+
 type ArgConstraints struct {
 	PositionalMax int `yaml:"positional_max"`
 }
