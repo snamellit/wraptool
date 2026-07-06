@@ -1,0 +1,25 @@
+version: "2"
+
+linters:
+  # The "standard" preset: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  disable:
+    # errcheck flags a large body of pre-existing, intentional idioms here
+    # (defer x.Close(), Fprintf to a hash/buffer, WriteFile in tests). The
+    # repo's established bar is gofmt/vet/staticcheck/modernize, which does not
+    # include it. Left off to keep the gate consistent; revisit deliberately.
+    - errcheck
+  enable:
+    # Exhaustiveness for enum-like switches — the guarantee the FlagConstraint
+    # single-source-of-truth work (design/flag-constraint-type-single-source.md)
+    # depends on: a switch over a typed-const enum must name every member.
+    - exhaustive
+  settings:
+    exhaustive:
+      # A `default:` clause does NOT excuse missing enum cases; we want each
+      # switch to name every member so adding a variant breaks the build.
+      default-signifies-exhaustive: false
+
+formatters:
+  enable:
+    - gofmt
