@@ -20,13 +20,14 @@ import (
 // allowed tool with the upstream JSON Schema passed through unchanged.
 type Source struct {
 	serverName string
-	cfg        *config.MCPServerConfig
 	policy     *whitelist.MCPPolicy
 	store      *requestlog.Store
 	version    string
 
-	mu     sync.Mutex
-	client *Client
+	mu             sync.Mutex
+	cfg            *config.MCPServerConfig
+	client         *Client
+	onToolsChanged func() // set by the registrar; re-registers this source's tools
 }
 
 // compile-time assertion that Source satisfies the shared seam.
@@ -51,10 +52,12 @@ func NewSource(serverName string, cfg *config.MCPServerConfig, policy *whitelist
 //
 // A spawn/handshake/list failure is non-fatal: it is logged and the server
 // contributes no tools, mirroring how CLI introspection failures are tolerated.
-// This keeps a broken upstream from failing startup or a whole reload.
+// This keeps a broken (or crashlooping) upstream from failing startup or a
+// whole reload.
 //
-// TODO(phase2): re-list on upstream notifications/tools/list_changed (via
-// Client.OnNotification) and propagate a re-registration up to the server.
+// Tools is also the re-registration path: the registrar re-invokes it (via the
+// onToolsChanged callback) after an upstream tools/list_changed notification or
+// a crash respawn, so the freshly-listed tool set replaces the stale one.
 func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -65,6 +68,7 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			log.Printf("mcpproxy: skipping mcp server %q: %v", s.serverName, err)
 			return nil, nil
 		}
+		c.setOnToolsChanged(s.onToolsChanged)
 		s.client = c
 	}
 
@@ -112,4 +116,30 @@ func (s *Source) Close() error {
 	err := s.client.Close()
 	s.client = nil
 	return err
+}
+
+// OnToolsChanged installs the callback the source invokes (via its Client) when
+// the upstream tool set may have changed — an upstream tools/list_changed
+// notification or a crash respawn. The registrar sets it to re-register just
+// this source's tools. It is wired onto the live Client too, so it takes effect
+// even if the child is already running.
+func (s *Source) OnToolsChanged(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onToolsChanged = fn
+	if s.client != nil {
+		s.client.setOnToolsChanged(fn)
+	}
+}
+
+// SetConfig swaps the server config used to build tool names on the next
+// Tools() call. It is used by the reload reconciler for a policy-only change
+// (e.g. a changed name_prefix or allow/deny set) where the child does not need
+// to restart — only the registrations are refreshed. It must not be used to
+// change spawn parameters of a live child; the reconciler recreates the source
+// for those.
+func (s *Source) SetConfig(cfg *config.MCPServerConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cfg = cfg
 }
