@@ -10,16 +10,27 @@ stages:
 
 variables:
   QUARTO_VERSION: "1.5.57"
-  GOLANGCI_LINT_VERSION: "v2.12.2"
 
 # Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
-# + the standard set, per .golangci.yml). Runs on every branch. The
-# golangci-lint image bundles a matching Go toolchain, so gofmt/go vet are
-# available here too.
+# + the standard set, per .golangci.yml). Runs on every branch. The image is
+# built from manifest.scm by the Forgejo `Publish CI toolchain image` workflow
+# and pushed to the (public) Forgejo registry, so go/git/golangci-lint versions
+# have a single source of truth shared with local `guix shell` development.
 lint:
   stage: test
-  image: golangci/golangci-lint:${GOLANGCI_LINT_VERSION}
+  image: forge.snamellit.com/pti/wraptool/ci-toolchain:latest
   interruptible: true
+  variables:
+    # The image has no HOME; point Go's and golangci-lint's caches at the
+    # writable project dir. CGO off — deps are pure Go, no C toolchain in image.
+    GOPATH: "$CI_PROJECT_DIR/.cache/go"
+    GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+    GOLANGCI_LINT_CACHE: "$CI_PROJECT_DIR/.cache/golangci"
+    CGO_ENABLED: "0"
+  cache:
+    key: go-lint
+    paths:
+      - .cache/
   rules:
     - if: $CI_COMMIT_BRANCH
   script:

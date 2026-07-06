@@ -17,6 +17,19 @@
 
 (define %golangci-lint-version "2.12.2")
 
+;; Base toolchain — what a developer needs from `guix shell -m manifest.scm`.
+(define %base-specs '("go" "git"))
+
+;; Extra packages baked in only when packing the CI container image
+;; (WRAPTOOL_CI_IMAGE=1 guix pack -f docker -S /bin=bin -m manifest.scm):
+;;   bash + coreutils  — GitLab's Docker runner needs /bin/sh and coreutils
+;;                       (mkdir/mv/…) for the job's prep script.
+;;   nss-certs         — puts a CA bundle on SSL_CERT_FILE/SSL_CERT_DIR so
+;;                       `go`/`golangci-lint` can fetch modules over HTTPS.
+;; A plain `guix shell` for local dev is unaffected (the host already has
+;; these), so the interactive profile stays lean.
+(define %ci-image-specs '("bash" "coreutils" "nss-certs"))
+
 (define golangci-lint
   (package
     (name "golangci-lint")
@@ -42,5 +55,8 @@ from source, since golangci-lint is not packaged in Guix.")
     (license license:gpl3+)))
 
 (concatenate-manifests
- (list (specifications->manifest '("go" "git"))
+ (list (specifications->manifest
+        (if (getenv "WRAPTOOL_CI_IMAGE")
+            (append %base-specs %ci-image-specs)
+            %base-specs))
        (packages->manifest (list golangci-lint))))
