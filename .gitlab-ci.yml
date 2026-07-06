@@ -4,11 +4,28 @@
 # Pages serves at https://<group>.gitlab.io/<project>/.
 
 stages:
+  - test
   - build
   - deploy
 
 variables:
   QUARTO_VERSION: "1.5.57"
+  GOLANGCI_LINT_VERSION: "v2.12.2"
+
+# Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
+# + the standard set, per .golangci.yml). Runs on every branch. The
+# golangci-lint image bundles a matching Go toolchain, so gofmt/go vet are
+# available here too.
+lint:
+  stage: test
+  image: golangci/golangci-lint:${GOLANGCI_LINT_VERSION}
+  interruptible: true
+  rules:
+    - if: $CI_COMMIT_BRANCH
+  script:
+    - test -z "$(gofmt -l .)" || { echo 'gofmt needed on:'; gofmt -l .; exit 1; }
+    - go vet ./...
+    - golangci-lint run ./...
 
 # Reusable build step: render docs/ into ./public.
 .render: &render

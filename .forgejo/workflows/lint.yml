@@ -1,0 +1,34 @@
+name: Lint
+
+# Go static checks on every push / PR: gofmt, go vet, and golangci-lint
+# (staticcheck + exhaustive + the standard set, per .golangci.yml).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    # Native (host-mode) Guix runner, same as the publish workflow. `go`/`gofmt`
+    # are the toolchain the build already needs, so they are present; the
+    # linter is installed in-job and version-pinned so the check is reproducible
+    # regardless of the host profile. `go install` is used rather than the
+    # upstream install script to avoid assuming curl is on the host — the Go
+    # toolchain is already guaranteed here.
+    runs-on: guix
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install golangci-lint (pinned)
+        run: |
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { echo 'gofmt needed on:'; gofmt -l .; exit 1; }
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: golangci-lint
+        run: golangci-lint run ./...

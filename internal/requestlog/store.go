@@ -115,6 +115,9 @@ func (s *Store) UpdateStatus(id string, status Status, reason string) error {
 		t = EventCapabilityApproved
 	case StatusDenied:
 		t = EventCapabilityDenied
+	case StatusPending:
+		// pending is the initial state, never a recordable decision event
+		return fmt.Errorf("cannot record status %q as an event", status)
 	default:
 		return fmt.Errorf("cannot record status %q as an event", status)
 	}
@@ -211,6 +214,9 @@ func (s *Store) foldRequestsLocked() (map[string]*CapabilityRequest, []string, e
 					req.DenyReason = d.Reason
 				}
 			}
+		case EventToolCall:
+			// audit-only events; not part of capability-request state, so they
+			// are ignored when folding requests.
 		}
 	})
 	return byID, order, err

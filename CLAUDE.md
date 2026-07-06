@@ -13,7 +13,10 @@ letting them use tools like git, gcloud, and kubectl through MCP.
 go build -o wraptool .
 go test ./...
 go vet ./...
+golangci-lint run ./...   # config: .golangci.yml (standard set minus errcheck, plus exhaustive)
 ```
+
+CI runs gofmt + `go vet` + `golangci-lint` on every branch — GitLab (`.gitlab-ci.yml`, `lint` job) and Forgejo (`.forgejo/workflows/lint.yml`, on the `guix` runner). The `exhaustive` linter is enabled so a `switch` over a typed-const enum must name every member (see `design/flag-constraint-type-single-source.md`).
 
 ## Architecture
 
