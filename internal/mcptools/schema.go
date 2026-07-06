@@ -81,8 +81,8 @@ func IsBooleanFlag(flag string, constraints map[string]config.FlagConstraint) bo
 	// heuristics below and silently turn a bare switch like --yes back into a
 	// value-taking flag.
 	if c, ok := constraints[flag]; ok && c.Type != config.ConstraintUntyped {
-		k, _ := c.Type.Kind()
-		return k.Valueless
+		k, known := c.Type.Kind()
+		return known && k.Valueless
 	}
 	if wellKnownBooleanFlags[flag] {
 		return true

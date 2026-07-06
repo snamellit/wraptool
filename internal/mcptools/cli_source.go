@@ -101,8 +101,8 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 			var isBool bool
 			switch {
 			case hasConstraint && constraint.Type != config.ConstraintUntyped:
-				k, _ := constraint.Type.Kind()
-				isBool = k.Valueless
+				k, known := constraint.Type.Kind()
+				isBool = known && k.Valueless
 			case introFlag != nil && introFlag.Type != "":
 				isBool = introFlag.Type == "boolean"
 			default:
