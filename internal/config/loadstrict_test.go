@@ -134,3 +134,16 @@ func TestConstraintTypeAcceptsKnown(t *testing.T) {
 		}
 	}
 }
+
+func TestConstraintTypeRejectsNonScalar(t *testing.T) {
+	// A YAML sequence/mapping for `type` has an empty scalar value; without a
+	// node-kind check it would slip through as ConstraintUntyped.
+	for _, bad := range []string{"[boolean]", "[string, integer]", "{a: b}"} {
+		body := "tools:\n  git:\n    binary: /usr/bin/git\n    allow:\n" +
+			"      - subcommand: [status]\n        flags: [--x]\n" +
+			"        flag_constraints:\n          --x:\n            type: " + bad + "\n"
+		if _, err := Load(writeConfig(t, body)); err == nil {
+			t.Errorf("type: %s should be rejected (non-scalar)", bad)
+		}
+	}
+}

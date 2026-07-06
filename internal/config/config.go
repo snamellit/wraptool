@@ -122,6 +122,12 @@ const (
 // parsed rather than silently at call time. An absent `type:` key never reaches
 // here and stays ConstraintUntyped.
 func (t *ConstraintType) UnmarshalYAML(n *yaml.Node) error {
+	// Reject non-scalars first: a sequence or mapping (e.g. `type: [boolean]`)
+	// has an empty n.Value, which would otherwise match ConstraintUntyped and be
+	// silently accepted.
+	if n.Kind != yaml.ScalarNode {
+		return fmt.Errorf("flag constraint type must be a scalar string, got a non-scalar YAML value at line %d", n.Line)
+	}
 	switch ConstraintType(n.Value) {
 	case ConstraintUntyped, ConstraintString, ConstraintInteger, ConstraintBoolean:
 		*t = ConstraintType(n.Value)
