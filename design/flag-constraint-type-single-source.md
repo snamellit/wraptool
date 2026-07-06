@@ -126,6 +126,16 @@ var constraintKinds = map[ConstraintType]ConstraintKind{ ... }
   table: `integer` → parse + range; everything else → pattern-only; `boolean`
   (valueless) → accept presence. No `default` error path.
 
+**Concurrency — the table is immutable after init.** `constraintKinds` is read
+concurrently: policy evaluation runs on many in-flight MCP handler goroutines,
+and tool registration re-runs on reload. A Go map is safe for concurrent reads
+*only* if nothing writes to it concurrently, so the table must be populated once
+at package init and **never mutated afterwards**. Keep it unexported and expose
+lookups through a value-returning helper (`func kindOf(t ConstraintType)
+(ConstraintKind, bool)`) rather than handing out the map, so no caller can
+accidentally write to it — treat it as an effectively-`const` lookup table.
+(Raised in MR !8 review.)
+
 ### 4.4 Note: `Type` conflates presentation and validation
 
 `boolean` and `string` are *presentation-only* — they tell `mcptools` how to
