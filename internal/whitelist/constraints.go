@@ -51,8 +51,17 @@ func validateValue(flagName, value string, c config.FlagConstraint) error {
 		if c.Max != nil && n > *c.Max {
 			return fmt.Errorf("flag %q: value %d exceeds maximum %d", flagName, n, *c.Max)
 		}
-	case "":
-		// No type constraint, accept any value.
+	case "boolean":
+		// A boolean flag is valueless: it is rendered as a bare --flag and
+		// reaches here with an empty value. There is nothing to type-check or
+		// pattern-match — its presence is the value — so accept it. (This type
+		// is honoured by the config schema and mcptools boolean rendering; the
+		// policy engine must accept it too, or a boolean flag is denied at call
+		// time.)
+		return nil
+	case "string", "":
+		// No value typing; any value is accepted. A pattern constraint, if set,
+		// is still applied below.
 	default:
 		return fmt.Errorf("flag %q: unknown constraint type %q", flagName, c.Type)
 	}

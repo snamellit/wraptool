@@ -96,6 +96,51 @@ func TestCheckConstraints_Pattern(t *testing.T) {
 	}
 }
 
+func TestCheckConstraints_BooleanType(t *testing.T) {
+	// A boolean flag is valueless: the handler renders it as a bare --flag,
+	// reaching the policy with an empty value. It must be accepted, not rejected
+	// as an "unknown constraint type".
+	constraints := map[string]config.FlagConstraint{
+		"--comments": {Type: "boolean"},
+	}
+	if err := checkConstraints(map[string]string{"--comments": ""}, constraints); err != nil {
+		t.Errorf("a present boolean flag should be accepted, got: %v", err)
+	}
+	// Absent is fine too (not required).
+	if err := checkConstraints(map[string]string{}, constraints); err != nil {
+		t.Errorf("an absent boolean flag should be accepted, got: %v", err)
+	}
+}
+
+func TestCheckConstraints_StringType(t *testing.T) {
+	// An explicit type: string accepts any value (pattern, if set, still applies).
+	constraints := map[string]config.FlagConstraint{
+		"--title": {Type: "string"},
+	}
+	if err := checkConstraints(map[string]string{"--title": "anything goes"}, constraints); err != nil {
+		t.Errorf("type: string should accept any value, got: %v", err)
+	}
+
+	patterned := map[string]config.FlagConstraint{
+		"--title": {Type: "string", Pattern: `^[a-z]+$`},
+	}
+	if err := checkConstraints(map[string]string{"--title": "abc"}, patterned); err != nil {
+		t.Errorf("value matching pattern should pass, got: %v", err)
+	}
+	if err := checkConstraints(map[string]string{"--title": "ABC"}, patterned); err == nil {
+		t.Error("value violating pattern should fail even with type: string")
+	}
+}
+
+func TestCheckConstraints_UnknownType(t *testing.T) {
+	constraints := map[string]config.FlagConstraint{
+		"--x": {Type: "float"},
+	}
+	if err := checkConstraints(map[string]string{"--x": "1.5"}, constraints); err == nil {
+		t.Error("a genuinely unknown constraint type should still be rejected")
+	}
+}
+
 func TestPolicy_ArgConstraints(t *testing.T) {
 	tools := map[string]*config.ToolConfig{
 		"git": {
