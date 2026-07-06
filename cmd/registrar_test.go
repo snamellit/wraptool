@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -21,6 +22,7 @@ type fakeSource struct {
 
 	mu             sync.Mutex
 	tools          []string
+	toolsErr       error // when set, Tools returns it (after "spawning")
 	toolsCalls     int
 	closed         int
 	setConfigCalls int
@@ -31,6 +33,9 @@ func (f *fakeSource) Tools(ctx context.Context) ([]mcptools.RegisteredTool, erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.toolsCalls++
+	if f.toolsErr != nil {
+		return nil, f.toolsErr
+	}
 	var out []mcptools.RegisteredTool
 	for _, t := range f.tools {
 		name := t
@@ -206,6 +211,28 @@ func TestReconcileAddAndRemove(t *testing.T) {
 	}
 	if fakes["beta"] == nil {
 		t.Errorf("added server's source was never built")
+	}
+}
+
+func TestAddClosesSourceWhenRegistrationFails(t *testing.T) {
+	reg, fakes := newTestRegistrar(t)
+	// A source whose Tools() errors after "spawning" its child. addMCPLocked
+	// must close it rather than leak the (never-tracked) child.
+	reg.newMCPSource = func(name string, cfg *config.MCPServerConfig) mcpSource {
+		f := &fakeSource{name: name, toolsErr: errors.New("spawn/list failed")}
+		fakes[name] = f
+		return f
+	}
+
+	err := reg.start(serverCfg("alpha"))
+	if err == nil {
+		t.Fatal("start should surface the registration error")
+	}
+	if got := fakes["alpha"].closed; got != 1 {
+		t.Errorf("failed source should be closed exactly once, got %d", got)
+	}
+	if _, ok := reg.mcp["alpha"]; ok {
+		t.Error("a source that failed to register must not be tracked")
 	}
 }
 

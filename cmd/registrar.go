@@ -188,6 +188,13 @@ func (r *registrar) addMCPLocked(name string, cfg *config.MCPServerConfig) error
 	src.OnToolsChanged(func() { r.reregister(name) })
 	names, err := r.registerSource(src)
 	if err != nil {
+		// registerSource enumerates the source's tools, which for an mcpproxy
+		// source spawns the child. If that errors after the child came up, the
+		// source is never stored in r.mcp and so would never be closed — close
+		// it here so a failed add never orphans a process.
+		if cerr := src.Close(); cerr != nil {
+			log.Printf("closing mcp server %q after failed registration: %s", name, cerr)
+		}
 		return err
 	}
 	spawnFP, policyFP := fingerprints(cfg)
