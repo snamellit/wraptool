@@ -50,10 +50,34 @@ func FlagSchemaType(c *config.FlagConstraint) string {
 	}
 }
 
-// IsBooleanFlag checks if a flag is boolean (no value argument).
+// wellKnownBooleanFlags are flag names that are effectively always valueless
+// switches across the CLIs wraptool wraps. Recognizing them by exact name saves
+// a config from spelling out a `flag_constraints: {--yes: {type: boolean}}`
+// entry for each — without it a bare switch like --yes would default to a
+// string param and render as "--yes true", which most tools reject.
+//
+// This is only a fallback: an explicit flag_constraints entry overrides it, and
+// --help introspection (when available) takes precedence too (see cli_source.go
+// buildCLITools), so a tool that genuinely takes a value for one of these — e.g.
+// `tar -f <file>` — is still typed correctly from its parsed help.
+var wellKnownBooleanFlags = map[string]bool{
+	"--yes": true, "-y": true,
+	"--force": true, "-f": true,
+	"--dry-run": true,
+	"--quiet":   true,
+	"--verbose": true,
+}
+
+// IsBooleanFlag checks if a flag is boolean (no value argument). Precedence: an
+// explicit flag_constraints entry wins; otherwise a small set of well-known
+// boolean flag names and prefixes is recognized so common switches need no
+// per-flag config.
 func IsBooleanFlag(flag string, constraints map[string]config.FlagConstraint) bool {
 	if c, ok := constraints[flag]; ok {
 		return c.Type == "boolean"
+	}
+	if wellKnownBooleanFlags[flag] {
+		return true
 	}
 	// Heuristic: common boolean flag patterns.
 	boolPrefixes := []string{"--no-", "--enable-", "--disable-"}

@@ -1,6 +1,40 @@
 package mcptools
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/pti/wraptool/internal/config"
+)
+
+func TestIsBooleanFlag(t *testing.T) {
+	boolean := []string{
+		"--yes", "-y", "--force", "-f", "--dry-run", "--quiet", "--verbose", // well-known names
+		"--no-edit", "--enable-foo", "--disable-bar", // prefix heuristic
+	}
+	for _, f := range boolean {
+		if !IsBooleanFlag(f, nil) {
+			t.Errorf("IsBooleanFlag(%q) = false, want true", f)
+		}
+	}
+
+	notBoolean := []string{"--message", "-m", "--output", "--file", "--format", "--fail-fast"}
+	for _, f := range notBoolean {
+		if IsBooleanFlag(f, nil) {
+			t.Errorf("IsBooleanFlag(%q) = true, want false", f)
+		}
+	}
+
+	// An explicit flag_constraints entry wins over the well-known-name default,
+	// both directions.
+	forceAsString := map[string]config.FlagConstraint{"--force": {Type: "string"}}
+	if IsBooleanFlag("--force", forceAsString) {
+		t.Error("explicit string constraint should override the well-known boolean name --force")
+	}
+	outputAsBool := map[string]config.FlagConstraint{"--output": {Type: "boolean"}}
+	if !IsBooleanFlag("--output", outputAsBool) {
+		t.Error("explicit boolean constraint should make --output boolean")
+	}
+}
 
 func TestToolName(t *testing.T) {
 	tests := []struct {
