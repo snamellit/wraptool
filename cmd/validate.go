@@ -34,10 +34,14 @@ flag_constraints) are reported rather than silently ignored. It then applies
 defaults and runs full semantic validation, exiting non-zero with a message on
 the first problem.
 
-The config path is resolved from, in order: the positional argument, the
---config flag, $WRAPTOOL_CONFIG, then the default location.`,
+The config path is given as either the positional argument or --config (not
+both); if neither is set it falls back to $WRAPTOOL_CONFIG, then the default
+location.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 && cmd.Flags().Changed("config") {
+				return fmt.Errorf("pass the config path as either the positional argument or --config, not both")
+			}
 			path := configPath
 			if len(args) == 1 {
 				path = args[0]

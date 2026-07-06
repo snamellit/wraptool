@@ -54,6 +54,19 @@ func TestConfigValidateAcceptsGoodConfig(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsBothArgAndFlag(t *testing.T) {
+	p := writeCfg(t, goodConfig)
+	// Both are individually valid; passing them together is the ambiguity we
+	// reject so a --config value is never silently ignored behind a positional.
+	_, err := runValidate(t, p, "--config", p)
+	if err == nil {
+		t.Fatal("expected an error when both a positional path and --config are given")
+	}
+	if !strings.Contains(err.Error(), "not both") {
+		t.Errorf("expected a mutual-exclusivity error, got: %v", err)
+	}
+}
+
 func TestConfigValidateRejectsUnknownKey(t *testing.T) {
 	body := `
 tools:
