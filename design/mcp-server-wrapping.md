@@ -613,6 +613,17 @@ crashes, react to `tools/list_changed`, and reconcile the running server set on
 reload instead of the Phase-1 close-all/rebuild-all. As with §10, everything
 below is verified against **mcp-go v0.54.0**.
 
+> **Status — landed.** Implemented as specified. Reactive respawn +
+> crashloop cap live in `mcpproxy.Client` (`withRespawn`/`restart`,
+> `upstreamConn` seam for testing, stderr drained into a bounded ring for crash
+> logging). The re-registration coordinator is `cmd/registrar.go` (replaces the
+> Phase-1 `reloadState`): one mutex serializes reload, `tools/list_changed`, and
+> respawn-driven re-registration; reload reconciles MCP sources by spawn/policy
+> fingerprint (`fingerprints`), swapping the CLI source wholesale. The
+> `Source.OnToolsChanged` callback wires the mcpproxy client's notification +
+> respawn paths to `registrar.reregister`. Covered by `supervision_test.go` and
+> `registrar_test.go`, `-race` clean.
+
 ### 11.0 Prerequisite landed out-of-band
 
 The Phase-2 spike surfaced a Phase-1 isolation defect (the default stdio
