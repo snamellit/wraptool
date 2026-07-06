@@ -153,11 +153,12 @@ func TestConstraintKind(t *testing.T) {
 		ct        ConstraintType
 		schema    string
 		valueless bool
+		numeric   bool
 	}{
-		{ConstraintUntyped, "string", false},
-		{ConstraintString, "string", false},
-		{ConstraintInteger, "integer", false},
-		{ConstraintBoolean, "boolean", true},
+		{ConstraintUntyped, "string", false, false},
+		{ConstraintString, "string", false, false},
+		{ConstraintInteger, "integer", false, true},
+		{ConstraintBoolean, "boolean", true, false},
 	}
 	for _, c := range cases {
 		k, ok := c.ct.Kind()
@@ -165,8 +166,8 @@ func TestConstraintKind(t *testing.T) {
 			t.Errorf("%q: ok=false, want a kind", c.ct)
 			continue
 		}
-		if k.JSONSchema != c.schema || k.Valueless != c.valueless {
-			t.Errorf("%q: got %+v, want {schema:%s valueless:%v}", c.ct, k, c.schema, c.valueless)
+		if k.JSONSchema != c.schema || k.Valueless != c.valueless || k.Numeric != c.numeric {
+			t.Errorf("%q: got %+v, want {schema:%s valueless:%v numeric:%v}", c.ct, k, c.schema, c.valueless, c.numeric)
 		}
 	}
 	if _, ok := ConstraintType("float").Kind(); ok {

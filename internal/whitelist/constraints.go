@@ -51,7 +51,7 @@ func validateValue(flagName, value string, c config.FlagConstraint) error {
 		// A boolean flag is a bare --flag: no value to type-check or match.
 		return nil
 	}
-	if k.JSONSchema == "integer" {
+	if k.Numeric {
 		n, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("flag %q: expected integer, got %q", flagName, value)

@@ -137,14 +137,16 @@ func (t *ConstraintType) UnmarshalYAML(n *yaml.Node) error {
 	}
 }
 
-// ConstraintKind is the derived semantics of a ConstraintType: how the flag is
-// presented to the AI (JSONSchema) and whether it is a valueless switch. It is
-// the single definition that both the MCP-schema (mcptools) and enforcement
-// (whitelist) layers read, so the two cannot drift — the failure mode that let
-// a boolean constraint render one way and be enforced another.
+// ConstraintKind is the derived semantics of a ConstraintType. It keeps the two
+// axes separate: JSONSchema is presentation (read only by mcptools), while
+// Valueless and Numeric are enforcement (read only by whitelist). Both layers
+// derive from this single definition, so they cannot drift — the failure mode
+// that let a boolean constraint render one way and be enforced another — and no
+// consumer ever infers one axis from the other's field.
 type ConstraintKind struct {
-	JSONSchema string // MCP tool-schema type: "string" | "integer" | "boolean"
-	Valueless  bool   // bare switch (boolean): no value to validate
+	JSONSchema string // presentation: MCP tool-schema type ("string"|"integer"|"boolean")
+	Valueless  bool   // enforcement: bare switch, no value to validate
+	Numeric    bool   // enforcement: value is parsed as an integer and range-checked
 }
 
 // Kind returns the semantics of the constraint type. The switch is exhaustive
@@ -156,7 +158,7 @@ type ConstraintKind struct {
 func (t ConstraintType) Kind() (ConstraintKind, bool) {
 	switch t {
 	case ConstraintInteger:
-		return ConstraintKind{JSONSchema: "integer"}, true
+		return ConstraintKind{JSONSchema: "integer", Numeric: true}, true
 	case ConstraintBoolean:
 		return ConstraintKind{JSONSchema: "boolean", Valueless: true}, true
 	case ConstraintString, ConstraintUntyped:
