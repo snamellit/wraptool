@@ -8,7 +8,7 @@ import (
 
 func TestIsBooleanFlag(t *testing.T) {
 	boolean := []string{
-		"--yes", "-y", "--force", "-f", "--dry-run", "--quiet", "--verbose", // well-known names
+		"--yes", "-y", "--force", "--dry-run", "--quiet", "--verbose", // well-known names
 		"--no-edit", "--enable-foo", "--disable-bar", // prefix heuristic
 	}
 	for _, f := range boolean {
@@ -17,7 +17,10 @@ func TestIsBooleanFlag(t *testing.T) {
 		}
 	}
 
-	notBoolean := []string{"--message", "-m", "--output", "--file", "--format", "--fail-fast"}
+	// -f is intentionally NOT well-known: it is a value flag (file) as often as
+	// a force switch, so it must fall through to string unless a tool's --help
+	// or an explicit constraint says otherwise.
+	notBoolean := []string{"--message", "-m", "-f", "--output", "--file", "--format", "--fail-fast"}
 	for _, f := range notBoolean {
 		if IsBooleanFlag(f, nil) {
 			t.Errorf("IsBooleanFlag(%q) = true, want false", f)

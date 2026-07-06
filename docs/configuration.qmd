@@ -107,10 +107,11 @@ deny:
 **Boolean (valueless) flags.** A flag's value-taking-ness is decided by, in
 order: an explicit `type` constraint, then `--help` introspection, then a name
 heuristic. The heuristic treats `--no-*`/`--enable-*`/`--disable-*` prefixes and
-the well-known switches `--yes`/`-y`, `--force`/`-f`, `--dry-run`, `--quiet`,
+the well-known switches `--yes`/`-y`, `--force`, `--dry-run`, `--quiet`,
 `--verbose` as boolean, so they render as a bare `--flag` (not `--flag true`)
-without needing a `flag_constraints` entry. If a tool uses one of those names
-*with* a value, introspection detects it (or set `type: string` explicitly).
+without needing a `flag_constraints` entry. Short `-f` is deliberately excluded
+(it's a filename flag as often as a force switch). If a tool uses one of these
+names *with* a value, introspection detects it (or set `type: string`).
 
 ## Evaluation order
 

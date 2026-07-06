@@ -96,8 +96,8 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 			// Determine boolean-ness with precedence: explicit constraint >
 			// --help introspection > name heuristic. Introspection, when present,
 			// is authoritative for whether a flag takes a value, so a well-known
-			// boolean name (e.g. -f) that a given tool actually uses with a value
-			// (tar -f <file>) is not forced boolean against its parsed help.
+			// boolean name (e.g. --verbose) that a given tool actually uses with a
+			// value (--verbose <level>) is not forced boolean against its help.
 			var isBool bool
 			switch {
 			case hasConstraint && constraint.Type != "":

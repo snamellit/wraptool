@@ -56,13 +56,18 @@ func FlagSchemaType(c *config.FlagConstraint) string {
 // entry for each — without it a bare switch like --yes would default to a
 // string param and render as "--yes true", which most tools reject.
 //
+// Kept deliberately conservative — only names that are boolean across
+// essentially every tool. Short -f is deliberately excluded: it is a value flag
+// at least as often as a force switch (tar -f <file>, make -f <file>,
+// awk -f <script>), so the unambiguous long form --force is listed instead.
+//
 // This is only a fallback: an explicit flag_constraints entry overrides it, and
 // --help introspection (when available) takes precedence too (see cli_source.go
-// buildCLITools), so a tool that genuinely takes a value for one of these — e.g.
-// `tar -f <file>` — is still typed correctly from its parsed help.
+// buildCLITools), so a tool that genuinely takes a value for a listed name —
+// e.g. --verbose <level> — is still typed correctly from its parsed help.
 var wellKnownBooleanFlags = map[string]bool{
 	"--yes": true, "-y": true,
-	"--force": true, "-f": true,
+	"--force":   true,
 	"--dry-run": true,
 	"--quiet":   true,
 	"--verbose": true,
