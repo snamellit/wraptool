@@ -145,6 +145,33 @@ types it fundamentally does not care about, and got it wrong. The table in §4.3
 keeps the two axes explicit so a presentation-only type never again implies a
 validation rule that a consumer must guess at.
 
+### 4.5 Hot-reload: the table is code, the config is data
+
+The §4.3 table is immutable at init, yet wraptool hot-reloads config — those do
+not conflict, because they are different layers:
+
+- **`constraintKinds` is the *vocabulary* of the type system** — what `boolean`
+  / `integer` / `string` *mean*. That is a property of wraptool's **code**, set
+  at build time. Editing a `config.yaml` never changes what `boolean` means.
+- **A `config.yaml` is the *program*** — *which* constraints exist and *what
+  values* they carry. That is the mutable data hot-reload swaps.
+
+The table is the **interpreter**; the config is the **program**. Reloading a new
+program does not require mutating the interpreter. Concretely, on reload:
+`config.Load` re-parses the file into new `FlagConstraint` values, `policy.Reload`
+swaps that config data in under its lock (as today), and a subsequent call has
+`whitelist` look up `kindOf(constraint.Type)` in the **unchanged** table.
+`kindOf(boolean)` returns the same answer before and after the reload, so the
+table is never written to — the mutation all lives in the swapped config.
+
+The one thing that genuinely *cannot* hot-reload is a **brand-new constraint
+type** (e.g. `type: duration`): that is a code change — a new enum member, table
+entry, and consumer handling — so it needs a rebuild + restart, exactly as the
+`type: boolean` fix did in MR !7. That is the correct boundary: any config using
+the already-compiled vocabulary hot-reloads freely; a *new* vocabulary cannot be
+loaded into a running binary. Immutability-at-init therefore does not narrow
+what operators can reload. (Raised in MR !8 review.)
+
 ## 5. Phased plan
 
 1. **Introduce the enum + unmarshaler** (§4.1–4.2) in `config`; switch
