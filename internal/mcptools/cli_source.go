@@ -93,10 +93,22 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 				flagDesc = fmt.Sprintf("%s (%s)", introFlag.Description, flag)
 			}
 
-			// Determine type: constraint > introspection > heuristic.
-			isBool := IsBooleanFlag(flag, rule.FlagConstraints)
-			if !isBool && introFlag != nil && introFlag.Type == "boolean" {
-				isBool = true
+			// Determine boolean-ness with precedence: explicit constraint >
+			// --help introspection > name heuristic. Introspection, when present,
+			// is authoritative for whether a flag takes a value, so a well-known
+			// boolean name (e.g. --verbose) that a given tool actually uses with a
+			// value (--verbose <level>) is not forced boolean against its help.
+			var isBool bool
+			switch {
+			case hasConstraint && constraint.Type != "":
+				isBool = constraint.Type == "boolean"
+			case introFlag != nil && introFlag.Type != "":
+				isBool = introFlag.Type == "boolean"
+			default:
+				// Typed constraints are handled by the first case above, so only
+				// the name/prefix heuristic is wanted here — pass nil rather than
+				// re-consulting the constraints map.
+				isBool = IsBooleanFlag(flag, nil)
 			}
 
 			if isBool {
