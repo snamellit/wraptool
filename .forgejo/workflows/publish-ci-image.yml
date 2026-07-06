@@ -1,0 +1,50 @@
+name: Publish CI toolchain image
+
+# Builds an OCI image from manifest.scm (go + git + golangci-lint, plus a
+# shell, coreutils and CA certs baked in via WRAPTOOL_CI_IMAGE=1) and pushes it
+# to the Forgejo registry as forge.snamellit.com/pti/wraptool/ci-toolchain.
+# Docker-executor CI that can't run Guix natively (GitLab) consumes this image,
+# so manifest.scm stays the single source of truth for the pinned toolchain.
+#
+# Path-filtered on manifest.scm: dormant on ordinary pushes, so it never adds
+# latency to the normal lint/build/docs pipelines — it only rebuilds when the
+# toolchain definition actually changes. Also runnable on demand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - manifest.scm
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Native (host-mode) Guix runner: guix-daemon is present, so `guix pack`
+    # realizes the closure here. The resulting image needs no daemon to run.
+    runs-on: guix
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image from manifest
+        run: |
+          # -S /bin=bin              → /bin/sh + coreutils on PATH for the runner
+          # -S /etc/ssl/certs=...    → CA bundle where Go looks by default (HTTPS
+          #                            module fetches), verified in podman.
+          img=$(WRAPTOOL_CI_IMAGE=1 guix pack -f docker \
+                  -S /bin=bin -S /etc/ssl/certs=etc/ssl/certs \
+                  -m manifest.scm)
+          echo "IMG=$img" >> "$GITHUB_ENV"
+
+      - name: Push to Forgejo registry
+        env:
+          # Username must own REGISTRY_TOKEN; defaults to the dispatch actor.
+          # Set a REGISTRY_TOKEN secret (write:package) if the automatic token
+          # lacks package:write. Mirrors publish-feature.yml.
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER || github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          dest="forge.snamellit.com/${{ github.repository }}/ci-toolchain"
+          for tag in latest "${GITHUB_SHA:0:12}"; do
+            guix shell skopeo -- skopeo copy \
+              --dest-creds "$REGISTRY_USER:$REGISTRY_TOKEN" \
+              docker-archive:"$IMG" "docker://$dest:$tag"
+          done
