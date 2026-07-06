@@ -211,3 +211,95 @@ what operators can reload. (Raised in MR !8 review.)
   one switch and not the other. Rejected in favour of the enum + table.
 - **Import cycle**: avoided by keeping the definition and table in `config` (the
   leaf) and consuming upward; do not move it into `whitelist`/`mcptools`.
+
+## Appendix A: alternative — model constraints as an interface
+
+> **Not the recommended path** for this proposal — §4.1–4.3 (enum + shared
+> semantics table) stays the plan. This appendix records a second Go design that
+> leans harder on the *compiler* instead of a linter/discipline, captured for
+> comparison and as a learning artifact. It came out of asking whether a
+> language with sum types (Rust/OCaml/Haskell) would prevent this whole bug
+> class in the type system — and how close idiomatic Go can get.
+
+### The idea
+
+Flip "one type + many `switch`es" into "many types + one interface." Each
+constraint *kind* becomes a concrete struct implementing a shared behaviour
+interface, all owned by `config` (the leaf — the methods need nothing from
+`whitelist`/`mcptools`, so there is no upward import):
+
+```go
+// internal/config
+type Constraint interface {
+    SchemaType() string           // presentation — consumed by mcptools
+    Valueless() bool              // boolean → rendered as a bare --flag
+    Validate(value string) error  // enforcement — consumed by whitelist
+}
+
+type BoolConstraint struct{}                       // no min/max/pattern fields to hold
+type IntConstraint  struct{ Min, Max *int }
+type StrConstraint  struct{ Pattern string }
+type AnyConstraint  struct{ Pattern string }        // untyped / pattern-only
+
+func (BoolConstraint) SchemaType() string { return "boolean" }
+func (BoolConstraint) Valueless() bool    { return true }
+func (BoolConstraint) Validate(string) error { return nil }
+// ... IntConstraint.Validate parses + range-checks, etc.
+```
+
+`mcptools` calls `c.SchemaType()`/`c.Valueless()`; `whitelist` calls
+`c.Validate(value)`. Neither switches on a type string.
+
+### What it buys over the enum + table
+
+- **Exhaustiveness enforced by the compiler, no linter needed.** Every kind
+  *must* implement every behaviour or it fails to compile — the `whitelist`
+  drift that caused the original bug becomes a build error, not a silent gap.
+  Adding a behaviour (new interface method) forces every kind to provide it;
+  adding a kind (new struct) forces it to provide every behaviour. This is the
+  closest idiomatic Go gets to a sum type's exhaustive `match`.
+- **Illegal combinations unrepresentable.** `BoolConstraint` has no `Min`/`Max`
+  field, so "a boolean flag with an integer range" — expressible today in the
+  flat `FlagConstraint` struct — simply cannot be constructed. §4.2 rejects bad
+  *types*; this additionally rejects bad *shapes*.
+
+### Costs (and why it is the appendix, not the plan)
+
+- **Decoding into an interface needs a custom unmarshaler.** YAML/JSON cannot
+  decode into a `Constraint` interface directly: you read the `type`
+  discriminator first, then build the right concrete struct (and reject fields
+  that do not belong to it — e.g. `min` on a boolean). That is strictly more
+  boilerplate than the enum's flat field decode. It also concentrates *all* the
+  boundary validation in one place, which is a plus — but it is the same
+  irreducible "the ingest is runtime" point every language has, just paid in Go
+  ceremony.
+- **Expression-problem tradeoff.** Sum types make adding *operations* cheap and
+  adding *variants* break every match; interfaces make adding *variants* cheap
+  and adding *operations* break every type. For this seam both change rarely and
+  we *want* a new variant to force all consumers to update, so either shape is
+  fine — but it is a real, permanent tradeoff, not a strict win.
+- **Type switches are still unchecked.** Go does not exhaustiveness-check
+  `switch x.(type)`, so the guarantee only holds if dispatch is via *methods*.
+  Discipline: never type-switch on `Constraint`; add a method instead.
+- **`nil` interface care**, and the per-constraint behaviour (`SchemaType`,
+  `Validate`) now lives in `config`, making `whitelist`/`mcptools` thin callers.
+  Reasonable encapsulation, but it does move enforcement logic into the config
+  package.
+
+### Side-by-side
+
+| | Enum + table (§4.1–4.3) | Interface of structs (this appendix) |
+|---|---|---|
+| Coverage guarantee | linter (`exhaustive`) / discipline | **compiler** (method-set completeness) |
+| Illegal *type* | rejected at decode (§4.2) | rejected at decode |
+| Illegal *shape* (`min` on bool) | not prevented | **unrepresentable** |
+| Decode | flat struct, simple | custom discriminated unmarshaler |
+| Diff size | smaller, mechanical | larger, restructures `FlagConstraint` |
+| Where behaviour lives | one table, switch-based consumers | methods on each kind |
+
+**Recommendation:** ship the enum + table (§4.1–4.3) as the default — smaller
+diff, idiomatic, and with the `exhaustive` linter it catches the drift that
+mattered. Reach for the interface variant if we later want the compiler itself
+(not a linter) to guarantee coverage, or if illegal *shapes* start mattering.
+Both stay in Go; the exercise was to see how much of the sum-type guarantee the
+language can borrow — the answer is "most of it, at the cost of some ceremony."
