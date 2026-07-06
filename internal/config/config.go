@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -110,6 +113,19 @@ type DenyRule struct {
 }
 
 func Load(path string) (*Config, error) {
+	return load(path, false)
+}
+
+// LoadStrict loads and defaults the config like Load, but rejects unknown or
+// misspelled keys (yaml KnownFields) instead of silently ignoring them. The
+// lenient Load is used at runtime for forward-compatibility; LoadStrict backs
+// `wraptool config validate`, so an operator can catch a typo'd key (e.g.
+// flag_constraint vs flag_constraints) that would otherwise be a silent no-op.
+func LoadStrict(path string) (*Config, error) {
+	return load(path, true)
+}
+
+func load(path string, strict bool) (*Config, error) {
 	path = expandPath(path)
 
 	data, err := os.ReadFile(path)
@@ -118,7 +134,11 @@ func Load(path string) (*Config, error) {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(strict)
+	if err := dec.Decode(&cfg); err != nil && !errors.Is(err, io.EOF) {
+		// io.EOF means an empty document — treat as a zero config, matching the
+		// lenient yaml.Unmarshal behaviour Load previously had.
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
