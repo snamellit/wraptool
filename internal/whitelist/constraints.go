@@ -40,7 +40,7 @@ func checkConstraints(flags map[string]string, constraints map[string]config.Fla
 
 func validateValue(flagName, value string, c config.FlagConstraint) error {
 	switch c.Type {
-	case "integer":
+	case config.ConstraintInteger:
 		n, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("flag %q: expected integer, got %q", flagName, value)
@@ -51,7 +51,7 @@ func validateValue(flagName, value string, c config.FlagConstraint) error {
 		if c.Max != nil && n > *c.Max {
 			return fmt.Errorf("flag %q: value %d exceeds maximum %d", flagName, n, *c.Max)
 		}
-	case "boolean":
+	case config.ConstraintBoolean:
 		// A boolean flag is valueless: it is rendered as a bare --flag and
 		// reaches here with an empty value. There is nothing to type-check or
 		// pattern-match — its presence is the value — so accept it. (This type
@@ -59,10 +59,12 @@ func validateValue(flagName, value string, c config.FlagConstraint) error {
 		// policy engine must accept it too, or a boolean flag is denied at call
 		// time.)
 		return nil
-	case "string", "":
+	case config.ConstraintString, config.ConstraintUntyped:
 		// No value typing; any value is accepted. A pattern constraint, if set,
 		// is still applied below.
 	default:
+		// Unreachable for a loaded config (ConstraintType.UnmarshalYAML rejects
+		// unknown types at decode); kept for values built in-process.
 		return fmt.Errorf("flag %q: unknown constraint type %q", flagName, c.Type)
 	}
 
