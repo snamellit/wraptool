@@ -40,11 +40,11 @@ func sampleValue(ct config.ConstraintType) string {
 // one half fails here.
 func TestConstraintTypeSeam(t *testing.T) {
 	for _, ct := range allConstraintTypes {
-		name := string(ct)
-		if name == "" {
-			name = "untyped"
+		label := string(ct)
+		if label == "" {
+			label = "untyped"
 		}
-		t.Run(name, func(t *testing.T) {
+		t.Run(label, func(t *testing.T) {
 			k, ok := ct.Kind()
 			if !ok {
 				t.Fatalf("%q has no Kind — extend ConstraintType.Kind", ct)
@@ -62,7 +62,8 @@ func TestConstraintTypeSeam(t *testing.T) {
 					},
 				},
 			}
-			pol := whitelist.NewPolicy(map[string]*config.ToolConfig{"tool": &[]config.ToolConfig{cfg.Tools["tool"]}[0]})
+			tc := cfg.Tools["tool"]
+			pol := whitelist.NewPolicy(map[string]*config.ToolConfig{"tool": &tc})
 
 			// Presentation half — mcptools renders the flag with the schema type
 			// Kind reports.
@@ -76,6 +77,7 @@ func TestConstraintTypeSeam(t *testing.T) {
 			for _, rt := range tools {
 				if rt.Name == name {
 					props = rt.Tool.InputSchema.Properties
+					break
 				}
 			}
 			if props == nil {
