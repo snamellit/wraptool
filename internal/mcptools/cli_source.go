@@ -100,8 +100,8 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 			// value (--verbose <level>) is not forced boolean against its help.
 			var isBool bool
 			switch {
-			case hasConstraint && constraint.Type != "":
-				isBool = constraint.Type == "boolean"
+			case hasConstraint && constraint.Type != config.ConstraintUntyped:
+				isBool = constraint.Type == config.ConstraintBoolean
 			case introFlag != nil && introFlag.Type != "":
 				isBool = introFlag.Type == "boolean"
 			default:

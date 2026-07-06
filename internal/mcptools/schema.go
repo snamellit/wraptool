@@ -41,10 +41,12 @@ func FlagSchemaType(c *config.FlagConstraint) string {
 		return "string"
 	}
 	switch c.Type {
-	case "integer":
+	case config.ConstraintInteger:
 		return "integer"
-	case "boolean":
+	case config.ConstraintBoolean:
 		return "boolean"
+	case config.ConstraintString, config.ConstraintUntyped:
+		return "string"
 	default:
 		return "string"
 	}
@@ -83,8 +85,8 @@ func IsBooleanFlag(flag string, constraints map[string]config.FlagConstraint) bo
 	// circuit to false — that would suppress the well-known-name and prefix
 	// heuristics below and silently turn a bare switch like --yes back into a
 	// value-taking flag.
-	if c, ok := constraints[flag]; ok && c.Type != "" {
-		return c.Type == "boolean"
+	if c, ok := constraints[flag]; ok && c.Type != config.ConstraintUntyped {
+		return c.Type == config.ConstraintBoolean
 	}
 	if wellKnownBooleanFlags[flag] {
 		return true

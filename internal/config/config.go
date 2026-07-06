@@ -96,12 +96,45 @@ type AllowRule struct {
 }
 
 type FlagConstraint struct {
-	Required bool   `yaml:"required"`
-	Type     string `yaml:"type"`
-	Max      *int   `yaml:"max"`
-	Min      *int   `yaml:"min"`
-	Pattern  string `yaml:"pattern"`
-	Deny     bool   `yaml:"deny"`
+	Required bool           `yaml:"required"`
+	Type     ConstraintType `yaml:"type"`
+	Max      *int           `yaml:"max"`
+	Min      *int           `yaml:"min"`
+	Pattern  string         `yaml:"pattern"`
+	Deny     bool           `yaml:"deny"`
+}
+
+// ConstraintType is the value-typing of a flag constraint. It is a closed enum:
+// UnmarshalYAML rejects any value outside this set at decode time, so an illegal
+// type cannot exist in a loaded config — the single source of truth for the
+// legal set lives here (design/flag-constraint-type-single-source.md).
+type ConstraintType string
+
+const (
+	ConstraintUntyped ConstraintType = ""        // no value typing; pattern-only
+	ConstraintString  ConstraintType = "string"  // any value; pattern still applies
+	ConstraintInteger ConstraintType = "integer" // parsed + range-checked
+	ConstraintBoolean ConstraintType = "boolean" // valueless; rendered as a bare flag
+)
+
+// UnmarshalYAML rejects any constraint type outside the closed set, so a
+// misspelled or unsupported type (e.g. `type: bolean`) fails when the config is
+// parsed rather than silently at call time. An absent `type:` key never reaches
+// here and stays ConstraintUntyped.
+func (t *ConstraintType) UnmarshalYAML(n *yaml.Node) error {
+	// Reject non-scalars first: a sequence or mapping (e.g. `type: [boolean]`)
+	// has an empty n.Value, which would otherwise match ConstraintUntyped and be
+	// silently accepted.
+	if n.Kind != yaml.ScalarNode {
+		return fmt.Errorf("flag constraint type must be a scalar string, got a non-scalar YAML value at line %d", n.Line)
+	}
+	switch ConstraintType(n.Value) {
+	case ConstraintUntyped, ConstraintString, ConstraintInteger, ConstraintBoolean:
+		*t = ConstraintType(n.Value)
+		return nil
+	default:
+		return fmt.Errorf("unknown flag constraint type %q (want string, integer, or boolean)", n.Value)
+	}
 }
 
 type ArgConstraints struct {
