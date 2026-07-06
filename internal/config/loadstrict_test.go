@@ -147,3 +147,29 @@ func TestConstraintTypeRejectsNonScalar(t *testing.T) {
 		}
 	}
 }
+
+func TestConstraintKind(t *testing.T) {
+	cases := []struct {
+		ct        ConstraintType
+		schema    string
+		valueless bool
+	}{
+		{ConstraintUntyped, "string", false},
+		{ConstraintString, "string", false},
+		{ConstraintInteger, "integer", false},
+		{ConstraintBoolean, "boolean", true},
+	}
+	for _, c := range cases {
+		k, ok := c.ct.Kind()
+		if !ok {
+			t.Errorf("%q: ok=false, want a kind", c.ct)
+			continue
+		}
+		if k.JSONSchema != c.schema || k.Valueless != c.valueless {
+			t.Errorf("%q: got %+v, want {schema:%s valueless:%v}", c.ct, k, c.schema, c.valueless)
+		}
+	}
+	if _, ok := ConstraintType("float").Kind(); ok {
+		t.Error("a value outside the enum should return ok=false")
+	}
+}

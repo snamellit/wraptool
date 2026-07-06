@@ -35,21 +35,16 @@ func ParamToFlag(param string) string {
 	return "--" + name
 }
 
-// FlagSchemaType maps a config flag constraint type to JSON Schema type.
+// FlagSchemaType maps a config flag constraint type to JSON Schema type,
+// derived from the single ConstraintType.Kind definition.
 func FlagSchemaType(c *config.FlagConstraint) string {
 	if c == nil {
 		return "string"
 	}
-	switch c.Type {
-	case config.ConstraintInteger:
-		return "integer"
-	case config.ConstraintBoolean:
-		return "boolean"
-	case config.ConstraintString, config.ConstraintUntyped:
-		return "string"
-	default:
-		return "string"
+	if k, ok := c.Type.Kind(); ok {
+		return k.JSONSchema
 	}
+	return "string"
 }
 
 // wellKnownBooleanFlags are flag names that are effectively always valueless
@@ -86,7 +81,8 @@ func IsBooleanFlag(flag string, constraints map[string]config.FlagConstraint) bo
 	// heuristics below and silently turn a bare switch like --yes back into a
 	// value-taking flag.
 	if c, ok := constraints[flag]; ok && c.Type != config.ConstraintUntyped {
-		return c.Type == config.ConstraintBoolean
+		k, _ := c.Type.Kind()
+		return k.Valueless
 	}
 	if wellKnownBooleanFlags[flag] {
 		return true

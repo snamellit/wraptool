@@ -39,8 +39,19 @@ func checkConstraints(flags map[string]string, constraints map[string]config.Fla
 }
 
 func validateValue(flagName, value string, c config.FlagConstraint) error {
-	switch c.Type {
-	case config.ConstraintInteger:
+	// Semantics come from the single ConstraintType.Kind definition, so
+	// enforcement can never diverge from how mcptools presents the flag.
+	k, ok := c.Type.Kind()
+	if !ok {
+		// Unreachable for a loaded config (UnmarshalYAML rejects unknown types
+		// at decode); kept for values built in-process.
+		return fmt.Errorf("flag %q: unknown constraint type %q", flagName, c.Type)
+	}
+	if k.Valueless {
+		// A boolean flag is a bare --flag: no value to type-check or match.
+		return nil
+	}
+	if k.JSONSchema == "integer" {
 		n, err := strconv.Atoi(value)
 		if err != nil {
 			return fmt.Errorf("flag %q: expected integer, got %q", flagName, value)
@@ -51,22 +62,8 @@ func validateValue(flagName, value string, c config.FlagConstraint) error {
 		if c.Max != nil && n > *c.Max {
 			return fmt.Errorf("flag %q: value %d exceeds maximum %d", flagName, n, *c.Max)
 		}
-	case config.ConstraintBoolean:
-		// A boolean flag is valueless: it is rendered as a bare --flag and
-		// reaches here with an empty value. There is nothing to type-check or
-		// pattern-match — its presence is the value — so accept it. (This type
-		// is honoured by the config schema and mcptools boolean rendering; the
-		// policy engine must accept it too, or a boolean flag is denied at call
-		// time.)
-		return nil
-	case config.ConstraintString, config.ConstraintUntyped:
-		// No value typing; any value is accepted. A pattern constraint, if set,
-		// is still applied below.
-	default:
-		// Unreachable for a loaded config (ConstraintType.UnmarshalYAML rejects
-		// unknown types at decode); kept for values built in-process.
-		return fmt.Errorf("flag %q: unknown constraint type %q", flagName, c.Type)
 	}
+	// string/untyped (and integer, after range) fall through to the pattern.
 
 	if c.Pattern != "" {
 		matched, err := regexp.MatchString(c.Pattern, value)
