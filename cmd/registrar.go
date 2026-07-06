@@ -173,8 +173,14 @@ func (r *registrar) reregisterLocked(name string) {
 	}
 	tools, err := e.source.Tools(context.Background())
 	if err != nil {
-		log.Printf("reregister: listing tools for mcp server %q: %s", name, err)
-		// fall through: swap in whatever we got (possibly empty).
+		// Keep the last-known-good registrations rather than tearing them down
+		// over a transient re-list failure — a list_changed or respawn blip must
+		// not strip a working server of its tools. (A real mcpproxy source
+		// reports an empty list with a nil error when its child is genuinely
+		// down, so a gone upstream still drops its tools via the path below;
+		// this only guards the error-return case.)
+		log.Printf("reregister: listing tools for mcp server %q: %s (keeping existing registrations)", name, err)
+		return
 	}
 	if len(e.registered) > 0 {
 		r.server.DeleteTools(e.registered...)

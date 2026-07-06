@@ -75,6 +75,12 @@ func (f *fakeSource) setTools(tools ...string) {
 	f.tools = tools
 }
 
+func (f *fakeSource) setToolsErr(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolsErr = err
+}
+
 func (f *fakeSource) fire() {
 	f.mu.Lock()
 	fn := f.onToolsChanged
@@ -253,6 +259,26 @@ func TestListChangedReregistersSource(t *testing.T) {
 	got := reg.mcp["alpha"].registered
 	if len(got) != 2 {
 		t.Errorf("list_changed should have swapped in the new tool set, got %v", got)
+	}
+}
+
+func TestReregisterKeepsToolsOnListError(t *testing.T) {
+	reg, fakes := newTestRegistrar(t)
+	if err := reg.start(serverCfg("alpha")); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	src := fakes["alpha"]
+	if got := reg.mcp["alpha"].registered; len(got) != 1 {
+		t.Fatalf("expected 1 initial tool, got %v", got)
+	}
+
+	// A subsequent re-list fails (e.g. a transient blip during a list_changed).
+	src.setToolsErr(errors.New("list failed"))
+	src.fire()
+
+	// The working registrations must survive the error, not be wiped.
+	if got := reg.mcp["alpha"].registered; len(got) != 1 {
+		t.Errorf("a transient re-list error wiped registrations: %v", got)
 	}
 }
 
