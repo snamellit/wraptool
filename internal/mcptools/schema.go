@@ -69,11 +69,16 @@ var wellKnownBooleanFlags = map[string]bool{
 }
 
 // IsBooleanFlag checks if a flag is boolean (no value argument). Precedence: an
-// explicit flag_constraints entry wins; otherwise a small set of well-known
-// boolean flag names and prefixes is recognized so common switches need no
-// per-flag config.
+// explicit flag_constraints entry with a type wins; otherwise a small set of
+// well-known boolean flag names and prefixes is recognized so common switches
+// need no per-flag config.
 func IsBooleanFlag(flag string, constraints map[string]config.FlagConstraint) bool {
-	if c, ok := constraints[flag]; ok {
+	// Only an explicit type decides boolean-ness. A constraint that sets other
+	// fields (e.g. required or pattern) but leaves type empty must NOT short-
+	// circuit to false — that would suppress the well-known-name and prefix
+	// heuristics below and silently turn a bare switch like --yes back into a
+	// value-taking flag.
+	if c, ok := constraints[flag]; ok && c.Type != "" {
 		return c.Type == "boolean"
 	}
 	if wellKnownBooleanFlags[flag] {

@@ -70,6 +70,31 @@ func TestBuildCLIToolsBooleanFlagTyping(t *testing.T) {
 	}
 }
 
+// TestBuildCLIToolsTypelessConstraintKeepsBoolean guards the empty-type trap: a
+// constraint that sets only `required` (no type) on a well-known boolean flag
+// must not turn it back into a value-taking string param.
+func TestBuildCLIToolsTypelessConstraintKeepsBoolean(t *testing.T) {
+	tc := &config.ToolConfig{
+		Binary: "/nonexistent/tool",
+		Allow: []config.AllowRule{
+			{
+				Subcommand:      []string{"create"},
+				Flags:           []string{"--yes"},
+				FlagConstraints: map[string]config.FlagConstraint{"--yes": {Required: true}},
+			},
+		},
+	}
+	policy := whitelist.NewPolicy(map[string]*config.ToolConfig{"tool": tc})
+
+	tools, err := buildCLITools("tool", tc, policy, nil, nil)
+	if err != nil {
+		t.Fatalf("buildCLITools: %v", err)
+	}
+	if got := propType(t, tools[0], "yes"); got != "boolean" {
+		t.Errorf("--yes with a typeless required constraint: type %q, want boolean", got)
+	}
+}
+
 // TestCLISourceTools guards the Source seam: cliSource must build one MCP tool
 // per allow-rule, with the expected namespaced names and flag-derived schema
 // parameters — the behaviour the registration path relied on before the refactor.

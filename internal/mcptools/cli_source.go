@@ -105,7 +105,10 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 			case introFlag != nil && introFlag.Type != "":
 				isBool = introFlag.Type == "boolean"
 			default:
-				isBool = IsBooleanFlag(flag, rule.FlagConstraints)
+				// Typed constraints are handled by the first case above, so only
+				// the name/prefix heuristic is wanted here — pass nil rather than
+				// re-consulting the constraints map.
+				isBool = IsBooleanFlag(flag, nil)
 			}
 
 			if isBool {

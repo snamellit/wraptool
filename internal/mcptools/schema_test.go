@@ -34,6 +34,17 @@ func TestIsBooleanFlag(t *testing.T) {
 	if !IsBooleanFlag("--output", outputAsBool) {
 		t.Error("explicit boolean constraint should make --output boolean")
 	}
+
+	// A constraint that sets other fields but no type must not suppress the
+	// well-known-name / prefix heuristics (the empty-type trap).
+	yesRequiredNoType := map[string]config.FlagConstraint{"--yes": {Required: true}}
+	if !IsBooleanFlag("--yes", yesRequiredNoType) {
+		t.Error("a typeless constraint (e.g. required:true) must fall back to the well-known boolean name")
+	}
+	noEditRequiredNoType := map[string]config.FlagConstraint{"--no-edit": {Required: true}}
+	if !IsBooleanFlag("--no-edit", noEditRequiredNoType) {
+		t.Error("a typeless constraint must fall back to the prefix heuristic")
+	}
 }
 
 func TestToolName(t *testing.T) {
