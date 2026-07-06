@@ -42,9 +42,12 @@ jobs:
           REGISTRY_USER: ${{ secrets.REGISTRY_USER || github.actor }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
-          dest="forge.snamellit.com/${{ github.repository }}/ci-toolchain"
-          for tag in latest "${GITHUB_SHA:0:12}"; do
-            guix shell skopeo -- skopeo copy \
-              --dest-creds "$REGISTRY_USER:$REGISTRY_TOKEN" \
-              docker-archive:"$IMG" "docker://$dest:$tag"
-          done
+          # One `guix shell` wrapping the loop → skopeo profile resolved once,
+          # not per tag. Push :latest and the short commit sha (blobs dedup by
+          # digest, so the second tag reuses the first's upload).
+          guix shell skopeo -- sh -c '
+            dest="forge.snamellit.com/${{ github.repository }}/ci-toolchain"
+            for tag in latest "${GITHUB_SHA:0:12}"; do
+              skopeo copy --dest-creds "$REGISTRY_USER:$REGISTRY_TOKEN" \
+                docker-archive:"$IMG" "docker://$dest:$tag"
+            done'

@@ -1,12 +1,13 @@
 ;; Development environment for wraptool.
 ;;
 ;; `go` and `git` come straight from Guix.  golangci-lint is not (yet)
-;; packaged in Guix, so we install the official pre-built release binary —
-;; version-pinned to match CI (.gitlab-ci.yml / .forgejo/workflows/lint.yml,
-;; currently v2.12.2).  The binary is a statically linked Go executable, so
-;; no dynamic-linker patching is required.
+;; packaged in Guix, so we install the official pre-built release binary
+;; (a statically linked Go executable, so no dynamic-linker patching is
+;; required).  This manifest is the single source of truth for the pinned
+;; toolchain: CI consumes it directly (Forgejo `guix shell`) or via an image
+;; packed from it (GitLab — see .forgejo/workflows/publish-ci-image.yml).
 ;;
-;; To bump the version: change %golangci-lint-version, then update the
+;; To bump golangci-lint: change %golangci-lint-version, then update the
 ;; hash with e.g.
 ;;   guix download https://github.com/golangci/golangci-lint/releases/download/v<VER>/golangci-lint-<VER>-linux-amd64.tar.gz
 
@@ -20,14 +21,15 @@
 ;; Base toolchain — what a developer needs from `guix shell -m manifest.scm`.
 (define %base-specs '("go" "git"))
 
-;; Extra packages baked in only when packing the CI container image
-;; (WRAPTOOL_CI_IMAGE=1 guix pack -f docker -S /bin=bin -m manifest.scm):
+;; Extra packages folded in only when WRAPTOOL_CI_IMAGE is set — for packing
+;; the CI container image (recipe: .forgejo/workflows/publish-ci-image.yml):
 ;;   bash + coreutils  — GitLab's Docker runner needs /bin/sh and coreutils
 ;;                       (mkdir/mv/…) for the job's prep script.
-;;   nss-certs         — puts a CA bundle on SSL_CERT_FILE/SSL_CERT_DIR so
-;;                       `go`/`golangci-lint` can fetch modules over HTTPS.
+;;   nss-certs         — a CA bundle so `go`/`golangci-lint` can fetch modules
+;;                       over HTTPS.
 ;; A plain `guix shell` for local dev is unaffected (the host already has
-;; these), so the interactive profile stays lean.
+;; these), so the interactive profile stays lean — but note the toggle is
+;; ambient: a stray WRAPTOOL_CI_IMAGE in your env silently fattens the profile.
 (define %ci-image-specs '("bash" "coreutils" "nss-certs"))
 
 (define golangci-lint
@@ -48,10 +50,7 @@
            #~'(("golangci-lint" "bin/"))))
     (home-page "https://golangci-lint.run")
     (synopsis "Fast linters runner for Go")
-    (description
-     "golangci-lint runs a configurable set of Go linters in parallel.  This
-package installs the upstream pre-built release binary rather than building
-from source, since golangci-lint is not packaged in Guix.")
+    (description "Upstream pre-built golangci-lint release binary.")
     (license license:gpl3+)))
 
 (concatenate-manifests

@@ -18,11 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: gofmt
-        run: guix shell -m manifest.scm -- sh -c "test -z \"\$(gofmt -l .)\" || { echo 'gofmt needed on:'; gofmt -l .; exit 1; }"
-
-      - name: go vet
-        run: guix shell -m manifest.scm -- go vet ./...
-
-      - name: golangci-lint
-        run: guix shell -m manifest.scm -- golangci-lint run ./...
+      # One `guix shell` for all three checks — resolves the profile once
+      # instead of per step (a collapsed step trades per-check UI granularity
+      # for that saving; only three fast checks, so it's worth it).
+      - name: gofmt + go vet + golangci-lint
+        run: |
+          guix shell -m manifest.scm -- sh -c '
+            unformatted=$(gofmt -l .)
+            test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
+            go vet ./...
+            golangci-lint run ./...'
