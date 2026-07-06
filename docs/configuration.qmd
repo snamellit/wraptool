@@ -128,6 +128,26 @@ flowchart LR
   class refuse no
 ```
 
+## Validating a config
+
+Check a config before the server loads it:
+
+```bash
+wraptool config validate                 # default / $WRAPTOOL_CONFIG path
+wraptool config validate ./config.yaml   # an explicit file
+```
+
+It exits non-zero with a message on the first problem, and touches nothing —
+no server, no spawned tools. Unlike the lenient load the running server does
+(which ignores unknown keys for forward-compatibility), validation **strictly
+decodes** the YAML: a misspelled key such as `flag_constraint` (instead of
+`flag_constraints`) is reported rather than silently dropped. It then applies
+defaults and runs the same semantic checks `serve` does at startup.
+
+Handy before an edit that the server would otherwise hot-reload: a config that
+fails validation is rejected on reload and the previous policy stays in effect,
+so validating first tells you whether a change will actually take.
+
 ## CLI introspection
 
 wraptool parses `--help` output at startup to enrich MCP tool schemas

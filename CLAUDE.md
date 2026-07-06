@@ -25,6 +25,7 @@ cmd/
   down.go                       `wraptool down` — stop this project's dev container (by devcontainer workspace label); `--rm` removes it. Leaves the shared server running.
   server.go                     `wraptool server status|stop` — lifecycle of the `up`-started detached server
   requests.go                   admin CLI for capability request review
+  validate.go                   `wraptool config validate [path]` — strict-decode (KnownFields) + semantic check of a config without starting the server; catches typo'd keys the lenient runtime load silently ignores
   init.go                       generates MCP config for coding harnesses
   root.go                       cobra root command
 internal/

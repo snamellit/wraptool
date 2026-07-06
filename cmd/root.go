@@ -26,6 +26,7 @@ environment (equivalent to 'wraptool up').`,
 	}
 
 	root.AddCommand(newServeCmd())
+	root.AddCommand(newConfigCmd())
 	root.AddCommand(newRequestsCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newUpCmd())
