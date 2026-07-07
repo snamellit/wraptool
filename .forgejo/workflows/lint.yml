@@ -1,9 +1,15 @@
 name: Lint
 
-# Go static checks on every push / PR: gofmt, go vet, and golangci-lint
-# (staticcheck + exhaustive + the standard set, per .golangci.yml).
+# Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
+# + the standard set, per .golangci.yml).
+#
+# `push` is scoped to main so a branch that has an open PR is linted exactly
+# once (via pull_request), not twice — two concurrent jobs on the shared native
+# runner collide on golangci-lint's host-wide lock ("another instance is
+# running") and one fails. main still lints on push (no PR involved).
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
