@@ -1,8 +1,8 @@
 name: Publish CI toolchain image
 
-# Builds an OCI image from manifest.scm (go + git + golangci-lint, plus a
-# shell, coreutils and CA certs baked in via WRAPTOOL_CI_IMAGE=1) and pushes it
-# to the Forgejo registry as forge.snamellit.com/pti/wraptool/ci-toolchain.
+# Builds an OCI image from manifest.scm (the flat toolchain: go + git +
+# golangci-lint + node + a shell/coreutils/CA-certs) and pushes it to the
+# Forgejo registry as forge.snamellit.com/pti/wraptool/ci-toolchain.
 # Docker-executor CI that can't run Guix natively (GitLab) consumes this image,
 # so manifest.scm stays the single source of truth for the pinned toolchain.
 #
@@ -29,7 +29,7 @@ jobs:
           # -S /bin=bin              → /bin/sh + coreutils on PATH for the runner
           # -S /etc/ssl/certs=...    → CA bundle where Go looks by default (HTTPS
           #                            module fetches), verified in podman.
-          img=$(WRAPTOOL_CI_IMAGE=1 guix pack -f docker \
+          img=$(guix pack -f docker \
                   -S /bin=bin -S /etc/ssl/certs=etc/ssl/certs \
                   -m manifest.scm)
           echo "IMG=$img" >> "$GITHUB_ENV"

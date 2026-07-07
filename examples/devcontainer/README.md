@@ -9,11 +9,12 @@ This is the devcontainer analogue of the Guix (`test-container.sh`) and
 Docker/Podman flows in [`docs/isolated-environments.md`](../../docs/isolated-environments.md).
 
 > **On a Guix host, prefer the native runtime.** `wraptool up` auto-selects a
-> Guix container (`guix shell --container`) when `guix` is on `PATH` and the
-> worktree has a `manifest.scm` — no Docker, no image build, the harness box
-> defined by a `container.scm` from the same Guix tooling. Scaffold it in one
-> step: `wraptool up --scaffold-guix`. This whole devcontainer template is only
-> needed off Guix (Arch, macOS, …) or with `--runtime=devcontainer`. See
+> Guix container (`guix shell --container -m manifest.scm`) when `guix` is on
+> `PATH` and the worktree has a `manifest.scm` — no Docker, no image build, no
+> extra config: the container is built from your project's own `manifest.scm`,
+> so the harness gets the same toolchain you do. This whole devcontainer
+> template is only needed off Guix (Arch, macOS, …) or with
+> `--runtime=devcontainer`. See
 > [`design/guix-container-runtime.md`](../../design/guix-container-runtime.md).
 
 ## Files
