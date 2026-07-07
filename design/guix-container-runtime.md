@@ -1,6 +1,7 @@
 # Design: Guix-container runtime for `wraptool up`
 
-Status: **proposal**
+Status: **implemented (phases 1–3)** — merged in PRs #6, #7, #8; phase 4
+(strict-net) deferred.
 Scope: give `wraptool up` a second container backend that uses native Guix
 containers (`guix shell --container`) instead of the `devcontainer` CLI, so a
 Guix host can bring up an isolated, credential-scrubbed dev environment with no
@@ -386,16 +387,22 @@ a Guix container (FHS need), and `writeMCPConfig` output matching `connect.sh`.
 
 ## 11. Phased plan
 
-1. **Runtime selection + Guix bring-up (happy path).** `--runtime`,
+1. ✅ **Runtime selection + Guix bring-up (happy path)** — PR #6. `--runtime`,
    `selectRuntime`, `hasGuix`, `bringUpGuixContainer` with `-N` + SSE loopback,
-   `writeMCPConfig`, `inContainer` marker. Gate: `wraptool up` on this repo
-   enters a container, `.mcp.json` points at `127.0.0.1:8717`, and a manual MCP
-   call reaches host wraptool. Resolve the Node/`-F` question here.
-2. **Scaffolding + DX.** `--scaffold-guix` writes `.wraptool/container.scm`;
-   print the chosen runtime and the network caveat; back up an existing
-   `.mcp.json`. Gate: fresh repo → scaffold → up, no manual steps.
-3. **Parity tests + docs.** Golden-file test `writeMCPConfig` vs `connect.sh`;
-   update `CLAUDE.md` and `examples/` with the Guix path. Gate: CI green.
+   `writeMCPConfig`, `inContainer` marker. Verified end-to-end: `wraptool up`
+   enters a container, `.mcp.json` points at the server, the harness reaches
+   host wraptool while host `$HOME`/repo are not visible. Node/`-F` question
+   resolved: node/npm run under `-N` with no FHS emulation needed.
+2. ✅ **Scaffolding + DX** — PR #7. `--scaffold-guix` writes
+   `.wraptool/container.scm` (non-clobbering); the chosen runtime is printed;
+   the network caveat is shown at bring-up; `.mcp.json` is backed up on
+   overwrite (landed in phase 1).
+3. ✅ **Parity tests + docs** — PR #8. Parity test `writeMCPConfig` vs
+   `connect.sh` (semantic, not byte — encodings differ, decode identically);
+   `CLAUDE.md` + `examples/devcontainer/README.md` updated with the Guix path.
+   Also on the way: the lint workflow was scoped to stop double-runs, and the
+   config-validation tests no longer hardcode `/usr/bin/git`, so `go test ./...`
+   is green on Guix.
 4. **(Deferred) strict-net mode.** pasta-wrapped private netns + unix
    transport + `socat`, behind `--strict-net` (§9).
 
