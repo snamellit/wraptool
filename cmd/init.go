@@ -30,6 +30,7 @@ Supported harnesses:
   cursor    - Cursor IDE (.cursor/mcp.json)
   opencode  - OpenCode (opencode.json)
   gemini    - Gemini CLI (.gemini/settings.json)
+  pi        - Pi coding agent, via pi-mcp-adapter (.pi/mcp.json)
   roo       - Roo Code (.roo/mcp.json)
   windsurf  - Windsurf (~/.codeium/windsurf/mcp_config.json)
 
@@ -47,7 +48,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, cursor, opencode, gemini, roo, windsurf, all)")
+	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, cursor, opencode, gemini, pi, roo, windsurf, all)")
 	cmd.Flags().StringVar(&transport, "transport", "sse", "transport type (stdio, sse, unix)")
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8717/sse", "SSE URL for the wraptool server")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (for unix transport)")
