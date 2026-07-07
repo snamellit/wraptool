@@ -25,6 +25,7 @@ type upOptions struct {
 	noContainer bool
 	shell       string // "auto" | "always" | "never"
 	workspace   string
+	runtime     string // "auto" | "guix" | "devcontainer"
 }
 
 func newUpCmd() *cobra.Command {
@@ -53,6 +54,7 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().BoolVar(&opts.noContainer, "no-container", false, "only ensure the server; do not touch the container")
 	cmd.Flags().StringVar(&opts.shell, "shell", "auto", "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
+	cmd.Flags().StringVar(&opts.runtime, "runtime", "auto", "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
 
 	return cmd
 }
@@ -91,7 +93,19 @@ func runUp(opts upOptions) error {
 	if err != nil {
 		return err
 	}
-	return bringUpContainer(root, token, wantShell(opts.shell))
+
+	rt, err := selectRuntime(opts.runtime, root)
+	if err != nil {
+		return err
+	}
+	shell := wantShell(opts.shell)
+	switch rt {
+	case runtimeGuix:
+		return bringUpGuixContainer(root, token, cfg.Server.Listen, shell)
+	case runtimeDevcontainer:
+		return bringUpContainer(root, token, shell)
+	}
+	return fmt.Errorf("unhandled runtime %v", rt)
 }
 
 // wantShell resolves the --shell mode. "auto" opens a shell only when stdin and
@@ -357,6 +371,9 @@ func inContainer() bool {
 		return true
 	}
 	if v := os.Getenv("REMOTE_CONTAINERS"); v != "" {
+		return true
+	}
+	if v := os.Getenv("WRAPTOOL_CONTAINER"); v != "" { // guix-container marker (bringUpGuixContainer)
 		return true
 	}
 	return false
