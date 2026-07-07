@@ -1,13 +1,13 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/pti/wraptool/internal/harness"
 )
 
 // containerRuntime selects which backend `wraptool up` uses to bring up the
@@ -79,8 +79,14 @@ func bringUpGuixContainer(root, token, listen string, shell bool) error {
 	// loopback via probeAddr). The workspace is shared writable, so write the
 	// MCP client config on the host — no in-container tooling needed.
 	base := "http://" + probeAddr(listen)
-	mcpPath := filepath.Join(root, ".mcp.json")
-	if err := writeMCPConfig(mcpPath, base, token, root); err != nil {
+	mcpPath, err := harness.Write("claude", harness.Params{
+		Transport: "sse",
+		URL:       base + "/sse",
+		Token:     token,
+		CWD:       root, // host worktree path -> ?cwd= scoping
+		Dir:       root, // write .mcp.json into the shared workspace root
+	})
+	if err != nil {
 		return err
 	}
 	fmt.Printf("wrote %s (wraptool @ %s)\n", mcpPath, base)
@@ -121,40 +127,6 @@ func bringUpGuixContainer(root, token, listen string, shell bool) error {
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
-}
-
-// writeMCPConfig writes the harness's .mcp.json pointing at the host-side
-// wraptool over SSE, scoped to hostCWD via ?cwd=. It is the Go twin of the
-// wraptool-connect feature's connect.sh (used by the devcontainer path); the
-// two must stay structurally in lockstep (asserted in tests).
-func writeMCPConfig(path, baseURL, token, hostCWD string) error {
-	sse := strings.TrimRight(baseURL, "/") + "/sse?cwd=" + url.QueryEscape(hostCWD)
-	server := map[string]any{"type": "sse", "url": sse}
-	if token != "" {
-		server["headers"] = map[string]string{"Authorization": "Bearer " + token}
-	}
-	doc := map[string]any{"mcpServers": map[string]any{"wraptool": server}}
-
-	b, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encoding mcp config: %w", err)
-	}
-	b = append(b, '\n')
-
-	// Back up an existing config once (mirrors connect.sh) before overwriting.
-	if fileExists(path) {
-		if bak := path + ".wraptool-bak"; !fileExists(bak) {
-			if cur, rerr := os.ReadFile(path); rerr == nil {
-				_ = os.WriteFile(bak, cur, 0o600)
-			}
-		}
-	}
-
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return fmt.Errorf("writing mcp config: %w", err)
-	}
-	return os.Rename(tmp, path)
 }
 
 // shellQuote wraps s as a single-quoted POSIX shell word.

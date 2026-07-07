@@ -25,17 +25,37 @@ type Params struct {
 	Transport   string // "stdio" | "sse" | "unix"
 	URL         string // full server URL for sse/unix (e.g. http://host:8717/sse)
 	SocketPath  string // unix transport
-	Token       string // bearer token; "" = none. Unused until the auth phase.
+	Token       string // bearer token; "" = none (localhost-trust)
 	CWD         string // host worktree path for ?cwd=; "" falls back to os.Getwd()
+	Dir         string // base dir for project-level configs; "" = process cwd (init's behaviour)
 	WraptoolBin string // stdio transport: the wraptool binary to launch
 	ConfigFile  string // stdio transport: --config value
 	Global      bool   // user-level vs project-level config path
 }
 
-// Descriptor is one harness's knowledge: its name and how to render its MCP
-// config (where it lives + the bytes to write).
+// AuthMode says how (or whether) a harness can authenticate to a networked
+// wraptool. It gates the loud failure in Write when a token is required but the
+// harness can't carry it.
+type AuthMode int
+
+const (
+	// AuthUnverified: auth support has not been checked for this harness. Used
+	// with a token (i.e. networked), Write errors rather than silently emitting
+	// an unauthenticated config that will 401. Localhost/stdio use (no token)
+	// is unaffected. Phase 3 replaces this with the harness's real mode.
+	AuthUnverified AuthMode = iota
+	// AuthHeader: an Authorization: Bearer header on the server entry.
+	AuthHeader
+	// AuthNone: the harness authenticates by other means / localhost only; a
+	// token is accepted but not emitted.
+	AuthNone
+)
+
+// Descriptor is one harness's knowledge: its name, how it authenticates, and how
+// to render its MCP config (where it lives + the bytes to write).
 type Descriptor struct {
 	Name   string
+	Auth   AuthMode
 	Render func(Params) (path string, content []byte, err error)
 }
 
@@ -43,9 +63,13 @@ type Descriptor struct {
 var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "roo", "windsurf"}
 
 // Registry maps a harness name to its descriptor.
+// Auth defaults to AuthUnverified (the zero value) for every harness except the
+// ones whose networked auth has actually been verified. claude carries a Bearer
+// header (matches connect.sh + the container path). The rest are verified in
+// phase 3; until then a token forces a loud failure in Write.
 var Registry = map[string]Descriptor{
 	"agy":      {Name: "agy", Render: renderAgy},
-	"claude":   {Name: "claude", Render: renderClaude},
+	"claude":   {Name: "claude", Auth: AuthHeader, Render: renderClaude},
 	"cursor":   {Name: "cursor", Render: renderCursor},
 	"opencode": {Name: "opencode", Render: renderOpenCode},
 	"gemini":   {Name: "gemini", Render: renderGemini},
@@ -77,9 +101,19 @@ func Write(name string, p Params) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unknown harness %q; supported: %v", name, Names())
 	}
+	if p.Token != "" && d.Auth == AuthUnverified {
+		return "", fmt.Errorf("harness %q cannot be used with a networked wraptool yet: "+
+			"its auth support is unverified. Use a localhost/stdio setup, or add its "+
+			"AuthMode (design/harness-descriptor.md phase 3)", name)
+	}
 	path, content, err := d.Render(p)
 	if err != nil {
 		return "", err
+	}
+	// Resolve a project-relative path against Dir (empty = process cwd, init's
+	// behaviour). Absolute paths (global configs) are left as-is.
+	if p.Dir != "" && !filepath.IsAbs(path) {
+		path = filepath.Join(p.Dir, path)
 	}
 
 	if existing, rerr := os.ReadFile(path); rerr == nil {
@@ -125,12 +159,22 @@ func renderClaude(p Params) (string, []byte, error) {
 	case "sse":
 		server["type"] = "sse"
 		server["url"] = appendCWD(p.URL, p)
+		bearer(server, p)
 	case "unix":
 		server["type"] = "sse"
 		// Claude Code has no native Unix-socket MCP support; document socat bridge.
 		server["url"] = appendCWD("http://localhost/sse", p)
+		bearer(server, p)
 	}
 	return path, mcpServers(server), nil
+}
+
+// bearer adds an Authorization: Bearer header to an sse/unix server entry when a
+// token is set (Claude Code's AuthHeader mode).
+func bearer(server map[string]any, p Params) {
+	if p.Token != "" {
+		server["headers"] = map[string]any{"Authorization": "Bearer " + p.Token}
+	}
 }
 
 func renderCursor(p Params) (string, []byte, error) {
