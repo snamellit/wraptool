@@ -1,6 +1,7 @@
 # Design: a shared harness descriptor registry
 
-Status: **proposal**
+Status: **implemented (phases 1–3)** — PRs #15, #16, + this; phase 4
+(connect.sh → `wraptool init`) is a follow-up.
 Scope: unify "how to point coding-harness *X* at the wraptool MCP server" into
 one registry shared by `wraptool init`, `wraptool up` (both the guix and
 devcontainer runtimes), and — eventually — the `wraptool-connect` feature.
@@ -173,16 +174,18 @@ the descriptor deliberately carries no fetch logic.
 
 ## 8. Phased plan
 
-1. **Extract, no behaviour change.** Move the registry + writers into
-   `internal/harness`; convert generators to `Descriptor.Render(Params)`;
-   `init.go` calls the package. Golden tests pin each harness's output.
-2. **Auth + container path.** Add `Token`/`CWD` handling and `AuthMode`; wire
-   claude's Bearer header; replace `writeMCPConfig` with `harness.Write`. The
-   existing `writeMCPConfig`↔`connect.sh` parity test retargets to
-   `harness.Write` (claude) ↔ `connect.sh`.
-3. **Selection + more harnesses.** `up --harness`; verify + set `AuthMode` for
-   opencode/gemini/cursor/roo/windsurf/agy (and add `pi` once its config schema
-   is known — a single new descriptor).
+1. ✅ **Extract, no behaviour change** — PR #15. Registry + writers in
+   `internal/harness`; `Descriptor.Render(Params)`; `init.go` is a thin CLI.
+2. ✅ **Auth + container path** — PR #16. `Token`/`CWD`/`Dir` + `AuthMode`;
+   claude Bearer header; `bringUpGuixContainer` writes via `harness.Write`
+   (`writeMCPConfig` deleted); parity test retargeted.
+3. ✅ **Selection + more harnesses** — `up --harness <name>` (default claude).
+   Auth verified against each tool's docs: **agy, claude, cursor, gemini,
+   opencode, windsurf** all take `headers: {Authorization: "Bearer …"}` →
+   `AuthHeader`. **roo** accepts a headers object but a known bug drops it on
+   SSE (RooCodeInc/Roo-Code#2480) → left `AuthUnverified` (a token fails loudly).
+   **`pi`** is not yet a descriptor — its tool identity / config schema is
+   unknown; adding it is a single registry row once identified.
 4. **Retire the shell reimpl (follow-up).** `connect.sh` shells out to
    `wraptool init`, collapsing three implementations to one.
 
