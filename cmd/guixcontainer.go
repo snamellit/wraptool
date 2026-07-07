@@ -104,6 +104,7 @@ func bringUpGuixContainer(root, token, listen string, shell bool) error {
 	entry := "export WRAPTOOL_CONTAINER=1; cd " + shellQuote(root) + "; exec bash -l"
 	args := []string{
 		"shell", "--container", "--network",
+		"--emulate-fhs",                // FHS layout (/usr/bin/env, /lib64/ld-linux-*)
 		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
 		"--preserve=^WRAPTOOL_",        // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
 		"-m", manifest,
