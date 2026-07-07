@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pti/wraptool/internal/harness"
+	"github.com/pti/wraptool/internal/paths"
 )
 
 // containerRuntime selects which backend `wraptool up` uses to bring up the
@@ -107,11 +108,25 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		return nil
 	}
 
-	entry := "export WRAPTOOL_CONTAINER=1; cd " + shellQuote(root) + "; exec bash -l"
+	// The developer harness pool: shared across all projects so a harness is
+	// installed once, not per session. bin/ goes on PATH; home/ is the harness
+	// HOME so its config/auth persist. It is the developer's toolbox — not the
+	// project (manifest.scm) and not host credentials (which stay host-side).
+	pool, poolBin, poolHome, err := ensureHarnessPool()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("harness pool: %s (install harness binaries into %s)\n", pool, poolBin)
+
+	entry := "export WRAPTOOL_CONTAINER=1" +
+		"; export PATH=" + shellQuote(poolBin) + ":$PATH" +
+		"; export HOME=" + shellQuote(poolHome) +
+		"; cd " + shellQuote(root) + "; exec bash -l"
 	args := []string{
 		"shell", "--container", "--network",
 		"--emulate-fhs",                // FHS layout (/usr/bin/env, /lib64/ld-linux-*)
 		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
+		"--share=" + pool + "=" + pool, // developer harness pool (binaries + state)
 		"--preserve=^WRAPTOOL_",        // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
 		"-m", manifest,
 		"--", "bash", "-lc", entry,
@@ -127,6 +142,24 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// harnessPoolDir is the developer-scoped pool of AI-harness binaries and their
+// state, shared into every container.
+func harnessPoolDir() string { return filepath.Join(paths.DataDir(), "harness-pool") }
+
+// ensureHarnessPool creates and returns the pool root plus its bin/ (PATH) and
+// home/ (harness HOME) subdirectories.
+func ensureHarnessPool() (pool, bin, home string, err error) {
+	pool = harnessPoolDir()
+	bin = filepath.Join(pool, "bin")
+	home = filepath.Join(pool, "home")
+	for _, d := range []string{bin, home} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
+		}
+	}
+	return pool, bin, home, nil
 }
 
 // shellQuote wraps s as a single-quoted POSIX shell word.
