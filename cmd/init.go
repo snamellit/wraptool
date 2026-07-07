@@ -1,18 +1,14 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
-	"path/filepath"
 
+	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
 
 	"github.com/spf13/cobra"
 )
-
-var supportedHarnesses = []string{"agy", "claude", "cursor", "opencode", "gemini", "roo", "windsurf"}
 
 func newInitCmd() *cobra.Command {
 	var (
@@ -62,332 +58,26 @@ Examples:
 }
 
 func runInit(harnesses []string, transport, url, socketPath string, global bool) error {
-	// Expand "all".
-	expanded := expandHarnesses(harnesses)
-
-	// Find wraptool binary path.
 	wraptoolBin, err := os.Executable()
 	if err != nil {
 		wraptoolBin = "wraptool"
 	}
 
-	configFile := paths.DefaultConfigFile()
+	p := harness.Params{
+		Transport:   transport,
+		URL:         url,
+		SocketPath:  socketPath,
+		WraptoolBin: wraptoolBin,
+		ConfigFile:  paths.DefaultConfigFile(),
+		Global:      global,
+	}
 
-	for _, h := range expanded {
-		gen, ok := harnessGenerators[h]
-		if !ok {
-			return fmt.Errorf("unknown harness %q; supported: %v", h, supportedHarnesses)
-		}
-
-		path, content, err := gen(transport, url, socketPath, wraptoolBin, configFile, global)
+	for _, h := range harness.Expand(harnesses) {
+		path, err := harness.Write(h, p)
 		if err != nil {
 			return fmt.Errorf("generating config for %s: %w", h, err)
 		}
-
-		if err := writeConfig(path, content, h); err != nil {
-			return err
-		}
+		fmt.Printf("  %s: wrote %s\n", h, path)
 	}
-
 	return nil
-}
-
-func expandHarnesses(harnesses []string) []string {
-	for _, h := range harnesses {
-		if h == "all" {
-			return supportedHarnesses
-		}
-	}
-	return harnesses
-}
-
-type harnessGenerator func(transport, url, socketPath, wraptoolBin, configFile string, global bool) (path string, content []byte, err error)
-
-var harnessGenerators = map[string]harnessGenerator{
-	"agy":      generateAgy,
-	"claude":   generateClaude,
-	"cursor":   generateCursor,
-	"opencode": generateOpenCode,
-	"gemini":   generateGemini,
-	"roo":      generateRoo,
-	"windsurf": generateWindsurf,
-}
-
-func generateAgy(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	path := ".agents/mcp_config.json"
-	if global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json")
-	}
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse", "unix":
-		server["serverUrl"] = appendCWD(effectiveURL(transport, url, socketPath), global)
-	}
-
-	cfg := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func generateClaude(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	path := ".mcp.json"
-	if global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".claude.json")
-	}
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse":
-		server["type"] = "sse"
-		server["url"] = appendCWD(url, global)
-	case "unix":
-		server["type"] = "sse"
-		server["url"] = appendCWD("http://localhost/sse", global)
-		// Claude Code doesn't natively support Unix sockets in MCP config;
-		// document the socat bridge approach.
-	}
-
-	cfg := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func generateCursor(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	path := ".cursor/mcp.json"
-	if global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".cursor", "mcp.json")
-	}
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse", "unix":
-		server["url"] = appendCWD(effectiveURL(transport, url, socketPath), global)
-	}
-
-	cfg := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func generateOpenCode(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	path := "opencode.json"
-	if global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".config", "opencode", "config.json")
-	}
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["type"] = "local"
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse", "unix":
-		server["type"] = "remote"
-		server["url"] = appendCWD(effectiveURL(transport, url, socketPath), global)
-	}
-	server["enabled"] = true
-
-	cfg := map[string]interface{}{
-		"mcp": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func generateGemini(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	path := ".gemini/settings.json"
-	if global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".gemini", "settings.json")
-	}
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse", "unix":
-		server["httpUrl"] = appendCWD(effectiveURL(transport, url, socketPath), global)
-	}
-
-	cfg := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func generateRoo(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	path := ".roo/mcp.json"
-	if global {
-		return "", nil, fmt.Errorf("roo global config is managed via VS Code UI; use project-level instead")
-	}
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse", "unix":
-		server["type"] = "sse"
-		server["url"] = appendCWD(effectiveURL(transport, url, socketPath), global)
-	}
-
-	cfg := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func generateWindsurf(transport, url, socketPath, wraptoolBin, configFile string, global bool) (string, []byte, error) {
-	// Windsurf only supports global config.
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")
-
-	server := make(map[string]interface{})
-	switch transport {
-	case "stdio":
-		server["command"] = wraptoolBin
-		server["args"] = []string{"serve", "--config", configFile}
-	case "sse", "unix":
-		server["serverUrl"] = appendCWD(effectiveURL(transport, url, socketPath), global)
-	}
-
-	cfg := map[string]interface{}{
-		"mcpServers": map[string]interface{}{
-			"wraptool": server,
-		},
-	}
-
-	return path, mustJSON(cfg), nil
-}
-
-func effectiveURL(transport, url, socketPath string) string {
-	if transport == "unix" && socketPath != "" {
-		// Most tools don't support Unix sockets natively.
-		// Return the URL as-is; the user needs a socat bridge.
-		return url
-	}
-	return url
-}
-
-func mustJSON(v interface{}) []byte {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		panic(err)
-	}
-	return append(data, '\n')
-}
-
-func writeConfig(path string, content []byte, harness string) error {
-	// Merge into existing config if the file exists.
-	if existing, err := os.ReadFile(path); err == nil {
-		merged, err := mergeJSONConfig(existing, content)
-		if err == nil {
-			content = merged
-		}
-		// If merge fails, fall through and write the new content.
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-		return fmt.Errorf("creating directory for %s: %w", path, err)
-	}
-
-	if err := os.WriteFile(path, content, 0644); err != nil {
-		return fmt.Errorf("writing %s: %w", path, err)
-	}
-
-	fmt.Printf("  %s: wrote %s\n", harness, path)
-	return nil
-}
-
-// mergeJSONConfig merges the wraptool server entry into an existing config file,
-// preserving other MCP servers and settings.
-func mergeJSONConfig(existing, newContent []byte) ([]byte, error) {
-	var existingMap, newMap map[string]interface{}
-	if err := json.Unmarshal(existing, &existingMap); err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(newContent, &newMap); err != nil {
-		return nil, err
-	}
-
-	// Find the servers key (mcpServers or mcp).
-	for key, newVal := range newMap {
-		newServers, ok := newVal.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		existingVal, exists := existingMap[key]
-		if !exists {
-			existingMap[key] = newVal
-			continue
-		}
-
-		existingServers, ok := existingVal.(map[string]interface{})
-		if !ok {
-			existingMap[key] = newVal
-			continue
-		}
-
-		// Merge: add/update wraptool entry, keep everything else.
-		for name, server := range newServers {
-			existingServers[name] = server
-		}
-		existingMap[key] = existingServers
-	}
-
-	return mustJSON(existingMap), nil
-}
-
-func appendCWD(rawURL string, global bool) string {
-	if global || rawURL == "" {
-		return rawURL
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return rawURL
-	}
-	q := u.Query()
-	q.Set("cwd", cwd)
-	u.RawQuery = q.Encode()
-	return u.String()
 }
