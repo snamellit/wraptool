@@ -136,6 +136,39 @@ func TestWriteMCPConfig_BacksUpExisting(t *testing.T) {
 	}
 }
 
+func TestScaffoldGuixContainer(t *testing.T) {
+	root := t.TempDir()
+	p, err := scaffoldGuixContainer(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, ".wraptool", "container.scm")
+	if p != want {
+		t.Fatalf("path = %q, want %q", p, want)
+	}
+	b, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("template not written: %v", err)
+	}
+	if !strings.Contains(string(b), `"node"`) {
+		t.Errorf("template missing node runtime:\n%s", b)
+	}
+	if strings.Contains(string(b), `"git"`) {
+		t.Errorf("template must not include git (creds isolation):\n%s", b)
+	}
+
+	// Idempotent: a second call must not clobber an existing (possibly edited) file.
+	if err := os.WriteFile(want, []byte("(custom)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scaffoldGuixContainer(root); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(want); string(b) != "(custom)" {
+		t.Errorf("scaffold clobbered an existing manifest: %s", b)
+	}
+}
+
 func TestContainerManifestPriority(t *testing.T) {
 	root := t.TempDir()
 	if got := containerManifest(root); got != "" {
