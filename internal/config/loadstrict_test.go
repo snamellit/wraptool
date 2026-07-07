@@ -16,12 +16,21 @@ func writeConfig(t *testing.T, body string) string {
 	return p
 }
 
-const validBody = `
+// validBody is a config that must pass Validate(), so its tool binary is a real
+// executable created for the test rather than a hardcoded path that may not
+// exist on the host (e.g. /usr/bin/git is absent on Guix).
+func validBody(t *testing.T) string {
+	t.Helper()
+	bin := filepath.Join(t.TempDir(), "git")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("writing dummy binary: %v", err)
+	}
+	return `
 server:
   transport: stdio
 tools:
   git:
-    binary: /usr/bin/git
+    binary: ` + bin + `
     allow:
       - subcommand: [status]
         flags: [--short]
@@ -29,9 +38,10 @@ tools:
           --short:
             type: boolean
 `
+}
 
 func TestLoadStrictAcceptsValidConfig(t *testing.T) {
-	cfg, err := LoadStrict(writeConfig(t, validBody))
+	cfg, err := LoadStrict(writeConfig(t, validBody(t)))
 	if err != nil {
 		t.Fatalf("LoadStrict rejected a valid config: %v", err)
 	}
