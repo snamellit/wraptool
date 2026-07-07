@@ -80,15 +80,27 @@ var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo
 // ones whose networked auth has actually been verified. claude carries a Bearer
 // header (matches connect.sh + the container path). The rest are verified in
 // phase 3; until then a token forces a loud failure in Write.
+// npmInstall builds an install recipe that npm-installs a package into the pool
+// prefix (bins land in <prefix>/bin). Run under `guix shell node` so npm is
+// present without assuming a host Node.
+func npmInstall(pkg string) []string {
+	return []string{"guix", "shell", "node", "--", "npm", "install", "-g", pkg, "--prefix", "{prefix}"}
+}
+
 var Registry = map[string]Descriptor{
-	"agy": {Name: "agy", Auth: AuthHeader, Bin: "agy", Render: renderAgy},
+	// agy (Antigravity) is a Go binary with no npm package; its official script
+	// installs to ~/.local/bin, so we run it and relocate the binary into the
+	// pool. Best-effort — it runs Google's installer (curl | bash).
+	"agy": {Name: "agy", Auth: AuthHeader, Bin: "agy", Render: renderAgy,
+		Install: []string{"guix", "shell", "curl", "bash", "coreutils", "--", "sh", "-c",
+			`curl -fsSL https://antigravity.google/cli/install.sh | bash && ` +
+				`install -Dm755 "$HOME/.local/bin/agy" "{prefix}/bin/agy"`}},
 	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
-		Install: []string{"guix", "shell", "node", "--", "npm", "install", "-g",
-			"@anthropic-ai/claude-code", "--prefix", "{prefix}"}},
+		Install: npmInstall("@anthropic-ai/claude-code")},
 	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor}, // host IDE, not pool CLI
-	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode},
+	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode, Install: npmInstall("opencode-ai")},
 	"gemini":   {Name: "gemini", Auth: AuthHeader, Bin: "gemini", Render: renderGemini},
-	"pi":       {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi},
+	"pi":       {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi, Install: npmInstall("@earendil-works/pi-coding-agent")},
 	// roo accepts a headers object but a known bug drops the Authorization
 	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
 	// unverified — a token forces a loud failure rather than a silent 401.
