@@ -81,10 +81,18 @@ var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo
 // header (matches connect.sh + the container path). The rest are verified in
 // phase 3; until then a token forces a loud failure in Write.
 // npmInstall builds an install recipe that npm-installs a package into the pool
-// prefix (bins land in <prefix>/bin). Run under `guix shell node` so npm is
-// present without assuming a host Node.
+// prefix (bins land in <prefix>/bin). It runs npm inside a Guix container with
+// FHS emulation (-F): npm's detect-libc mis-reads glibc as musl on the bare
+// (non-FHS) Guix host, which breaks platform-split native CLIs (opencode,
+// claude, …) with EBADPLATFORM. -F supplies a glibc FHS so the right platform
+// binary is chosen; --share persists the install into the pool; --network is
+// for the download.
 func npmInstall(pkg string) []string {
-	return []string{"guix", "shell", "node", "--", "npm", "install", "-g", pkg, "--prefix", "{prefix}"}
+	return []string{
+		"guix", "shell", "--container", "--network", "--emulate-fhs",
+		"--share={prefix}={prefix}", "node", "--",
+		"npm", "install", "-g", pkg, "--prefix", "{prefix}",
+	}
 }
 
 var Registry = map[string]Descriptor{
