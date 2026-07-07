@@ -2,7 +2,9 @@ package harness
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -155,4 +157,139 @@ func TestWriteMergesPreservingOtherServers(t *testing.T) {
 	if _, ok := cfg.MCPServers["wraptool"]; !ok {
 		t.Errorf("merge did not add wraptool: %s", b)
 	}
+}
+
+func TestClaudeAuthHeader(t *testing.T) {
+	base := Params{Transport: "sse", URL: "http://127.0.0.1:8717/sse", Global: true}
+
+	withTok := base
+	withTok.Token = "s3cr3t"
+	_, srv := serverEntry(t, "claude", "mcpServers", withTok)
+	h, ok := srv["headers"].(map[string]any)
+	if !ok || h["Authorization"] != "Bearer s3cr3t" {
+		t.Errorf("token set: want Bearer header, got %v", srv["headers"])
+	}
+
+	_, srv = serverEntry(t, "claude", "mcpServers", base) // no token
+	if _, ok := srv["headers"]; ok {
+		t.Errorf("no token: headers should be absent, got %v", srv["headers"])
+	}
+}
+
+func TestWriteRejectsTokenForUnverifiedHarness(t *testing.T) {
+	// cursor is AuthUnverified: a token (networked use) must fail loudly.
+	if _, err := Write("cursor", Params{Transport: "sse", URL: "http://x/sse", Token: "t", Global: true}); err == nil {
+		t.Fatal("expected error using an unverified harness with a token")
+	}
+	// claude is AuthHeader: a token is fine (write to a temp dir, not real home).
+	if _, err := Write("claude", Params{Transport: "sse", URL: "http://x/sse", Token: "t", Dir: t.TempDir()}); err != nil {
+		t.Fatalf("claude with token should succeed: %v", err)
+	}
+}
+
+func TestWriteDirResolution(t *testing.T) {
+	dir := t.TempDir()
+	path, err := Write("claude", Params{Transport: "sse", URL: "http://127.0.0.1:8717/sse", Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, ".mcp.json"); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".mcp.json")); err != nil {
+		t.Errorf("config not written into Dir: %v", err)
+	}
+}
+
+// TestClaudeParityWithConnectSh asserts the registry's claude output matches the
+// wraptool-connect feature's connect.sh (the devcontainer path) for the same
+// inputs. Semantic, not byte (connect.sh minimally URL-encodes cwd; the Go path
+// uses url.QueryEscape) — they must decode identically. Retargeted from the old
+// writeMCPConfig parity test.
+func TestClaudeParityWithConnectSh(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh available")
+	}
+	connect := filepath.Join("..", "..", "features", "src", "wraptool-connect", "connect.sh")
+	if _, err := os.Stat(connect); err != nil {
+		t.Skipf("connect.sh not found at %s", connect)
+	}
+	connectAbs, _ := filepath.Abs(connect)
+
+	const base = "http://127.0.0.1:8717"
+	const cwd = "/home/dev/proj with space"
+
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"with token", "s3cr3t"},
+		{"no token", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Registry (guix/container path): write into a temp workspace.
+			goDir := t.TempDir()
+			if _, err := Write("claude", Params{Transport: "sse", URL: base + "/sse", Token: tc.token, CWD: cwd, Dir: goDir}); err != nil {
+				t.Fatal(err)
+			}
+			goSrv := readServer(t, filepath.Join(goDir, ".mcp.json"))
+
+			// connect.sh (devcontainer path).
+			shOut := filepath.Join(t.TempDir(), ".mcp.json")
+			cmd := exec.Command(sh, connectAbs)
+			cmd.Env = append(os.Environ(),
+				"WT_URL="+base, "WRAPTOOL_TOKEN="+tc.token, "WRAPTOOL_CWD="+cwd,
+				"WT_HARNESS=claude", "WT_CONFIG_OUT="+shOut,
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("connect.sh failed: %v\n%s", err, out)
+			}
+			shSrv := readServer(t, shOut)
+
+			if goSrv["type"] != "sse" || shSrv["type"] != "sse" {
+				t.Errorf("type: go=%v sh=%v", goSrv["type"], shSrv["type"])
+			}
+			goBase, goCwd := splitURL(t, goSrv["url"].(string))
+			shBase, shCwd := splitURL(t, shSrv["url"].(string))
+			if goBase != shBase || goBase != base+"/sse" {
+				t.Errorf("base/path: go=%q sh=%q", goBase, shBase)
+			}
+			if goCwd != cwd || shCwd != cwd {
+				t.Errorf("decoded cwd: go=%q sh=%q want=%q", goCwd, shCwd, cwd)
+			}
+			gh, ghas := goSrv["headers"].(map[string]any)
+			sh2, shas := shSrv["headers"].(map[string]any)
+			if ghas != shas {
+				t.Fatalf("headers presence: go=%v sh=%v", ghas, shas)
+			}
+			if ghas && gh["Authorization"] != sh2["Authorization"] {
+				t.Errorf("Authorization: go=%v sh=%v", gh["Authorization"], sh2["Authorization"])
+			}
+		})
+	}
+}
+
+func readServer(t *testing.T, path string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		MCPServers map[string]map[string]any `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(b, &doc); err != nil {
+		t.Fatalf("bad json %s: %v", path, err)
+	}
+	return doc.MCPServers["wraptool"]
+}
+
+func splitURL(t *testing.T, raw string) (basePath, cwd string) {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %q: %v", raw, err)
+	}
+	return u.Scheme + "://" + u.Host + u.Path, u.Query().Get("cwd")
 }
