@@ -96,7 +96,6 @@ func TestRenderURLKeys(t *testing.T) {
 		"claude":   {"mcpServers", "url"},
 		"cursor":   {"mcpServers", "url"},
 		"gemini":   {"mcpServers", "httpUrl"},
-		"windsurf": {"mcpServers", "serverUrl"},
 		"agy":      {"mcpServers", "serverUrl"},
 		"opencode": {"mcp", "url"},
 	}
@@ -164,8 +163,7 @@ func TestWriteMergesPreservingOtherServers(t *testing.T) {
 func TestAuthHeaderHarnesses(t *testing.T) {
 	topKey := map[string]string{
 		"claude": "mcpServers", "cursor": "mcpServers", "gemini": "mcpServers",
-		"windsurf": "mcpServers", "agy": "mcpServers", "opencode": "mcp",
-		"pi": "mcpServers",
+		"agy": "mcpServers", "opencode": "mcp", "pi": "mcpServers",
 	}
 	for name, d := range Registry {
 		if d.Auth != AuthHeader {

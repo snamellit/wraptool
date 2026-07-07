@@ -85,7 +85,7 @@ wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
 ```
 
 This writes the MCP config block for each harness. Supported values:
-`claude`, `cursor`, `opencode`, `gemini`, `roo`, `windsurf`, or `all`.
+`agy`, `claude`, `cursor`, `opencode`, `gemini`, `pi`, `roo`, or `all`.
 
 ## 5. Smoke test
 
