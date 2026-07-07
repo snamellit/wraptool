@@ -20,13 +20,12 @@ import (
 )
 
 type upOptions struct {
-	configPath   string
-	noServer     bool
-	noContainer  bool
-	shell        string // "auto" | "always" | "never"
-	workspace    string
-	runtime      string // "auto" | "guix" | "devcontainer"
-	scaffoldGuix bool   // write .wraptool/container.scm before bring-up
+	configPath  string
+	noServer    bool
+	noContainer bool
+	shell       string // "auto" | "always" | "never"
+	workspace   string
+	runtime     string // "auto" | "guix" | "devcontainer"
 }
 
 func newUpCmd() *cobra.Command {
@@ -56,7 +55,6 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().StringVar(&opts.shell, "shell", "auto", "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "auto", "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
-	cmd.Flags().BoolVar(&opts.scaffoldGuix, "scaffold-guix", false, "write a starter .wraptool/container.scm (harness runtime) if absent, then continue")
 
 	return cmd
 }
@@ -75,12 +73,6 @@ func runUp(opts upOptions) error {
 		}
 	}
 	root, _ = filepath.Abs(root)
-
-	if opts.scaffoldGuix {
-		if _, err := scaffoldGuixContainer(root); err != nil {
-			return err
-		}
-	}
 
 	cfg, err := config.Load(configOrDefault(opts.configPath))
 	if err != nil {

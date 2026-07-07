@@ -1,7 +1,26 @@
 # Design: Guix-container runtime for `wraptool up`
 
-Status: **implemented (phases 1–3)** — merged in PRs #6, #7, #8; phase 4
-(strict-net) deferred.
+Status: **implemented (phases 1–3), revised R2** — merged in PRs #6, #7, #8;
+phase 4 (strict-net) deferred.
+
+> **Revision R2 — single flat manifest (supersedes §6.2/§6.4, §6.5's harness
+> box, and the `--scaffold-guix` parts of the phased plan).** The original
+> design gave the container its *own* harness manifest (`.wraptool/container.scm`,
+> scaffolded, no git) distinct from `manifest.scm`. That was two files diluting
+> the single source of truth, and — worse — a harness-only box can't
+> compile/test/analyze. R2 collapses to **one flat `manifest.scm`** (go, git,
+> golangci-lint, node, + shell/coreutils/certs plumbing) used verbatim for dev,
+> CI lint, the CI image (no `WRAPTOOL_CI_IMAGE` toggle), and the container. The
+> container therefore has the **same toolchain a developer uses, including git**.
+> Credential isolation is unchanged — it is the mount/user namespace (host
+> `$HOME`/secrets never shared), *not* the package set: privileged/remote git
+> (push, private fetch) still must go through wraptool's MCP git tool (only the
+> host has creds), while local non-privileged git (status/diff/commit/branch)
+> works in-box. `bringUpGuixContainer` runs `guix shell --container -m
+> manifest.scm`; `container.scm`, `--scaffold-guix`, and the manifest toggles
+> are gone. Sections below marked (R1) describe the superseded model; §3's
+> security analysis and §5's network analysis still hold.
+
 Scope: give `wraptool up` a second container backend that uses native Guix
 containers (`guix shell --container`) instead of the `devcontainer` CLI, so a
 Guix host can bring up an isolated, credential-scrubbed dev environment with no
@@ -155,7 +174,7 @@ worktree root proves there is a toolchain to put in it. Absent either, fall
 back. `runUp` calls `selectRuntime` after resolving `root` and dispatches to
 `bringUpGuixContainer` or the existing `bringUpContainer`.
 
-### 6.2 Container bring-up
+### 6.2 Container bring-up (R1 — the `containerManifest`/scaffold lookup shown here is superseded by R2: `bringUpGuixContainer` uses `manifest.scm` directly)
 
 ```
 func bringUpGuixContainer(root, token string, shell bool) error {
@@ -228,7 +247,7 @@ func inContainer() bool {
 The entry command exports `WRAPTOOL_CONTAINER=1`, so a nested `up` is refused as
 it is under devcontainer.
 
-### 6.4 Container manifest — the harness runtime, not the toolchain
+### 6.4 Container manifest — the harness runtime, not the toolchain (R1 — superseded by R2; the container now uses the flat `manifest.scm`, git included)
 
 Critical distinction: the *dev toolchain* manifest (`manifest.scm`: go, git,
 golangci-lint) is **not** what the container runs. The container runs the **AI

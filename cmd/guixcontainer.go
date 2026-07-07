@@ -59,77 +59,19 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// candidateManifests lists, in priority order, where the harness-runtime
-// manifest for the Guix container may live. This is NOT the dev toolchain
-// (manifest.scm): it is the box the AI harness runs in — node/bash/coreutils/
-// nss-certs, deliberately no git/creds. See design/guix-container-runtime.md.
-func candidateManifests(root string) []string {
-	return []string{
-		filepath.Join(root, ".wraptool", "container.scm"),
-		filepath.Join(root, "container.scm"),
-	}
-}
-
-func containerManifest(root string) string {
-	for _, p := range candidateManifests(root) {
-		if fileExists(p) {
-			return p
-		}
-	}
-	return ""
-}
-
-// containerManifestTemplate is the starter harness-runtime manifest written by
-// `wraptool up --scaffold-guix`. It is the AI-harness box (node = Claude Code),
-// deliberately WITHOUT git or credentials — privileged tools run host-side.
-const containerManifestTemplate = `;; Runtime for the wraptool Guix dev container (` + "`wraptool up`" + `, guix runtime).
-;;
-;; This is the AI-harness box, NOT the dev toolchain (that is manifest.scm).
-;; Deliberately has NO git and NO credentials: privileged tools (git, gcloud,
-;; kubectl, ...) run on the host and are reached only through wraptool's MCP
-;; tools. Keep it minimal; add only what the harness itself needs.
-(specifications->manifest
- '("node"        ; Claude Code
-   "bash"
-   "coreutils"   ; the harness/shell prep expects mkdir/mv/...
-   "nss-certs")) ; CA roots for HTTPS dependency pulls (npm/pip/cargo/...)
-`
-
-// scaffoldGuixContainer writes the starter .wraptool/container.scm if it (and a
-// top-level container.scm) do not already exist, and returns the manifest path.
-// Existing manifests are left untouched.
-func scaffoldGuixContainer(root string) (string, error) {
-	if existing := containerManifest(root); existing != "" {
-		fmt.Printf("container manifest already exists: %s (leaving as-is)\n", existing)
-		return existing, nil
-	}
-	dir := filepath.Join(root, ".wraptool")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("creating %s: %w", dir, err)
-	}
-	path := filepath.Join(dir, "container.scm")
-	if err := os.WriteFile(path, []byte(containerManifestTemplate), 0o644); err != nil {
-		return "", fmt.Errorf("writing %s: %w", path, err)
-	}
-	fmt.Printf("scaffolded %s (harness runtime; edit to add tools)\n", path)
-	return path, nil
-}
-
 // bringUpGuixContainer runs the dev environment in a native Guix container
-// (`guix shell --container`). Credential isolation comes from the mount/user
-// namespace (host $HOME and secrets are not shared); --network (-N) gives the
-// container outbound internet for dependency pulls, at the cost of sharing the
-// host network namespace. See design/guix-container-runtime.md §3/§5.
+// (`guix shell --container`) built from the project's own manifest.scm — the
+// same toolchain a developer uses, so the harness can compile/test/analyze
+// locally. Credential isolation comes from the mount/user namespace (host $HOME
+// and secrets are never shared), so privileged/remote git (push, private fetch)
+// still goes through wraptool's MCP git tool, which holds the host credentials.
+// --network (-N) gives outbound internet for dependency pulls, at the cost of
+// sharing the host network namespace. See design/guix-container-runtime.md.
 func bringUpGuixContainer(root, token, listen string, shell bool) error {
-	manifest := containerManifest(root)
-	if manifest == "" {
-		return fmt.Errorf(
-			"no container manifest found (looked for %s)\n\n"+
-				"Create one — the AI-harness runtime, e.g.\n"+
-				"    (specifications->manifest '(\"node\" \"bash\" \"coreutils\" \"nss-certs\"))\n"+
-				"deliberately with no git/credentials — then re-run `wraptool up`.\n"+
-				"(A scaffold command lands in a later phase; see design/guix-container-runtime.md §6.4.)",
-			strings.Join(candidateManifests(root), ", "))
+	manifest := filepath.Join(root, "manifest.scm")
+	if !fileExists(manifest) {
+		return fmt.Errorf("no manifest.scm at %s — the guix runtime builds the "+
+			"container from it; add one, or use --runtime=devcontainer", root)
 	}
 
 	// Under -N the container shares the host loopback, so the harness reaches
