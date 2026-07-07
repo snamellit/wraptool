@@ -60,7 +60,7 @@ type Descriptor struct {
 }
 
 // order is the stable listing order (used for `all`, help, and error messages).
-var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "roo", "windsurf"}
+var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo", "windsurf"}
 
 // Registry maps a harness name to its descriptor.
 // Auth defaults to AuthUnverified (the zero value) for every harness except the
@@ -73,6 +73,7 @@ var Registry = map[string]Descriptor{
 	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor},
 	"opencode": {Name: "opencode", Auth: AuthHeader, Render: renderOpenCode},
 	"gemini":   {Name: "gemini", Auth: AuthHeader, Render: renderGemini},
+	"pi":       {Name: "pi", Auth: AuthHeader, Render: renderPi},
 	// roo accepts a headers object but a known bug drops the Authorization
 	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
 	// unverified — a token forces a loud failure rather than a silent 401.
@@ -224,6 +225,24 @@ func renderGemini(p Params) (string, []byte, error) {
 	}
 	server := stdioOr(p, func(s map[string]any) {
 		s["httpUrl"] = appendCWD(effectiveURL(p), p)
+		bearer(s, p)
+	})
+	return path, mcpServers(server), nil
+}
+
+// renderPi targets the Pi coding agent. Pi has no native MCP; the third-party
+// pi-mcp-adapter (github.com/nicobailon/pi-mcp-adapter) reads this config. We
+// write the Pi-specific .pi/mcp.json (project) / ~/.pi/agent/mcp.json (global)
+// so it never collides with claude's .mcp.json, using the adapter's remote
+// shape: mcpServers → {url, headers:{Authorization: Bearer}}.
+func renderPi(p Params) (string, []byte, error) {
+	path := filepath.Join(".pi", "mcp.json")
+	if p.Global {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".pi", "agent", "mcp.json")
+	}
+	server := stdioOr(p, func(s map[string]any) {
+		s["url"] = appendCWD(effectiveURL(p), p)
 		bearer(s, p)
 	})
 	return path, mcpServers(server), nil

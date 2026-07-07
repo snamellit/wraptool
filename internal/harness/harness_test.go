@@ -165,6 +165,7 @@ func TestAuthHeaderHarnesses(t *testing.T) {
 	topKey := map[string]string{
 		"claude": "mcpServers", "cursor": "mcpServers", "gemini": "mcpServers",
 		"windsurf": "mcpServers", "agy": "mcpServers", "opencode": "mcp",
+		"pi": "mcpServers",
 	}
 	for name, d := range Registry {
 		if d.Auth != AuthHeader {
