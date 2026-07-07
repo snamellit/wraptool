@@ -19,12 +19,19 @@ func newTestServer(t *testing.T) (*Server, *requestlog.Store, string) {
 	logPath := filepath.Join(dir, "requests.jsonl")
 	cfgPath := filepath.Join(dir, "config.yaml")
 
+	// A real executable so config validation (rule edits / ApplyRequest re-run
+	// Validate) passes on any host — a hardcoded /usr/bin/git is absent on Guix.
+	binPath := filepath.Join(dir, "git")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	cfg := "" +
 		"server:\n" +
 		"  transport: stdio\n" +
 		"tools:\n" +
 		"  git:\n" +
-		"    binary: /usr/bin/git\n" +
+		"    binary: " + binPath + "\n" +
 		"    allow:\n" +
 		"      - subcommand: [log]\n"
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0600); err != nil {
