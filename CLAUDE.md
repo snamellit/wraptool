@@ -32,7 +32,8 @@ cmd/
   server.go                     `wraptool server status|stop` — lifecycle of the `up`-started detached server
   requests.go                   admin CLI for capability request review
   validate.go                   `wraptool config validate [path]` — strict-decode (KnownFields) + semantic check of a config without starting the server; catches typo'd keys the lenient runtime load silently ignores
-  init.go                       generates MCP config for coding harnesses
+  init.go                       generates MCP config for coding harnesses (thin CLI over `internal/harness`)
+  harness.go                    `wraptool harness list|install` — manage the developer harness pool (`$XDG_DATA_HOME/wraptool/harness-pool`). `list` shows each registry harness (container CLI vs host IDE, installed?, auth); `install <name>` runs the harness's own installer into the pool (claude: `npm i -g @anthropic-ai/claude-code`), or prints manual/IDE guidance. wraptool never packages harnesses — it delegates to their installers.
   root.go                       cobra root command
 internal/
   config/                       YAML config types, loading, validation, in-place edits (edit.go + rules.go: editConfig node-tree editor preserves comments via yaml.Node; ApplyRequest + rule CRUD)

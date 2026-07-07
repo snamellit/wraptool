@@ -51,13 +51,26 @@ const (
 	AuthNone
 )
 
-// Descriptor is one harness's knowledge: its name, how it authenticates, and how
-// to render its MCP config (where it lives + the bytes to write).
+// Descriptor is one harness's knowledge: its name, how it authenticates, how to
+// render its MCP config, and — for CLI harnesses that run inside the container —
+// its pool binary name and optional install recipe.
 type Descriptor struct {
-	Name   string
-	Auth   AuthMode
-	Render func(Params) (path string, content []byte, err error)
+	Name string
+	Auth AuthMode
+	// Bin is the executable name in the harness pool. Empty means the harness is
+	// a host-side IDE/extension (cursor, roo, windsurf), not a container CLI, so
+	// it is not pool-installable.
+	Bin string
+	// Install is an argv template run by `wraptool harness install` to fetch the
+	// binary into the pool; the token "{prefix}" is replaced with the pool root.
+	// Nil means no automated installer (drop the binary in pool/bin by hand).
+	Install []string
+	Render  func(Params) (path string, content []byte, err error)
 }
+
+// IsCLI reports whether the harness runs as a binary inside the container pool
+// (vs a host-side IDE/extension).
+func (d Descriptor) IsCLI() bool { return d.Bin != "" }
 
 // order is the stable listing order (used for `all`, help, and error messages).
 var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo", "windsurf"}
@@ -68,17 +81,19 @@ var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo
 // header (matches connect.sh + the container path). The rest are verified in
 // phase 3; until then a token forces a loud failure in Write.
 var Registry = map[string]Descriptor{
-	"agy":      {Name: "agy", Auth: AuthHeader, Render: renderAgy},
-	"claude":   {Name: "claude", Auth: AuthHeader, Render: renderClaude},
-	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor},
-	"opencode": {Name: "opencode", Auth: AuthHeader, Render: renderOpenCode},
-	"gemini":   {Name: "gemini", Auth: AuthHeader, Render: renderGemini},
-	"pi":       {Name: "pi", Auth: AuthHeader, Render: renderPi},
+	"agy": {Name: "agy", Auth: AuthHeader, Bin: "agy", Render: renderAgy},
+	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
+		Install: []string{"guix", "shell", "node", "--", "npm", "install", "-g",
+			"@anthropic-ai/claude-code", "--prefix", "{prefix}"}},
+	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor}, // host IDE, not pool CLI
+	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode},
+	"gemini":   {Name: "gemini", Auth: AuthHeader, Bin: "gemini", Render: renderGemini},
+	"pi":       {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi},
 	// roo accepts a headers object but a known bug drops the Authorization
 	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
 	// unverified — a token forces a loud failure rather than a silent 401.
-	"roo":      {Name: "roo", Render: renderRoo},
-	"windsurf": {Name: "windsurf", Auth: AuthHeader, Render: renderWindsurf},
+	"roo":      {Name: "roo", Render: renderRoo},                             // host VS Code ext
+	"windsurf": {Name: "windsurf", Auth: AuthHeader, Render: renderWindsurf}, // host IDE
 }
 
 // Names returns the supported harness names in stable order.
