@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -133,6 +135,95 @@ func TestWriteMCPConfig_BacksUpExisting(t *testing.T) {
 	}
 	if string(bak) != `{"existing":true}` {
 		t.Errorf("backup content = %q", bak)
+	}
+}
+
+// splitURL returns the scheme://host/path (query stripped) and the decoded cwd
+// query param of an MCP server URL.
+func splitURL(t *testing.T, raw string) (basePath, cwd string) {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parsing url %q: %v", raw, err)
+	}
+	return u.Scheme + "://" + u.Host + u.Path, u.Query().Get("cwd")
+}
+
+// TestWriteMCPConfigParityWithConnectSh asserts the Go writer (guix path) and
+// the wraptool-connect feature's connect.sh (devcontainer path) produce the
+// same MCP server entry for the same inputs. Parity is semantic, not byte:
+// connect.sh minimally URL-encodes cwd while writeMCPConfig uses
+// url.QueryEscape, so the encodings differ but must decode identically.
+func TestWriteMCPConfigParityWithConnectSh(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh available")
+	}
+	connect := filepath.Join("..", "features", "src", "wraptool-connect", "connect.sh")
+	if !fileExists(connect) {
+		t.Skipf("connect.sh not found at %s", connect)
+	}
+
+	const base = "http://127.0.0.1:8717"
+	const cwd = "/home/dev/proj with space"
+
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"with token", "s3cr3t"},
+		{"no token", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Go writer.
+			goPath := filepath.Join(t.TempDir(), ".mcp.json")
+			if err := writeMCPConfig(goPath, base, tc.token, cwd); err != nil {
+				t.Fatal(err)
+			}
+			goSrv := parseMCP(t, goPath)
+
+			// connect.sh, fresh target (no jq/merge path needed).
+			shPath := filepath.Join(t.TempDir(), ".mcp.json")
+			cmd := exec.Command(sh, connect)
+			cmd.Env = append(os.Environ(),
+				"WT_URL="+base,
+				"WRAPTOOL_TOKEN="+tc.token,
+				"WRAPTOOL_CWD="+cwd,
+				"WT_HARNESS=claude",
+				"WT_CONFIG_OUT="+shPath,
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("connect.sh failed: %v\n%s", err, out)
+			}
+			shSrv := parseMCP(t, shPath)
+
+			// type parity.
+			if goSrv["type"] != shSrv["type"] || goSrv["type"] != "sse" {
+				t.Errorf("type mismatch: go=%v sh=%v", goSrv["type"], shSrv["type"])
+			}
+
+			// url: same base+path, and cwd decodes to the same value on both.
+			goBase, goCwd := splitURL(t, goSrv["url"].(string))
+			shBase, shCwd := splitURL(t, shSrv["url"].(string))
+			if goBase != shBase || goBase != base+"/sse" {
+				t.Errorf("base/path mismatch: go=%q sh=%q", goBase, shBase)
+			}
+			if goCwd != cwd || shCwd != cwd {
+				t.Errorf("decoded cwd mismatch: go=%q sh=%q want=%q", goCwd, shCwd, cwd)
+			}
+
+			// headers: both present with matching Bearer, or both absent.
+			goH, goHas := goSrv["headers"].(map[string]any)
+			shH, shHas := shSrv["headers"].(map[string]any)
+			if goHas != shHas {
+				t.Fatalf("headers presence differs: go=%v sh=%v", goHas, shHas)
+			}
+			if goHas {
+				if goH["Authorization"] != shH["Authorization"] {
+					t.Errorf("Authorization mismatch: go=%v sh=%v", goH["Authorization"], shH["Authorization"])
+				}
+			}
+		})
 	}
 }
 
