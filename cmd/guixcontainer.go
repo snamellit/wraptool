@@ -119,6 +119,10 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	fmt.Printf("harness pool: %s (install harness binaries into %s)\n", pool, poolBin)
 
 	entry := "export WRAPTOOL_CONTAINER=1" +
+		// Guix defaults TERM=dumb (no colors) and the box has no terminfo DB, so
+		// normalize to a widely-assumed value; COLORTERM (forwarded below) drives
+		// truecolor detection for the harness.
+		"; export TERM=xterm-256color" +
 		"; export PATH=" + shellQuote(poolBin) + ":$PATH" +
 		"; export HOME=" + shellQuote(poolHome) +
 		"; cd " + shellQuote(root) + "; exec bash -l"
@@ -128,6 +132,7 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
 		"--share=" + pool + "=" + pool, // developer harness pool (binaries + state)
 		"--preserve=^WRAPTOOL_",        // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
+		"--preserve=^COLORTERM$",       // truecolor detection for the harness
 		"-m", manifest,
 		"--", "bash", "-lc", entry,
 	}
