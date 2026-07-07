@@ -58,7 +58,7 @@ type Descriptor struct {
 	Name string
 	Auth AuthMode
 	// Bin is the executable name in the harness pool. Empty means the harness is
-	// a host-side IDE/extension (cursor, roo, windsurf), not a container CLI, so
+	// a host-side IDE/extension (cursor, roo), not a container CLI, so
 	// it is not pool-installable.
 	Bin string
 	// Install is an argv template run by `wraptool harness install` to fetch the
@@ -73,7 +73,7 @@ type Descriptor struct {
 func (d Descriptor) IsCLI() bool { return d.Bin != "" }
 
 // order is the stable listing order (used for `all`, help, and error messages).
-var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo", "windsurf"}
+var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo"}
 
 // Registry maps a harness name to its descriptor.
 // Auth defaults to AuthUnverified (the zero value) for every harness except the
@@ -92,8 +92,7 @@ var Registry = map[string]Descriptor{
 	// roo accepts a headers object but a known bug drops the Authorization
 	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
 	// unverified — a token forces a loud failure rather than a silent 401.
-	"roo":      {Name: "roo", Render: renderRoo},                             // host VS Code ext
-	"windsurf": {Name: "windsurf", Auth: AuthHeader, Render: renderWindsurf}, // host IDE
+	"roo": {Name: "roo", Render: renderRoo}, // host VS Code ext
 }
 
 // Names returns the supported harness names in stable order.
@@ -272,17 +271,6 @@ func renderRoo(p Params) (string, []byte, error) {
 		s["url"] = appendCWD(effectiveURL(p), p)
 	})
 	return ".roo/mcp.json", mcpServers(server), nil
-}
-
-func renderWindsurf(p Params) (string, []byte, error) {
-	// Windsurf only supports global config.
-	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")
-	server := stdioOr(p, func(s map[string]any) {
-		s["serverUrl"] = appendCWD(effectiveURL(p), p)
-		bearer(s, p)
-	})
-	return path, mcpServers(server), nil
 }
 
 // --- helpers ---
