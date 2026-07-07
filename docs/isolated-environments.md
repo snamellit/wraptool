@@ -40,6 +40,13 @@ against the whitelist, and executes the command on the host.
 Guix provides `guix shell --container` which creates a lightweight,
 reproducible isolated environment using Linux namespaces (no Docker needed).
 
+> **Shortcut:** on a Guix host, `wraptool up` (or bare `wraptool`) in a repo
+> with a `manifest.scm` does all of this for you — starts the host server,
+> mints/injects the token, builds the container from `manifest.scm`, writes
+> `.mcp.json`, and drops you into a shell. The steps below are the manual
+> equivalent, useful for understanding the mechanism or customising it. See
+> [Getting started](getting-started.qmd#one-command-per-project-wraptool-up).
+
 ### Step 1: Start wraptool on the host
 
 ```bash

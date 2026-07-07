@@ -120,11 +120,32 @@ and does three things:
 1. **Ensures the shared server is running** — if it isn't, it starts `wraptool
    serve` detached (pidfile + lock under `$XDG_RUNTIME_DIR`, auto-generating the
    auth token), and waits for it to become reachable.
-2. **Brings up the project's dev container** via `devcontainer up`, injecting the
-   connection info: the auth token and this worktree's host path.
+2. **Brings up the project's container**, injecting the connection info: the auth
+   token and this worktree's host path. On a Guix host it uses a **native Guix
+   container** built from your project's `manifest.scm`; elsewhere it falls back
+   to `devcontainer up` (see below).
 3. **Drops you into a shell** in the container so you can start developing
    immediately. Exiting the shell leaves the container running; re-enter with
    `wraptool up`.
+
+### Which container runtime?
+
+`up` auto-selects (and prints) the backend:
+
+- **`guix`** — when `guix` is on `PATH` and the worktree has a `manifest.scm`.
+  It runs `guix shell --container --network -m manifest.scm`: no Docker, no image
+  build, and the container gets the **same toolchain you develop with** (from
+  `manifest.scm`), so the AI harness can compile, test, and analyze locally.
+- **`devcontainer`** — the fallback for non-Guix hosts (Arch, macOS, …); see
+  [Dev Containers](devcontainers.qmd).
+
+Force one with `--runtime=guix|devcontainer|auto`.
+
+Credentials never enter the container either way — the isolation is the
+mount/user namespace (your `$HOME`, SSH keys, and tokens are not mounted). git is
+available inside for local work (status/diff/commit/branch), but anything needing
+credentials (push, private fetch) goes through wraptool's policed MCP git tool on
+the host. See [`design/guix-container-runtime.md`](https://forge.snamellit.com/pti/wraptool/src/branch/main/design/guix-container-runtime.md).
 
 The shell opens automatically when you run `up` from a terminal. Control it with
 `--shell`:
