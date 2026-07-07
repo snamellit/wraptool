@@ -24,10 +24,12 @@
 (define %golangci-lint-version "2.12.2")
 
 ;; Runtime plumbing every self-contained use (image / --container) needs: a
-;; shell + coreutils for job/prep scripts, and CA roots for HTTPS dependency
-;; pulls (npm/pip/cargo/go modules). Named so the toolchain list below reads as
-;; project intent, not boilerplate. Harmless for local dev (the host has these).
-(define %plumbing '("bash" "coreutils" "nss-certs"))
+;; shell + the standard text utils that job/prep scripts and harnesses assume
+;; (coreutils has neither grep nor sed — they are separate packages in Guix),
+;; curl for fetches, and CA roots for HTTPS dependency pulls (npm/pip/cargo/go
+;; modules). Named so the toolchain list below reads as project intent, not
+;; boilerplate. Harmless for local dev (the host has these).
+(define %plumbing '("bash" "coreutils" "grep" "sed" "curl" "nss-certs"))
 
 (define golangci-lint
   (package
