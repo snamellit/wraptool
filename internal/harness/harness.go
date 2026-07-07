@@ -68,13 +68,16 @@ var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "roo", "wi
 // header (matches connect.sh + the container path). The rest are verified in
 // phase 3; until then a token forces a loud failure in Write.
 var Registry = map[string]Descriptor{
-	"agy":      {Name: "agy", Render: renderAgy},
+	"agy":      {Name: "agy", Auth: AuthHeader, Render: renderAgy},
 	"claude":   {Name: "claude", Auth: AuthHeader, Render: renderClaude},
-	"cursor":   {Name: "cursor", Render: renderCursor},
-	"opencode": {Name: "opencode", Render: renderOpenCode},
-	"gemini":   {Name: "gemini", Render: renderGemini},
+	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor},
+	"opencode": {Name: "opencode", Auth: AuthHeader, Render: renderOpenCode},
+	"gemini":   {Name: "gemini", Auth: AuthHeader, Render: renderGemini},
+	// roo accepts a headers object but a known bug drops the Authorization
+	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
+	// unverified — a token forces a loud failure rather than a silent 401.
 	"roo":      {Name: "roo", Render: renderRoo},
-	"windsurf": {Name: "windsurf", Render: renderWindsurf},
+	"windsurf": {Name: "windsurf", Auth: AuthHeader, Render: renderWindsurf},
 }
 
 // Names returns the supported harness names in stable order.
@@ -142,6 +145,7 @@ func renderAgy(p Params) (string, []byte, error) {
 	}
 	server := stdioOr(p, func(s map[string]any) {
 		s["serverUrl"] = appendCWD(effectiveURL(p), p)
+		bearer(s, p)
 	})
 	return path, mcpServers(server), nil
 }
@@ -185,6 +189,7 @@ func renderCursor(p Params) (string, []byte, error) {
 	}
 	server := stdioOr(p, func(s map[string]any) {
 		s["url"] = appendCWD(effectiveURL(p), p)
+		bearer(s, p)
 	})
 	return path, mcpServers(server), nil
 }
@@ -204,6 +209,7 @@ func renderOpenCode(p Params) (string, []byte, error) {
 	case "sse", "unix":
 		server["type"] = "remote"
 		server["url"] = appendCWD(effectiveURL(p), p)
+		bearer(server, p)
 	}
 	server["enabled"] = true
 	cfg := map[string]any{"mcp": map[string]any{"wraptool": server}}
@@ -218,6 +224,7 @@ func renderGemini(p Params) (string, []byte, error) {
 	}
 	server := stdioOr(p, func(s map[string]any) {
 		s["httpUrl"] = appendCWD(effectiveURL(p), p)
+		bearer(s, p)
 	})
 	return path, mcpServers(server), nil
 }
@@ -239,6 +246,7 @@ func renderWindsurf(p Params) (string, []byte, error) {
 	path := filepath.Join(home, ".codeium", "windsurf", "mcp_config.json")
 	server := stdioOr(p, func(s map[string]any) {
 		s["serverUrl"] = appendCWD(effectiveURL(p), p)
+		bearer(s, p)
 	})
 	return path, mcpServers(server), nil
 }

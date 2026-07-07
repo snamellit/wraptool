@@ -67,7 +67,7 @@ func fileExists(p string) bool {
 // still goes through wraptool's MCP git tool, which holds the host credentials.
 // --network (-N) gives outbound internet for dependency pulls, at the cost of
 // sharing the host network namespace. See design/guix-container-runtime.md.
-func bringUpGuixContainer(root, token, listen string, shell bool) error {
+func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	manifest := filepath.Join(root, "manifest.scm")
 	if !fileExists(manifest) {
 		return fmt.Errorf("no manifest.scm at %s — the guix runtime builds the "+
@@ -79,12 +79,12 @@ func bringUpGuixContainer(root, token, listen string, shell bool) error {
 	// loopback via probeAddr). The workspace is shared writable, so write the
 	// MCP client config on the host — no in-container tooling needed.
 	base := "http://" + probeAddr(listen)
-	mcpPath, err := harness.Write("claude", harness.Params{
+	mcpPath, err := harness.Write(hname, harness.Params{
 		Transport: "sse",
 		URL:       base + "/sse",
 		Token:     token,
 		CWD:       root, // host worktree path -> ?cwd= scoping
-		Dir:       root, // write .mcp.json into the shared workspace root
+		Dir:       root, // write the harness config into the shared workspace root
 	})
 	if err != nil {
 		return err

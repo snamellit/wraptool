@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
 
 	"github.com/spf13/cobra"
@@ -26,6 +27,7 @@ type upOptions struct {
 	shell       string // "auto" | "always" | "never"
 	workspace   string
 	runtime     string // "auto" | "guix" | "devcontainer"
+	harness     string // which harness to wire in the container (guix runtime)
 }
 
 func newUpCmd() *cobra.Command {
@@ -55,6 +57,7 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().StringVar(&opts.shell, "shell", "auto", "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", "auto", "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
+	cmd.Flags().StringVar(&opts.harness, "harness", "claude", "coding harness to wire in the container (guix runtime): "+strings.Join(harness.Names(), ", "))
 
 	return cmd
 }
@@ -102,7 +105,7 @@ func runUp(opts upOptions) error {
 	shell := wantShell(opts.shell)
 	switch rt {
 	case runtimeGuix:
-		return bringUpGuixContainer(root, token, cfg.Server.Listen, shell)
+		return bringUpGuixContainer(root, token, cfg.Server.Listen, opts.harness, shell)
 	case runtimeDevcontainer:
 		return bringUpContainer(root, token, shell)
 	}

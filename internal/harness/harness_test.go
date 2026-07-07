@@ -159,26 +159,43 @@ func TestWriteMergesPreservingOtherServers(t *testing.T) {
 	}
 }
 
-func TestClaudeAuthHeader(t *testing.T) {
-	base := Params{Transport: "sse", URL: "http://127.0.0.1:8717/sse", Global: true}
-
-	withTok := base
-	withTok.Token = "s3cr3t"
-	_, srv := serverEntry(t, "claude", "mcpServers", withTok)
-	h, ok := srv["headers"].(map[string]any)
-	if !ok || h["Authorization"] != "Bearer s3cr3t" {
-		t.Errorf("token set: want Bearer header, got %v", srv["headers"])
+// TestAuthHeaderHarnesses: every AuthHeader harness emits an
+// Authorization: Bearer header when a token is set, and none when it isn't.
+func TestAuthHeaderHarnesses(t *testing.T) {
+	topKey := map[string]string{
+		"claude": "mcpServers", "cursor": "mcpServers", "gemini": "mcpServers",
+		"windsurf": "mcpServers", "agy": "mcpServers", "opencode": "mcp",
 	}
+	for name, d := range Registry {
+		if d.Auth != AuthHeader {
+			continue
+		}
+		tk, ok := topKey[name]
+		if !ok {
+			t.Fatalf("AuthHeader harness %q missing from topKey map", name)
+		}
+		t.Run(name, func(t *testing.T) {
+			base := Params{Transport: "sse", URL: "http://127.0.0.1:8717/sse", Global: true}
 
-	_, srv = serverEntry(t, "claude", "mcpServers", base) // no token
-	if _, ok := srv["headers"]; ok {
-		t.Errorf("no token: headers should be absent, got %v", srv["headers"])
+			with := base
+			with.Token = "s3cr3t"
+			_, srv := serverEntry(t, name, tk, with)
+			h, ok := srv["headers"].(map[string]any)
+			if !ok || h["Authorization"] != "Bearer s3cr3t" {
+				t.Errorf("%s with token: want Bearer header, got %v", name, srv["headers"])
+			}
+
+			_, srv = serverEntry(t, name, tk, base)
+			if _, ok := srv["headers"]; ok {
+				t.Errorf("%s no token: headers should be absent, got %v", name, srv["headers"])
+			}
+		})
 	}
 }
 
 func TestWriteRejectsTokenForUnverifiedHarness(t *testing.T) {
-	// cursor is AuthUnverified: a token (networked use) must fail loudly.
-	if _, err := Write("cursor", Params{Transport: "sse", URL: "http://x/sse", Token: "t", Global: true}); err == nil {
+	// roo is AuthUnverified (SSE header bug): a token (networked use) must fail loudly.
+	if _, err := Write("roo", Params{Transport: "sse", URL: "http://x/sse", Token: "t", Dir: t.TempDir()}); err == nil {
 		t.Fatal("expected error using an unverified harness with a token")
 	}
 	// claude is AuthHeader: a token is fine (write to a temp dir, not real home).
