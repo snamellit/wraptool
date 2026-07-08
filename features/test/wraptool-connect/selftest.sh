@@ -25,7 +25,7 @@ printf '%s\n' \
 echo "1. Auto-detected gateway + cwd + token -> .mcp.json"
 OUT="$WORK/mcp.json"
 env -i sh -c "
-  WT_ROUTE_FILE='$ROUTE' WT_CONFIG_OUT='$OUT' \
+  WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT' \
   WRAPTOOL_TOKEN='tok123' WRAPTOOL_CWD='/home/pti/src/proj a' \
   PATH='$PATH' HOME='$WORK' PWD='$WORK' \
   sh '$CONNECT'
@@ -38,7 +38,7 @@ have '"type":"sse"' "$OUT"
 echo "2. Explicit url, no token -> no headers, trailing slash trimmed"
 OUT2="$WORK/mcp2.json"
 env -i sh -c "
-  WT_ROUTE_FILE='$ROUTE' WT_CONFIG_OUT='$OUT2' WT_URL='http://10.0.0.5:9000/' \
+  WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT2' WT_URL='http://10.0.0.5:9000/' \
   PATH='$PATH' HOME='$WORK' PWD='$WORK' \
   sh '$CONNECT'
 " >/dev/null
@@ -50,7 +50,7 @@ OUT3="$WORK/mcp3.json"
 printf '{\n  "mcpServers": {\n    "other": {"type":"stdio","command":"foo"}\n  }\n}\n' > "$OUT3"
 if command -v jq >/dev/null 2>&1; then
   env -i sh -c "
-    WT_ROUTE_FILE='$ROUTE' WT_CONFIG_OUT='$OUT3' WT_URL='http://10.0.0.5:8717' \
+    WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT3' WT_URL='http://10.0.0.5:8717' \
     PATH='$PATH' HOME='$WORK' PWD='$WORK' \
     sh '$CONNECT'
   " >/dev/null

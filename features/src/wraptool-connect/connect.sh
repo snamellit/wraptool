@@ -9,11 +9,15 @@
 #                    (for VS Code, set containerEnv WRAPTOOL_CWD=${localWorkspaceFolder})
 # Options (from options.env, written at install time): WT_HARNESS WT_PORT WT_URL
 #
-# Test hooks: WT_ROUTE_FILE overrides /proc/net/route; WT_CONFIG_OUT overrides the
-# output config path.
+# Test hooks: WT_ROUTE_FILE overrides /proc/net/route; WT_SHARE_DIR overrides the
+# install dir (skips the host's options.env); WT_CONFIG_OUT overrides the output
+# config path.
 set -eu
 
-SHARE=/usr/local/share/wraptool-connect
+# WT_SHARE_DIR overrides the install dir (test hook, like WT_ROUTE_FILE): a test
+# points it at an empty dir so the host's installed options.env cannot clobber
+# the WT_* env it passes in.
+SHARE="${WT_SHARE_DIR:-/usr/local/share/wraptool-connect}"
 [ -f "$SHARE/options.env" ] && . "$SHARE/options.env"
 : "${WT_HARNESS:=claude}"
 : "${WT_PORT:=8717}"
