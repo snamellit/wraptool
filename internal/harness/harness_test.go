@@ -257,6 +257,10 @@ func TestClaudeParityWithConnectSh(t *testing.T) {
 			cmd.Env = append(os.Environ(),
 				"WT_URL="+base, "WRAPTOOL_TOKEN="+tc.token, "WRAPTOOL_CWD="+cwd,
 				"WT_HARNESS=claude", "WT_CONFIG_OUT="+shOut,
+				// Isolate from a host-installed options.env (present when the
+				// wraptool-connect feature is installed on the test machine),
+				// which would otherwise clobber WT_URL above.
+				"WT_SHARE_DIR="+t.TempDir(),
 			)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("connect.sh failed: %v\n%s", err, out)
