@@ -27,6 +27,10 @@ lint:
     GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
     GOLANGCI_LINT_CACHE: "$CI_PROJECT_DIR/.cache/golangci"
     CGO_ENABLED: "0"
+    # Use the image's pinned Go; never silently download a toolchain. If the
+    # image's Go is older than go.mod's directive this fails loudly (a signal to
+    # refresh the image) instead of a flaky download that breaks gofmt/lint.
+    GOTOOLCHAIN: "local"
   cache:
     key: go-lint
     paths:
