@@ -31,7 +31,7 @@ jobs:
       - name: gofmt + go vet + golangci-lint + go test
         run: |
           guix shell -m manifest.scm -- sh -ec '
-            unformatted=$(gofmt -l .)
+            unformatted=$(gofmt -l $(git ls-files "*.go"))
             test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
             go vet ./...
             golangci-lint run ./...
