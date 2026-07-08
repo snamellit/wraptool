@@ -16,6 +16,11 @@ tools:     # one entry per wrapped CLI tool
 | `transport` | `stdio` \| `sse` \| `unix` | `stdio` | MCP transport |
 | `listen`    | string | — | `host:port` (sse) or socket path (unix) |
 | `auth_token_file` | string | — | Bearer token file for sse/unix |
+
+The `sse`/`unix` TCP listener serves both MCP HTTP transports on the one port —
+legacy SSE at `/sse` and Streamable HTTP at `/mcp` — behind the same
+`auth_token_file` Bearer check. Clients hit whichever their generated config
+targets.
 | `log_level` | string | `info` | log verbosity |
 | `request_log` | string | XDG data dir | path to capability-request JSONL |
 | `web` | map | — | operator request-review Web UI (see below) |
