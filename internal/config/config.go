@@ -29,6 +29,10 @@ type ServerConfig struct {
 	LogLevel      string    `yaml:"log_level"`
 	RequestLog    string    `yaml:"request_log"`
 	Web           WebConfig `yaml:"web"`
+	// AllowedCWDRoots, when non-empty, constrains a client-supplied working
+	// directory to these roots (symlinks resolved); a cwd outside them is
+	// refused. Empty = no containment (warn-only). See security audit F5.
+	AllowedCWDRoots []string `yaml:"allowed_cwd_roots"`
 }
 
 // WebConfig configures the operator-facing request-review Web UI. It runs

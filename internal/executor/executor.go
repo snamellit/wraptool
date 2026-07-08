@@ -97,7 +97,10 @@ func Run(ctx context.Context, tc *config.ToolConfig, subcommand []string, flags 
 	// (co-located helper executables like gke-gcloud-auth-plugin must resolve).
 	cmd.Env = ChildEnv(tc.Binary, env)
 
-	cwd := paths.ResolveCWD(ctx, tc.WorkingDir)
+	cwd, err := paths.ResolveCWD(ctx, tc.WorkingDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolving working directory: %w", err)
+	}
 	if cwd != "" {
 		cmd.Dir = cwd
 	}

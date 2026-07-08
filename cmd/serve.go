@@ -147,9 +147,15 @@ func configPointers[T any](m map[string]T) map[string]*T {
 // newSSEServer builds the SSE server shared by the sse and unix transports,
 // wiring the client-CWD context func and appending query params to the message
 // endpoint. Callers may pass extra transport-specific options.
-func newSSEServer(s *server.MCPServer, extra ...server.SSEOption) *server.SSEServer {
+func newSSEServer(s *server.MCPServer, allowedCWDRoots []string, extra ...server.SSEOption) *server.SSEServer {
+	if len(allowedCWDRoots) == 0 {
+		log.Printf("warning: server.allowed_cwd_roots is unset — a client-supplied cwd is not " +
+			"contained and may point at any host directory the server can access. See F5 in " +
+			"design/security-audit-policy-enforcement.md.")
+	}
 	opts := []server.SSEOption{
 		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
+			ctx = paths.WithAllowedCWDRoots(ctx, allowedCWDRoots)
 			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
 				ctx = paths.WithClientCWD(ctx, cwd)
 			}
@@ -181,7 +187,7 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("server.listen is required for sse transport (e.g. 127.0.0.1:8717)")
 	}
 
-	handler, err := authWrapped(newSSEServer(s), cfg.Server.AuthTokenFile)
+	handler, err := authWrapped(newSSEServer(s, cfg.Server.AllowedCWDRoots), cfg.Server.AuthTokenFile)
 	if err != nil {
 		return err
 	}
@@ -221,7 +227,7 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("setting socket permissions: %w", err)
 	}
 
-	sseServer := newSSEServer(s, server.WithBaseURL("http://localhost"))
+	sseServer := newSSEServer(s, cfg.Server.AllowedCWDRoots, server.WithBaseURL("http://localhost"))
 
 	handler, err := authWrapped(sseServer, cfg.Server.AuthTokenFile)
 	if err != nil {
