@@ -109,9 +109,10 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	}
 
 	// The developer harness pool: shared across all projects so a harness is
-	// installed once, not per session. bin/ goes on PATH; home/ is the harness
-	// HOME so its config/auth persist. It is the developer's toolbox — not the
-	// project (manifest.scm) and not host credentials (which stay host-side).
+	// installed once, not per session. bin/ goes on PATH (mounted read-only —
+	// installs happen host-side via `wraptool harness install`); home/ is the
+	// harness HOME so its config/auth persist (writable). It is the developer's
+	// toolbox — not the project (manifest.scm) and not host credentials.
 	pool, poolBin, poolHome, err := ensureHarnessPool()
 	if err != nil {
 		return err
@@ -123,16 +124,23 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		// normalize to a widely-assumed value; COLORTERM (forwarded below) drives
 		// truecolor detection for the harness.
 		"; export TERM=xterm-256color" +
-		"; export PATH=" + shellQuote(poolBin) + ":$PATH" +
+		// Append (not prepend) the pool bin dir so a pool binary can never shadow a
+		// toolchain binary (git/go/bash) — otherwise a poisoned pool could hijack
+		// what every project's container runs.
+		"; export PATH=$PATH:" + shellQuote(poolBin) +
 		"; export HOME=" + shellQuote(poolHome) +
 		"; cd " + shellQuote(root) + "; exec bash -l"
 	args := []string{
 		"shell", "--container", "--network",
 		"--emulate-fhs",                // FHS layout (/usr/bin/env, /lib64/ld-linux-*)
 		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
-		"--share=" + pool + "=" + pool, // developer harness pool (binaries + state)
-		"--preserve=^WRAPTOOL_",        // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
-		"--preserve=^COLORTERM$",       // truecolor detection for the harness
+		// Harness pool, split by trust: bin/ is read-only (--expose) so a compromised
+		// agent in one project can't trojan the binaries other projects run; home/
+		// (auth + state) stays writable (--share) so login/config persist per session.
+		"--expose=" + poolBin + "=" + poolBin,
+		"--share=" + poolHome + "=" + poolHome,
+		"--preserve=^WRAPTOOL_",  // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
+		"--preserve=^COLORTERM$", // truecolor detection for the harness
 		"-m", manifest,
 		"--", "bash", "-lc", entry,
 	}
