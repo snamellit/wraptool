@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
 
@@ -17,6 +18,7 @@ func newInitCmd() *cobra.Command {
 		socketPath string
 		harnesses  []string
 		global     bool
+		configPath string
 	)
 
 	cmd := &cobra.Command{
@@ -43,7 +45,7 @@ Examples:
   # Set up with stdio transport (wraptool started by the harness)
   wraptool init --harness claude --transport stdio`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInit(harnesses, transport, url, socketPath, global)
+			return runInit(harnesses, transport, url, socketPath, global, configPath)
 		},
 	}
 
@@ -52,15 +54,29 @@ Examples:
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8717/sse", "SSE URL for the wraptool server")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (for unix transport)")
 	cmd.Flags().BoolVar(&global, "global", false, "write to user-level config instead of project-level")
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 	cmd.MarkFlagRequired("harness")
 
 	return cmd
 }
 
-func runInit(harnesses []string, transport, url, socketPath string, global bool) error {
+func runInit(harnesses []string, transport, url, socketPath string, global bool, configPath string) error {
 	wraptoolBin, err := os.Executable()
 	if err != nil {
 		wraptoolBin = "wraptool"
+	}
+
+	// Read the server's auth token so networked harness configs carry the
+	// Authorization: Bearer header (agy/claude/… render it when a token is set).
+	// Without this the generated config is header-less and 401s against an
+	// auth-enabled server. A missing/tokenless config means localhost-trust — no
+	// header, unchanged behaviour.
+	cfgFile := configOrDefault(configPath)
+	var token string
+	if cfg, cerr := config.Load(cfgFile); cerr == nil {
+		if token, err = readAuthToken(cfg); err != nil {
+			return err
+		}
 	}
 
 	p := harness.Params{
@@ -68,8 +84,9 @@ func runInit(harnesses []string, transport, url, socketPath string, global bool)
 		URL:         url,
 		SocketPath:  socketPath,
 		WraptoolBin: wraptoolBin,
-		ConfigFile:  paths.DefaultConfigFile(),
+		ConfigFile:  cfgFile,
 		Global:      global,
+		Token:       token,
 	}
 
 	for _, h := range harness.Expand(harnesses) {

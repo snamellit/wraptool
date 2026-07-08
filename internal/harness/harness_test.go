@@ -57,20 +57,24 @@ func TestRenderAgy(t *testing.T) {
 		}
 	})
 
-	t.Run("sse project (cwd appended)", func(t *testing.T) {
+	// Antigravity speaks Streamable HTTP, so agy's serverUrl targets /mcp, not the
+	// SSE /sse the base URL carries. See renderAgy / newStreamableServer.
+	const streamURL = "http://127.0.0.1:8717/mcp"
+
+	t.Run("sse project (streamable /mcp, cwd appended)", func(t *testing.T) {
 		p := base
 		p.Transport = "sse"
 		_, srv := serverEntry(t, "agy", "mcpServers", p)
 		u, _ := srv["serverUrl"].(string)
-		if !strings.HasPrefix(u, url) {
-			t.Errorf("serverUrl = %q, want prefix %q", u, url)
+		if !strings.HasPrefix(u, streamURL) {
+			t.Errorf("serverUrl = %q, want prefix %q", u, streamURL)
 		}
 		if !strings.Contains(u, "cwd=") {
 			t.Errorf("serverUrl missing cwd=: %q", u)
 		}
 	})
 
-	t.Run("sse global (no cwd, global path)", func(t *testing.T) {
+	t.Run("sse global (streamable /mcp, no cwd, global path)", func(t *testing.T) {
 		p := base
 		p.Transport = "sse"
 		p.Global = true
@@ -79,8 +83,8 @@ func TestRenderAgy(t *testing.T) {
 		if want := filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json"); path != want {
 			t.Errorf("global path = %q, want %q", path, want)
 		}
-		if u, _ := srv["serverUrl"].(string); u != url {
-			t.Errorf("global serverUrl = %q, want %q (no cwd)", u, url)
+		if u, _ := srv["serverUrl"].(string); u != streamURL {
+			t.Errorf("global serverUrl = %q, want %q (no cwd)", u, streamURL)
 		}
 	})
 }

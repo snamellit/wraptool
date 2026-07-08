@@ -179,7 +179,10 @@ func renderAgy(p Params) (string, []byte, error) {
 		path = filepath.Join(home, ".gemini", "antigravity-cli", "mcp_config.json")
 	}
 	server := stdioOr(p, func(s map[string]any) {
-		s["serverUrl"] = appendCWD(effectiveURL(p), p)
+		// Antigravity negotiates the 2025-03 Streamable HTTP transport (POSTs
+		// initialize to the URL), so point it at wraptool's /mcp endpoint, not the
+		// legacy SSE /sse (which would 405 the POST). See newStreamableServer.
+		s["serverUrl"] = appendCWD(streamableURL(p), p)
 		bearer(s, p)
 	})
 	return path, mcpServers(server), nil
@@ -323,6 +326,18 @@ func effectiveURL(p Params) string {
 		return p.URL
 	}
 	return p.URL
+}
+
+// streamableURL derives wraptool's Streamable HTTP endpoint (/mcp) from the
+// configured base URL, for harnesses that speak the 2025-03 transport instead of
+// legacy SSE. It swaps only the path, preserving scheme/host/port.
+func streamableURL(p Params) string {
+	u, err := url.Parse(p.URL)
+	if err != nil {
+		return p.URL
+	}
+	u.Path = "/mcp"
+	return u.String()
 }
 
 // appendCWD adds a ?cwd= query param scoping tools to the worktree. It uses
