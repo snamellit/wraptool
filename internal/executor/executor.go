@@ -18,24 +18,41 @@ const defaultMaxOutput = 1 << 20 // 1MB
 const defaultPath = "/usr/bin:/bin"
 
 // childPath returns the PATH for a child process: the tool binary's own
-// directory prepended to the minimal base, so helper executables that ship
-// alongside the tool (credential plugins, components) resolve. The binary's
-// directory is omitted when it is empty or already part of the base.
+// directory prepended to the server's inherited PATH (falling back to a minimal
+// base when unset). We inherit PATH — and only PATH, never the rest of
+// wraptool's environment — so a tool can find its genuine runtime dependencies
+// (e.g. git → ssh, which on a store-based distro like Guix lives in a separate
+// prefix, not next to the git binary) without any parent credentials leaking.
+// The binary's own directory is still prepended for co-located helpers (e.g.
+// kubectl → gke-gcloud-auth-plugin), and skipped when empty or already present.
 func childPath(binary string) string {
-	dir := filepath.Dir(binary)
-	switch dir {
-	case "", ".", "/usr/bin", "/bin":
-		return defaultPath
-	default:
-		return dir + ":" + defaultPath
+	base := os.Getenv("PATH")
+	if base == "" {
+		base = defaultPath
 	}
+	dir := filepath.Dir(binary)
+	if dir == "" || dir == "." || pathContains(base, dir) {
+		return base
+	}
+	return dir + ":" + base
+}
+
+// pathContains reports whether dir is already an entry in a PATH-style list.
+func pathContains(pathList, dir string) bool {
+	for _, p := range filepath.SplitList(pathList) {
+		if p == dir {
+			return true
+		}
+	}
+	return false
 }
 
 // ChildEnv builds the minimal, clean environment for a wrapped child process:
-// PATH (the binary's own dir prepended to the base, see childPath), HOME, LANG,
-// plus the tool's resolved env vars. It never inherits wraptool's own
-// environment, so credentials cannot leak from the parent. Both CLI tools and
-// spawned stdio MCP servers use this, keeping their env isolation identical.
+// PATH (the binary's own dir prepended to the server's PATH, see childPath),
+// HOME, LANG, plus the tool's resolved env vars. Apart from PATH it never
+// inherits wraptool's own environment, so credentials cannot leak from the
+// parent. Both CLI tools and spawned stdio MCP servers use this, keeping their
+// env isolation identical.
 func ChildEnv(binary string, resolved map[string]string) []string {
 	envSlice := []string{
 		"PATH=" + childPath(binary),
