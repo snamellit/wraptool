@@ -43,3 +43,18 @@ func SanitizePositionalArgs(args []string) error {
 	}
 	return nil
 }
+
+// SanitizeFlagValues rejects flag values that could be reinterpreted as options
+// by the wrapped tool. buildArgs emits each flag as two argv tokens (flag, value),
+// so a value beginning with '-' — e.g. a valueless flag handed
+// "--upload-pack=/tmp/x" — lands as its own option token and bypasses the flag
+// allowlist entirely. Mirrors the positional-arg guard above. See the F2 finding
+// in design/security-audit-policy-enforcement.md.
+func SanitizeFlagValues(flags map[string]string) error {
+	for flag, value := range flags {
+		if strings.HasPrefix(value, "-") {
+			return fmt.Errorf("flag %q value %q must not start with '-' (possible option injection)", flag, value)
+		}
+	}
+	return nil
+}

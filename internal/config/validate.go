@@ -43,6 +43,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	for _, root := range c.Server.AllowedCWDRoots {
+		if !filepath.IsAbs(root) {
+			return fmt.Errorf("server.allowed_cwd_roots: %q must be an absolute path", root)
+		}
+	}
+
 	if len(c.Tools) == 0 && len(c.MCPServers) == 0 {
 		return fmt.Errorf("no tools configured")
 	}

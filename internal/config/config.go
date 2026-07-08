@@ -29,6 +29,10 @@ type ServerConfig struct {
 	LogLevel      string    `yaml:"log_level"`
 	RequestLog    string    `yaml:"request_log"`
 	Web           WebConfig `yaml:"web"`
+	// AllowedCWDRoots, when non-empty, constrains a client-supplied working
+	// directory to these roots (symlinks resolved); a cwd outside them is
+	// refused. Empty = no containment (warn-only). See security audit F5.
+	AllowedCWDRoots []string `yaml:"allowed_cwd_roots"`
 }
 
 // WebConfig configures the operator-facing request-review Web UI. It runs
@@ -181,10 +185,12 @@ func Load(path string) (*Config, error) {
 }
 
 // LoadStrict loads and defaults the config like Load, but rejects unknown or
-// misspelled keys (yaml KnownFields) instead of silently ignoring them. The
-// lenient Load is used at runtime for forward-compatibility; LoadStrict backs
-// `wraptool config validate`, so an operator can catch a typo'd key (e.g.
-// flag_constraint vs flag_constraints) that would otherwise be a silent no-op.
+// misspelled keys (yaml KnownFields) instead of silently ignoring them. It backs
+// the security-critical paths — `serve`, config reload, and `wraptool config
+// validate` — so a typo'd key (e.g. flag_constraint vs flag_constraints) fails
+// loudly instead of silently dropping a rule and weakening the policy. The
+// lenient Load remains for read-only/forward-compatible consumers (up, requests,
+// server status, web UI) that don't gate execution.
 func LoadStrict(path string) (*Config, error) {
 	return load(path, true)
 }

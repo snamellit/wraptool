@@ -81,7 +81,10 @@ func watchConfigFile(configPath string, reg *registrar) {
 
 func reloadConfig(configPath string, reg *registrar, trigger string) {
 	log.Printf("reloading config (%s)...", trigger)
-	newCfg, err := config.Load(configPath)
+	// Strict load (see serve): a typo'd restrictive key must fail the reload, not
+	// silently weaken the live policy. On any error the old policy stays in
+	// effect (fail-closed) — F1 in design/security-audit-policy-enforcement.md.
+	newCfg, err := config.LoadStrict(configPath)
 	if err != nil {
 		log.Printf("reload failed: %s", err)
 		return

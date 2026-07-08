@@ -10,6 +10,7 @@ import (
 // plus the resolved vars — and nothing inherited from wraptool's own env.
 func TestChildEnv(t *testing.T) {
 	t.Setenv("HOME", "/home/tester")
+	t.Setenv("PATH", "/usr/bin:/bin") // deterministic base for the assertion below
 	t.Setenv("WRAPTOOL_SECRET", "must-not-leak")
 
 	env := ChildEnv("/opt/tools/gcloud", map[string]string{"CLOUDSDK_CORE_PROJECT": "demo"})
@@ -40,6 +41,7 @@ func TestChildEnv(t *testing.T) {
 }
 
 func TestChildPath(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin") // deterministic base
 	cases := []struct {
 		binary string
 		want   string
@@ -54,5 +56,28 @@ func TestChildPath(t *testing.T) {
 		if got := childPath(c.binary); got != c.want {
 			t.Errorf("childPath(%q) = %q, want %q", c.binary, got, c.want)
 		}
+	}
+}
+
+// TestChildPathInheritsServerPATH locks the option-3 behaviour: the child PATH
+// is the server's PATH (so genuine deps like ssh, in their own store prefix,
+// resolve), with the tool dir prepended and no duplicate entry.
+func TestChildPathInheritsServerPATH(t *testing.T) {
+	t.Setenv("PATH", "/gnu/store/openssh/bin:/usr/bin:/bin")
+
+	if got, want := childPath("/gnu/store/git/bin/git"), "/gnu/store/git/bin:/gnu/store/openssh/bin:/usr/bin:/bin"; got != want {
+		t.Errorf("childPath prepends tool dir to server PATH: got %q, want %q", got, want)
+	}
+	// A dir already on the server PATH is not duplicated.
+	if got, want := childPath("/gnu/store/openssh/bin/ssh"), "/gnu/store/openssh/bin:/usr/bin:/bin"; got != want {
+		t.Errorf("childPath must not duplicate an existing entry: got %q, want %q", got, want)
+	}
+}
+
+// TestChildPathFallback: an empty server PATH falls back to the minimal base.
+func TestChildPathFallback(t *testing.T) {
+	t.Setenv("PATH", "")
+	if got, want := childPath("/opt/tools/gcloud"), "/opt/tools:/usr/bin:/bin"; got != want {
+		t.Errorf("childPath fallback: got %q, want %q", got, want)
 	}
 }

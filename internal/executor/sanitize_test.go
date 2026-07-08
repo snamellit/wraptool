@@ -52,3 +52,26 @@ func TestSanitizePositionalArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestSanitizeFlagValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		flags   map[string]string
+		wantErr bool
+	}{
+		{"clean values", map[string]string{"--output": "json", "--message": "hello world"}, false},
+		{"empty value (bare flag)", map[string]string{"--verbose": ""}, false},
+		{"path value", map[string]string{"--file": "src/main.go"}, false},
+		{"option injection via value", map[string]string{"--verbose": "--upload-pack=/tmp/x"}, true},
+		{"short option injection", map[string]string{"--n": "-rf"}, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := SanitizeFlagValues(tt.flags)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SanitizeFlagValues() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}

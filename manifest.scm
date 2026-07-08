@@ -29,7 +29,7 @@
 ;; curl for fetches, and CA roots for HTTPS dependency pulls (npm/pip/cargo/go
 ;; modules). Named so the toolchain list below reads as project intent, not
 ;; boilerplate. Harmless for local dev (the host has these).
-(define %plumbing '("bash" "coreutils" "grep" "sed" "curl" "nss-certs"))
+(define %plumbing '("bash" "coreutils" "grep" "sed" "curl" "nss-certs" "less" "fd" "ripgrep"))
 
 (define golangci-lint
   (package
