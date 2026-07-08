@@ -62,7 +62,11 @@ func runServe(configPath string) error {
 		configPath = paths.DefaultConfigFile()
 	}
 
-	cfg, err := config.Load(configPath)
+	// Strict load: reject unknown/misspelled keys rather than silently ignoring
+	// them. A typo'd restrictive key (deny, deny_flags, flag_constraints) would
+	// otherwise be dropped and weaken the policy with no error — see the F1
+	// finding in design/security-audit-policy-enforcement.md.
+	cfg, err := config.LoadStrict(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}

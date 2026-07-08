@@ -96,6 +96,42 @@ func TestCheckConstraints_Pattern(t *testing.T) {
 	}
 }
 
+func TestCheckConstraints_PatternAnchored(t *testing.T) {
+	// An unanchored pattern must still be enforced as an exact-value match, not a
+	// substring match — otherwise `main` would admit `main-evil`. See F6.
+	constraints := map[string]config.FlagConstraint{
+		"--branch": {Pattern: `main`},
+	}
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{"exact match", "main", false},
+		{"suffix injection", "main-evil", true},
+		{"prefix injection", "evilmain", true},
+		{"substring", "xmainx", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkConstraints(map[string]string{"--branch": tt.value}, constraints)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkConstraints() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+
+	// A pattern with a top-level alternation must anchor both branches, not just
+	// leave the last one open-ended.
+	alt := map[string]config.FlagConstraint{"--mode": {Pattern: `read|write`}}
+	if err := checkConstraints(map[string]string{"--mode": "read"}, alt); err != nil {
+		t.Errorf("alternation branch should match exactly, got: %v", err)
+	}
+	if err := checkConstraints(map[string]string{"--mode": "writeXXL"}, alt); err == nil {
+		t.Error("alternation must anchor every branch (writeXXL should fail)")
+	}
+}
+
 func TestCheckConstraints_BooleanType(t *testing.T) {
 	// A boolean flag is valueless: the handler renders it as a bare --flag,
 	// reaching the policy with an empty value. It must be accepted, not rejected

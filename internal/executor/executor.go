@@ -79,6 +79,11 @@ func Run(ctx context.Context, tc *config.ToolConfig, subcommand []string, flags 
 		return nil, fmt.Errorf("positional argument check failed: %w", err)
 	}
 
+	// Reject flag values that would be reparsed as options (option injection).
+	if err := SanitizeFlagValues(flags); err != nil {
+		return nil, fmt.Errorf("flag value check failed: %w", err)
+	}
+
 	// Resolve environment.
 	env, err := tc.ResolvedEnv()
 	if err != nil {

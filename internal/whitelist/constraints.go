@@ -66,7 +66,13 @@ func validateValue(flagName, value string, c config.FlagConstraint) error {
 	// string/untyped (and integer, after range) fall through to the pattern.
 
 	if c.Pattern != "" {
-		matched, err := regexp.MatchString(c.Pattern, value)
+		// Anchor the pattern to the full value. Go's regexp (like JSON Schema)
+		// treats an unanchored pattern as a substring match, so a constraint like
+		// `main` would also admit `main-evil`. Wrapping in ^(?:…)$ makes every
+		// constraint an exact-value allowlist — the security intent — and is a
+		// no-op for patterns already written with ^…$. See design/security-audit.
+		anchored := "^(?:" + c.Pattern + ")$"
+		matched, err := regexp.MatchString(anchored, value)
 		if err != nil {
 			return fmt.Errorf("flag %q: invalid pattern %q: %w", flagName, c.Pattern, err)
 		}
