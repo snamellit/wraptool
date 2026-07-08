@@ -12,3 +12,7 @@
 .gemini/
 .mcp.json
 .devcontainer/devcontainer-lock.json
+.agents
+.mcp.json*
+opencode.json
+skills-lock.json
