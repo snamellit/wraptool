@@ -34,7 +34,12 @@ lint:
   rules:
     - if: $CI_COMMIT_BRANCH
   script:
-    - test -z "$(gofmt -l .)" || { echo 'gofmt needed on:'; gofmt -l .; exit 1; }
+    # gofmt only tracked files: `gofmt -l .` would also walk the in-project Go
+    # module/toolchain cache (GOPATH is under $CI_PROJECT_DIR so GitLab can cache
+    # it), and gofmt does NOT skip dot-dirs the way `go ./...` does — it would
+    # then parse the downloaded stdlib testdata and fail. go vet / golangci use
+    # ./... so they already skip .cache.
+    - test -z "$(gofmt -l $(git ls-files '*.go'))" || { echo 'gofmt needed on:'; gofmt -l $(git ls-files '*.go'); exit 1; }
     - go vet ./...
     - golangci-lint run ./...
 
