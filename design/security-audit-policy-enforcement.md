@@ -44,19 +44,24 @@ allow/deny logic itself.
 
 ## Findings
 
-| # | Severity | Finding | Evidence |
-|---|---|---|---|
-| F1 | 🔴 High | Typo'd restrictive keys are silently dropped (lenient decode); serve & reload fail-open | `config.go:201`, `reload.go:84`, `validate.go` |
-| F2 | 🔴 High | Option injection via unchecked flag *values* (esp. valueless flags) | `sanitize.go:35-45`, `executor.go:132-137`, `constraints.go:50-53`, `handler.go:53-64` |
-| F5 | 🔴 High | Client-supplied `cwd` is used unvalidated → allowed commands run in an attacker-chosen dir (git repo-local config/hook execution) | `context.go:31-32`, `executor.go:95-98` |
-| F3 | 🟠 Medium | Positional args have no *content* constraint, only a max count | `policy.go:98` |
-| F6 | 🟠 Medium | Flag-value regex patterns are unanchored (substring match) — constraints weaker than authored | `constraints.go:69` |
-| F4 | 🟡 Low | Deny matches exact subcommand length, not prefix | `policy.go:119-129` |
-| M1 | 🟡 Low | Upstream MCP child is spawned even with zero allowed tools | `mcpproxy/source.go:61-73,83` |
-| M2 | 🟡 Low | Introspection runs `--help`/`--version` unsanitized and outside flag-level policy | `introspect.go:72-99` |
+| # | Severity | Finding | Status | Evidence |
+|---|---|---|---|---|
+| F1 | 🔴 High | Typo'd restrictive keys are silently dropped (lenient decode); serve & reload fail-open | ✅ fixed `1adb80b` | `config.go:201`, `reload.go:84`, `validate.go` |
+| F2 | 🔴 High | Option injection via unchecked flag *values* (esp. valueless flags) | ✅ fixed `1adb80b` | `sanitize.go:35-45`, `executor.go:132-137`, `constraints.go:50-53`, `handler.go:53-64` |
+| F5 | 🔴 High | Client-supplied `cwd` is used unvalidated → allowed commands run in an attacker-chosen dir (git repo-local config/hook execution) | ✅ fixed `32903be` | `context.go:31-32`, `executor.go:95-98` |
+| F3 | 🟠 Medium | Positional args have no *content* constraint, only a max count | ⬜ open | `policy.go:98` |
+| F6 | 🟠 Medium | Flag-value regex patterns are unanchored (substring match) — constraints weaker than authored | ✅ fixed `1adb80b` | `constraints.go:69` |
+| F4 | 🟡 Low | Deny matches exact subcommand length, not prefix | ⬜ open | `policy.go:119-129` |
+| M1 | 🟡 Low | Upstream MCP child is spawned even with zero allowed tools | ⬜ open | `mcpproxy/source.go:61-73,83` |
+| M2 | 🟡 Low | Introspection runs `--help`/`--version` unsanitized and outside flag-level policy | ⬜ open | `introspect.go:72-99` |
 
 > Validation pass (2026-07-08): F1–F4 re-verified against code, cites confirmed.
 > F5 and F6 were found during that review and added below.
+>
+> Remediation (2026-07-08): F1, F2, F5, F6 fixed on branch
+> `security-policy-hardening` (commits `1adb80b`, `32903be`); build/vet/test
+> green. F3, F4, M1, M2 remain open. The evidence line-cites above describe the
+> *pre-fix* code — see the commits for the fixed state.
 
 ### F1 — Typo'd security keys are silently dropped (FAIL-OPEN) 🔴
 
@@ -237,9 +242,9 @@ host-side against:
 
 ## Proposed remediation order
 
-1. **F1** — `serve` + reload use `LoadStrict` (or warn on unknown keys). Cheap, closes the silent-typo fail-open.
-2. **F2** — executor rejects option-like (`-`-leading) flag values / drops values on valueless flags. Cheap, closes the flag-value injection.
-3. **F6** — auto-anchor constraint patterns. Cheap, and it hardens the mechanism F2 and the checklist depend on — do it alongside F2.
-4. **F5** — allowlist/contain `cwd` to the workspace root; reject escapes. Cheap guard; pair with git hardening.
-5. **F3** — optional per-positional pattern in `ArgConstraints`. Larger; enables real least-privilege on positionals.
-6. **F4 / M1 / M2** — prefix-deny (or doc), skip zero-tool spawns, sanitize introspection args.
+1. ~~**F1** — `serve` + reload use `LoadStrict`.~~ ✅ done (`1adb80b`) — chose hard-fail over warn-only; lenient `Load` kept for read-only consumers.
+2. ~~**F2** — executor rejects option-like (`-`-leading) flag values.~~ ✅ done (`1adb80b`) — `SanitizeFlagValues`.
+3. ~~**F6** — auto-anchor constraint patterns.~~ ✅ done (`1adb80b`) — `^(?:…)$` in `validateValue`.
+4. ~~**F5** — contain `cwd` to allowed roots; reject escapes.~~ ✅ done (`32903be`) — `server.allowed_cwd_roots`, warn-only when unset (non-breaking).
+5. **F3** — optional per-positional pattern in `ArgConstraints`. Larger; enables real least-privilege on positionals. *(open)*
+6. **F4 / M1 / M2** — prefix-deny (or doc), skip zero-tool spawns, sanitize introspection args. *(open)*
