@@ -154,17 +154,46 @@ func newSSEServer(s *server.MCPServer, allowedCWDRoots []string, extra ...server
 			"design/security-audit-policy-enforcement.md.")
 	}
 	opts := []server.SSEOption{
-		server.WithSSEContextFunc(func(ctx context.Context, r *http.Request) context.Context {
-			ctx = paths.WithAllowedCWDRoots(ctx, allowedCWDRoots)
-			if cwd := r.URL.Query().Get("cwd"); cwd != "" {
-				ctx = paths.WithClientCWD(ctx, cwd)
-			}
-			return ctx
-		}),
+		server.WithSSEContextFunc(server.SSEContextFunc(cwdContextFunc(allowedCWDRoots))),
 		server.WithAppendQueryToMessageEndpoint(),
 	}
 	opts = append(opts, extra...)
 	return server.NewSSEServer(s, opts...)
+}
+
+// cwdContextFunc injects the operator's allowed-CWD roots and any client-supplied
+// cwd query param into the request context, shared by the SSE and Streamable HTTP
+// transports so both enforce F5 containment identically.
+func cwdContextFunc(allowedCWDRoots []string) func(context.Context, *http.Request) context.Context {
+	return func(ctx context.Context, r *http.Request) context.Context {
+		ctx = paths.WithAllowedCWDRoots(ctx, allowedCWDRoots)
+		if cwd := r.URL.Query().Get("cwd"); cwd != "" {
+			ctx = paths.WithClientCWD(ctx, cwd)
+		}
+		return ctx
+	}
+}
+
+// newStreamableServer builds the Streamable HTTP transport (single POST/GET
+// endpoint at /mcp), used by clients such as Antigravity that negotiate the
+// 2025-03 transport instead of legacy SSE. It shares the tool registry and the
+// same CWD context func as the SSE server.
+func newStreamableServer(s *server.MCPServer, allowedCWDRoots []string) *server.StreamableHTTPServer {
+	return server.NewStreamableHTTPServer(s,
+		server.WithEndpointPath("/mcp"),
+		server.WithHTTPContextFunc(cwdContextFunc(allowedCWDRoots)),
+	)
+}
+
+// newMCPHTTPHandler mounts both transports on one mux — Streamable HTTP at /mcp,
+// legacy SSE at /sse (+ its /message endpoint) — behind a single Bearer-auth
+// wrapper, so SSE clients (claude, cursor) and Streamable clients (Antigravity)
+// hit the same listener with the same tool registry and auth.
+func newMCPHTTPHandler(s *server.MCPServer, cfg *config.Config, sseExtra ...server.SSEOption) (http.Handler, error) {
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", newStreamableServer(s, cfg.Server.AllowedCWDRoots))
+	mux.Handle("/", newSSEServer(s, cfg.Server.AllowedCWDRoots, sseExtra...))
+	return authWrapped(mux, cfg.Server.AuthTokenFile)
 }
 
 // authWrapped wraps handler with Bearer-token auth when tokenFile is set,
@@ -187,12 +216,12 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("server.listen is required for sse transport (e.g. 127.0.0.1:8717)")
 	}
 
-	handler, err := authWrapped(newSSEServer(s, cfg.Server.AllowedCWDRoots), cfg.Server.AuthTokenFile)
+	handler, err := newMCPHTTPHandler(s, cfg)
 	if err != nil {
 		return err
 	}
 
-	log.Printf("wraptool MCP server starting on %s (SSE)", cfg.Server.Listen)
+	log.Printf("wraptool MCP server starting on %s (SSE at /sse, Streamable HTTP at /mcp)", cfg.Server.Listen)
 
 	srv := &http.Server{
 		Addr:    cfg.Server.Listen,
@@ -227,9 +256,7 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 		return fmt.Errorf("setting socket permissions: %w", err)
 	}
 
-	sseServer := newSSEServer(s, cfg.Server.AllowedCWDRoots, server.WithBaseURL("http://localhost"))
-
-	handler, err := authWrapped(sseServer, cfg.Server.AuthTokenFile)
+	handler, err := newMCPHTTPHandler(s, cfg, server.WithBaseURL("http://localhost"))
 	if err != nil {
 		return err
 	}
