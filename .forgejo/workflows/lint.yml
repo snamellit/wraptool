@@ -31,6 +31,7 @@ jobs:
       - name: gofmt + go vet + golangci-lint + go test
         run: |
           guix shell -m manifest.scm -- sh -ec '
+            export GOTOOLCHAIN=local   # use the manifest Go; never silently download a toolchain
             unformatted=$(gofmt -l $(git ls-files "*.go"))
             test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }
             go vet ./...
