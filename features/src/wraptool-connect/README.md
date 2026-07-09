@@ -51,7 +51,7 @@ the top-level `WRAPTOOL_CWD` line above is only needed for the plain VS Code flo
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `harness` | `claude` | MCP client to configure (Claude Code `.mcp.json`). More to follow. |
+| `harness` | `claude` | Container-CLI MCP client to configure: `claude` (`.mcp.json`, SSE), `agy` (Antigravity `.agents/mcp_config.json`, Streamable HTTP `/mcp`), `opencode` (`opencode.json`), `gemini` (`.gemini/settings.json`), or `pi` (`.pi/mcp.json`). Host IDEs (`cursor`, `roo`) run host-side — use `wraptool init` for those. |
 | `port` | `8717` | Host wraptool port, used when `url` is auto-detected. |
 | `url` | `""` | Explicit base URL (e.g. `http://172.18.0.1:8717`). Empty = auto-detect via default-route gateway. |
 

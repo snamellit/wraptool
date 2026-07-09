@@ -7,9 +7,9 @@
   "options": {
     "harness": {
       "type": "string",
-      "enum": ["claude"],
+      "enum": ["claude", "agy", "opencode", "gemini", "pi"],
       "default": "claude",
-      "description": "Which MCP client config to write. Currently Claude Code (.mcp.json); more harnesses to follow."
+      "description": "Which container-CLI MCP client config to write: claude (.mcp.json, SSE), agy (Antigravity, .agents/mcp_config.json, Streamable HTTP /mcp), opencode (opencode.json), gemini (.gemini/settings.json), or pi (.pi/mcp.json). Host IDEs (cursor, roo) are configured host-side with `wraptool init`."
     },
     "port": {
       "type": "string",

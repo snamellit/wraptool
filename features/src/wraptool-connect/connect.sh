@@ -59,35 +59,53 @@ else
   fi
 fi
 
-SSE_URL="${BASE}/sse"
+# Per-harness config shape, mirroring the Go renderers in internal/harness. Only
+# the container-CLI harnesses (those that run inside the container) are here; the
+# host IDEs (cursor, roo) are configured host-side by `wraptool init`, never this.
+#   EP      endpoint path — legacy SSE (/sse) or Streamable HTTP (/mcp, agy)
+#   TOP     top-level object key ("mcpServers", or opencode's "mcp")
+#   URL_KEY the server entry's URL field (url / serverUrl / httpUrl)
+#   TYPE    a leading "type":"…", fragment, or empty
+#   EXTRA   a trailing fragment (opencode's ,"enabled":true), or empty
+#   TARGET  the config file this harness reads
+case "$WT_HARNESS" in
+  claude)   EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"sse",';    EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
+  agy)      EP="/mcp"; TOP="mcpServers"; URL_KEY="serverUrl"; TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.agents/mcp_config.json}" ;;
+  opencode) EP="/sse"; TOP="mcp";        URL_KEY="url";       TYPE='"type":"remote",'; EXTRA=',"enabled":true'; TARGET="${WT_CONFIG_OUT:-$PWD/opencode.json}" ;;
+  gemini)   EP="/sse"; TOP="mcpServers"; URL_KEY="httpUrl";   TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.gemini/settings.json}" ;;
+  pi)       EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.pi/mcp.json}" ;;
+  *) echo "wraptool-connect: ERROR unsupported harness '$WT_HARNESS' (container CLIs: claude agy opencode gemini pi)" >&2; exit 1 ;;
+esac
+
+URL="${BASE}${EP}"
 if [ -n "${WRAPTOOL_CWD:-}" ]; then
-  SSE_URL="${SSE_URL}?cwd=$(urlencode "$WRAPTOOL_CWD")"
+  URL="${URL}?cwd=$(urlencode "$WRAPTOOL_CWD")"
 fi
 
 # Build the wraptool server entry (add a bearer header only when a token is set).
 if [ -n "${WRAPTOOL_TOKEN:-}" ]; then
-  SERVER=$(printf '{"type":"sse","url":"%s","headers":{"Authorization":"Bearer %s"}}' "$SSE_URL" "$WRAPTOOL_TOKEN")
+  HDR=$(printf ',"headers":{"Authorization":"Bearer %s"}' "$WRAPTOOL_TOKEN")
 else
-  SERVER=$(printf '{"type":"sse","url":"%s"}' "$SSE_URL")
+  HDR=''
 fi
+SERVER=$(printf '{%s"%s":"%s"%s%s}' "$TYPE" "$URL_KEY" "$URL" "$HDR" "$EXTRA")
 
-case "$WT_HARNESS" in
-  claude) TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
-  *) echo "wraptool-connect: ERROR unsupported harness '$WT_HARNESS'" >&2; exit 1 ;;
-esac
+# Ensure the config's parent dir exists (agy/gemini/pi write under a subdir).
+mkdir -p "$(dirname "$TARGET")"
 
 # Merge into an existing config with jq when available (preserves other MCP
-# servers); otherwise write fresh, backing up any existing file once.
+# servers under the same top-level key); otherwise write fresh, backing up any
+# existing file once.
 if command -v jq >/dev/null 2>&1 && [ -f "$TARGET" ]; then
   tmp="$(mktemp)"
-  jq --argjson s "$SERVER" '.mcpServers = (.mcpServers // {}) | .mcpServers.wraptool = $s' "$TARGET" > "$tmp"
+  jq --argjson s "$SERVER" --arg top "$TOP" '.[$top] = (.[$top] // {}) | .[$top].wraptool = $s' "$TARGET" > "$tmp"
   mv "$tmp" "$TARGET"
 else
   if [ -f "$TARGET" ] && [ ! -f "$TARGET.wraptool-bak" ]; then
     cp "$TARGET" "$TARGET.wraptool-bak"
     echo "wraptool-connect: backed up existing $TARGET -> $TARGET.wraptool-bak" >&2
   fi
-  printf '{\n  "mcpServers": {\n    "wraptool": %s\n  }\n}\n' "$SERVER" > "$TARGET"
+  printf '{\n  "%s": {\n    "wraptool": %s\n  }\n}\n' "$TOP" "$SERVER" > "$TARGET"
 fi
 
 echo "wraptool-connect: wrote $TARGET (wraptool @ ${BASE})"

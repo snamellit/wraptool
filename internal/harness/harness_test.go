@@ -221,12 +221,12 @@ func TestWriteDirResolution(t *testing.T) {
 	}
 }
 
-// TestClaudeParityWithConnectSh asserts the registry's claude output matches the
-// wraptool-connect feature's connect.sh (the devcontainer path) for the same
-// inputs. Semantic, not byte (connect.sh minimally URL-encodes cwd; the Go path
-// uses url.QueryEscape) — they must decode identically. Retargeted from the old
-// writeMCPConfig parity test.
-func TestClaudeParityWithConnectSh(t *testing.T) {
+// TestHarnessParityWithConnectSh asserts the registry's output matches the
+// wraptool-connect feature's connect.sh (the devcontainer path) for every
+// container-CLI harness. Comparison is semantic, not byte (connect.sh minimally
+// URL-encodes cwd; the Go path uses url.QueryEscape) — they must decode
+// identically. Host IDEs (cursor, roo) run host-side and are not in connect.sh.
+func TestHarnessParityWithConnectSh(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip("no sh available")
@@ -240,73 +240,98 @@ func TestClaudeParityWithConnectSh(t *testing.T) {
 	const base = "http://127.0.0.1:8717"
 	const cwd = "/home/dev/proj with space"
 
-	for _, tc := range []struct {
-		name  string
-		token string
+	harnesses := []struct {
+		name     string
+		topKey   string // top-level object holding the "wraptool" entry
+		urlKey   string // field carrying the server URL
+		wantType string // expected "type" value; "" = no type field
+		endpoint string // path the harness connects on (/sse or /mcp)
+		relPath  string // config file, relative to the workspace
 	}{
-		{"with token", "s3cr3t"},
-		{"no token", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// Registry (guix/container path): write into a temp workspace.
-			goDir := t.TempDir()
-			if _, err := Write("claude", Params{Transport: "sse", URL: base + "/sse", Token: tc.token, CWD: cwd, Dir: goDir}); err != nil {
-				t.Fatal(err)
-			}
-			goSrv := readServer(t, filepath.Join(goDir, ".mcp.json"))
+		{"claude", "mcpServers", "url", "sse", "/sse", ".mcp.json"},
+		{"agy", "mcpServers", "serverUrl", "", "/mcp", ".agents/mcp_config.json"},
+		{"opencode", "mcp", "url", "remote", "/sse", "opencode.json"},
+		{"gemini", "mcpServers", "httpUrl", "", "/sse", ".gemini/settings.json"},
+		{"pi", "mcpServers", "url", "", "/sse", ".pi/mcp.json"},
+	}
 
-			// connect.sh (devcontainer path).
-			shOut := filepath.Join(t.TempDir(), ".mcp.json")
-			cmd := exec.Command(sh, connectAbs)
-			cmd.Env = append(os.Environ(),
-				"WT_URL="+base, "WRAPTOOL_TOKEN="+tc.token, "WRAPTOOL_CWD="+cwd,
-				"WT_HARNESS=claude", "WT_CONFIG_OUT="+shOut,
-				// Isolate from a host-installed options.env (present when the
-				// wraptool-connect feature is installed on the test machine),
-				// which would otherwise clobber WT_URL above.
-				"WT_SHARE_DIR="+t.TempDir(),
-			)
-			if out, err := cmd.CombinedOutput(); err != nil {
-				t.Fatalf("connect.sh failed: %v\n%s", err, out)
-			}
-			shSrv := readServer(t, shOut)
+	for _, h := range harnesses {
+		for _, tc := range []struct {
+			name  string
+			token string
+		}{
+			{"with token", "s3cr3t"},
+			{"no token", ""},
+		} {
+			t.Run(h.name+"/"+tc.name, func(t *testing.T) {
+				// Registry (guix/container path): write into a temp workspace.
+				goDir := t.TempDir()
+				if _, err := Write(h.name, Params{Transport: "sse", URL: base + "/sse", Token: tc.token, CWD: cwd, Dir: goDir}); err != nil {
+					t.Fatal(err)
+				}
+				goSrv := readServer(t, filepath.Join(goDir, filepath.FromSlash(h.relPath)), h.topKey)
 
-			if goSrv["type"] != "sse" || shSrv["type"] != "sse" {
-				t.Errorf("type: go=%v sh=%v", goSrv["type"], shSrv["type"])
-			}
-			goBase, goCwd := splitURL(t, goSrv["url"].(string))
-			shBase, shCwd := splitURL(t, shSrv["url"].(string))
-			if goBase != shBase || goBase != base+"/sse" {
-				t.Errorf("base/path: go=%q sh=%q", goBase, shBase)
-			}
-			if goCwd != cwd || shCwd != cwd {
-				t.Errorf("decoded cwd: go=%q sh=%q want=%q", goCwd, shCwd, cwd)
-			}
-			gh, ghas := goSrv["headers"].(map[string]any)
-			sh2, shas := shSrv["headers"].(map[string]any)
-			if ghas != shas {
-				t.Fatalf("headers presence: go=%v sh=%v", ghas, shas)
-			}
-			if ghas && gh["Authorization"] != sh2["Authorization"] {
-				t.Errorf("Authorization: go=%v sh=%v", gh["Authorization"], sh2["Authorization"])
-			}
-		})
+				// connect.sh (devcontainer path).
+				shOut := filepath.Join(t.TempDir(), filepath.FromSlash(h.relPath))
+				cmd := exec.Command(sh, connectAbs)
+				cmd.Env = append(os.Environ(),
+					"WT_URL="+base, "WRAPTOOL_TOKEN="+tc.token, "WRAPTOOL_CWD="+cwd,
+					"WT_HARNESS="+h.name, "WT_CONFIG_OUT="+shOut,
+					// Isolate from a host-installed options.env (present when the
+					// wraptool-connect feature is installed on the test machine),
+					// which would otherwise clobber WT_URL above.
+					"WT_SHARE_DIR="+t.TempDir(),
+				)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("connect.sh failed: %v\n%s", err, out)
+				}
+				shSrv := readServer(t, shOut, h.topKey)
+
+				if h.wantType == "" {
+					if _, ok := goSrv["type"]; ok {
+						t.Errorf("go %s: unexpected type field %v", h.name, goSrv["type"])
+					}
+					if _, ok := shSrv["type"]; ok {
+						t.Errorf("sh %s: unexpected type field %v", h.name, shSrv["type"])
+					}
+				} else if goSrv["type"] != h.wantType || shSrv["type"] != h.wantType {
+					t.Errorf("type: go=%v sh=%v want %q", goSrv["type"], shSrv["type"], h.wantType)
+				}
+
+				goURL, _ := goSrv[h.urlKey].(string)
+				shURL, _ := shSrv[h.urlKey].(string)
+				goBase, goCwd := splitURL(t, goURL)
+				shBase, shCwd := splitURL(t, shURL)
+				if goBase != shBase || goBase != base+h.endpoint {
+					t.Errorf("%s base/path: go=%q sh=%q want %q", h.urlKey, goBase, shBase, base+h.endpoint)
+				}
+				if goCwd != cwd || shCwd != cwd {
+					t.Errorf("decoded cwd: go=%q sh=%q want=%q", goCwd, shCwd, cwd)
+				}
+				gh, ghas := goSrv["headers"].(map[string]any)
+				sh2, shas := shSrv["headers"].(map[string]any)
+				if ghas != shas {
+					t.Fatalf("headers presence: go=%v sh=%v", ghas, shas)
+				}
+				if ghas && gh["Authorization"] != sh2["Authorization"] {
+					t.Errorf("Authorization: go=%v sh=%v", gh["Authorization"], sh2["Authorization"])
+				}
+			})
+		}
 	}
 }
 
-func readServer(t *testing.T, path string) map[string]any {
+func readServer(t *testing.T, path, topKey string) map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var doc struct {
-		MCPServers map[string]map[string]any `json:"mcpServers"`
-	}
+	var doc map[string]map[string]map[string]any
 	if err := json.Unmarshal(b, &doc); err != nil {
 		t.Fatalf("bad json %s: %v", path, err)
 	}
-	return doc.MCPServers["wraptool"]
+	return doc[topKey]["wraptool"]
 }
 
 func splitURL(t *testing.T, raw string) (basePath, cwd string) {
