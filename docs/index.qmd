@@ -15,42 +15,65 @@ direct access exposes API keys, SSH keys, kubeconfigs, and service
 account credentials to the model context. wraptool sits between the
 assistant and the tools:
 
-- **Credentials stay isolated** — wraptool runs as a separate process
-  with its own environment; secrets never enter the AI context.
+- **Credentials stay isolated** — wraptool runs on the **host** with the
+  secrets; the assistant runs in an **isolated container** (user/mount
+  namespace) that never mounts your `$HOME`, SSH keys, or tokens. Anything
+  privileged (`git push`, private fetch, `gcloud`, `kubectl`) crosses the
+  boundary only through wraptool's policed MCP tools.
 - **Subcommand-level whitelisting** — allow `git commit` but deny
   `git push --force`, with flag-level granularity and value
-  constraints.
+  constraints. Deny always beats allow.
 - **Auto-discovery** — wraptool parses `--help` output to generate
   MCP tool schemas with real descriptions, so the AI knows what each
   flag does.
 - **Structured denial workflow** — when a command is denied, the AI
-  can submit a capability request that an admin reviews and approves
-  from the command line.
+  can submit a capability request that an operator reviews and approves
+  — from the **command line** (`wraptool requests`) or a browser-based
+  **[Web UI](web-ui.qmd)** (approve/deny, live rule editing, tool-call audit).
+- **One-command setup** — `wraptool up` in a repo starts the shared
+  server, **auto-provisions** the assistant's MCP config (with the auth
+  header), and drops you into the isolated container. No manual wiring.
 
 ## High-level architecture
 
+The assistant lives in an isolated box with **no credentials**; secrets and
+the privileged tools stay on the host, reachable only through the policy engine.
+
 ```{mermaid}
 flowchart LR
-  ai[AI Coding<br/>Assistant]
-  mcp[MCP<br/>Transport]
-  wt[wraptool<br/>server]
-  policy[Policy<br/>Engine]
-  exec[Sandboxed<br/>Exec]
-  cli[CLI Tools<br/>git / gcloud / kubectl]
-  creds[(Credentials)]
+  subgraph box["🔒 Isolated container — no credentials"]
+    ai[AI Coding<br/>Assistant]
+    localgit[local git<br/>status / diff / commit]
+  end
 
-  ai -- "tool call" --> mcp
-  mcp --> wt
+  subgraph host["Host — credentials live here"]
+    wt[wraptool<br/>server]
+    policy[Policy Engine<br/>deny &gt; allow &gt; constraints]
+    exec[Sandboxed Exec<br/>+ credential scrub]
+    cli[Privileged CLI<br/>git push / gcloud / kubectl]
+    creds[(Credentials<br/>SSH keys · tokens · kubeconfig)]
+    op[Operator review<br/>CLI + Web UI]
+  end
+
+  ai -- "MCP tool call<br/>Bearer auth" --> wt
   wt --> policy
   policy -- "allowed" --> exec
   exec --> cli
   cli -.-> creds
   exec -- "scrubbed output" --> wt
-  wt --> mcp --> ai
+  wt -- "result" --> ai
+  policy -- "denied" --> req[Capability<br/>request]
+  req --> op
+  op -- "approve / deny" --> policy
 
+  style box fill:#eef,stroke:#3a3ad0
   style creds fill:#fee,stroke:#E60028
   style policy fill:#fef,stroke:#666
 ```
+
+Local, non-privileged git runs inside the box; only credentialed operations
+cross into wraptool. The container boundary is a user/mount namespace — your
+`$HOME` and secrets are never shared in.
 
 ## Next steps
 

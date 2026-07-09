@@ -2,6 +2,24 @@
 title: "Getting started"
 ---
 
+## The fast path
+
+Once wraptool is installed and you have a config, you don't wire anything by
+hand. In any git repo:
+
+```bash
+wraptool up
+```
+
+That one command starts the shared server (auto-generating the auth token),
+**auto-provisions your coding assistant's MCP config** with the connection URL
+and `Authorization` header, brings up an **isolated container** (no credentials),
+and drops you into a shell. Bare `wraptool` in a repo does the same. Full detail
+in [§6 below](#one-command-per-project-wraptool-up).
+
+The sections below are the **from-scratch / manual** path — how the pieces fit
+when you want to build, configure, and connect a harness yourself.
+
 ## 1. Build
 
 ```bash
