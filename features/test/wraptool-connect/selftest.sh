@@ -74,6 +74,43 @@ have '"serverUrl"' "$OUT4"
 have 'Bearer tok123' "$OUT4"
 if grep -qF '"type"' "$OUT4"; then fail "agy config should not carry a type field"; else pass "agy streamable /mcp rendered, no type"; fi
 
+echo "5. opencode harness -> opencode.json, top-level mcp, type remote, enabled"
+OUT5="$WORK/opencode.json"
+env -i sh -c "
+  WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT5' WT_HARNESS='opencode' \
+  WRAPTOOL_TOKEN='tok123' WRAPTOOL_CWD='/home/pti/src/proj a' \
+  PATH='$PATH' HOME='$WORK' PWD='$WORK' \
+  sh '$CONNECT'
+" >/dev/null
+have '"mcp"' "$OUT5"
+have 'http://172.18.0.1:8717/sse?cwd=/home/pti/src/proj%20a' "$OUT5"
+have '"type":"remote"' "$OUT5"
+have '"enabled":true' "$OUT5"
+[ "$FAIL" -eq 0 ] && pass "opencode remote entry rendered"
+
+echo "6. gemini harness -> .gemini/settings.json, httpUrl"
+OUT6="$WORK/gem/.gemini/settings.json"
+env -i sh -c "
+  WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT6' WT_HARNESS='gemini' \
+  WRAPTOOL_TOKEN='tok123' WRAPTOOL_CWD='/home/pti/src/proj a' \
+  PATH='$PATH' HOME='$WORK' PWD='$WORK' \
+  sh '$CONNECT'
+" >/dev/null
+have '"httpUrl":"http://172.18.0.1:8717/sse?cwd=/home/pti/src/proj%20a"' "$OUT6"
+have 'Bearer tok123' "$OUT6"
+[ "$FAIL" -eq 0 ] && pass "gemini httpUrl rendered"
+
+echo "7. pi harness -> .pi/mcp.json, url, no type"
+OUT7="$WORK/pi/.pi/mcp.json"
+env -i sh -c "
+  WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT7' WT_HARNESS='pi' \
+  WRAPTOOL_TOKEN='tok123' WRAPTOOL_CWD='/home/pti/src/proj a' \
+  PATH='$PATH' HOME='$WORK' PWD='$WORK' \
+  sh '$CONNECT'
+" >/dev/null
+have '"url":"http://172.18.0.1:8717/sse?cwd=/home/pti/src/proj%20a"' "$OUT7"
+if grep -qF '"type"' "$OUT7"; then fail "pi config should not carry a type field"; else pass "pi url rendered, no type"; fi
+
 echo
 echo "RESULT: $FAIL failed"
 [ "$FAIL" -eq 0 ]
