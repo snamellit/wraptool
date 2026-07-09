@@ -294,6 +294,80 @@ func TestClaudeParityWithConnectSh(t *testing.T) {
 	}
 }
 
+// TestAgyParityWithConnectSh pins the Go renderAgy and the connect.sh agy case to
+// the same output: Streamable HTTP at /mcp, the serverUrl key with no type field,
+// written to .agents/mcp_config.json, header present iff a token is set.
+func TestAgyParityWithConnectSh(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("no sh available")
+	}
+	connect := filepath.Join("..", "..", "features", "src", "wraptool-connect", "connect.sh")
+	if _, err := os.Stat(connect); err != nil {
+		t.Skipf("connect.sh not found at %s", connect)
+	}
+	connectAbs, _ := filepath.Abs(connect)
+
+	const base = "http://127.0.0.1:8717"
+	const cwd = "/home/dev/proj with space"
+
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"with token", "s3cr3t"},
+		{"no token", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Registry (guix/container path): write into a temp workspace.
+			goDir := t.TempDir()
+			if _, err := Write("agy", Params{Transport: "sse", URL: base + "/sse", Token: tc.token, CWD: cwd, Dir: goDir}); err != nil {
+				t.Fatal(err)
+			}
+			goSrv := readServer(t, filepath.Join(goDir, ".agents", "mcp_config.json"))
+
+			// connect.sh (devcontainer path).
+			shOut := filepath.Join(t.TempDir(), ".agents", "mcp_config.json")
+			cmd := exec.Command(sh, connectAbs)
+			cmd.Env = append(os.Environ(),
+				"WT_URL="+base, "WRAPTOOL_TOKEN="+tc.token, "WRAPTOOL_CWD="+cwd,
+				"WT_HARNESS=agy", "WT_CONFIG_OUT="+shOut,
+				"WT_SHARE_DIR="+t.TempDir(),
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("connect.sh failed: %v\n%s", err, out)
+			}
+			shSrv := readServer(t, shOut)
+
+			// agy uses serverUrl and carries no "type" field.
+			if _, ok := goSrv["type"]; ok {
+				t.Errorf("go agy config should have no type field: %v", goSrv["type"])
+			}
+			if _, ok := shSrv["type"]; ok {
+				t.Errorf("sh agy config should have no type field: %v", shSrv["type"])
+			}
+			goURL, _ := goSrv["serverUrl"].(string)
+			shURL, _ := shSrv["serverUrl"].(string)
+			goBase, goCwd := splitURL(t, goURL)
+			shBase, shCwd := splitURL(t, shURL)
+			if goBase != shBase || goBase != base+"/mcp" {
+				t.Errorf("base/path: go=%q sh=%q want %q", goBase, shBase, base+"/mcp")
+			}
+			if goCwd != cwd || shCwd != cwd {
+				t.Errorf("decoded cwd: go=%q sh=%q want=%q", goCwd, shCwd, cwd)
+			}
+			gh, ghas := goSrv["headers"].(map[string]any)
+			sh2, shas := shSrv["headers"].(map[string]any)
+			if ghas != shas {
+				t.Fatalf("headers presence: go=%v sh=%v", ghas, shas)
+			}
+			if ghas && gh["Authorization"] != sh2["Authorization"] {
+				t.Errorf("Authorization: go=%v sh=%v", gh["Authorization"], sh2["Authorization"])
+			}
+		})
+	}
+}
+
 func readServer(t *testing.T, path string) map[string]any {
 	t.Helper()
 	b, err := os.ReadFile(path)

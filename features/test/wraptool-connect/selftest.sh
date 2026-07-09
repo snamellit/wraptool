@@ -61,6 +61,19 @@ else
   echo "  SKIP: jq not installed (merge path)"
 fi
 
+echo "4. agy harness -> .agents/mcp_config.json, Streamable HTTP /mcp, serverUrl, no type"
+OUT4="$WORK/agy/.agents/mcp_config.json"
+env -i sh -c "
+  WT_ROUTE_FILE='$ROUTE' WT_SHARE_DIR='$WORK/none' WT_CONFIG_OUT='$OUT4' WT_HARNESS='agy' \
+  WRAPTOOL_TOKEN='tok123' WRAPTOOL_CWD='/home/pti/src/proj a' \
+  PATH='$PATH' HOME='$WORK' PWD='$WORK' \
+  sh '$CONNECT'
+" >/dev/null
+have 'http://172.18.0.1:8717/mcp?cwd=/home/pti/src/proj%20a' "$OUT4"
+have '"serverUrl"' "$OUT4"
+have 'Bearer tok123' "$OUT4"
+if grep -qF '"type"' "$OUT4"; then fail "agy config should not carry a type field"; else pass "agy streamable /mcp rendered, no type"; fi
+
 echo
 echo "RESULT: $FAIL failed"
 [ "$FAIL" -eq 0 ]

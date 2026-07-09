@@ -59,22 +59,31 @@ else
   fi
 fi
 
-SSE_URL="${BASE}/sse"
+# Per-harness shape, mirroring internal/harness renderClaude/renderAgy:
+#   EP      endpoint path — legacy SSE (/sse) vs Streamable HTTP (/mcp)
+#   URL_KEY the server entry's URL field ("url" vs Antigravity's "serverUrl")
+#   TYPE    a leading "type":"sse", fragment (claude) or empty (agy)
+#   TARGET  the config file this harness reads
+case "$WT_HARNESS" in
+  claude) EP="/sse"; URL_KEY="url"; TYPE='"type":"sse",'; TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
+  agy)    EP="/mcp"; URL_KEY="serverUrl"; TYPE=''; TARGET="${WT_CONFIG_OUT:-$PWD/.agents/mcp_config.json}" ;;
+  *) echo "wraptool-connect: ERROR unsupported harness '$WT_HARNESS'" >&2; exit 1 ;;
+esac
+
+URL="${BASE}${EP}"
 if [ -n "${WRAPTOOL_CWD:-}" ]; then
-  SSE_URL="${SSE_URL}?cwd=$(urlencode "$WRAPTOOL_CWD")"
+  URL="${URL}?cwd=$(urlencode "$WRAPTOOL_CWD")"
 fi
 
 # Build the wraptool server entry (add a bearer header only when a token is set).
 if [ -n "${WRAPTOOL_TOKEN:-}" ]; then
-  SERVER=$(printf '{"type":"sse","url":"%s","headers":{"Authorization":"Bearer %s"}}' "$SSE_URL" "$WRAPTOOL_TOKEN")
+  SERVER=$(printf '{%s"%s":"%s","headers":{"Authorization":"Bearer %s"}}' "$TYPE" "$URL_KEY" "$URL" "$WRAPTOOL_TOKEN")
 else
-  SERVER=$(printf '{"type":"sse","url":"%s"}' "$SSE_URL")
+  SERVER=$(printf '{%s"%s":"%s"}' "$TYPE" "$URL_KEY" "$URL")
 fi
 
-case "$WT_HARNESS" in
-  claude) TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
-  *) echo "wraptool-connect: ERROR unsupported harness '$WT_HARNESS'" >&2; exit 1 ;;
-esac
+# Ensure the config's parent dir exists (agy writes under .agents/).
+mkdir -p "$(dirname "$TARGET")"
 
 # Merge into an existing config with jq when available (preserves other MCP
 # servers); otherwise write fresh, backing up any existing file once.

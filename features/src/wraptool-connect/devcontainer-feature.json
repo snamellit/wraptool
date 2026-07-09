@@ -7,9 +7,9 @@
   "options": {
     "harness": {
       "type": "string",
-      "enum": ["claude"],
+      "enum": ["claude", "agy"],
       "default": "claude",
-      "description": "Which MCP client config to write. Currently Claude Code (.mcp.json); more harnesses to follow."
+      "description": "Which MCP client config to write: claude (Claude Code, .mcp.json, SSE) or agy (Antigravity, .agents/mcp_config.json, Streamable HTTP /mcp). More harnesses to follow."
     },
     "port": {
       "type": "string",
