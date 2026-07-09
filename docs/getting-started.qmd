@@ -65,6 +65,12 @@ The available transports:
 | `sse`     | `transport: sse`, `listen: host:port` | Independent process, TCP |
 | `unix`    | `transport: unix`, `listen: /path/to.sock` | Independent process, Unix socket |
 
+The TCP listener (`sse`/`unix`) serves **both** MCP HTTP transports on one port:
+legacy SSE at `/sse` (Claude Code, Cursor) and Streamable HTTP at `/mcp` (the
+2025-03 transport — Antigravity and other clients that POST `initialize` to the
+URL). One Bearer-auth wrapper guards both; you don't choose — each harness's
+generated config points at the endpoint it speaks.
+
 For SSE and Unix transports, add an auth token:
 
 ```yaml
@@ -86,6 +92,28 @@ wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
 
 This writes the MCP config block for each harness. Supported values:
 `agy`, `claude`, `cursor`, `opencode`, `gemini`, `pi`, `roo`, or `all`.
+
+`init` reads `auth_token_file` from your config and embeds the
+`Authorization: Bearer` header in every networked harness config — so an
+auth-enabled server works out of the box, no hand-editing. With no
+`auth_token_file` (localhost-trust) no header is written. `agy` (Antigravity)
+speaks Streamable HTTP, so its `serverUrl` targets `/mcp` rather than `/sse`; all
+others are written to the endpoint they use.
+
+::: {.callout-important}
+**A harness running inside a container** (e.g. Antigravity in its own container)
+cannot reach the server at `127.0.0.1` — that's the container's own loopback. Use
+the host's docker-gateway address instead (typically `172.17.0.1`), and bind the
+server where the container can reach it (`listen: 0.0.0.0:8717` or the gateway),
+not `127.0.0.1`:
+
+```bash
+wraptool init --harness agy --url http://172.17.0.1:8717/sse
+```
+
+`wraptool up`'s devcontainer feature auto-detects this gateway for you; the manual
+`init` above is only needed when you wire a container-side harness yourself.
+:::
 
 ## 5. Smoke test
 
