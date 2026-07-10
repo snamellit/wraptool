@@ -114,33 +114,6 @@ func TestHandleCallsRenders(t *testing.T) {
 	}
 }
 
-// TestCallsDeniedFilterIncludesDenyReason guards the reported bug: a call
-// carrying a DenyReason must show under the Denied filter and not under Allowed,
-// even if its Allowed flag was (inconsistently) recorded true.
-func TestCallsDeniedFilterIncludesDenyReason(t *testing.T) {
-	srv, store, _ := newTestServer(t)
-	if err := store.AppendToolCall(&requestlog.ToolCallEvent{
-		Tool: "acli", Subcommand: []string{"jira", "workitem", "create"},
-		Flags:      map[string]string{"--help": ""},
-		Allowed:    true, // mis-logged: allowed=true but a deny reason is present
-		DenyReason: `flag "--help" is not in the allowlist for "jira workitem create"`,
-	}); err != nil {
-		t.Fatalf("AppendToolCall: %v", err)
-	}
-
-	get := func(q string) string {
-		rr := httptest.NewRecorder()
-		srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls"+q, nil))
-		return rr.Body.String()
-	}
-	if b := get("?status=denied"); !strings.Contains(b, "acli jira workitem create") {
-		t.Errorf("denied filter should include the deny-reason call; got: %s", b)
-	}
-	if b := get("?status=allowed"); strings.Contains(b, "acli jira workitem create") {
-		t.Errorf("allowed filter should exclude a call with a deny reason")
-	}
-}
-
 func TestRootRedirects(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	rr := httptest.NewRecorder()

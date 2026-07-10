@@ -95,6 +95,38 @@ func TestToolCallsSurviveApproval(t *testing.T) {
 	}
 }
 
+// TestAppendToolCallEnforcesInvariant pins the core invariant: an allowed call
+// can never carry a deny reason, so downstream consumers classify on Allowed
+// alone. A contradictory event is normalized at the append boundary rather than
+// persisted as a state that has to be reconciled later.
+func TestAppendToolCallEnforcesInvariant(t *testing.T) {
+	s := newTestStore(t)
+
+	// Buggy caller: allowed=true AND a deny reason. The reason must be dropped.
+	if err := s.AppendToolCall(&ToolCallEvent{
+		Tool: "acli", Allowed: true, DenyReason: "should be cleared",
+	}); err != nil {
+		t.Fatalf("AppendToolCall: %v", err)
+	}
+	// A genuine denial keeps its reason.
+	if err := s.AppendToolCall(&ToolCallEvent{
+		Tool: "git", Allowed: false, DenyReason: "not whitelisted",
+	}); err != nil {
+		t.Fatalf("AppendToolCall: %v", err)
+	}
+
+	calls, err := s.ListToolCalls()
+	if err != nil {
+		t.Fatalf("ListToolCalls: %v", err)
+	}
+	if calls[0].DenyReason != "" {
+		t.Errorf("allowed call retained a deny reason: %q", calls[0].DenyReason)
+	}
+	if calls[1].Allowed || calls[1].DenyReason != "not whitelisted" {
+		t.Errorf("denied call detail lost: %+v", calls[1])
+	}
+}
+
 // TestMCPToolCallRoundTrip asserts an MCP-shaped ToolCallEvent (with the new
 // Source/Server/Arguments fields) survives a write→read projection cycle.
 func TestMCPToolCallRoundTrip(t *testing.T) {
