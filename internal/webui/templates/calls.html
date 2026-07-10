@@ -27,11 +27,11 @@
     <div class="card">
       <div class="top">
         <span class="cmd"><code>{{.Command}}</code></span>
-        <span class="badge {{if .Denied}}denied{{else}}approved{{end}}">{{if .Denied}}denied{{else}}allowed{{end}}</span>
+        <span class="badge {{if .Allowed}}approved{{else}}denied{{end}}">{{if .Allowed}}allowed{{else}}denied{{end}}</span>
         <span class="meta">{{.ID}} · {{.When}}</span>
       </div>
       <div class="kv">
-        {{if not .Denied}}exit: <code>{{.ExitCode}}</code>{{if .Duration}} · {{.Duration}}{{end}}{{if .Truncated}} · <span class="flag">truncated</span>{{end}}{{end}}
+        {{if .Allowed}}exit: <code>{{.ExitCode}}</code>{{if .Duration}} · {{.Duration}}{{end}}{{if .Truncated}} · <span class="flag">truncated</span>{{end}}{{end}}
         {{if .DenyReason}}deny reason: <code>{{.DenyReason}}</code>{{end}}
       </div>
       {{if or .ClientName .SessionID}}<div class="kv">{{if .ClientName}}client: <code>{{.ClientName}}{{if .ClientVersion}} {{.ClientVersion}}{{end}}</code>{{end}}{{if .SessionID}} · session: <code>{{.SessionID}}</code>{{end}}</div>{{end}}
