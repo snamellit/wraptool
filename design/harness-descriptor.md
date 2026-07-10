@@ -146,14 +146,27 @@ developer's toolbox, not the project** — so wraptool neither packages harnesse
 (it must not inherit N agents' release cadences) nor puts them in `manifest.scm`
 (that is the project toolchain, and would bloat CI/dev).
 
-Instead, a **developer-scoped shared pool** — `$XDG_DATA_HOME/wraptool/harnesses/`,
-outside any repo — holds the harness binaries (+ their own service config/auth).
-`wraptool up` `--share`s it into every container (read-only) and adds its `bin/`
-to PATH; combined with `--emulate-fhs`, native binaries just run. Because the
-pool is shared across all projects and worktrees, a harness is installed **once
-per developer** (via its own installer — npm/curl/…), and wraptool tracks zero
-harness versions. An optional `wraptool harness install|list` helper may follow,
-but the dev can populate the pool by hand.
+Instead, a **developer-scoped shared pool** — `$XDG_DATA_HOME/wraptool/harness-pool/`,
+outside any repo — holds the harness binaries (`bin/`) and their own service
+config/auth (`home/`, used as the harness `HOME`). `wraptool up` mounts it into
+every container **split by trust**: `bin/` **read-only** (`--expose`) and appended
+(not prepended) to PATH, `home/` **writable** (`--share`). Combined with
+`--emulate-fhs`, native binaries just run. Because the pool is shared across all
+projects and worktrees, a harness is installed **once per developer** (via its own
+installer — npm/curl/…, run host-side by `wraptool harness install`), and wraptool
+tracks zero harness versions.
+
+**Why the split — the pool is a cross-project trust domain.** It is shared, rw in
+part, and survives container teardown, so a compromised agent in one project could
+otherwise poison what *every other* project runs. The mount policy narrows that:
+`bin/` read-only + PATH-appended means a poisoned pool cannot introduce or shadow
+the binaries (`git`/`go`/`bash`/the harness itself) another project's container
+executes — installs are a deliberate host-side act, never something the in-container
+agent can do. `home/` must stay writable for login/config to persist, so it remains
+a residual channel: a harness's own config there (e.g. hooks, MCP entries) runs in
+every session, and its service credential is readable by any project's agent. That
+is an accepted cost of "install/login once per developer," not host-secret exposure
+(SSH/gcloud creds are never mounted — see below); curate `home/` accordingly.
 
 **Curate the pool; never mount `$HOME`.** A harness needs its *own* service
 credential (e.g. Claude Code's Anthropic key) to function — a *developer*
