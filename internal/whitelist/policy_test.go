@@ -89,6 +89,48 @@ func TestPolicy_AllowedCommand(t *testing.T) {
 	}
 }
 
+func TestPolicy_HelpAlwaysAllowed(t *testing.T) {
+	tools := map[string]*config.ToolConfig{
+		"git": {
+			Allow: []config.AllowRule{
+				{Subcommand: []string{"status"}, Flags: []string{"--short"}},
+				// --message is required, so a bare `commit` is denied — but
+				// `commit --help` must still be allowed (help short-circuits).
+				{
+					Subcommand:      []string{"commit"},
+					Flags:           []string{"--message"},
+					FlagConstraints: map[string]config.FlagConstraint{"--message": {Required: true}},
+				},
+				// An explicit deny_flags on --help must still override.
+				{Subcommand: []string{"secret"}, Flags: []string{}, DenyFlags: []string{"--help"}},
+			},
+		},
+	}
+	p := NewPolicy(tools)
+
+	tests := []struct {
+		name   string
+		subcmd []string
+		flags  map[string]string
+		wantOk bool
+	}{
+		{"--help on allowed subcommand", []string{"status"}, map[string]string{"--help": ""}, true},
+		{"-h short form", []string{"status"}, map[string]string{"-h": ""}, true},
+		{"--help bypasses a required-flag constraint", []string{"commit"}, map[string]string{"--help": ""}, true},
+		{"--help alongside an otherwise-disallowed flag", []string{"status"}, map[string]string{"--help": "", "--bogus": "x"}, true},
+		{"explicit deny_flags on --help still denies", []string{"secret"}, map[string]string{"--help": ""}, false},
+		{"--help does not rescue a non-allowlisted subcommand", []string{"push"}, map[string]string{"--help": ""}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := p.Evaluate("git", tt.subcmd, tt.flags, nil)
+			if d.Allowed != tt.wantOk {
+				t.Errorf("got Allowed=%v, want %v (reason: %s)", d.Allowed, tt.wantOk, d.Reason)
+			}
+		})
+	}
+}
+
 func TestPolicy_DenyRulesTakePrecedence(t *testing.T) {
 	tools := map[string]*config.ToolConfig{
 		"git": {

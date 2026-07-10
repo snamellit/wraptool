@@ -123,6 +123,15 @@ type callView struct {
 	requestlog.ToolCallEvent
 	When    string
 	Command string
+	Denied  bool // classification for badge + filter (see isDenied)
+}
+
+// isDenied classifies a tool-call event. Allowed is the source of truth, but we
+// also treat any event carrying a DenyReason as denied: it keeps a mis-logged
+// event (Allowed=true with a deny reason) out of the "Allowed" view and in
+// "Denied" where its reason belongs, instead of silently hiding it.
+func isDenied(c requestlog.ToolCallEvent) bool {
+	return !c.Allowed || c.DenyReason != ""
 }
 
 type callsView struct {
@@ -205,16 +214,18 @@ func (s *Server) handleCalls(w http.ResponseWriter, r *http.Request) {
 
 	views := make([]callView, 0, len(calls))
 	for _, c := range calls {
-		if only == "allowed" && !c.Allowed {
+		denied := isDenied(c)
+		if only == "allowed" && denied {
 			continue
 		}
-		if only == "denied" && c.Allowed {
+		if only == "denied" && !denied {
 			continue
 		}
 		views = append(views, callView{
 			ToolCallEvent: c,
 			When:          c.Timestamp.Format("2006-01-02 15:04:05 MST"),
 			Command:       formatCommand(c),
+			Denied:        denied,
 		})
 	}
 	slices.Reverse(views) // newest first
