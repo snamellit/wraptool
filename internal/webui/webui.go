@@ -203,8 +203,9 @@ func (s *Server) handleCalls(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Allowed is the authoritative decision (AppendToolCall guarantees a denied
-	// event iff DenyReason is set), so classify purely on it.
+	// Allowed is the authoritative decision; DenyReason is only its explanation
+	// (AppendToolCall guarantees an allowed event carries no reason), so classify
+	// purely on Allowed.
 	views := make([]callView, 0, len(calls))
 	for _, c := range calls {
 		if only == "allowed" && !c.Allowed {

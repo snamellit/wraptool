@@ -66,14 +66,16 @@ func (s *Store) Append(req *CapabilityRequest) error {
 	return s.appendEvent(EventCapabilityRequested, req.Timestamp, req)
 }
 
-// AppendToolCall records a tool invocation as a tool_call event.
+// AppendToolCall records a tool invocation as a tool_call event. It stamps and
+// normalizes evt in place (ID, Timestamp, and the invariant below).
 //
 // It enforces the event's core invariant at this single boundary: Allowed is the
 // authoritative policy decision, and DenyReason is only its explanation. An
 // allowed call therefore never carries a deny reason, so downstream consumers can
 // classify purely on Allowed without having to reconcile the two fields. This
 // makes the contradictory state (Allowed && DenyReason != "") unrepresentable in
-// the log rather than trusting every call site to keep the pair consistent.
+// the log rather than trusting every call site to keep the pair consistent. The
+// converse is not implied — a denial may legitimately carry no reason.
 func (s *Store) AppendToolCall(evt *ToolCallEvent) error {
 	if evt.Allowed {
 		evt.DenyReason = ""
