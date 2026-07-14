@@ -1,0 +1,25 @@
+{
+  "id": "wraptool-harness",
+  "version": "0.1.0",
+  "name": "wraptool harness",
+  "description": "Provision an AI coding harness (claude, opencode, pi, agy, gemini) inside a dev container: install its binary at build time and point its HOME at a shared, host-mounted pool so auth/skills/extensions persist across every project (the developer toolbox). Wiring the harness to wraptool is a separate concern — add the wraptool-connect feature for that.",
+  "documentationURL": "https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool-harness",
+  "options": {
+    "harness": {
+      "type": "string",
+      "enum": ["claude", "opencode", "pi", "agy", "gemini"],
+      "default": "claude",
+      "description": "Which harness binary to install: claude (@anthropic-ai/claude-code), opencode (opencode-ai), pi (@earendil-works/pi-coding-agent) install via npm and need a node runtime in the image; agy (Antigravity) installs via its own script; gemini has no automated installer here — bake it into your image."
+    },
+    "version": {
+      "type": "string",
+      "default": "",
+      "description": "Version/tag for the npm-installed harnesses (claude/opencode/pi), e.g. 1.2.3 or latest. Empty = the installer's default (latest). Ignored for agy/gemini."
+    }
+  },
+  "installsAfter": ["ghcr.io/devcontainers/features/node"],
+  "//": "HOME is pinned to the shared-pool mount target (/home/wraptool-harness — a dedicated user-space home, not a system /opt path). `wraptool up` bind-mounts the host pool ($XDG_DATA_HOME/wraptool/harness-pool/home, a per-developer XDG-data dir) onto it so the harness's auth+config persist across every project; for standalone Reopen-in-Container, declare the same bind mount yourself (see examples/devcontainer). Set via containerEnv (not remoteEnv): remoteEnv is overridden by devcontainer's user-env probe on `devcontainer exec`, so HOME silently reverted to the base user's home; containerEnv bakes it into the image env, which every exec/probe inherits. Fixed target (env can't reference an option value).",
+  "containerEnv": {
+    "HOME": "/home/wraptool-harness"
+  }
+}

@@ -67,6 +67,40 @@ Docker/Podman flows in [`docs/isolated-environments.md`](../../docs/isolated-env
    .devcontainer/test-connection.sh
    ```
 
+## Sharing the harness across projects (the developer toolbox)
+
+The harness *binary* is cheap to install per container, but its **state** — auth
+token, skills, extensions, MCP config — is a per-developer toolbox you don't want
+to rebuild in every project. The `wraptool-harness` feature installs the binary at
+build time and pins the container's `HOME` to `/home/wraptool-harness`; bind-
+mount your host pool onto that path so the state persists across every project.
+
+When `wraptool up` drives the devcontainer it adds the mount for you. For a
+standalone "Reopen in Container" (no `wraptool` process), declare it yourself:
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "features": {
+    // claude/opencode/pi install via npm, so pull a node runtime too:
+    "ghcr.io/devcontainers/features/node:1": {},
+    "forge.snamellit.com/pti/wraptool/wraptool-harness:0": { "harness": "claude" },
+    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": { "harness": "claude" }
+  },
+  // Share the host harness-state pool (login/skills once, every project):
+  "mounts": [
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+  ]
+}
+```
+
+The mount source is your host pool (`$XDG_DATA_HOME/wraptool/harness-pool/home`,
+default `~/.local/share/...`). Only `home/` (state) is shared — the binary lives
+in the image, isolated per project. This mirrors the Guix runtime's split; see
+[`design/harness-descriptor.md`](../../design/harness-descriptor.md) §7 for the
+trust model (shared writable `home/` is an accepted residual-risk channel; never
+mount host `$HOME` or credentials).
+
 ## Networking
 
 The container reaches the host at `host.docker.internal`, mapped to the host

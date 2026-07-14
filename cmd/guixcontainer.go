@@ -157,6 +157,18 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	return cmd.Run()
 }
 
+// devcontainerPoolHome is the fixed in-container path the wraptool-harness
+// feature pins HOME to; `wraptool up` bind-mounts the host pool home/ onto it so
+// harness auth/state persists across projects. Must match the feature's
+// remoteEnv.HOME in features/src/wraptool-harness/devcontainer-feature.json.
+//
+// A dedicated user-space home (under /home, not /opt) — /opt connotes a shared
+// *system* location, but this is the single harness user's HOME inside a
+// throwaway, single-user container. The actual per-developer isolation boundary
+// is the HOST source of the mount (paths.DataDir() = XDG data, one per account),
+// not this container-internal path.
+const devcontainerPoolHome = "/home/wraptool-harness"
+
 // harnessPoolDir is the developer-scoped pool of AI-harness binaries and their
 // state, shared into every container.
 func harnessPoolDir() string { return filepath.Join(paths.DataDir(), "harness-pool") }

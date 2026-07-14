@@ -63,6 +63,7 @@ internal/
 - `testdata/` has captured `--help` outputs for parser tests
 - `test-container.sh` runs the full isolation test in a Guix container
 - `examples/devcontainer/` is a copy-into-your-project Dev Container template (client-side); `test-connection.sh` there is its isolation + MCP-reachability smoke test (targets host wraptool over the docker bridge, Bearer auth)
+- `features/src/` holds the Dev Container **features** (published to the Forgejo OCI registry by `.forgejo/workflows/publish-feature.yml`, tested by `features/test/*/selftest.sh`): `wraptool-connect` **wires** a harness to the host wraptool (MCP config only, adds no tools); `wraptool-harness` **provisions** a harness on a devcontainer host — installs the binary per image and pins `HOME` to `/home/wraptool-harness` (user-space, not a system `/opt` path), onto which `wraptool up` bind-mounts the shared pool `home/` (host source `paths.DataDir()` = per-developer XDG data — the real isolation boundary) so auth/skills persist across projects. This is the devcontainer counterpart of the guix pool (`design/harness-descriptor.md` §7a); the guix-based `wraptool harness install` errors and points here when `guix` is absent.
 - Run integration test: start `wraptool serve` with SSE, then run `test-container.sh`
 
 ## Config Location

@@ -325,8 +325,21 @@ func bringUpContainer(root, token string, shell bool) error {
 		"WRAPTOOL_CWD="+root, // host path → server scopes tools to this worktree via ?cwd=
 	)
 
+	// Shared harness-state pool: bind-mount the host pool home/ onto the fixed
+	// target the wraptool-harness feature pins HOME to, so a harness's auth/skills/
+	// config persist across every project (the developer toolbox, installed once).
+	// Harmless if the feature isn't present (nothing reads the target). Binary
+	// provisioning is the feature's job (per image); this is state only. See
+	// design/harness-descriptor.md §7.
+	_, _, poolHome, err := ensureHarnessPool()
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("bringing up dev container for %s ...\n", root)
-	up := exec.Command("devcontainer", "up", "--workspace-folder", root)
+	fmt.Printf("harness pool: sharing %s -> %s (state persists across projects)\n", poolHome, devcontainerPoolHome)
+	up := exec.Command("devcontainer", "up", "--workspace-folder", root,
+		"--mount", "type=bind,source="+poolHome+",target="+devcontainerPoolHome)
 	up.Env = env
 	up.Stdout = os.Stdout
 	up.Stderr = os.Stderr

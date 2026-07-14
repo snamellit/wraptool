@@ -88,6 +88,20 @@ func newHarnessInstallCmd() *cobra.Command {
 			for i, a := range d.Install {
 				argv[i] = strings.ReplaceAll(a, "{prefix}", pool)
 			}
+			// The pool installers run the harness's own installer inside a guix
+			// container (FHS emulation dodges npm's detect-libc misread on bare
+			// guix). Off guix — a devcontainer host — the pool isn't the delivery
+			// path at all: the wraptool-harness dev-container feature installs the
+			// binary per image and shares state via the pool home mount. Point there
+			// instead of failing on a missing `guix`.
+			if argv[0] == "guix" && !hasGuix() {
+				return fmt.Errorf("`wraptool harness install` provisions the guix-container pool, "+
+					"but `guix` is not on PATH.\nOn a devcontainer host, install %q via the "+
+					"wraptool-harness feature instead: add\n  "+
+					`"forge.snamellit.com/pti/wraptool/wraptool-harness:0": {"harness": %q}`+
+					"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). "+
+					"`wraptool up` shares the pool home so auth/skills persist across projects.", name, name)
+			}
 			fmt.Printf("installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
 			c := exec.Command(argv[0], argv[1:]...)
 			c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
