@@ -100,7 +100,7 @@ func newHarnessInstallCmd() *cobra.Command {
 					"wraptool-harness feature instead: add\n  "+
 					`"forge.snamellit.com/pti/wraptool/wraptool-harness:0": {"harness": %q}`+
 					"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). "+
-					"`wraptool up` shares the pool home so auth/skills persist across projects.", name, name)
+					"`wraptool up` shares the pool home so auth/skills persist across projects", name, name)
 			}
 			fmt.Printf("installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
 			c := exec.Command(argv[0], argv[1:]...)
