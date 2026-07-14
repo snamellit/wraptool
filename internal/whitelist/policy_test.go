@@ -89,24 +89,27 @@ func TestPolicy_AllowedCommand(t *testing.T) {
 	}
 }
 
+// Help is an ordinary allowed flag: config load seeds -h/--help into every allow
+// rule's Flags (config.SeedHelpFlags), so the policy engine permits them through
+// the normal allowlist check with no special-casing. These tests seed the rules
+// the same way load() does, then assert that orthogonal behaviour — including the
+// deny_flags override and the fact that help does NOT bypass other checks.
 func TestPolicy_HelpAlwaysAllowed(t *testing.T) {
-	tools := map[string]*config.ToolConfig{
-		"git": {
-			Allow: []config.AllowRule{
-				{Subcommand: []string{"status"}, Flags: []string{"--short"}},
-				// --message is required, so a bare `commit` is denied — but
-				// `commit --help` must still be allowed (help short-circuits).
-				{
-					Subcommand:      []string{"commit"},
-					Flags:           []string{"--message"},
-					FlagConstraints: map[string]config.FlagConstraint{"--message": {Required: true}},
-				},
-				// An explicit deny_flags on --help must still override.
-				{Subcommand: []string{"secret"}, Flags: []string{}, DenyFlags: []string{"--help"}},
-			},
+	rules := []config.AllowRule{
+		{Subcommand: []string{"status"}, Flags: []string{"--short"}},
+		{
+			Subcommand:      []string{"commit"},
+			Flags:           []string{"--message"},
+			FlagConstraints: map[string]config.FlagConstraint{"--message": {Required: true}},
 		},
+		// An explicit deny_flags on --help revokes the seeded help flag.
+		{Subcommand: []string{"secret"}, Flags: []string{}, DenyFlags: []string{"--help"}},
 	}
-	p := NewPolicy(tools)
+	// Seed exactly as config load does, so the test exercises the real path.
+	for i := range rules {
+		rules[i].Flags = config.SeedHelpFlags(rules[i].Flags, rules[i].DenyFlags)
+	}
+	p := NewPolicy(map[string]*config.ToolConfig{"git": {Allow: rules}})
 
 	tests := []struct {
 		name   string
@@ -116,8 +119,13 @@ func TestPolicy_HelpAlwaysAllowed(t *testing.T) {
 	}{
 		{"--help on allowed subcommand", []string{"status"}, map[string]string{"--help": ""}, true},
 		{"-h short form", []string{"status"}, map[string]string{"-h": ""}, true},
-		{"--help bypasses a required-flag constraint", []string{"commit"}, map[string]string{"--help": ""}, true},
-		{"--help alongside an otherwise-disallowed flag", []string{"status"}, map[string]string{"--help": "", "--bogus": "x"}, true},
+		// Orthogonal: help is a normal allowed flag, so it does NOT short-circuit
+		// other checks. A required-flag constraint still applies to a help-only
+		// call; pass the required flag alongside --help to see usage.
+		{"--help does not bypass a required-flag constraint", []string{"commit"}, map[string]string{"--help": ""}, false},
+		{"--help with the required flag is allowed", []string{"commit"}, map[string]string{"--help": "", "--message": "x"}, true},
+		// Orthogonal: help does not rescue a non-allowlisted flag in the same call.
+		{"--help alongside a non-allowlisted flag is denied", []string{"status"}, map[string]string{"--help": "", "--bogus": "x"}, false},
 		{"explicit deny_flags on --help still denies", []string{"secret"}, map[string]string{"--help": ""}, false},
 		{"--help does not rescue a non-allowlisted subcommand", []string{"push"}, map[string]string{"--help": ""}, false},
 	}
@@ -126,6 +134,36 @@ func TestPolicy_HelpAlwaysAllowed(t *testing.T) {
 			d := p.Evaluate("git", tt.subcmd, tt.flags, nil)
 			if d.Allowed != tt.wantOk {
 				t.Errorf("got Allowed=%v, want %v (reason: %s)", d.Allowed, tt.wantOk, d.Reason)
+			}
+		})
+	}
+}
+
+// TestSeedHelpFlags covers the single-source seeding helper directly.
+func TestSeedHelpFlags(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags []string
+		deny  []string
+		want  []string
+	}{
+		{"empty rule gets help", nil, nil, []string{"-h", "--help"}},
+		{"configured flags kept, help appended", []string{"--short"}, nil, []string{"--short", "-h", "--help"}},
+		{"deny revokes --help", nil, []string{"--help"}, []string{"-h"}},
+		{"deny revokes both help flags", nil, []string{"-h", "--help"}, []string{}},
+		{"already-present help not duplicated", []string{"--help", "--x"}, nil, []string{"--help", "--x", "-h"}},
+		{"deny also drops a configured flag", []string{"--force"}, []string{"--force"}, []string{"-h", "--help"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := config.SeedHelpFlags(tt.flags, tt.deny)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}

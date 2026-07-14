@@ -74,17 +74,11 @@ func (p *Policy) Evaluate(toolName string, subcommand []string, flags map[string
 			}
 		}
 
-		// -h/--help are always permitted on an allowed subcommand: a help
-		// invocation just prints usage and exits, and introspecting a tool's
-		// capabilities is how the AI formulates valid calls and capability
-		// requests. An explicit deny_flags entry (checked above) still overrides.
-		// Present with any other flags, help short-circuits — the tool ignores
-		// the rest — so we skip the allowlist and constraint checks entirely.
-		for flag := range flags {
-			if isHelpFlag(flag) {
-				return Decision{Allowed: true}
-			}
-		}
+		// -h/--help need no special-casing here: config load seeds them into every
+		// allow rule's Flags (config.SeedHelpFlags), so they pass the allowlist
+		// check below like any other permitted flag — and an operator's deny_flags
+		// entry removes them at the same source, handled by the deny_flags check
+		// above. Help is thus an ordinary allowed flag, not a policy exception.
 
 		// Check that all provided flags are in the allowlist.
 		for flag := range flags {
@@ -138,12 +132,6 @@ func subcommandMatches(actual, rule []string) bool {
 		}
 	}
 	return len(rule) == len(actual)
-}
-
-// isHelpFlag reports whether a flag is the universal help flag, which wraptool
-// always permits on an allowed subcommand for introspection.
-func isHelpFlag(flag string) bool {
-	return flag == "--help" || flag == "-h"
 }
 
 func containsFlag(allowed []string, flag string) bool {
