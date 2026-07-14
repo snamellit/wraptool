@@ -1,0 +1,47 @@
+{
+  "id": "wraptool",
+  "version": "0.1.0",
+  "name": "wraptool",
+  "description": "Set up an AI coding harness in a dev container against a host-side wraptool MCP server. Two orthogonal, independently-toggled jobs off one harness choice: provision installs the harness binary per image and shares its state via a host-mounted pool (auth/skills persist across projects); connect writes the MCP client config that points it at the host wraptool. Supersedes the separate wraptool-harness and wraptool-connect features.",
+  "documentationURL": "https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool",
+  "options": {
+    "harness": {
+      "type": "string",
+      "enum": ["claude", "opencode", "pi", "agy", "gemini"],
+      "default": "claude",
+      "description": "Which harness this feature targets — the single source for BOTH provisioning (which binary to install) and connect (which MCP config shape to write). claude/opencode/pi install via npm and need a node runtime; agy installs via its own script; gemini has no automated installer here (bake it in, provision: false)."
+    },
+    "provision": {
+      "type": "boolean",
+      "default": true,
+      "description": "Install the harness binary into the image at build time. Set false to bring your own binary (baked into your base image); the shared-pool HOME and connect wiring still apply."
+    },
+    "connect": {
+      "type": "boolean",
+      "default": true,
+      "description": "Write the MCP client config that wires the harness to the host wraptool (postCreate). Set false to wire it yourself (e.g. host-side `wraptool init`)."
+    },
+    "version": {
+      "type": "string",
+      "default": "",
+      "description": "Version/tag for the npm-provisioned harnesses (claude/opencode/pi), e.g. 1.2.3. Empty = latest. Ignored for agy/gemini and when provision is false."
+    },
+    "port": {
+      "type": "string",
+      "proposals": ["8717"],
+      "default": "8717",
+      "description": "Host wraptool port, used by connect when the URL is auto-detected."
+    },
+    "url": {
+      "type": "string",
+      "default": "",
+      "description": "Explicit wraptool base URL for connect (e.g. http://172.18.0.1:8717). Empty = auto-detect the host as the container's default-route gateway."
+    }
+  },
+  "installsAfter": ["ghcr.io/devcontainers/features/node"],
+  "//": "HOME is pinned to the shared-pool mount target (/home/wraptool-harness — a dedicated user-space home, not a system /opt path). It is a feature invariant, not gated by a toggle: devcontainer features can't conditionalize containerEnv on an option value, and containerEnv is the layer that actually survives `devcontainer exec` (remoteEnv is reverted by its user-env probe). install.sh always creates the dir so HOME is valid even without a mount. `wraptool up` bind-mounts the host pool ($XDG_DATA_HOME/wraptool/harness-pool/home, per-developer XDG data) onto it; standalone Reopen-in-Container declares the same mount (see examples/devcontainer).",
+  "containerEnv": {
+    "HOME": "/home/wraptool-harness"
+  },
+  "postCreateCommand": "/usr/local/share/wraptool/connect.sh"
+}

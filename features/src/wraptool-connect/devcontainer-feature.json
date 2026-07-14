@@ -1,8 +1,8 @@
 {
   "id": "wraptool-connect",
   "version": "0.1.0",
-  "name": "wraptool connect",
-  "description": "Wire a dev container to a host-side wraptool MCP server (credential-isolated CLI tools). Image-agnostic: adds no tools of its own, only the MCP connection config. Auto-detects the host via the container's default-route gateway.",
+  "name": "wraptool connect (deprecated)",
+  "description": "DEPRECATED — use the `wraptool` feature with `connect: true` (and `provision: false` for wiring-only). Wire a dev container to a host-side wraptool MCP server (credential-isolated CLI tools). Image-agnostic: adds no tools of its own, only the MCP connection config. Auto-detects the host via the container's default-route gateway.",
   "documentationURL": "https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool-connect",
   "options": {
     "harness": {

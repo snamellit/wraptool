@@ -70,6 +70,32 @@ func TestBuildCLIToolsBooleanFlagTyping(t *testing.T) {
 	}
 }
 
+// TestBuildCLIToolsHelpFlagsExposed proves the end-to-end result of help-flag
+// seeding: once config load folds -h/--help into a rule's Flags
+// (config.SeedHelpFlags), buildCLITools renders them as boolean schema params, so
+// a client can pass `help: true` as a flag (never as a positional, which the
+// executor rightly rejects). No help-specific code lives in buildCLITools — it
+// just consumes the seeded Flags.
+func TestBuildCLIToolsHelpFlagsExposed(t *testing.T) {
+	tc := &config.ToolConfig{
+		Binary: "/nonexistent/tool",
+		Allow: []config.AllowRule{
+			{Subcommand: []string{"status"}, Flags: config.SeedHelpFlags([]string{"--short"}, nil)},
+		},
+	}
+	policy := whitelist.NewPolicy(map[string]*config.ToolConfig{"tool": tc})
+
+	tools, err := buildCLITools("tool", tc, policy, nil, nil)
+	if err != nil {
+		t.Fatalf("buildCLITools: %v", err)
+	}
+	for _, param := range []string{"help", "h"} {
+		if got := propType(t, tools[0], param); got != "boolean" {
+			t.Errorf("seeded help param %q: type %q, want boolean", param, got)
+		}
+	}
+}
+
 // TestBuildCLIToolsTypelessConstraintKeepsBoolean guards the empty-type trap: a
 // constraint that sets only `required` (no type) on a well-known boolean flag
 // must not turn it back into a value-taking string param.

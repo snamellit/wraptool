@@ -63,6 +63,7 @@ func FlagSchemaType(c *config.FlagConstraint) string {
 // buildCLITools), so a tool that genuinely takes a value for a listed name —
 // e.g. --verbose <level> — is still typed correctly from its parsed help.
 var wellKnownBooleanFlags = map[string]bool{
+	"--help": true, "-h": true,
 	"--yes": true, "-y": true,
 	"--force":   true,
 	"--dry-run": true,

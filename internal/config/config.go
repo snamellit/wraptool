@@ -217,6 +217,42 @@ func load(path string, strict bool) (*Config, error) {
 	return &cfg, nil
 }
 
+// HelpFlags are the universal help flags. wraptool seeds them into every allow
+// rule's Flags at load, so `-h`/`--help` are always callable and introspectable
+// on any approved subcommand — the sole exception being an operator who lists a
+// help flag under deny_flags to revoke it (deny wins). This is the single source
+// of that behaviour: the policy engine and the MCP schema builder just read the
+// resulting rule.Flags with no help-specific logic of their own.
+var HelpFlags = []string{"-h", "--help"}
+
+// SeedHelpFlags returns flags with HelpFlags folded in and denyFlags removed —
+// order-stable and de-duplicated. Configured flags keep their order and come
+// first; the help flags are appended; anything listed in denyFlags (a help flag
+// included) is dropped, so deny takes precedence over allow. Idempotent, so it is
+// safe to apply more than once.
+func SeedHelpFlags(flags, denyFlags []string) []string {
+	denied := make(map[string]bool, len(denyFlags))
+	for _, d := range denyFlags {
+		denied[d] = true
+	}
+	seen := make(map[string]bool, len(flags)+len(HelpFlags))
+	out := make([]string, 0, len(flags)+len(HelpFlags))
+	add := func(f string) {
+		if seen[f] || denied[f] {
+			return
+		}
+		seen[f] = true
+		out = append(out, f)
+	}
+	for _, f := range flags {
+		add(f)
+	}
+	for _, f := range HelpFlags {
+		add(f)
+	}
+	return out
+}
+
 func (c *Config) applyDefaults() {
 	if c.Server.Transport == "" {
 		c.Server.Transport = "stdio"
@@ -245,6 +281,14 @@ func (c *Config) applyDefaults() {
 		}
 		if tool.Introspection.OverridesFile != "" {
 			tool.Introspection.OverridesFile = expandPath(tool.Introspection.OverridesFile)
+		}
+		// Seed the universal help flags into every allow rule so -h/--help are
+		// always permitted and introspectable on any approved subcommand, unless
+		// explicitly revoked via deny_flags. Single source: the policy engine and
+		// the MCP schema builder both read the resulting rule.Flags, so no
+		// help-specific logic lives anywhere downstream.
+		for i := range tool.Allow {
+			tool.Allow[i].Flags = SeedHelpFlags(tool.Allow[i].Flags, tool.Allow[i].DenyFlags)
 		}
 		c.Tools[name] = tool
 	}
