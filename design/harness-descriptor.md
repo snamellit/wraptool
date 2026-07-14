@@ -194,8 +194,19 @@ axes get **different mechanisms** there, chosen to be devcontainer-native:
 
 | Axis | Guix runtime | Devcontainer runtime |
 |---|---|---|
-| Binary | shared pool `bin/`, mounted read-only | **`wraptool-harness` feature** — installed per image at build time (`npm i -g` / the harness's own script). npm runs in-image where node lives, so the guix FHS/detect-libc workaround never applies. |
+| Binary | shared pool `bin/`, mounted read-only | **`wraptool` feature, `provision: true`** — installed per image at build time (`npm i -g` / the harness's own script). npm runs in-image where node lives, so the guix FHS/detect-libc workaround never applies. |
 | State  | shared pool `home/`, mounted writable | **same shared pool `home/`**, bind-mounted onto the feature's fixed `HOME` (`/home/wraptool-harness` — user-space, not system `/opt`). Login/skills/config persist across every project — the toolbox value. |
+| Wiring | host-side `harness.Write` into the shared workspace | **`wraptool` feature, `connect: true`** — `connect.sh` writes the MCP client config at postCreate (auto-detects the host gateway). |
+
+**One feature, two toggles.** Wiring and provisioning are orthogonal but serve the
+same population (container-CLI harnesses) and are almost always used together with
+the *same* harness, so they live in one `wraptool` feature keyed on a single
+`harness` option (no cross-feature drift), with independent `provision`/`connect`
+booleans (default true) — `provision: false` for a BYO binary, `connect: false` to
+wire it yourself. The shared-pool `HOME` is a feature invariant (via `containerEnv`,
+not a toggle: features can't conditionalize `containerEnv` on an option, and
+`containerEnv` is the layer that survives `devcontainer exec`). The deprecated
+`wraptool-connect` feature (wiring only) stays published for existing configs.
 
 `wraptool up` (devcontainer path) adds the `home/` bind mount on `devcontainer
 up`; standalone "Reopen in Container" declares the same mount + feature in

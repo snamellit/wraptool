@@ -326,7 +326,7 @@ func bringUpContainer(root, token string, shell bool) error {
 	)
 
 	// Shared harness-state pool: bind-mount the host pool home/ onto the fixed
-	// target the wraptool-harness feature pins HOME to, so a harness's auth/skills/
+	// target the wraptool feature pins HOME to, so a harness's auth/skills/
 	// config persist across every project (the developer toolbox, installed once).
 	// Harmless if the feature isn't present (nothing reads the target). Binary
 	// provisioning is the feature's job (per image); this is state only. See

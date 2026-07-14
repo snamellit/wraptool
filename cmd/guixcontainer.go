@@ -157,10 +157,10 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	return cmd.Run()
 }
 
-// devcontainerPoolHome is the fixed in-container path the wraptool-harness
-// feature pins HOME to; `wraptool up` bind-mounts the host pool home/ onto it so
-// harness auth/state persists across projects. Must match the feature's
-// remoteEnv.HOME in features/src/wraptool-harness/devcontainer-feature.json.
+// devcontainerPoolHome is the fixed in-container path the wraptool feature pins
+// HOME to; `wraptool up` bind-mounts the host pool home/ onto it so harness
+// auth/state persists across projects. Must match the feature's containerEnv.HOME
+// in features/src/wraptool/devcontainer-feature.json.
 //
 // A dedicated user-space home (under /home, not /opt) — /opt connotes a shared
 // *system* location, but this is the single harness user's HOME inside a

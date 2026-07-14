@@ -1,20 +1,21 @@
 name: Publish dev container feature
 
 # Publishes the wraptool Dev Container Features under features/src/ to the Forgejo
-# OCI registry as forge.snamellit.com/pti/wraptool/<feature-id> (wraptool-connect,
-# wraptool-harness). `devcontainer features publish ./features/src` handles every
+# OCI registry as forge.snamellit.com/pti/wraptool/<feature-id>: `wraptool` (the
+# merged provision+connect feature) and `wraptool-connect` (deprecated, kept for
+# existing configs). `devcontainer features publish ./features/src` handles every
 # feature in the dir; each is tagged from the `version` in its own
 # devcontainer-feature.json (:X, :X.Y, :X.Y.Z, :latest).
 #
 # To release: bump `version` in the feature's devcontainer-feature.json, then push
-# a tag (either trigger republishes the whole dir):
-#   git tag wraptool-harness-v0.1.1 && git push origin wraptool-harness-v0.1.1
+# a tag (any trigger republishes the whole dir):
+#   git tag wraptool-v0.1.1 && git push origin wraptool-v0.1.1
 # or run this workflow manually.
 on:
   push:
     tags:
+      - 'wraptool-v*'
       - 'wraptool-connect-v*'
-      - 'wraptool-harness-v*'
   workflow_dispatch:
 
 jobs:
@@ -30,8 +31,8 @@ jobs:
       # Fail fast if a feature is broken (also checks the vendored copy match).
       - name: Test features
         run: |
+          sh features/test/wraptool/selftest.sh
           sh features/test/wraptool-connect/selftest.sh
-          sh features/test/wraptool-harness/selftest.sh
 
       - name: Install devcontainers CLI
         run: |
