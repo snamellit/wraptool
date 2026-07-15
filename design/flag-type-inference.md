@@ -41,7 +41,10 @@ The parser's fallback is flipped from "assert `boolean`" to "admit **unknown**":
 - When the parsed help shows **no value placeholder on any flag**, the CLI's
   renderer gives no type signal, so valueless flags are marked **unknown**
   (`Flag.Type == ""`) rather than `boolean`
-  (`introspect.demoteBooleansIfNoPlaceholders`). The schema builder then defaults
+  (`introspect.demoteBooleansIfNoPlaceholders`, applied by `BestParse` to the
+  **winning** parser's result — which parser wins is data-dependent, e.g. the git
+  parser also handles cobra-style help and wins for glab, so demoting per-parser
+  silently missed it). The schema builder then defaults
   an unknown flag to **string** (`mcptools.buildCLITools` → `IsBooleanFlag`
   heuristic, whose default is string) — the recoverable direction: a switch
   rendered as a string param still works as a bare flag (`buildArgs` emits just

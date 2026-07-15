@@ -66,8 +66,6 @@ func (p *GNUParser) ParseFlags(helpText string) ParseResult {
 		matchCount++
 	}
 
-	demoteBooleansIfNoPlaceholders(flags)
-
 	confidence := 0.0
 	if matchCount > 0 {
 		confidence = 0.6

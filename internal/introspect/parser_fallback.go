@@ -51,8 +51,6 @@ func (p *FallbackParser) ParseFlags(helpText string) ParseResult {
 		}
 	}
 
-	demoteBooleansIfNoPlaceholders(flags)
-
 	confidence := 0.0
 	if len(flags) > 0 {
 		confidence = 0.3
