@@ -4,8 +4,13 @@ import "time"
 
 // Schema represents the introspected structure of a CLI tool.
 type Schema struct {
-	Binary         string                `json:"binary"`
-	VersionOutput  string                `json:"version_output,omitempty"`
+	Binary        string `json:"binary"`
+	VersionOutput string `json:"version_output,omitempty"`
+	// ConfigHash is a stable hash of the introspection-relevant config
+	// (binary + allowed subcommands + overrides file) that produced this schema.
+	// The cache is reused only when it still matches — so editing the config
+	// regenerates the schema. See design/introspection-cache-invalidation.md.
+	ConfigHash     string                `json:"config_hash,omitempty"`
 	IntrospectedAt time.Time             `json:"introspected_at"`
 	Subcommands    map[string]Subcommand `json:"subcommands"`
 }
