@@ -57,6 +57,8 @@ Examples:
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 	cmd.MarkFlagRequired("harness")
 
+	cmd.AddCommand(newInitDevcontainerCmd())
+
 	return cmd
 }
 

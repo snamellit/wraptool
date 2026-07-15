@@ -103,64 +103,42 @@ If you need a specific install order, use the `overrideFeatureInstallOrder`
 property. For most language + tool combinations the defaults are fine.
 :::
 
-## Adding the AI harness as a feature
+## The `wraptool` feature
 
-The same mechanism installs your agent. Instead of scripting `npm install -g`
-in a `postCreate` hook, drop in a feature and let it handle the install, PATH,
-and updates.
+One feature does both jobs, keyed on a single `harness` choice so the name can't
+drift between two places:
 
-### Claude Code
-
-```jsonc
-"features": {
-  "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
-}
-```
-
-Installs the Claude Code CLI into the container. Combined with
-`wraptool-connect` (below), Claude starts already wired to the host's wrapped
-tools — it discovers `git_status`, `git_push`, `kubectl_get`, and friends over
-MCP the moment you launch it.
-
-### Antigravity (`agy`)
-
-```jsonc
-"features": {
-  "ghcr.io/aqua/devcontainer-antigravity-cli/antigravity-cli:1": {}
-}
-```
-
-Installs the Antigravity CLI (`agy`). It coexists with Claude Code — you can
-list several harness features and pick whichever agent you want inside the
-container; they all edit the same bind-mounted source and, via wraptool, share
-the same credential-isolated toolset.
-
-## The `wraptool-connect` feature
-
-This is the feature that makes the whole setup safe. It wires the container's
-AI client to a **host-side wraptool** MCP server, so the agent's git/gcloud/kubectl
-calls execute on the host — where the credentials live — while the container
-itself stays credential-free.
+- **`provision`** (default `true`) — installs the harness binary into the image
+  (`npm i -g` for claude/opencode/pi, the harness's own script for agy), plus
+  pins `HOME` to a host-mounted **shared pool** so the harness's auth, skills, and
+  config persist across every project (the developer toolbox — installed and
+  logged-in once, not per session).
+- **`connect`** (default `true`) — wires the container to a **host-side wraptool**
+  MCP server, so the agent's git/gcloud/kubectl calls execute on the host, where
+  the credentials live, while the container itself stays credential-free.
 
 ```jsonc
 {
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    // Language toolchains
+    // Language toolchains (npm harnesses need node — see below)
     "ghcr.io/devcontainers/features/go:1": {},
-    // AI harness
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    // Credential-isolated tool access (this one)
-    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
+    "ghcr.io/devcontainers/features/node:1": {},
+    // Provision the harness binary + wire it to the host wraptool
+    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
   },
   // Host workspace path, so the server scopes tools to this worktree.
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   // The token is a secret → remoteEnv keeps it out of image layers.
-  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" }
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+  // Share the host harness-state pool (login/skills once, every project).
+  "mounts": [
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+  ]
 }
 ```
 
-It is **image-agnostic**: it adds no tools of its own, only the MCP client
+`connect` is **image-agnostic**: it adds no tools of its own, only the MCP client
 config. At container-create it writes `.mcp.json` pointing at wraptool,
 auto-detecting the host as the container's default-route gateway — so there's no
 `host.docker.internal` or `--add-host` to manage, and it works across docker
@@ -175,9 +153,19 @@ variable-substituted):
 | `WRAPTOOL_TOKEN` | `remoteEnv` | `${localEnv:WRAPTOOL_TOKEN}` | Bearer token (secret → `remoteEnv`, not baked into the image). |
 | `WRAPTOOL_CWD` | `containerEnv` | `${localWorkspaceFolder}` | Host workspace path, sent to the server as `?cwd=` so it scopes tools to this worktree. |
 
-See the [feature README](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool-connect)
+::: {.callout-note}
+**npm harnesses need node.** claude/opencode/pi install via `npm`, so the image
+needs a node runtime — add `ghcr.io/devcontainers/features/node:1`. The scaffolder
+(below) adds it for you. Set `"provision": false` to bring your own binary (baked
+into your base image), or `"connect": false` to wire the harness yourself. `agy`
+installs via its own script (no node); `gemini` has no automated installer, so use
+`"provision": false` and bake it in.
+:::
+
+See the [feature README](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool)
 for every option, and [Isolated environments](isolated-environments.md) for the
-threat model.
+threat model. The older `wraptool-connect` feature (wiring only) is deprecated but
+stays published for existing configs.
 
 ::: {.callout-important}
 For container use the server must listen where the container can reach it — bind
@@ -185,10 +173,26 @@ the docker gateway or `0.0.0.0` (e.g. `listen: 0.0.0.0:8717`), **not**
 `127.0.0.1`.
 :::
 
+## Scaffold it
+
+Rather than hand-write the config, generate a starting point:
+
+```bash
+wraptool init devcontainer --harness claude --lang go,java
+```
+
+It writes `.devcontainer/devcontainer.json` from the `base:ubuntu` + features
+model above: the language features you list, the `wraptool` feature with your
+harness, and the `WRAPTOOL_*` env + shared-pool mount prefilled. npm harnesses
+auto-pull the node feature so the build won't fail for lack of `npm`. It writes a
+fresh file and refuses to clobber an existing one (pass `--force`); it does **not**
+merge into a hand-authored config. Edit the result freely — it's a starting point.
+
 ## A complete example
 
-Putting the pieces together — an Ubuntu base, Go and Java toolchains, both AI
-harnesses, and credential-isolated tools:
+Putting the pieces together — an Ubuntu base, Go and Java toolchains, and a
+credential-isolated Claude Code (this is what the scaffolder emits, plus editor
+extensions):
 
 ```jsonc
 {
@@ -198,15 +202,17 @@ harnesses, and credential-isolated tools:
   "features": {
     "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
     "ghcr.io/devcontainers/features/java:1": { "version": "21" },
+    "ghcr.io/devcontainers/features/node:1": {},
 
-    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-    "ghcr.io/aqua/devcontainer-antigravity-cli/antigravity-cli:1": {},
-
-    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
+    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
   },
 
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+
+  "mounts": [
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+  ],
 
   // Editor integration: install the language extensions in the container.
   "customizations": {
