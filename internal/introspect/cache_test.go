@@ -87,6 +87,29 @@ func TestConfigHash(t *testing.T) {
 	}
 }
 
+func TestCacheStamp(t *testing.T) {
+	isolateCacheDir(t)
+
+	if _, _, ok := CacheStamp("git"); ok {
+		t.Error("CacheStamp should report ok=false when no cache exists")
+	}
+
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := SaveCache("git", &Schema{ConfigHash: "H", IntrospectedAt: at, Subcommands: map[string]Subcommand{}}); err != nil {
+		t.Fatal(err)
+	}
+	gotAt, gotHash, ok := CacheStamp("git")
+	if !ok {
+		t.Fatal("CacheStamp ok=false after SaveCache")
+	}
+	if !gotAt.Equal(at) {
+		t.Errorf("introspectedAt = %v, want %v", gotAt, at)
+	}
+	if gotHash != "H" {
+		t.Errorf("configHash = %q, want H", gotHash)
+	}
+}
+
 func TestNewestInputMtime_MissingBinary(t *testing.T) {
 	if _, err := newestInputMtime(&config.ToolConfig{Binary: "/no/such/tool/binary"}); err == nil {
 		t.Error("a missing tool binary should surface as an error (removed or renamed?)")

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/pti/wraptool/internal/buildinfo"
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/mcpproxy"
 	"github.com/pti/wraptool/internal/mcptools"
@@ -73,7 +74,7 @@ func newRegistrar(s *server.MCPServer, policy *whitelist.Policy, mcpPolicy *whit
 		mcp:       map[string]*mcpSourceEntry{},
 	}
 	r.newMCPSource = func(name string, cfg *config.MCPServerConfig) mcpSource {
-		return mcpproxy.NewSource(name, cfg, r.mcpPolicy, r.store, serverVersion)
+		return mcpproxy.NewSource(name, cfg, r.mcpPolicy, r.store, buildinfo.Version())
 	}
 	return r
 }
