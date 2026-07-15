@@ -21,19 +21,24 @@ have() { grep -qF "$1" "$2" || fail "expected '$1' in $2"; }
 absent() { grep -qF "$1" "$2" && fail "did not expect '$1' in $2" || true; }
 
 # Fake bin dir: npm/curl stubs that record args instead of acting.
+# Portable shebang for the stub scripts: a guix host runner has no /bin/sh (no FHS
+# off-container), so #!/bin/sh would fail to exec — /usr/bin/env resolves sh from PATH.
 STUB="$WORK/bin"
 mkdir -p "$STUB"
 cat > "$STUB/npm" <<EOF
-#!/bin/sh
+#!/usr/bin/env sh
 echo "npm \$*" >> "$WORK/npm.log"
 EOF
 cat > "$STUB/curl" <<EOF
-#!/bin/sh
+#!/usr/bin/env sh
 echo "curl \$*" >> "$WORK/curl.log"
-echo 'mkdir -p "\$HOME/.local/bin"; printf "#!/bin/sh\n" > "\$HOME/.local/bin/agy"; chmod +x "\$HOME/.local/bin/agy"'
+echo 'mkdir -p "\$HOME/.local/bin"; printf "#!/usr/bin/env sh\n" > "\$HOME/.local/bin/agy"; chmod +x "\$HOME/.local/bin/agy"'
 EOF
 chmod +x "$STUB/npm" "$STUB/curl"
-STUBPATH="$STUB:/usr/bin:/bin"
+# Prepend the stubs to the REAL PATH (coreutils live in /gnu/store on guix, not
+# /usr/bin), so install.sh/connect.sh find mkdir/sed/etc. and the stubs win for
+# npm/curl.
+STUBPATH="$STUB:$PATH"
 
 # install <harness> [extra env...] — run install.sh with per-run pool/share/home.
 install_run() {
