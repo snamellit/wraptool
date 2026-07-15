@@ -2,7 +2,7 @@
 title: "Getting started"
 ---
 
-## The fast path
+## The recommended path: `wraptool up`
 
 Once wraptool is installed and you have a config, you don't wire anything by
 hand. In any git repo:
@@ -17,10 +17,17 @@ and `Authorization` header, brings up an **isolated container** (no credentials)
 and drops you into a shell. Bare `wraptool` in a repo does the same. Full detail
 in [§6 below](#one-command-per-project-wraptool-up).
 
-The sections below are the **from-scratch / manual** path — how the pieces fit
-when you want to build, configure, and connect a harness yourself.
+`up` needs **one thing up front**: an existing config. It calls `config.Load`
+before it does anything else, so with no config file it fails immediately —
+create one first (see [Create a config](#create-a-config)). After that, `up` is
+all you run.
 
-## 1. Build
+The sections below are the **manual / from-scratch** path — how the pieces fit
+when you want to build, configure, and connect a harness yourself. If you just
+ran `up`, skip to [§6](#one-command-per-project-wraptool-up) for its details; you
+only need the config section below.
+
+## 1. Build (manual path)
 
 ```bash
 go build -o wraptool .
@@ -33,10 +40,12 @@ toolchain:
 guix shell -m manifest.scm -- go build -o wraptool .
 ```
 
-## 2. Create a config
+## 2. Create a config {#create-a-config}
 
-`wraptool` reads YAML from `~/.config/wraptool/config.yaml` (XDG, with
-`--config` / `WRAPTOOL_CONFIG` overrides).
+Both paths need this — `wraptool up` requires an existing config, and the manual
+flow below reads the same file. `wraptool` reads YAML from
+`~/.config/wraptool/config.yaml` (XDG, with `--config` / `WRAPTOOL_CONFIG`
+overrides).
 
 ```yaml
 server:
@@ -181,7 +190,11 @@ and does three things:
 - **`guix`** — when `guix` is on `PATH` and the worktree has a `manifest.scm`.
   It runs `guix shell --container --network -m manifest.scm`: no Docker, no image
   build, and the container gets the **same toolchain you develop with** (from
-  `manifest.scm`), so the AI harness can compile, test, and analyze locally.
+  `manifest.scm`), so the AI harness can compile, test, and analyze locally. The
+  harness itself installs **once** into the shared pool
+  (`$XDG_DATA_HOME/wraptool/harness-pool/home`, mounted to
+  `/home/wraptool-harness`) — its login and skills persist there across every
+  project, so you don't re-authenticate per box.
 - **`devcontainer`** — the fallback for non-Guix hosts (Arch, macOS, …); see
   [Dev Containers](devcontainers.qmd).
 
@@ -219,30 +232,52 @@ wraptool server status
 wraptool server stop
 ```
 
-### Wiring the container: the `wraptool-connect` feature
+### Wiring the container: the `wraptool` feature
 
-The container side is handled by the **wraptool-connect** dev container feature,
-published to the Forgejo OCI registry. Add it to the project's
-`.devcontainer/devcontainer.json` — it layers onto any base image and adds no
-tools of its own, only the MCP connection:
+The container side is handled by the single **wraptool** dev container feature,
+published to the Forgejo OCI registry. Keyed on one `harness` choice, it does
+**both** jobs via toggles that default to `true`: `provision` installs the
+harness binary into the image, and `connect` writes the MCP client config that
+points it at the host wraptool. It layers onto any base image.
+
+Rather than hand-write the `.devcontainer/devcontainer.json`, scaffold it:
+
+```bash
+wraptool init devcontainer --harness claude --lang go,java
+```
+
+That writes the committed config from the `base:ubuntu` + language-features model:
+the languages you list, the `wraptool` feature with your harness, the `WRAPTOOL_*`
+env, and the shared-pool mount — all prefilled. npm harnesses
+(claude/opencode/pi) auto-pull the `node` feature so the build won't fail for lack
+of `npm`. It writes a fresh file and **refuses to clobber** an existing one (pass
+`--force`); edit the result freely. The emitted config looks like:
 
 ```jsonc
 {
-  "image": "your-base-image",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    "forge.snamellit.com/pti/wraptool/wraptool-connect:0": {}
+    "ghcr.io/devcontainers/features/go:1": {},
+    "ghcr.io/devcontainers/features/node:1": {}, // for the npm harness
+    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
   },
   // Host workspace path (so the server scopes tools to this worktree).
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   // Token is a secret → remoteEnv keeps it out of image layers.
-  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" }
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+  // Share the host harness-state pool (login/skills once, every project).
+  "mounts": [
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+  ]
 }
 ```
 
 At container create the feature writes the MCP client config pointing at the host
 wraptool, auto-detecting the host as the container's default-route gateway — so
 it works across docker networks and worktrees with no `host.docker.internal` or
-`--add-host`.
+`--add-host`. See [Dev Containers](devcontainers.qmd) for every option. The older
+`wraptool-connect` feature (wiring only) is **deprecated** but stays published for
+existing configs.
 
 ::: {.callout-important}
 For container use the server must listen where the container can reach it — bind

@@ -4,9 +4,13 @@ title: "Security model"
 
 ## Threat model
 
-wraptool's adversary is **the AI assistant itself** (or its operator)
-treated as untrusted code with goal-directed behaviour. The assistant
-may:
+wraptool treats the **whole workspace as untrusted**. The adversary is
+not just the AI assistant (or its operator) but everything the assistant
+sets in motion: the build, test, and dependency code its tool calls
+trigger. Prompt injection can steer the assistant; a malicious
+`postinstall` hook or a compromised transitive dependency pulled in
+during a routine version bump runs drive-by, with the assistant's
+reach, the moment you build or test. Any of them may:
 
 - Probe for any reachable secret in its process environment.
 - Send arbitrary tool calls hoping one slips through the policy.
@@ -14,7 +18,28 @@ may:
 - Exfiltrate data via stdout/stderr.
 
 wraptool's job is to make the **set of reachable commands** finite,
-audited, and credential-free from the AI's point of view.
+audited, and credential-free from the workspace's point of view. Run
+under `wraptool up`'s throwaway container (see [Deployment
+patterns](#deployment-patterns)) this bounds the blast radius for both
+the assistant and the code it triggers.
+
+### Scope — what wraptool does and does not protect
+
+Be honest about the boundary. The container has network access and the
+full source tree, and in-container code can read the `.mcp.json` config
+and its bearer token — so it can invoke the **same** whitelisted host
+tools the agent can. wraptool therefore:
+
+- **Protects host credentials** — SSH keys, gcloud, kubeconfig, and the
+  rest of the host environment never enter the container or the AI
+  context.
+- **Bounds which operations run** — privileged/remote actions go only
+  through wraptool's policed, constrained subcommands on the host.
+
+It does **not** protect source confidentiality or network egress, and a
+compromised dependency inherits the agent's (policed) tool access. The
+guarantee is that untrusted workspace code **cannot steal credentials or
+exceed the policy** — not that it can do nothing.
 
 ## Trust boundary
 
@@ -60,9 +85,21 @@ that an attacker could inject into.
 
 ### Argument sanitization
 
-Positional arguments are rejected if they contain `;|&$\`(){}` or
-start with `-` (which would otherwise be parsed as an unintended
-flag).
+Every argument is rejected if it contains a shell metacharacter — the
+full set is ``;|&$`(){}\``, `<`, `>`, and newline/carriage-return.
+There is no shell to inject into (see above); this is a defence-in-depth
+layer.
+
+Two further guards close off option injection, where a value is smuggled
+in as its own argument token:
+
+- **Positional arguments** must not start with `-`, which would
+  otherwise be parsed as an unintended flag.
+- **Flag values** must not start with `-` either (`SanitizeFlagValues`).
+  Each flag is emitted as two argv tokens — flag then value — so a
+  valueless flag handed, say, `--upload-pack=/tmp/x` would land as its
+  own option token and bypass the flag allowlist entirely. Rejecting
+  leading-`-` values closes that path (the F2 finding).
 
 ### Credential scrubbing
 
@@ -91,16 +128,21 @@ Every call uses `context.WithTimeout` based on the tool's `timeout`
 
 ### Minimal child environment
 
-Child processes inherit only `PATH`, `HOME`, `LANG` plus the
-configured `env` / `env_files`. The parent shell's environment is
-**not** propagated.
+Child processes get `HOME`, `PATH`, and `LANG` plus the configured
+`env` / `env_files`. `HOME` and `PATH` are inherited from wraptool's own
+environment; **nothing else is**, so credentials in the parent
+environment cannot leak to a wrapped command.
 
-`PATH` is the tool binary's own directory prepended to `/usr/bin:/bin`,
-so helper executables that ship alongside a tool resolve — e.g.
-`kubectl` invoking its kubeconfig exec credential plugin
-`gke-gcloud-auth-plugin`, or `gcloud` components shelling out to
-siblings. This adds only the directory the trusted binary already lives
-in; nothing else from the host PATH leaks.
+`PATH` is the tool binary's own directory prepended to the **server's
+inherited `PATH`** (`os.Getenv("PATH")`, falling back to `/usr/bin:/bin`
+only when it is unset). Inheriting the full server `PATH` is by design:
+a tool must find its genuine runtime dependencies — e.g. `git`
+shelling out to `ssh`, which on a store-based distro like Guix lives in
+a separate prefix, not beside the `git` binary. Prepending the binary's
+own directory additionally resolves co-located helpers — e.g. `kubectl`
+invoking its kubeconfig exec credential plugin `gke-gcloud-auth-plugin`.
+`PATH` names executables, not secrets; inheriting it restores real
+dependencies without exposing any credential.
 
 ### Auth on network transports
 
@@ -114,6 +156,15 @@ comparison.
 In-flight commands keep using the policy they started with. The
 swap is atomic; partially-applied policy is never observable.
 
+### Help flags are always available
+
+`-h` and `--help` are seeded into every allow rule at config load
+(`config.SeedHelpFlags`), so they are permitted and introspectable on
+any allowed subcommand. They are handled as **ordinary allowed flags**,
+not a policy special-case: the policy engine and the MCP schema builder
+both just read the resulting `flags` list. An operator can revoke them
+per-rule via `deny_flags` like any other flag.
+
 ### Capability requests
 
 Denied commands return a structured error pointing the AI at
@@ -123,11 +174,22 @@ operator reviews and approves out-of-band. This makes the policy
 
 ## Deployment patterns
 
-For maximum isolation, run the AI assistant in a container or VM
-without credentials, with wraptool on the host or a separate
-container that holds the secrets. See
-[isolated environments](isolated-environments.md) for Guix, Docker,
-Podman, and systemd recipes.
+The recommended default is `wraptool up`: from any git repo it brings up
+a **throwaway container per project** — a native Guix container built
+from your `manifest.scm` when Guix is available, otherwise a Dev
+Container — wired to the wraptool server on the host over an
+`auth_token`. The assistant, your build scripts, and their dependencies
+all run inside with **no host credentials**; privileged and remote
+actions (`git push`, `gcloud`, `kubectl`) go back through wraptool's
+whitelisted subcommands on the host. Per the scope above, the container
+still has network and the source tree, so this bounds credentials and
+policy, not confidentiality or egress.
+
+More generally, run the AI assistant in a container or VM without
+credentials, with wraptool on the host or a separate container that
+holds the secrets. See [isolated
+environments](isolated-environments.md) for Guix, Docker, Podman, and
+systemd recipes.
 
 ## Reporting
 
