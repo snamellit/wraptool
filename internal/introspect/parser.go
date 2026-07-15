@@ -34,6 +34,11 @@ func AllParsers() []Parser {
 // (curl, git), the absence of one is a reliable "boolean", so those are left
 // untouched. Authoritative types still come from flag_constraints (see
 // design/flag-type-inference.md).
+//
+// Applied by BestParse to the WINNING result, not by the individual parsers —
+// which parser wins is data-dependent (GitParser also handles cobra-style help
+// and wins for glab), so demoting anywhere but the final result silently misses
+// whichever parser happened to win.
 func demoteBooleansIfNoPlaceholders(flags map[string]Flag) {
 	for _, f := range flags {
 		if f.TakesValue {
@@ -48,8 +53,10 @@ func demoteBooleansIfNoPlaceholders(flags map[string]Flag) {
 	}
 }
 
-// BestParse runs all parsers against the help text and returns the
-// result with the highest confidence.
+// BestParse runs all parsers against the help text and returns the highest-
+// confidence result, then relaxes its placeholder-less booleans (see
+// demoteBooleansIfNoPlaceholders) — on the winner, so the choice of parser
+// doesn't change the flag typing.
 func BestParse(helpText string) ParseResult {
 	var best ParseResult
 	for _, p := range AllParsers() {
@@ -58,5 +65,6 @@ func BestParse(helpText string) ParseResult {
 			best = result
 		}
 	}
+	demoteBooleansIfNoPlaceholders(best.Subcommand.Flags)
 	return best
 }
