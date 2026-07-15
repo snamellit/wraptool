@@ -35,6 +35,15 @@ The key insight: **credentials never enter the isolated environment**.
 The AI assistant calls tools via MCP, wraptool validates the request
 against the whitelist, and executes the command on the host.
 
+Be clear on what this does and does not buy you. The container still has
+network access and the full source tree bind-mounted, and any code running in
+it can read the MCP config plus the bearer token and invoke the same
+whitelisted host tools the agent can. So wraptool protects **credentials**
+(SSH keys, gcloud/kube config, and privileged git like push stay on the host)
+and **bounds operations** by the whitelist policy — it does **not** protect
+source confidentiality or restrict network egress. For those, add container
+network controls of your own.
+
 ## Option 1: Guix Shell Container
 
 Guix provides `guix shell --container` which creates a lightweight,
@@ -120,31 +129,41 @@ Flags explained:
 
 ### Step 3: Configure Claude Code inside the container
 
-```bash
-# Inside the container
-mkdir -p ~/.config/claude
+Claude Code reads a project-level `.mcp.json` (not `~/.config/claude/...`).
+Generate it with `wraptool init` rather than hand-writing the JSON — the shape
+and endpoint differ per harness. Run it on the host (or anywhere `wraptool` is
+on `PATH`) from the project root:
 
-cat > ~/.config/claude/settings.json << 'EOF'
+```bash
+wraptool init --harness claude --transport sse \
+  --url http://127.0.0.1:8717/sse
+```
+
+That writes `.mcp.json` with the entry Claude Code expects (a Unix-socket host
+carries no auth token, so no header is emitted):
+
+```json
 {
   "mcpServers": {
     "wraptool": {
-      "url": "http://localhost/sse",
-      "transport": {
-        "type": "unix",
-        "socketPath": "/run/user/1000/wraptool.sock"
-      }
+      "type": "sse",
+      "url": "http://127.0.0.1:8717/sse?cwd=/home/you/src/myproject"
     }
   }
 }
-EOF
+```
 
+Then, inside the container:
+
+```bash
 # Start Claude Code — it discovers git_status, git_commit, etc. via MCP
 claude
 ```
 
-> **Note:** Claude Code's MCP Unix socket client support depends on your
-> version. If Unix sockets aren't supported, use SSE transport with
-> `--network` and `listen: 127.0.0.1:8717` instead.
+> **Note:** Claude Code has no native MCP Unix-socket client, so it always
+> connects over HTTP/SSE. To keep the host on a Unix socket, bridge it with
+> `socat` (see [Option 3](#option-3-unix-socket-with-sse-transport)); otherwise
+> run wraptool with `listen: 127.0.0.1:8717` and `--network`.
 
 ### Guix manifest for the coding environment
 
@@ -222,24 +241,27 @@ podman run -it --rm \
 
 ### Step 3: Configure Claude Code inside the container
 
-```bash
-# Inside the container
-apt-get update && apt-get install -y curl
+Claude Code reads a project `.mcp.json`, which must carry the
+`Authorization: Bearer` header for an auth-enabled server. The Dev Container
+`wraptool` feature's `connect.sh` renders exactly this from the `WRAPTOOL_TOKEN`
+(and `WRAPTOOL_CWD`) env you already passed in — the recommended path
+([Option 4](#option-4-vs-code-dev-container)). For a plain `docker run`, drop
+`connect.sh` into the image and run it from the workspace, or write the file
+directly:
 
-mkdir -p ~/.config/claude
-cat > ~/.config/claude/settings.json << EOF
+```json
 {
   "mcpServers": {
     "wraptool": {
-      "url": "http://127.0.0.1:8717/sse",
-      "headers": {
-        "Authorization": "Bearer $WRAPTOOL_TOKEN"
-      }
+      "type": "sse",
+      "url": "http://127.0.0.1:8717/sse?cwd=/workspace",
+      "headers": { "Authorization": "Bearer <WRAPTOOL_TOKEN>" }
     }
   }
 }
-EOF
+```
 
+```bash
 # Install and start Claude Code
 # ... (install node, npm, claude-code)
 claude
@@ -274,28 +296,79 @@ socat TCP-LISTEN:8717,fork,reuseaddr \
 
 ## Option 4: VS Code Dev Container
 
-A ready-made Dev Container template lives in
-[`examples/devcontainer/`](../examples/devcontainer/). Copy it into your project
-as `.devcontainer/` and it builds a minimal client image (no git, no
-credentials), points Claude Code at the host wraptool, and ships a
-`test-connection.sh` smoke test.
+The recommended path uses the merged **`wraptool` Dev Container feature**
+(`forge.snamellit.com/pti/wraptool/wraptool`), which does two jobs off a single
+`harness` choice: **provision** installs the harness binary into the image, and
+**connect** writes the MCP client config wiring it to the host wraptool. Scaffold
+a config and bring it up:
+
+```bash
+# In your project root: generate .devcontainer/devcontainer.json
+wraptool init devcontainer --harness claude --lang go,node
+
+# Host: start wraptool on a container-reachable address (see note below) and
+# export the token so it reaches the container out of the image layers.
+export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
+
+# Bring it up: `wraptool up`, or VS Code "Reopen in Container", or:
+wraptool up            # (off Guix this runs `devcontainer up` for you)
+#   devcontainer up --workspace-folder .
+```
+
+`wraptool init devcontainer` emits a starting-point `devcontainer.json` from the
+`base:ubuntu` + language-features model: the language features you list, the
+`wraptool` feature with your harness, and the `WRAPTOOL_CWD` / `WRAPTOOL_TOKEN`
+env plus the shared-pool mount prefilled (npm harnesses like claude auto-pull the
+`node` feature). It writes a fresh file and refuses to clobber an existing one
+(pass `--force`).
+
+At container-create the feature's `connect.sh` writes `.mcp.json` pointing at
+wraptool, auto-detecting the host as the container's default-route gateway — so
+there's no `host.docker.internal` or `--add-host` to manage, and it works across
+docker networks and git worktrees. The token stays out of image layers (passed
+via `remoteEnv`), and `WRAPTOOL_CWD=${localWorkspaceFolder}` scopes host tools to
+this worktree.
+
+### Shared harness pool and toggles
+
+The feature pins the harness's `HOME` to `/home/wraptool-harness` and mounts the
+host **harness pool** (`$XDG_DATA_HOME/wraptool/harness-pool/home`, e.g.
+`~/.local/share/wraptool/harness-pool/home`) onto it, so the harness's auth,
+skills, and config persist **across every project** — you log in and install
+skills once, not per container. `wraptool up` bind-mounts this pool for you; a
+standalone "Reopen in Container" declares the same mount (the scaffolder prefills
+it).
+
+Two independent toggles on the feature (both default `true`):
+
+- `"provision": false` — bring your own harness binary (baked into your base
+  image); the shared-pool HOME and connect wiring still apply.
+- `"connect": false` — wire the MCP config yourself (e.g. host-side
+  `wraptool init`); provisioning still installs the binary.
+
+See [Dev containers for AI harnesses](devcontainers.qmd) for the full feature
+reference (every option, the base-image-plus-features rationale, and the
+`wraptool up`/`down` lifecycle).
+
+### Drive it yourself
+
+If you'd rather not use the feature, a hand-rolled template lives in
+[`examples/devcontainer/`](../examples/devcontainer/): a minimal client image
+(no git, no credentials) pointed at the host wraptool, plus a
+`test-connection.sh` isolation + MCP-reachability smoke test. Copy it into your
+project as `.devcontainer/`, then "Reopen in Container".
 
 ```bash
 cp -r examples/devcontainer /path/to/your-project/.devcontainer
-
-# Host: start wraptool on a container-reachable address (see note below).
 export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
 # VS Code: "Reopen in Container"  — or:  devcontainer up --workspace-folder .
-
-# Inside the container, verify isolation + connectivity:
-.devcontainer/test-connection.sh
+.devcontainer/test-connection.sh   # verify isolation + connectivity
 ```
 
-The container reaches the host at `host.docker.internal` (mapped to the host
-gateway). Because it lives in its own network namespace, host `127.0.0.1` is not
-reachable — wraptool must listen on the docker gateway or `0.0.0.0`. Override
-`WRAPTOOL_URL` in `devcontainer.json` to target a specific gateway. See
-`examples/devcontainer/README.md` for details.
+Because the container lives in its own network namespace, host `127.0.0.1` is
+not reachable — wraptool must listen on the docker gateway or `0.0.0.0` (e.g.
+`listen: 0.0.0.0:8717`). Override `WRAPTOOL_URL` in `devcontainer.json` to target
+a specific gateway. See `examples/devcontainer/README.md` for details.
 
 ## Security Checklist
 

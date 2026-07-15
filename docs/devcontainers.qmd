@@ -16,8 +16,8 @@ For AI-assisted development this is exactly the shape you want:
 - **Compile and test happen in the container too**, so the agent's edits are
   validated against the same toolchain your editor uses — no "works on my
   machine" gap between the human and the AI.
-- **Credentials stay on the host.** Paired with the [`wraptool-connect`
-  feature](#the-wraptool-connect-feature), the agent reaches git, gcloud, and
+- **Credentials stay on the host.** With the [`wraptool`
+  feature](#the-wraptool-feature), the agent reaches git, gcloud, and
   kubectl through wraptool over MCP — it never holds a token or an SSH key.
 
 This page is a short tour of how to assemble such a container. If you just want
@@ -162,7 +162,7 @@ installs via its own script (no node); `gemini` has no automated installer, so u
 `"provision": false` and bake it in.
 :::
 
-See the [feature README](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool)
+See the [feature definition](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool/devcontainer-feature.json)
 for every option, and [Isolated environments](isolated-environments.md) for the
 threat model. The older `wraptool-connect` feature (wiring only) is deprecated but
 stays published for existing configs.
@@ -244,9 +244,12 @@ It is idempotent and does three things:
    the auth token) and waits for it to become reachable.
 2. **Brings up this project's container** — a native Guix container on a Guix
    host, else `devcontainer up` — injecting the connection info the
-   `wraptool-connect` feature needs: the auth token (`WRAPTOOL_TOKEN`) and this
+   `wraptool` feature needs: the auth token (`WRAPTOOL_TOKEN`) and this
    worktree's host path (`WRAPTOOL_CWD`), so `.mcp.json` is wired correctly
-   without you exporting anything.
+   without you exporting anything. It also bind-mounts the shared harness pool
+   into the container — but **defers** when the `devcontainer.json` already
+   declares that mount (e.g. one written by `wraptool init devcontainer`), so
+   the two never collide on a duplicate-mount error.
 3. **Drops you into a shell** in the container, ready to code. Exiting the shell
    leaves the container running; re-enter any time by running `wraptool up` again.
 

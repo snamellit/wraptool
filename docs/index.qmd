@@ -48,10 +48,10 @@ flowchart LR
 
   subgraph host["Host — credentials live here"]
     wt[wraptool<br/>server]
-    policy[Policy Engine<br/>deny &gt; allow &gt; constraints]
+    policy["Policy Engine<br/>deny &gt; allow &gt; constraints"]
     exec[Sandboxed Exec<br/>+ credential scrub]
     cli[Privileged CLI<br/>git push / gcloud / kubectl]
-    creds[(Credentials<br/>SSH keys · tokens · kubeconfig)]
+    creds[("Credentials<br/>SSH keys · tokens · kubeconfig")]
     op[Operator review<br/>CLI + Web UI]
   end
 

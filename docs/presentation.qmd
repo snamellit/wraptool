@@ -28,11 +28,23 @@ format:
 
 ## Threats in scope
 
+The **whole workspace is untrusted** — the assistant, its tool calls,
+*and* the build/test/dependency code they trigger.
+
 - Goal-directed model behaviour (intentional probing).
 - Prompt-injection into long-running sessions.
 - Output exfiltration via stdout / stderr.
 - Shell-metacharacter injection in command arguments.
-- Future supply-chain compromise of the harness itself.
+- Supply-chain compromise — a malicious `postinstall` or a poisoned
+  transitive dep pulled in during a routine dependency update —
+  bounded by the throwaway `wraptool up` container.
+
+::: {.fragment}
+Honest scope: the container isolates **host credentials** and bounds
+ops by the whitelist. It still has network + the source tree and shares
+the agent's policed MCP tools — so it does **not** guarantee source
+confidentiality or block egress.
+:::
 
 ## What we want
 
@@ -91,11 +103,26 @@ flowchart LR
   style trusted fill:#efe,stroke:#2a7
 ```
 
+## The sandbox is a real container
+
+`wraptool up` (or bare `wraptool` in a repo) backs the "untrusted"
+box with an actual throwaway container:
+
+- **Guix-native** — `guix shell --container --network --emulate-fhs
+  -m manifest.scm` when `guix` is present, else a **Dev Container**.
+- **user + mount namespace** — host `$HOME` and secrets are **never**
+  mounted; local git works in-box, privileged git still goes through
+  the MCP tool.
+- Same flat toolchain as the developer's, so the harness can
+  compile / test / analyze locally.
+- Harness installed + wired, host gateway auto-detected.
+
 ## Inside wraptool
 
 ```
 main.go
-cmd/      serve · requests · init · root
+cmd/      up · down · server · harness · validate
+          init (+ init devcontainer) · serve · requests · root
 internal/
   config/         YAML types + Validate + ApplyRequest
   whitelist/      deny > allow > flag / arg constraints
@@ -103,6 +130,8 @@ internal/
   mcptools/       MCP tool registry, handler, request_capability
   introspect/     --help parsing (git / GNU / fallback), cache
   requestlog/     JSONL store
+  webui/          operator request-review Web UI
+  harness/        harness descriptor registry
   paths/          XDG via adrg/xdg
 ```
 
@@ -183,6 +212,9 @@ tools:
 ## Network transports
 
 - `stdio`, `sse`, `unix`.
+- The HTTP listener serves **both** legacy SSE at `/sse` **and**
+  Streamable HTTP at `/mcp` behind one Bearer wrapper (Antigravity
+  negotiates the latter).
 - `sse` + `unix` support `auth_token_file` with constant-time bearer
   comparison.
 - Unix socket auto-`chmod 0600`.
@@ -225,15 +257,23 @@ sequenceDiagram
 ## Live walkthrough
 
 ::: {.incremental}
-1. Start `wraptool serve` with SSE on `127.0.0.1:8717`.
-2. Connect Claude Code via `wraptool init --harness claude`.
-3. Allowed: `git_status`, `git_commit_message="..."`.
-4. Denied: `git_push --force` → structured refusal.
-5. AI calls `wraptool_request_capability` with rationale.
-6. Operator: `wraptool requests list`, then
+1. `wraptool up` (or bare `wraptool`) in a repo → **one command**
+   brings up a credential-isolated container with the harness
+   installed and wired, host gateway auto-detected.
+   - Guix-native container from `manifest.scm` if `guix` is present,
+     else a Dev Container.
+2. Allowed: `git_status`, `git_commit_message="..."`.
+3. Denied: `git_push --force` → structured refusal.
+4. AI calls `wraptool_request_capability` with rationale.
+5. Operator: `wraptool requests list`, then
    `wraptool requests approve req_xxxx --apply`.
-7. fsnotify → reload → new tool registered → AI's next call
+6. fsnotify → reload → new tool registered → AI's next call
    succeeds. **No restart.**
+:::
+
+::: {.fragment}
+Minimal, no-container fallback: `wraptool init --harness claude`
+to wire a harness at any MCP client, then `wraptool serve` on the host.
 :::
 
 # Where next
@@ -246,7 +286,10 @@ sequenceDiagram
 - A "dry-run" mode that records what *would* be denied.
 
 ::: {.fragment}
-*Shipped: a browser-based Web UI for the request-review workflow.*
+*Shipped:* `wraptool up` one-command container isolation
+(Guix / devcontainer) · the single merged `wraptool` Dev Container
+feature · a browser-based Web UI for request review **and full rule
+CRUD**.
 :::
 
 ## Try it
@@ -258,14 +301,18 @@ git clone \
   forgejo@forge.snamellit.com:pti/wraptool.git
 cd wraptool
 go build -o wraptool .
-./wraptool init --harness claude
+./wraptool up          # or bare: ./wraptool
 ```
 :::
 ::: {.column width=50%}
-- GPLv3
-- Go 1.26+
-- Docs: this site
-- Issues: forgejo project tracker
+- One command → isolated container,
+  harness installed + wired.
+- Or drop the single `wraptool` Dev
+  Container feature into a project
+  (harness option + provision /
+  connect toggles).
+- GPLv3 · Go 1.26+
+- Docs: this site · Issues: forgejo
 :::
 :::
 

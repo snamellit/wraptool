@@ -5,9 +5,17 @@ title: "Configuration reference"
 ## Top-level shape
 
 ```yaml
-server:    # how the MCP transport is exposed
-tools:     # one entry per wrapped CLI tool
+server:       # how the MCP transport is exposed
+tools:        # one entry per wrapped CLI tool
+mcp_servers:  # experimental — see below
 ```
+
+`mcp_servers` (map keyed by server name) declares local stdio MCP servers that
+wraptool spawns and polices. It is **present but experimental**: the config type
+exists (`command`/`args`/`working_dir`/`env`/`env_files`/`timeout`, plus
+`allow`/`deny` lists of upstream tool names), but the policy engine, config
+editors, and rule CRUD do not operate on it yet, until extended in a later
+phase.
 
 ## `server`
 
@@ -16,14 +24,15 @@ tools:     # one entry per wrapped CLI tool
 | `transport` | `stdio` \| `sse` \| `unix` | `stdio` | MCP transport |
 | `listen`    | string | — | `host:port` (sse) or socket path (unix) |
 | `auth_token_file` | string | — | Bearer token file for sse/unix |
+| `log_level` | string | `info` | log verbosity |
+| `request_log` | string | XDG data dir | path to capability-request JSONL |
+| `allowed_cwd_roots` | `[]string` | — | when non-empty, constrains a client-supplied cwd to these roots (symlinks resolved); a cwd outside them is refused. Empty = no containment |
+| `web` | map | — | operator request-review Web UI (see below) |
 
 The `sse`/`unix` TCP listener serves both MCP HTTP transports on the one port —
 legacy SSE at `/sse` and Streamable HTTP at `/mcp` — behind the same
 `auth_token_file` Bearer check. Clients hit whichever their generated config
 targets.
-| `log_level` | string | `info` | log verbosity |
-| `request_log` | string | XDG data dir | path to capability-request JSONL |
-| `web` | map | — | operator request-review Web UI (see below) |
 
 ### `server.web`
 
@@ -34,7 +43,7 @@ transport, so it works even under `stdio`. Leave `listen` empty to disable.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `listen` | string | — | `host:port` for the UI; **bind `127.0.0.1`** — it is not AI-facing |
-| `auth_token_file` | string | — | optional; HTTP Basic password (browser prompt) or `Bearer` token (scripts). Empty ⇒ localhost-trust, no auth |
+| `auth_token_file` | string | — | optional shared token. Browsers authenticate via `?token=` or a login form ⇒ an `HttpOnly` session cookie; scripts send it as a `Bearer` header. Empty ⇒ localhost-trust, no auth |
 
 ```yaml
 server:
@@ -88,6 +97,12 @@ tools:
 | `deny_flags` | `[]string` | Flags blocked even though in `flags` |
 | `flag_constraints` | `map[flag]Constraint` | Value-level rules |
 | `arg_constraints.positional_max` | `int` | Max positional args |
+
+**Help flags are always permitted.** At config load wraptool seeds `-h` and
+`--help` into every allow rule's `flags` (`config.SeedHelpFlags`), so they are
+callable and introspectable on any approved subcommand without listing them.
+The MCP schema renders them as boolean params. To revoke help on a rule, list
+the flag under its `deny_flags` — deny wins.
 
 ### Deny rules
 
@@ -191,9 +206,12 @@ subcommands:
 
 Each child process gets a minimal base environment:
 
-- `PATH` — the tool binary's own directory prepended to `/usr/bin:/bin`,
-  so co-located helper executables resolve (e.g. `kubectl` →
-  `gke-gcloud-auth-plugin`)
+- `PATH` — the tool binary's own directory prepended to the **server's
+  inherited `PATH`** (falling back to `/usr/bin:/bin` only when that is unset).
+  PATH is the one variable inherited from wraptool's environment — nothing else
+  is — so a tool finds both co-located helpers (e.g. `kubectl` →
+  `gke-gcloud-auth-plugin`) and genuine runtime deps in a separate prefix (e.g.
+  `git` → `ssh` on a store-based distro like Guix), without leaking credentials
 - `HOME`, `LANG`
 - Variables from `env_files` (merged in order)
 - Variables from inline `env` (override `env_files`)

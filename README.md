@@ -19,11 +19,14 @@ code they trigger — as untrusted**, and bounds what it can reach:
   with its own environment; secrets never enter the AI context.
 - **Bounded blast radius** -- inside `wraptool up`'s throwaway container
   the assistant, your build scripts, and the dependencies they pull in
-  all run with no host credentials. A hijacked agent *or* a drive-by
-  supply-chain payload in a routine dependency update comes up empty — it
-  can't read SSH keys or cloud tokens, or run privileged `git`/`kubectl`.
-  Those happen only through wraptool's whitelisted, constrained
-  subcommands on the host.
+  all run with no host credentials. A hijacked agent *or* a poisoned
+  dependency can't steal your credentials or exceed the whitelist: raw
+  host secrets (SSH keys, gcloud, kubeconfig, push access) never leave the
+  host, and privileged `git`/`kubectl` happen only through wraptool's
+  whitelisted, constrained subcommands. A malicious payload still runs
+  with the container's network and source tree, and can invoke the same
+  approved tools the agent can — but policy, not the payload, bounds which
+  operations reach the host.
 - **Subcommand-level whitelisting** -- allow `git commit` but deny
   `git push --force`, with flag-level granularity and value
   constraints.
