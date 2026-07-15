@@ -68,3 +68,38 @@ func TestHasDevcontainer(t *testing.T) {
 		t.Fatal("should detect .devcontainer/devcontainer.json")
 	}
 }
+
+func TestDevcontainerDeclaresPoolMount(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		dir := t.TempDir()
+		dc := filepath.Join(dir, ".devcontainer")
+		if err := os.MkdirAll(dc, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dc, "devcontainer.json"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+
+	t.Run("declares the pool mount", func(t *testing.T) {
+		dir := write(t, `{"mounts":["source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=`+devcontainerPoolHome+`,type=bind"]}`)
+		if !devcontainerDeclaresPoolMount(dir) {
+			t.Error("should detect the pool mount target in the config")
+		}
+	})
+
+	t.Run("no pool mount", func(t *testing.T) {
+		dir := write(t, `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`)
+		if devcontainerDeclaresPoolMount(dir) {
+			t.Error("must not report a mount that is not declared")
+		}
+	})
+
+	t.Run("no config at all", func(t *testing.T) {
+		if devcontainerDeclaresPoolMount(t.TempDir()) {
+			t.Error("no config → no declared mount")
+		}
+	})
+}

@@ -328,18 +328,26 @@ func bringUpContainer(root, token string, shell bool) error {
 	// Shared harness-state pool: bind-mount the host pool home/ onto the fixed
 	// target the wraptool feature pins HOME to, so a harness's auth/skills/
 	// config persist across every project (the developer toolbox, installed once).
-	// Harmless if the feature isn't present (nothing reads the target). Binary
-	// provisioning is the feature's job (per image); this is state only. See
-	// design/harness-descriptor.md §7.
+	// Binary provisioning is the feature's job (per image); this is state only.
+	// See design/harness-descriptor.md §7.
 	_, _, poolHome, err := ensureHarnessPool()
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("bringing up dev container for %s ...\n", root)
-	fmt.Printf("harness pool: sharing %s -> %s (state persists across projects)\n", poolHome, devcontainerPoolHome)
-	up := exec.Command("devcontainer", "up", "--workspace-folder", root,
-		"--mount", "type=bind,source="+poolHome+",target="+devcontainerPoolHome)
+	upArgs := []string{"up", "--workspace-folder", root}
+	// Defer to a config that already declares the pool mount (e.g. one written by
+	// `wraptool init devcontainer`, or a standalone Reopen-in-Container setup):
+	// adding our own --mount on top would be a duplicate mount point and docker
+	// rejects it. Only add the mount when the config does not carry it.
+	if devcontainerDeclaresPoolMount(root) {
+		fmt.Printf("harness pool: mount declared in devcontainer.json (%s)\n", devcontainerPoolHome)
+	} else {
+		fmt.Printf("harness pool: sharing %s -> %s (state persists across projects)\n", poolHome, devcontainerPoolHome)
+		upArgs = append(upArgs, "--mount", "type=bind,source="+poolHome+",target="+devcontainerPoolHome)
+	}
+	up := exec.Command("devcontainer", upArgs...)
 	up.Env = env
 	up.Stdout = os.Stdout
 	up.Stderr = os.Stderr
@@ -361,12 +369,31 @@ func bringUpContainer(root, token string, shell bool) error {
 	return sh.Run()
 }
 
-func hasDevcontainer(root string) bool {
-	for _, p := range []string{
+func devcontainerConfigPaths(root string) []string {
+	return []string{
 		filepath.Join(root, ".devcontainer", "devcontainer.json"),
 		filepath.Join(root, ".devcontainer.json"),
-	} {
+	}
+}
+
+func hasDevcontainer(root string) bool {
+	for _, p := range devcontainerConfigPaths(root) {
 		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// devcontainerDeclaresPoolMount reports whether the project's devcontainer.json
+// already bind-mounts the harness-state pool onto devcontainerPoolHome. It is a
+// deliberate substring check, not a JSONC parse: the pool target path only ever
+// appears in a config as the mount's target (the feature sets HOME to it via
+// containerEnv, in the image — never in the user's config), so its presence is a
+// reliable signal that `wraptool up` must not add a second, duplicate mount.
+func devcontainerDeclaresPoolMount(root string) bool {
+	for _, p := range devcontainerConfigPaths(root) {
+		if data, err := os.ReadFile(p); err == nil && strings.Contains(string(data), devcontainerPoolHome) {
 			return true
 		}
 	}
