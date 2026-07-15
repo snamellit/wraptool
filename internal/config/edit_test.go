@@ -37,7 +37,7 @@ tools:
       - subcommand: [status]
 `)
 
-	res, err := ApplyRequest(cfgPath, "git", []string{"commit"}, []string{"--message"})
+	res, err := ApplyRequest(cfgPath, "git", []string{"commit"}, []string{"--message"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyRequest: %v", err)
 	}
@@ -63,6 +63,96 @@ tools:
 	}
 }
 
+// ruleFor finds the allow rule for a tool+subcommand in a loaded config.
+func ruleFor(t *testing.T, cfg *Config, tool string, subcommand []string) AllowRule {
+	t.Helper()
+	for _, r := range cfg.Tools[tool].Allow {
+		if strings.Join(r.Subcommand, " ") == strings.Join(subcommand, " ") {
+			return r
+		}
+	}
+	t.Fatalf("no allow rule for %s %v", tool, subcommand)
+	return AllowRule{}
+}
+
+func TestApplyRequest_WritesFlagConstraints(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, `server:
+  transport: stdio
+tools:
+  git:
+    binary: {{BIN}}
+    allow:
+      - subcommand: [status]
+`)
+	// A requester supplies a type for --message but not --amend.
+	if _, err := ApplyRequest(cfgPath, "git", []string{"commit"},
+		[]string{"--message", "--amend"},
+		map[string]string{"--message": "string"}); err != nil {
+		t.Fatalf("ApplyRequest: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rule := ruleFor(t, cfg, "git", []string{"commit"})
+	fc, ok := rule.FlagConstraints["--message"]
+	if !ok {
+		t.Fatalf("no flag_constraints for --message; got %v", rule.FlagConstraints)
+	}
+	if fc.Type != ConstraintString {
+		t.Errorf("--message type = %q, want string", fc.Type)
+	}
+	if _, ok := rule.FlagConstraints["--amend"]; ok {
+		t.Error("--amend should carry no constraint (no type supplied)")
+	}
+}
+
+func TestApplyRequest_KeepsExistingConstraint(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, `server:
+  transport: stdio
+tools:
+  git:
+    binary: {{BIN}}
+    allow:
+      - subcommand: [commit]
+        flags: [--message]
+        flag_constraints:
+          --message: {type: string, required: true}
+`)
+	// A later request tries to retype --message to integer — the existing
+	// operator-authored constraint must win.
+	if _, err := ApplyRequest(cfgPath, "git", []string{"commit"},
+		[]string{"--message"}, map[string]string{"--message": "integer"}); err != nil {
+		t.Fatalf("ApplyRequest: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fc := ruleFor(t, cfg, "git", []string{"commit"}).FlagConstraints["--message"]
+	if fc.Type != ConstraintString || !fc.Required {
+		t.Errorf("existing constraint clobbered: type=%q required=%v, want string/true", fc.Type, fc.Required)
+	}
+}
+
+func TestApplyRequest_RejectsInvalidFlagType(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, `server:
+  transport: stdio
+tools:
+  git:
+    binary: {{BIN}}
+    allow:
+      - subcommand: [status]
+`)
+	// An invalid type must fail the round-trip validation and leave the file
+	// untouched (the closed ConstraintType enum rejects it at decode).
+	if _, err := ApplyRequest(cfgPath, "git", []string{"commit"},
+		[]string{"--message"}, map[string]string{"--message": "bogus"}); err == nil {
+		t.Error("expected ApplyRequest to reject an invalid flag type")
+	}
+}
+
 func TestApplyRequest_ExtendExistingRule(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, `server:
   transport: stdio
@@ -74,7 +164,7 @@ tools:
         flags: [--message]
 `)
 
-	res, err := ApplyRequest(cfgPath, "git", []string{"commit"}, []string{"--message", "--amend"})
+	res, err := ApplyRequest(cfgPath, "git", []string{"commit"}, []string{"--message", "--amend"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyRequest: %v", err)
 	}
@@ -107,7 +197,7 @@ tools:
 `)
 	before, _ := os.ReadFile(cfgPath)
 
-	res, err := ApplyRequest(cfgPath, "git", []string{"commit"}, []string{"--message"})
+	res, err := ApplyRequest(cfgPath, "git", []string{"commit"}, []string{"--message"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyRequest: %v", err)
 	}
@@ -137,7 +227,7 @@ tools:
 `)
 	before, _ := os.ReadFile(cfgPath)
 
-	_, err := ApplyRequest(cfgPath, "git", []string{"push"}, []string{"--force"})
+	_, err := ApplyRequest(cfgPath, "git", []string{"push"}, []string{"--force"}, nil)
 	if err == nil {
 		t.Fatal("expected deny-conflict error")
 	}
@@ -161,7 +251,7 @@ tools:
 `)
 	before, _ := os.ReadFile(cfgPath)
 
-	_, err := ApplyRequest(cfgPath, "kubectl", []string{"get"}, nil)
+	_, err := ApplyRequest(cfgPath, "kubectl", []string{"get"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for unknown tool")
 	}
@@ -184,7 +274,7 @@ tools:
       - subcommand: [status]
 `)
 
-	res, err := ApplyRequest(cfgPath, "git", []string{"remote", "set-url"}, []string{"--push"})
+	res, err := ApplyRequest(cfgPath, "git", []string{"remote", "set-url"}, []string{"--push"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyRequest: %v", err)
 	}
@@ -214,7 +304,7 @@ tools:
 	}
 	before, _ := os.ReadFile(cfgPath)
 
-	_, err := ApplyRequest(cfgPath, "git", []string{"commit"}, nil)
+	_, err := ApplyRequest(cfgPath, "git", []string{"commit"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -249,7 +339,7 @@ tools:
 		t.Fatal(err)
 	}
 
-	res, err := ApplyRequest(cfgPath, "git", []string{"log"}, []string{"--oneline"})
+	res, err := ApplyRequest(cfgPath, "git", []string{"log"}, []string{"--oneline"}, nil)
 	if err != nil {
 		t.Fatalf("ApplyRequest: %v", err)
 	}

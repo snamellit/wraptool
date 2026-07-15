@@ -144,7 +144,7 @@ func checkRuleAt(seq *yaml.Node, toolName, kind string, index int, expect []stri
 
 func newRule(kind string, subcommand, flags []string) *yaml.Node {
 	if kind == KindAllow {
-		return newAllowRule(subcommand, flags)
+		return newAllowRule(subcommand, flags, nil)
 	}
 	rule := &yaml.Node{Kind: yaml.MappingNode}
 	mapSet(rule, "subcommand", stringSeq(subcommand))

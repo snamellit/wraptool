@@ -40,7 +40,7 @@ internal/
   whitelist/                    policy engine — deny > allow > constraints
   executor/                     exec.CommandContext, sanitization, credential scrubbing
   mcptools/                     MCP tool registry, handler, request_capability tool
-  introspect/                   --help parsing (git/GNU/fallback), caching, overrides
+  introspect/                   --help parsing (git/GNU/fallback), caching, overrides. Flag value types are syntactic (value placeholder → typed) with a placeholder-aware default: a help that shows **no** placeholder anywhere (e.g. glab) can't distinguish a value flag from a switch, so valueless flags are left **unknown** (`Type==""`) and the schema builder defaults them to string — safer than asserting boolean, which makes a value flag uncarriable. The authoritative type comes from the capability author, not the regex: `wraptool_request_capability` takes an optional `flag_types` map that `config.ApplyRequest` writes as `flag_constraints` (which override introspection). See `design/flag-type-inference.md`.
   requestlog/                   append-only JSONL event log (capability requests + tool-call audit); state is a projection folded over the stream, never rewritten in place
   webui/                        operator-facing request-review Web UI (stdlib net/http + html/template, go:embed)
   paths/                        XDG platform paths via adrg/xdg

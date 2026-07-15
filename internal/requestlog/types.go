@@ -71,15 +71,22 @@ type ToolCallEvent struct {
 
 // CapabilityRequest represents a request to add a new capability to the whitelist.
 type CapabilityRequest struct {
-	ID            string    `json:"id"`
-	Timestamp     time.Time `json:"timestamp"`
-	Status        Status    `json:"status"`
-	Tool          string    `json:"tool"`
-	Subcommand    []string  `json:"subcommand"`
-	Flags         []string  `json:"flags,omitempty"`
-	Rationale     string    `json:"rationale"`
-	Enables       string    `json:"enables,omitempty"`
-	DeniedCommand string    `json:"denied_command,omitempty"`
-	SessionID     string    `json:"session_id,omitempty"`
-	DenyReason    string    `json:"deny_reason,omitempty"`
+	ID         string    `json:"id"`
+	Timestamp  time.Time `json:"timestamp"`
+	Status     Status    `json:"status"`
+	Tool       string    `json:"tool"`
+	Subcommand []string  `json:"subcommand"`
+	Flags      []string  `json:"flags,omitempty"`
+	// FlagTypes carries the requester's inferred value type for a flag (keyed by
+	// flag name → "string"|"integer"|"boolean"). The requester (a developer, or
+	// an AI that read the tool's --help) types the flag far more accurately than
+	// the generic introspection parser can; on approval these become
+	// flag_constraints in the config, which override the introspected type. Only
+	// flags also present in Flags are applied. See design/flag-type-inference.md.
+	FlagTypes     map[string]string `json:"flag_types,omitempty"`
+	Rationale     string            `json:"rationale"`
+	Enables       string            `json:"enables,omitempty"`
+	DeniedCommand string            `json:"denied_command,omitempty"`
+	SessionID     string            `json:"session_id,omitempty"`
+	DenyReason    string            `json:"deny_reason,omitempty"`
 }
