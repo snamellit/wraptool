@@ -52,6 +52,22 @@ func LoadCache(toolName string, v cacheValidity) *Schema {
 	return &schema
 }
 
+// CacheStamp reports when a tool's cached schema was last introspected and the
+// config hash it was built from, with no validity check — purely for reporting
+// freshness (e.g. the wraptool_info tool). Returns ok=false when there is no
+// readable cache (introspected fresh this boot, or introspection failed).
+func CacheStamp(toolName string) (introspectedAt time.Time, configHash string, ok bool) {
+	data, err := os.ReadFile(paths.IntrospectionCacheFile(toolName))
+	if err != nil {
+		return time.Time{}, "", false
+	}
+	var schema Schema
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return time.Time{}, "", false
+	}
+	return schema.IntrospectedAt, schema.ConfigHash, true
+}
+
 // SaveCache writes a schema to the cache.
 func SaveCache(toolName string, schema *Schema) error {
 	path := paths.IntrospectionCacheFile(toolName)

@@ -1,13 +1,18 @@
 package cmd
 
 import (
+	"fmt"
+
+	"github.com/pti/wraptool/internal/buildinfo"
+
 	"github.com/spf13/cobra"
 )
 
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "wraptool",
-		Short: "MCP server that wraps CLI tools with security whitelisting",
+		Use:     "wraptool",
+		Version: buildinfo.Version(), // `wraptool --version`
+		Short:   "MCP server that wraps CLI tools with security whitelisting",
 		Long: `wraptool is an MCP server that wraps CLI tools (git, gcloud, kubectl, etc.)
 behind a security whitelist. AI coding assistants discover and use wrapped tools
 via MCP, but never see credentials. Unapproved commands are denied with structured
@@ -33,6 +38,28 @@ environment (equivalent to 'wraptool up').`,
 	root.AddCommand(newUpCmd())
 	root.AddCommand(newDownCmd())
 	root.AddCommand(newServerCmd())
+	root.AddCommand(newVersionCmd())
 
 	return root
+}
+
+// newVersionCmd prints the full build identity — version, git revision, dirty
+// flag, Go version — so you can check any wraptool binary (including a stale one
+// on PATH) without starting a server. `which wraptool && wraptool version`
+// answers "which binary am I running?".
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the wraptool build version and git revision",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			i := buildinfo.Get()
+			fmt.Printf("wraptool %s\n", i.Version)
+			if i.Revision != "" {
+				fmt.Printf("  revision: %s (dirty: %v)\n", i.Revision, i.Modified)
+			}
+			fmt.Printf("  go:       %s\n", i.GoVersion)
+			return nil
+		},
+	}
 }

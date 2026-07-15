@@ -13,6 +13,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/pti/wraptool/internal/buildinfo"
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/paths"
@@ -79,10 +80,11 @@ func runServe(configPath string) error {
 	mcpPolicy := whitelist.NewMCPPolicy(configPointers(cfg.MCPServers))
 	store := requestlog.NewStore(cfg.Server.RequestLog)
 
-	// Create MCP server.
+	// Create MCP server. serverInfo.version carries the stamped build identity so
+	// clients can see which wraptool binary is serving.
 	s := server.NewMCPServer(
 		"wraptool",
-		serverVersion,
+		buildinfo.Version(),
 		server.WithToolCapabilities(true),
 	)
 
@@ -100,8 +102,9 @@ func runServe(configPath string) error {
 		return fmt.Errorf("registering tools: %w", err)
 	}
 
-	// Register the capability request tool.
+	// Register the capability request tool + the server-info tool.
 	mcptools.RegisterRequestCapabilityTool(s, store)
+	mcptools.RegisterInfoTool(s, toolNames(cfg))
 
 	// Set up SIGHUP and file-watch for hot-reload.
 	go handleSIGHUP(configPath, reg)
@@ -151,9 +154,15 @@ func runServe(configPath string) error {
 	}
 }
 
-// serverVersion is reported to MCP clients and forwarded to upstream MCP
-// servers as wraptool's ClientInfo version.
-const serverVersion = "0.1.0"
+// toolNames returns the configured CLI tool names, for the wraptool_info tool's
+// per-tool introspection-freshness report.
+func toolNames(cfg *config.Config) []string {
+	names := make([]string, 0, len(cfg.Tools))
+	for name := range cfg.Tools {
+		names = append(names, name)
+	}
+	return names
+}
 
 // configPointers adapts a config's value map into the pointer map the policy
 // engines expect. Each &v is a distinct per-iteration variable (Go 1.22+ loop
