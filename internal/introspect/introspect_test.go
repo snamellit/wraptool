@@ -115,6 +115,43 @@ func TestGNUParser_ParseFlags_Curl(t *testing.T) {
 	}
 }
 
+// TestDemoteBooleansWhenNoPlaceholders covers the glab-style case: a help that
+// shows no value placeholder on any flag can't distinguish a value flag from a
+// switch, so valueless flags become UNKNOWN ("") — not a confident (and wrong)
+// "boolean". When placeholders ARE present, valueless flags stay boolean.
+func TestDemoteBooleansWhenNoPlaceholders(t *testing.T) {
+	// No placeholders anywhere: --reviewer (a value flag) looks identical to
+	// --draft (a switch). Both the GNU and fallback parsers must emit "".
+	glabish := "  FLAGS\n" +
+		"    --draft                 Mark merge request as a draft.\n" +
+		"    --reviewer              Request review from users by their usernames.\n" +
+		"    --target-branch         Set target branch.\n"
+	for _, p := range []Parser{&GNUParser{}, &FallbackParser{}} {
+		flags := p.ParseFlags(glabish).Subcommand.Flags
+		f, ok := flags["--reviewer"]
+		if !ok {
+			t.Fatalf("%s: --reviewer not parsed", p.Name())
+		}
+		if f.Type != "" {
+			t.Errorf("%s: --reviewer type = %q, want \"\" (no placeholder in help ⇒ unknown, not boolean)", p.Name(), f.Type)
+		}
+		if f.TakesValue {
+			t.Errorf("%s: --reviewer TakesValue = true, want false (no placeholder observed)", p.Name())
+		}
+	}
+
+	// Placeholders present (curl/git style): a valueless flag is a real boolean.
+	withPlaceholders := "  -d, --data <data>   HTTP POST data\n" +
+		"  -f, --fail          Fail fast with no output\n"
+	flags := (&GNUParser{}).ParseFlags(withPlaceholders).Subcommand.Flags
+	if f := flags["--fail"]; f.Type != "boolean" {
+		t.Errorf("--fail type = %q, want boolean (help uses placeholders elsewhere)", f.Type)
+	}
+	if f := flags["--data"]; f.Type != "string" {
+		t.Errorf("--data type = %q, want string", f.Type)
+	}
+}
+
 func TestBestParse_PicksHighestConfidence(t *testing.T) {
 	helpText := readTestData(t, "git_commit_h.txt")
 	result := BestParse(helpText)

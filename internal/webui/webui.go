@@ -278,7 +278,7 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := config.ApplyRequest(s.configPath, req.Tool, req.Subcommand, req.Flags)
+	result, err := config.ApplyRequest(s.configPath, req.Tool, req.Subcommand, req.Flags, req.FlagTypes)
 	if err != nil {
 		// Status is already approved; report the apply failure so the
 		// operator can edit the config by hand.

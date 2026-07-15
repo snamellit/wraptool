@@ -130,7 +130,7 @@ func newRequestsApproveCmd(configPath *string) *cobra.Command {
 				resolvedPath = paths.DefaultConfigFile()
 			}
 
-			result, err := config.ApplyRequest(resolvedPath, req.Tool, req.Subcommand, req.Flags)
+			result, err := config.ApplyRequest(resolvedPath, req.Tool, req.Subcommand, req.Flags, req.FlagTypes)
 			if err != nil {
 				return fmt.Errorf("applying to config: %w", err)
 			}

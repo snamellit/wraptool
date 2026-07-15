@@ -31,7 +31,7 @@ type ApplyResult struct {
 //   - The tool is not configured (caller must add a `binary` entry first).
 //   - A deny rule for the same subcommand exists (conflict).
 //   - The post-edit config fails validation.
-func ApplyRequest(path, toolName string, subcommand, flags []string) (*ApplyResult, error) {
+func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes map[string]string) (*ApplyResult, error) {
 	result := &ApplyResult{}
 	var ruleNode *yaml.Node
 
@@ -73,7 +73,7 @@ func ApplyRequest(path, toolName string, subcommand, flags []string) (*ApplyResu
 		}
 
 		if ruleNode == nil {
-			ruleNode = newAllowRule(subcommand, flags)
+			ruleNode = newAllowRule(subcommand, flags, flagTypes)
 			allowNode.Content = append(allowNode.Content, ruleNode)
 			result.NewRule = true
 			result.AddedFlags = append([]string(nil), flags...)
@@ -99,6 +99,7 @@ func ApplyRequest(path, toolName string, subcommand, flags []string) (*ApplyResu
 			existing[f] = true
 			result.AddedFlags = append(result.AddedFlags, f)
 		}
+		applyFlagTypes(ruleNode, flags, flagTypes)
 		return nil
 	})
 	if err != nil {
@@ -213,13 +214,43 @@ func stringSeqEqual(seq *yaml.Node, want []string) bool {
 	return true
 }
 
-func newAllowRule(subcommand, flags []string) *yaml.Node {
+func newAllowRule(subcommand, flags []string, flagTypes map[string]string) *yaml.Node {
 	rule := &yaml.Node{Kind: yaml.MappingNode}
 	mapSet(rule, "subcommand", stringSeq(subcommand))
 	if len(flags) > 0 {
 		mapSet(rule, "flags", stringSeq(flags))
 	}
+	applyFlagTypes(rule, flags, flagTypes)
 	return rule
+}
+
+// applyFlagTypes adds `flag_constraints: {flag: {type: T}}` on rule for each flag
+// in `flags` that has a concrete type in flagTypes. It never overwrites an
+// existing constraint entry — an operator-authored (or previously applied) type
+// wins over a fresh request. Called by ApplyRequest so an approved capability's
+// requester-supplied types become authoritative flag_constraints, overriding the
+// introspected type. See design/flag-type-inference.md.
+func applyFlagTypes(rule *yaml.Node, flags []string, flagTypes map[string]string) {
+	if len(flagTypes) == 0 {
+		return
+	}
+	fcNode := mapGet(rule, "flag_constraints")
+	for _, f := range flags {
+		t, ok := flagTypes[f]
+		if !ok || t == "" {
+			continue
+		}
+		if fcNode == nil {
+			fcNode = &yaml.Node{Kind: yaml.MappingNode}
+			mapSet(rule, "flag_constraints", fcNode)
+		}
+		if mapGet(fcNode, f) != nil {
+			continue // don't clobber an existing constraint
+		}
+		entry := &yaml.Node{Kind: yaml.MappingNode}
+		mapSet(entry, "type", scalarNode(t))
+		mapSet(fcNode, f, entry)
+	}
 }
 
 func stringSeq(values []string) *yaml.Node {
