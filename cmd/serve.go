@@ -116,6 +116,28 @@ func runServe(configPath string) error {
 		}
 	}
 
+	// Record our pid for the persistent transports so `server stop`/`status`
+	// find the server however it was started — `up`, a direct `wraptool serve`,
+	// or a service manager. This is the single writer of the pidfile. stdio is a
+	// per-session, harness-spawned transport (many run at once), so it must NOT
+	// touch the shared pidfile. A default-signal exit skips defers, so also clear
+	// the pidfile (and tear down MCP children) on SIGINT/SIGTERM — e.g. from
+	// `wraptool server stop`.
+	if cfg.Server.Transport != "stdio" {
+		if err := writePidFile(); err != nil {
+			return err
+		}
+		defer removePidFile()
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		go func() {
+			<-sigCh
+			reg.closeAll()
+			removePidFile()
+			os.Exit(0)
+		}()
+	}
+
 	// Start the appropriate transport.
 	switch cfg.Server.Transport {
 	case "stdio":

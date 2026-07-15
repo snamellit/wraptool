@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/paths"
 
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,7 @@ import (
 func newServerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
-		Short: "Inspect or stop the shared wraptool server started by `up`",
+		Short: "Inspect or stop the shared wraptool server",
 	}
 	cmd.AddCommand(newServerStatusCmd())
 	cmd.AddCommand(newServerStopCmd())
@@ -46,7 +47,7 @@ func newServerStatusCmd() *cobra.Command {
 			case alive:
 				fmt.Printf("process alive (pid %d) but not reachable%s\n", pid, addrSuffix(probe))
 			case reachable:
-				fmt.Printf("reachable at %s (not started by `up`, no pidfile)\n", probe)
+				fmt.Printf("reachable at %s (no pidfile — started externally or by an older wraptool)\n", probe)
 			default:
 				fmt.Println("not running")
 			}
@@ -60,11 +61,11 @@ func newServerStatusCmd() *cobra.Command {
 func newServerStopCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stop",
-		Short: "Stop the shared server started by `up`",
+		Short: "Stop the shared wraptool server",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			pid, err := readPidFile()
 			if err != nil || pid <= 0 {
-				return fmt.Errorf("no pidfile at %s; server not started by `up` (stop it however you started it)", pidFilePath())
+				return fmt.Errorf("no pidfile at %s; the server isn't running (or was started by an older wraptool that didn't record one — stop it however you started it)", pidFilePath())
 			}
 			if !processAlive(pid) {
 				_ = os.Remove(pidFilePath())
@@ -88,6 +89,22 @@ func newServerStopCmd() *cobra.Command {
 	}
 	return cmd
 }
+
+// writePidFile records the current process's pid so `server stop`/`status` can
+// find the server no matter how it was started (`up`, a direct `wraptool serve`,
+// or a service manager). serve calls this for the persistent transports; it is
+// the single writer of the pidfile.
+func writePidFile() error {
+	if err := os.MkdirAll(paths.RuntimeDir(), 0o700); err != nil {
+		return fmt.Errorf("creating runtime dir: %w", err)
+	}
+	if err := os.WriteFile(pidFilePath(), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		return fmt.Errorf("writing pidfile: %w", err)
+	}
+	return nil
+}
+
+func removePidFile() { _ = os.Remove(pidFilePath()) }
 
 func readPidFile() (int, error) {
 	b, err := os.ReadFile(pidFilePath())

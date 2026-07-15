@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -232,13 +231,8 @@ func spawnServer(configPath string) error {
 		return fmt.Errorf("starting server: %w", err)
 	}
 
-	if err := os.MkdirAll(paths.RuntimeDir(), 0700); err != nil {
-		return fmt.Errorf("creating runtime dir: %w", err)
-	}
-	if err := os.WriteFile(pidFilePath(), []byte(strconv.Itoa(cmd.Process.Pid)), 0600); err != nil {
-		return fmt.Errorf("writing pidfile: %w", err)
-	}
-	// Detach: don't wait on or reap the child.
+	// The spawned `serve` writes the pidfile itself (its own pid), so every start
+	// path records one — see writePidFile in serve. Detach: don't wait or reap.
 	return cmd.Process.Release()
 }
 
