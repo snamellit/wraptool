@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 )
@@ -263,6 +264,22 @@ func stringSeq(values []string) *yaml.Node {
 
 func scalarNode(value string) *yaml.Node {
 	return &yaml.Node{Kind: yaml.ScalarNode, Value: value}
+}
+
+// strNode is a scalar explicitly tagged as a string, so the encoder quotes
+// values that would otherwise misparse as YAML (a pattern starting with `*`,
+// containing `:`, etc.). Use it for free-form text; scalarNode's untagged form
+// is right for barewords, ints, and bools that should resolve to their type.
+func strNode(value string) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+}
+
+func intNode(i int) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: strconv.Itoa(i)}
+}
+
+func boolNode(b bool) *yaml.Node {
+	return &yaml.Node{Kind: yaml.ScalarNode, Value: strconv.FormatBool(b)}
 }
 
 func marshalNode(n *yaml.Node) (string, error) {

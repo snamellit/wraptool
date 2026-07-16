@@ -162,6 +162,84 @@ func TestDeleteRule_DriftRejected(t *testing.T) {
 	}
 }
 
+func TestSetFlagConstraint_ReplacesEntry(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	// --short is boolean in the base config; retype it as integer with a range.
+	min, max := 0, 10
+	fc := FlagConstraint{Type: ConstraintInteger, Min: &min, Max: &max}
+	if err := SetFlagConstraint(cfgPath, "git", 0, []string{"status"}, "--short", fc); err != nil {
+		t.Fatalf("SetFlagConstraint: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	if !strings.Contains(got, "type: integer") {
+		t.Errorf("type not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "min: 0") || !strings.Contains(got, "max: 10") {
+		t.Errorf("min/max not written as ints:\n%s", got)
+	}
+	if strings.Contains(got, "type: boolean") {
+		t.Errorf("old boolean constraint not replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "# config") {
+		t.Errorf("comment lost:\n%s", got)
+	}
+}
+
+func TestSetFlagConstraint_AddsToNewFlag(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	// Rule 0 already carries a flag_constraints block; add a second flag to it.
+	// --branch must be an allowed flag or validation rejects the constraint.
+	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short", "--branch"}); err != nil {
+		t.Fatalf("UpdateRule: %v", err)
+	}
+	fc := FlagConstraint{Type: ConstraintString, Pattern: "*.log"}
+	if err := SetFlagConstraint(cfgPath, "git", 0, []string{"status"}, "--branch", fc); err != nil {
+		t.Fatalf("SetFlagConstraint: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	// A pattern that would misparse as a YAML alias (leading '*') must be quoted.
+	if !strings.Contains(got, `"*.log"`) && !strings.Contains(got, "'*.log'") {
+		t.Errorf("pattern not quoted:\n%s", got)
+	}
+	// Existing --short entry survives.
+	if !strings.Contains(got, "--short:") {
+		t.Errorf("existing constraint dropped:\n%s", got)
+	}
+}
+
+func TestSetFlagConstraint_EmptyFlagRejected(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	if err := SetFlagConstraint(cfgPath, "git", 0, []string{"status"}, "", FlagConstraint{Type: ConstraintString}); err == nil {
+		t.Fatal("expected error for empty flag name")
+	}
+}
+
+func TestSetFlagConstraint_DriftRejected(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	if err := SetFlagConstraint(cfgPath, "git", 0, []string{"log"}, "--short", FlagConstraint{Type: ConstraintString}); err == nil {
+		t.Fatal("expected drift error")
+	}
+}
+
+func TestDeleteFlagConstraint_RemovesBlockWhenEmpty(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	if err := DeleteFlagConstraint(cfgPath, "git", 0, []string{"status"}, "--short"); err != nil {
+		t.Fatalf("DeleteFlagConstraint: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	if strings.Contains(got, "flag_constraints") {
+		t.Errorf("empty flag_constraints block not removed:\n%s", got)
+	}
+}
+
+func TestDeleteFlagConstraint_AbsentIsNoop(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	// Rule 1 (log) has no constraints; deleting one must not error.
+	if err := DeleteFlagConstraint(cfgPath, "git", 1, []string{"log"}, "--nope"); err != nil {
+		t.Fatalf("DeleteFlagConstraint on absent entry: %v", err)
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

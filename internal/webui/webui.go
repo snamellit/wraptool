@@ -31,6 +31,9 @@ var assets embed.FS
 // invoked with several named values (Go's html/template passes a single
 // pipeline argument to {{template}}).
 var tmplFuncs = template.FuncMap{
+	// emptyConstraint yields a zero constraintView for the "add constraint" form
+	// so it can reuse the same partial as the pre-filled edit forms.
+	"emptyConstraint": func() constraintView { return constraintView{} },
 	"dict": func(pairs ...any) (map[string]any, error) {
 		if len(pairs)%2 != 0 {
 			return nil, fmt.Errorf("dict requires an even number of arguments")
@@ -90,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /rules/{tool}/{kind}/add", s.handleRuleAdd)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/update", s.handleRuleUpdate)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/delete", s.handleRuleDelete)
+	// flag_constraints are allow-only, so these routes are not parameterised on kind.
+	mux.HandleFunc("POST /rules/{tool}/allow/{index}/constraint/set", s.handleRuleConstraintSet)
+	mux.HandleFunc("POST /rules/{tool}/allow/{index}/constraint/delete", s.handleRuleConstraintDelete)
 	mux.Handle("GET /static/", s.static)
 	return mux
 }
@@ -366,11 +372,24 @@ func flashFromQuery(q url.Values) *flashView {
 // --- rule CRUD ---
 
 type ruleView struct {
-	Kind       string // "allow" | "deny"
-	Index      int
-	Subcommand string // space-joined tokens
-	Flags      string // space-joined tokens
-	Advanced   bool   // has flag_constraints / arg_constraints / deny_flags (edit YAML directly)
+	Kind        string // "allow" | "deny"
+	Index       int
+	Subcommand  string // space-joined tokens
+	Flags       string // space-joined tokens
+	Constraints []constraintView
+	Advanced    bool // has arg_constraints / deny_flags (still edit those in YAML directly)
+}
+
+// constraintView is a flag_constraints entry rendered for the rules editor.
+// Numeric bounds are strings so an unset bound renders as an empty input.
+type constraintView struct {
+	Flag     string
+	Type     string
+	Min      string
+	Max      string
+	Pattern  string
+	Required bool
+	Deny     bool
 }
 
 type toolRulesView struct {
@@ -404,11 +423,14 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 		tv := toolRulesView{Name: name, Binary: tc.Binary}
 		for i, rule := range tc.Allow {
 			tv.Allow = append(tv.Allow, ruleView{
-				Kind:       config.KindAllow,
-				Index:      i,
-				Subcommand: strings.Join(rule.Subcommand, " "),
-				Flags:      strings.Join(rule.Flags, " "),
-				Advanced:   len(rule.FlagConstraints) > 0 || rule.ArgConstraints != nil || len(rule.DenyFlags) > 0,
+				Kind:        config.KindAllow,
+				Index:       i,
+				Subcommand:  strings.Join(rule.Subcommand, " "),
+				Flags:       strings.Join(rule.Flags, " "),
+				Constraints: constraintViews(rule.FlagConstraints),
+				// flag_constraints are now editable inline; arg_constraints and
+				// deny_flags still require a YAML edit.
+				Advanced: rule.ArgConstraints != nil || len(rule.DenyFlags) > 0,
 			})
 		}
 		for i, rule := range tc.Deny {
@@ -475,6 +497,109 @@ func (s *Server) handleRuleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Deleted %s rule %s. Server will hot-reload.", kind, tool), "")
+}
+
+// constraintViews renders a rule's flag_constraints map into a stable,
+// flag-sorted slice for the template. An unset numeric bound becomes an empty
+// string so its input renders blank.
+func constraintViews(fcs map[string]config.FlagConstraint) []constraintView {
+	if len(fcs) == 0 {
+		return nil
+	}
+	flags := make([]string, 0, len(fcs))
+	for f := range fcs {
+		flags = append(flags, f)
+	}
+	sort.Strings(flags)
+	views := make([]constraintView, 0, len(flags))
+	for _, f := range flags {
+		fc := fcs[f]
+		cv := constraintView{
+			Flag:     f,
+			Type:     string(fc.Type),
+			Pattern:  fc.Pattern,
+			Required: fc.Required,
+			Deny:     fc.Deny,
+		}
+		if fc.Min != nil {
+			cv.Min = strconv.Itoa(*fc.Min)
+		}
+		if fc.Max != nil {
+			cv.Max = strconv.Itoa(*fc.Max)
+		}
+		views = append(views, cv)
+	}
+	return views
+}
+
+// parseFlagConstraintForm reads a flag_constraints entry from an approve/rule
+// form. An invalid type is not rejected here — SetFlagConstraint's round-trip
+// validation catches it against the closed ConstraintType enum — but a
+// non-integer min/max is a parse error surfaced to the operator.
+func parseFlagConstraintForm(r *http.Request) (config.FlagConstraint, error) {
+	fc := config.FlagConstraint{
+		Type:     config.ConstraintType(strings.TrimSpace(r.FormValue("type"))),
+		Pattern:  strings.TrimSpace(r.FormValue("pattern")),
+		Required: r.FormValue("required") == "1",
+		Deny:     r.FormValue("deny") == "1",
+	}
+	if v := strings.TrimSpace(r.FormValue("min")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fc, fmt.Errorf("min must be an integer: %w", err)
+		}
+		fc.Min = &n
+	}
+	if v := strings.TrimSpace(r.FormValue("max")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fc, fmt.Errorf("max must be an integer: %w", err)
+		}
+		fc.Max = &n
+	}
+	return fc, nil
+}
+
+func (s *Server) handleRuleConstraintSet(w http.ResponseWriter, r *http.Request) {
+	tool := r.PathValue("tool")
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil {
+		s.redirect(w, r, "/rules", "err", "invalid rule index", "")
+		return
+	}
+	expect := strings.Fields(r.FormValue("expect"))
+	flag := strings.TrimSpace(r.FormValue("flag"))
+	fc, err := parseFlagConstraintForm(r)
+	if err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Set constraint failed: %s", err), "")
+		return
+	}
+	if err := config.SetFlagConstraint(s.configPath, tool, index, expect, flag, fc); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Set constraint failed: %s", err), "")
+		return
+	}
+	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Set constraint on %s %s. Server will hot-reload.", tool, flag), "")
+}
+
+func (s *Server) handleRuleConstraintDelete(w http.ResponseWriter, r *http.Request) {
+	tool := r.PathValue("tool")
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil {
+		s.redirect(w, r, "/rules", "err", "invalid rule index", "")
+		return
+	}
+	expect := strings.Fields(r.FormValue("expect"))
+	flag := strings.TrimSpace(r.FormValue("flag"))
+	if flag == "" {
+		s.redirect(w, r, "/rules", "err", "Delete constraint failed: flag name is required", "")
+		return
+	}
+
+	if err := config.DeleteFlagConstraint(s.configPath, tool, index, expect, flag); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Delete constraint failed: %s", err), "")
+		return
+	}
+	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Deleted constraint on %s %s. Server will hot-reload.", tool, flag), "")
 }
 
 const sessionCookie = "wraptool_session"
