@@ -70,7 +70,7 @@ func TestAddRule_UnknownTool(t *testing.T) {
 func TestUpdateRule_FlagsAndConstraintPreserved(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
 	// Update the status rule's flags; its flag_constraints block must survive.
-	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short", "--branch"}); err != nil {
+	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short", "--branch"}, nil); err != nil {
 		t.Fatalf("UpdateRule: %v", err)
 	}
 	got := readFile(t, cfgPath)
@@ -84,7 +84,7 @@ func TestUpdateRule_FlagsAndConstraintPreserved(t *testing.T) {
 
 func TestUpdateRule_EmptyFlagsRemovesKey(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
-	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, nil); err != nil {
+	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, nil, nil); err != nil {
 		t.Fatalf("UpdateRule: %v", err)
 	}
 	got := readFile(t, cfgPath)
@@ -93,10 +93,28 @@ func TestUpdateRule_EmptyFlagsRemovesKey(t *testing.T) {
 	}
 }
 
+func TestUpdateRule_DenyFlags(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short"}, []string{"--exec"}); err != nil {
+		t.Fatalf("UpdateRule: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	if !strings.Contains(got, "deny_flags") || !strings.Contains(got, "--exec") {
+		t.Errorf("deny_flags not written:\n%s", got)
+	}
+	// Empty denyFlags removes the key on a later edit.
+	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short"}, nil); err != nil {
+		t.Fatalf("UpdateRule clear: %v", err)
+	}
+	if strings.Contains(readFile(t, cfgPath), "deny_flags") {
+		t.Errorf("deny_flags not removed when cleared")
+	}
+}
+
 func TestUpdateRule_DriftRejected(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
 	// expect says [commit] but rule 0 is [status] → refuse.
-	err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"commit"}, []string{"commit"}, nil)
+	err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"commit"}, []string{"commit"}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "changed since") {
 		t.Fatalf("expected drift error, got %v", err)
 	}
@@ -104,7 +122,7 @@ func TestUpdateRule_DriftRejected(t *testing.T) {
 
 func TestUpdateRule_IndexOutOfRange(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
-	if err := UpdateRule(cfgPath, "git", KindAllow, 9, nil, []string{"x"}, nil); err == nil {
+	if err := UpdateRule(cfgPath, "git", KindAllow, 9, nil, []string{"x"}, nil, nil); err == nil {
 		t.Fatal("expected out-of-range error")
 	}
 }
@@ -186,7 +204,7 @@ func TestSetFlagConstraint_AddsToNewFlag(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
 	// Rule 0 already carries a flag_constraints block; add a second flag to it.
 	// --branch must be an allowed flag or validation rejects the constraint.
-	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short", "--branch"}); err != nil {
+	if err := UpdateRule(cfgPath, "git", KindAllow, 0, []string{"status"}, []string{"status"}, []string{"--short", "--branch"}, nil); err != nil {
 		t.Fatalf("UpdateRule: %v", err)
 	}
 	fc := FlagConstraint{Type: ConstraintString, Pattern: "*.log"}

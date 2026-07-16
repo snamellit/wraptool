@@ -90,6 +90,32 @@ func TestRuleUpdateDriftRejected(t *testing.T) {
 	}
 }
 
+func TestRuleUpdateDenyFlags(t *testing.T) {
+	srv, _, cfgPath := newTestServer(t)
+	// Set deny_flags on the allow rule, then clear them.
+	rr := postRule(t, srv, "/rules/git/allow/0/update", url.Values{
+		"expect": {"log"}, "subcommand": {"log"}, "flags": {"--oneline"}, "deny_flags": {"--exec --force"},
+	})
+	if loc := rr.Header().Get("Location"); strings.Contains(loc, "kind=err") {
+		t.Fatalf("update reported error: %s", loc)
+	}
+	got, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(got), "deny_flags") || !strings.Contains(string(got), "--exec") {
+		t.Errorf("deny_flags not written:\n%s", got)
+	}
+
+	// Clearing the field removes the key.
+	if rr = postRule(t, srv, "/rules/git/allow/0/update", url.Values{
+		"expect": {"log"}, "subcommand": {"log"}, "flags": {"--oneline"}, "deny_flags": {""},
+	}); strings.Contains(rr.Header().Get("Location"), "kind=err") {
+		t.Fatalf("clear update failed: %s", rr.Header().Get("Location"))
+	}
+	got, _ = os.ReadFile(cfgPath)
+	if strings.Contains(string(got), "deny_flags") {
+		t.Errorf("deny_flags not removed when cleared:\n%s", got)
+	}
+}
+
 func TestRuleAddThenDelete(t *testing.T) {
 	srv, _, cfgPath := newTestServer(t)
 	if rr := postRule(t, srv, "/rules/git/allow/add", url.Values{"subcommand": {"status"}}); rr.Code != http.StatusSeeOther {
@@ -217,7 +243,7 @@ func TestRuleConstraintEditorAllowOnly(t *testing.T) {
 	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/rules", nil))
 	body := rr.Body.String()
 	// One allow rule → exactly one constraint editor; the deny rule gets none.
-	if got := strings.Count(body, "flag constraints"); got != 1 {
+	if got := strings.Count(body, `class="constraints"`); got != 1 {
 		t.Errorf("constraint editor count = %d, want 1 (allow rules only)", got)
 	}
 }

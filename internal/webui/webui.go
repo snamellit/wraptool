@@ -378,8 +378,9 @@ type ruleView struct {
 	Index       int
 	Subcommand  string // space-joined tokens
 	Flags       string // space-joined tokens
+	DenyFlags   string // space-joined tokens
 	Constraints []constraintView
-	Advanced    bool // has arg_constraints / deny_flags (still edit those in YAML directly)
+	Advanced    bool // has arg_constraints (still edit those in YAML directly)
 }
 
 // constraintView is a flag_constraints entry rendered for the rules editor.
@@ -429,10 +430,11 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 				Index:       i,
 				Subcommand:  strings.Join(rule.Subcommand, " "),
 				Flags:       strings.Join(rule.Flags, " "),
+				DenyFlags:   strings.Join(rule.DenyFlags, " "),
 				Constraints: constraintViews(rule.FlagConstraints),
-				// flag_constraints are now editable inline; arg_constraints and
-				// deny_flags still require a YAML edit.
-				Advanced: rule.ArgConstraints != nil || len(rule.DenyFlags) > 0,
+				// flags, deny_flags and flag_constraints are editable inline;
+				// only arg_constraints still requires a YAML edit.
+				Advanced: rule.ArgConstraints != nil,
 			})
 		}
 		for i, rule := range tc.Deny {
@@ -495,8 +497,9 @@ func (s *Server) handleRuleUpdate(w http.ResponseWriter, r *http.Request) {
 	expect := strings.Fields(r.FormValue("expect"))
 	subcommand := strings.Fields(r.FormValue("subcommand"))
 	flags := strings.Fields(r.FormValue("flags"))
+	denyFlags := strings.Fields(r.FormValue("deny_flags"))
 
-	if err := config.UpdateRule(s.configPath, tool, kind, index, expect, subcommand, flags); err != nil {
+	if err := config.UpdateRule(s.configPath, tool, kind, index, expect, subcommand, flags, denyFlags); err != nil {
 		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Update %s rule failed: %s", kind, err), "")
 		return
 	}

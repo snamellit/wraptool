@@ -18,9 +18,9 @@
 <main>
   {{with .Flash}}<div class="flash {{.Kind}}">{{.Message}}{{if .Detail}}<pre>{{.Detail}}</pre>{{end}}</div>{{end}}
   <p class="hint">Subcommand and flags are space-separated. Edits validate and
-  hot-reload the running server. Flag constraints are editable per allow rule
-  below. Rules marked <span class="tag">adv</span> also carry arg_constraints /
-  deny_flags — edit those in the YAML directly.</p>
+  hot-reload the running server. Flags, deny flags and per-flag constraints are
+  editable per allow rule below. Rules marked <span class="tag">adv</span> also
+  carry arg_constraints — edit those in the YAML directly.</p>
 
   {{range .Tools}}
   <div class="card tool">
@@ -54,8 +54,9 @@
   <form class="rule" method="post" action="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/update">
     <input type="hidden" name="expect" value="{{.Subcommand}}">
     <input type="text" name="subcommand" value="{{.Subcommand}}" placeholder="subcommand" class="sub-in">
-    {{if $.HasFlags}}<input type="text" name="flags" value="{{.Flags}}" placeholder="flags" class="flags-in">{{end}}
-    {{if .Advanced}}<span class="tag" title="has arg_constraints / deny_flags">adv</span>{{end}}
+    {{if $.HasFlags}}<input type="text" name="flags" value="{{.Flags}}" placeholder="flags" class="flags-in">
+    <input type="text" name="deny_flags" value="{{.DenyFlags}}" placeholder="deny flags" class="flags-in">{{end}}
+    {{if .Advanced}}<span class="tag" title="has arg_constraints">adv</span>{{end}}
     <button type="submit">Save</button>
     <button type="submit" class="deny" formaction="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/delete" formnovalidate>Delete</button>
   </form>
