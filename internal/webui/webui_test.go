@@ -79,6 +79,40 @@ func TestHandleListRendersPending(t *testing.T) {
 	}
 }
 
+func TestHandleListRendersFlagTypes(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+
+	// A request carrying proposed flag types renders them read-only.
+	typed := &requestlog.CapabilityRequest{
+		Tool:       "glab",
+		Subcommand: []string{"mr", "update"},
+		Flags:      []string{"--reviewer", "--draft"},
+		FlagTypes:  map[string]string{"--reviewer": "string", "--draft": "boolean"},
+	}
+	if err := store.Append(typed); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// A request without flag types must not render the section.
+	plain := appendReq(t, store, "git", []string{"status"}, nil)
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/requests", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"Proposed flag types", "--reviewer: string", "--draft: boolean"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body missing %q", want)
+		}
+	}
+	// The plain request's card carries no flag-type section; assert the label
+	// appears exactly once (only the typed request has it).
+	if got := strings.Count(body, "Proposed flag types"); got != 1 {
+		t.Errorf("flag-types label count = %d, want 1 (plain request %s should have none)", got, plain)
+	}
+}
+
 func TestHandleCallsRenders(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	if err := store.AppendToolCall(&requestlog.ToolCallEvent{
