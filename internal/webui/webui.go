@@ -309,7 +309,11 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 // ParseForm is called explicitly (idempotent) so PostForm is populated
 // regardless of whether the caller already touched the form.
 func flagTypeOverrides(proposed map[string]string, r *http.Request) map[string]string {
-	_ = r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		// Non-fatal: proceed with whatever PostForm holds, but leave a trace so
+		// a mangled body that drops the operator's overrides is diagnosable.
+		log.Printf("webui: parsing approve form: %s", err)
+	}
 	merged := make(map[string]string, len(proposed))
 	maps.Copy(merged, proposed)
 	for key, vals := range r.PostForm {
