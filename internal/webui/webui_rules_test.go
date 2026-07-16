@@ -208,6 +208,31 @@ func TestRuleConstraintBadMin(t *testing.T) {
 	}
 }
 
+func TestRuleConstraintEditorAllowOnly(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	// Add a deny rule so both an allow and a deny rule are on the page.
+	if rr := postRule(t, srv, "/rules/git/deny/add", url.Values{"subcommand": {"push"}}); rr.Code != http.StatusSeeOther {
+		t.Fatalf("deny add: %d", rr.Code)
+	}
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/rules", nil))
+	body := rr.Body.String()
+	// One allow rule → exactly one constraint editor; the deny rule gets none.
+	if got := strings.Count(body, "flag constraints"); got != 1 {
+		t.Errorf("constraint editor count = %d, want 1 (allow rules only)", got)
+	}
+}
+
+func TestRuleConstraintDeleteEmptyFlagRejected(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rr := postRule(t, srv, "/rules/git/allow/0/constraint/delete", url.Values{
+		"expect": {"log"}, "flag": {""},
+	})
+	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
+		t.Errorf("expected error for empty flag on delete, got %s", loc)
+	}
+}
+
 func TestRuleAddBadKind(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	rr := postRule(t, srv, "/rules/git/nonsense/add", url.Values{"subcommand": {"x"}})

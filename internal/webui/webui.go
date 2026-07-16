@@ -590,6 +590,10 @@ func (s *Server) handleRuleConstraintDelete(w http.ResponseWriter, r *http.Reque
 	}
 	expect := strings.Fields(r.FormValue("expect"))
 	flag := strings.TrimSpace(r.FormValue("flag"))
+	if flag == "" {
+		s.redirect(w, r, "/rules", "err", "Delete constraint failed: flag name is required", "")
+		return
+	}
 
 	if err := config.DeleteFlagConstraint(s.configPath, tool, index, expect, flag); err != nil {
 		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Delete constraint failed: %s", err), "")

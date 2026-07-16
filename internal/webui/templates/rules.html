@@ -50,7 +50,7 @@
     <button type="submit">Save</button>
     <button type="submit" class="deny" formaction="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/delete" formnovalidate>Delete</button>
   </form>
-  {{if $.HasFlags}}
+  {{if and $.HasFlags (eq .Kind "allow")}}
   <details class="constraints"{{if .Constraints}} open{{end}}>
     <summary>flag constraints{{if .Constraints}} · {{len .Constraints}}{{end}}</summary>
     {{range .Constraints}}
