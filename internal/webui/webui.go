@@ -90,6 +90,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /requests/{id}/deny", s.handleDeny)
 	mux.HandleFunc("GET /calls", s.handleCalls)
 	mux.HandleFunc("GET /rules", s.handleRules)
+	mux.HandleFunc("POST /tools/add", s.handleToolAdd)
+	mux.HandleFunc("POST /tools/{tool}/delete", s.handleToolDelete)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/add", s.handleRuleAdd)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/update", s.handleRuleUpdate)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/delete", s.handleRuleDelete)
@@ -448,6 +450,25 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 	if err := s.tmpl.ExecuteTemplate(w, "rules", data); err != nil {
 		log.Printf("webui: render rules: %s", err)
 	}
+}
+
+func (s *Server) handleToolAdd(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.FormValue("name"))
+	binary := strings.TrimSpace(r.FormValue("binary"))
+	if err := config.AddTool(s.configPath, name, binary); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Add tool failed: %s", err), "")
+		return
+	}
+	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Added tool %s. Add allow rules to expose it; the server will hot-reload.", name), "")
+}
+
+func (s *Server) handleToolDelete(w http.ResponseWriter, r *http.Request) {
+	tool := r.PathValue("tool")
+	if err := config.DeleteTool(s.configPath, tool); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Delete tool %s failed: %s", tool, err), "")
+		return
+	}
+	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Deleted tool %s. Server will hot-reload.", tool), "")
 }
 
 func (s *Server) handleRuleAdd(w http.ResponseWriter, r *http.Request) {

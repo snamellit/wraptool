@@ -92,7 +92,6 @@ func TestRuleUpdateDriftRejected(t *testing.T) {
 
 func TestRuleAddThenDelete(t *testing.T) {
 	srv, _, cfgPath := newTestServer(t)
-	// Add a second allow rule so we can delete the first (a tool must keep >=1).
 	if rr := postRule(t, srv, "/rules/git/allow/add", url.Values{"subcommand": {"status"}}); rr.Code != http.StatusSeeOther {
 		t.Fatalf("add: %d", rr.Code)
 	}
@@ -110,16 +109,16 @@ func TestRuleAddThenDelete(t *testing.T) {
 	}
 }
 
-func TestRuleDeleteLastAllowRejected(t *testing.T) {
+func TestRuleDeleteLastAllowAllowed(t *testing.T) {
+	// Emptying a tool of allow rules is permitted — it becomes inert, not open.
 	srv, _, cfgPath := newTestServer(t)
-	before, _ := os.ReadFile(cfgPath)
 	rr := postRule(t, srv, "/rules/git/allow/0/delete", url.Values{"expect": {"log"}})
-	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
-		t.Errorf("expected error deleting last allow rule, got %s", loc)
+	if loc := rr.Header().Get("Location"); strings.Contains(loc, "kind=err") {
+		t.Errorf("deleting last allow rule should be allowed, got %s", loc)
 	}
-	after, _ := os.ReadFile(cfgPath)
-	if string(before) != string(after) {
-		t.Errorf("config changed despite rejected delete")
+	got, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(got), "[log]") {
+		t.Errorf("log rule should be deleted:\n%s", got)
 	}
 }
 
@@ -230,6 +229,50 @@ func TestRuleConstraintDeleteEmptyFlagRejected(t *testing.T) {
 	})
 	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
 		t.Errorf("expected error for empty flag on delete, got %s", loc)
+	}
+}
+
+func TestToolAdd(t *testing.T) {
+	srv, _, cfgPath := newTestServer(t)
+	// Reuse the existing git binary path so the new tool validates.
+	data, _ := os.ReadFile(cfgPath)
+	var binPath string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.Contains(line, "binary:") {
+			binPath = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "binary:"))
+		}
+	}
+	rr := postRule(t, srv, "/tools/add", url.Values{"name": {"kubectl"}, "binary": {binPath}})
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); strings.Contains(loc, "kind=err") {
+		t.Fatalf("add tool reported error: %s", loc)
+	}
+	got, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(got), "kubectl:") {
+		t.Errorf("tool not added:\n%s", got)
+	}
+}
+
+func TestToolAddMissingBinary(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rr := postRule(t, srv, "/tools/add", url.Values{"name": {"kubectl"}, "binary": {"/no/such/bin"}})
+	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
+		t.Errorf("expected error for a missing binary, got %s", loc)
+	}
+}
+
+func TestToolDeleteLastRejected(t *testing.T) {
+	srv, _, cfgPath := newTestServer(t)
+	before, _ := os.ReadFile(cfgPath)
+	rr := postRule(t, srv, "/tools/git/delete", nil)
+	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
+		t.Errorf("expected error deleting the last tool, got %s", loc)
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if string(before) != string(after) {
+		t.Error("config changed despite rejected tool delete")
 	}
 }
 

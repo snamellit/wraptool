@@ -148,6 +148,10 @@ main > .hint { color: var(--muted); font-size: 0.82rem; margin: 0 0 1.25rem; }
   padding: 0 0.3rem;
 }
 .card.tool .top { margin-bottom: 0.5rem; }
+.tool-del { margin-left: 0.75rem; }
+.tool-del button { font-size: 0.8rem; padding: 0.25rem 0.6rem; }
+form.tool-add { margin-top: 1rem; }
+form.tool-add .sub-in { width: 12rem; }
 .ruleset { margin-top: 0.75rem; }
 .ruleset-label {
   color: var(--muted);
