@@ -158,6 +158,44 @@ func newRule(kind string, subcommand, flags []string) *yaml.Node {
 	return rule
 }
 
+// SetArgConstraints sets the positional-argument limit on the allow rule at
+// index, or removes the arg_constraints block when positionalMax is nil. expect
+// guards against concurrent edits. A nil limit means "unlimited" (the key is
+// dropped); a value of 0 is meaningful — it forbids positional args entirely —
+// so it is distinct from nil. Negative values are rejected. Allow rules only.
+func SetArgConstraints(path, toolName string, index int, expect []string, positionalMax *int) error {
+	if positionalMax != nil && *positionalMax < 0 {
+		return fmt.Errorf("positional_max must not be negative")
+	}
+	return editConfig(path, func(doc *yaml.Node) error {
+		rule, err := ruleAt(doc, toolName, KindAllow, index, expect)
+		if err != nil {
+			return err
+		}
+		ac := mapGet(rule, "arg_constraints")
+		if ac != nil && ac.Kind != yaml.MappingNode {
+			return fmt.Errorf("tool %q allow rule %d `arg_constraints` is not a mapping", toolName, index)
+		}
+		// Touch only positional_max so any sibling keys added later survive.
+		if positionalMax == nil {
+			if ac == nil {
+				return nil
+			}
+			mapDelete(ac, "positional_max")
+			if len(ac.Content) == 0 {
+				mapDelete(rule, "arg_constraints")
+			}
+			return nil
+		}
+		if ac == nil {
+			ac = &yaml.Node{Kind: yaml.MappingNode}
+			mapSet(rule, "arg_constraints", ac)
+		}
+		mapSet(ac, "positional_max", intNode(*positionalMax))
+		return nil
+	})
+}
+
 // SetFlagConstraint sets (creating or replacing) the flag_constraints entry for
 // flag on the allow rule at index. expect guards against concurrent edits (see
 // UpdateRule). Only allow rules carry constraints. The entry is written with

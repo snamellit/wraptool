@@ -302,6 +302,48 @@ func TestToolDeleteLastRejected(t *testing.T) {
 	}
 }
 
+func TestRuleArgsSetAndClear(t *testing.T) {
+	srv, _, cfgPath := newTestServer(t)
+	// Set a positional-args limit of 0 (forbids positional args), then clear it.
+	rr := postRule(t, srv, "/rules/git/allow/0/args/set", url.Values{
+		"expect": {"log"}, "positional_max": {"0"},
+	})
+	if loc := rr.Header().Get("Location"); strings.Contains(loc, "kind=err") {
+		t.Fatalf("set args reported error: %s", loc)
+	}
+	got, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(got), "arg_constraints") || !strings.Contains(string(got), "positional_max: 0") {
+		t.Errorf("arg_constraints not written:\n%s", got)
+	}
+	// The page renders the limit pre-filled.
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/rules", nil))
+	if !strings.Contains(rr.Body.String(), `name="positional_max" value="0"`) {
+		t.Errorf("positional_max not rendered pre-filled")
+	}
+
+	// Empty field clears the block.
+	if rr = postRule(t, srv, "/rules/git/allow/0/args/set", url.Values{
+		"expect": {"log"}, "positional_max": {""},
+	}); strings.Contains(rr.Header().Get("Location"), "kind=err") {
+		t.Fatalf("clear args failed: %s", rr.Header().Get("Location"))
+	}
+	got, _ = os.ReadFile(cfgPath)
+	if strings.Contains(string(got), "arg_constraints") {
+		t.Errorf("arg_constraints not removed when cleared:\n%s", got)
+	}
+}
+
+func TestRuleArgsSetBadValue(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rr := postRule(t, srv, "/rules/git/allow/0/args/set", url.Values{
+		"expect": {"log"}, "positional_max": {"lots"},
+	})
+	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
+		t.Errorf("expected error for non-integer positional_max, got %s", loc)
+	}
+}
+
 func TestRuleAddBadKind(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	rr := postRule(t, srv, "/rules/git/nonsense/add", url.Values{"subcommand": {"x"}})
