@@ -101,15 +101,50 @@ func TestHandleListRendersFlagTypes(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	for _, want := range []string{"Proposed flag types", "--reviewer: string", "--draft: boolean"} {
+	// A pending typed request renders editable per-flag selects, pre-selected to
+	// the proposed type (read-only display is reserved for non-pending cards).
+	for _, want := range []string{
+		`name="ftype:--reviewer"`, `name="ftype:--draft"`,
+		`value="string" selected`, `value="boolean" selected`,
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q", want)
 		}
 	}
-	// The plain request's card carries no flag-type section; assert the label
-	// appears exactly once (only the typed request has it).
-	if got := strings.Count(body, "Proposed flag types"); got != 1 {
-		t.Errorf("flag-types label count = %d, want 1 (plain request %s should have none)", got, plain)
+	// The plain request's card carries no flag-type editor; only the typed
+	// request contributes one.
+	if got := strings.Count(body, `class="ftedit"`); got != 1 {
+		t.Errorf("flag-type editor count = %d, want 1 (plain request %s should have none)", got, plain)
+	}
+}
+
+func TestHandleListRendersFlagTypesReadOnlyWhenDecided(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	req := &requestlog.CapabilityRequest{
+		Tool: "glab", Subcommand: []string{"mr", "update"},
+		Flags:     []string{"--reviewer", "--draft"},
+		FlagTypes: map[string]string{"--reviewer": "string", "--draft": ""},
+	}
+	if err := store.Append(req); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := store.UpdateStatus(req.ID, requestlog.StatusApproved, ""); err != nil {
+		t.Fatalf("UpdateStatus: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/requests?status=approved", nil))
+	body := rr.Body.String()
+	// Decided requests show the types read-only, with no editable select.
+	if !strings.Contains(body, "--reviewer: string") {
+		t.Errorf("approved card missing read-only flag types:\n%s", body)
+	}
+	// An empty type renders as "untyped", not a naked trailing colon.
+	if !strings.Contains(body, "--draft: untyped") {
+		t.Errorf("empty flag type not rendered as untyped:\n%s", body)
+	}
+	if strings.Contains(body, `name="ftype:--reviewer"`) {
+		t.Error("decided request should not render an editable flag-type select")
 	}
 }
 
@@ -191,6 +226,65 @@ func TestApproveWithApplyEditsConfig(t *testing.T) {
 	loc := rr.Header().Get("Location")
 	if strings.Contains(loc, "kind=err") {
 		t.Errorf("approve reported error: %s", loc)
+	}
+}
+
+func TestApproveOverridesFlagType(t *testing.T) {
+	srv, store, cfgPath := newTestServer(t)
+
+	// Requester proposed boolean for --reviewer; operator corrects it to string
+	// via the approve form's per-flag select.
+	req := &requestlog.CapabilityRequest{
+		Tool:       "git",
+		Subcommand: []string{"status"},
+		Flags:      []string{"--reviewer"},
+		FlagTypes:  map[string]string{"--reviewer": "boolean"},
+	}
+	if err := store.Append(req); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	form := url.Values{"apply": {"1"}, "ftype:--reviewer": {"string"}}
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/requests/"+req.ID+"/approve", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.Handler().ServeHTTP(rr, r)
+
+	if loc := rr.Header().Get("Location"); strings.Contains(loc, "kind=err") {
+		t.Fatalf("approve reported error: %s", loc)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(data), "type: string") {
+		t.Errorf("operator override not written; config:\n%s", data)
+	}
+	if strings.Contains(string(data), "type: boolean") {
+		t.Errorf("proposed boolean written despite override:\n%s", data)
+	}
+}
+
+func TestApproveFallsBackToProposedFlagType(t *testing.T) {
+	srv, store, cfgPath := newTestServer(t)
+
+	// No ftype override submitted → the requester's proposed type is applied.
+	req := &requestlog.CapabilityRequest{
+		Tool:       "git",
+		Subcommand: []string{"status"},
+		Flags:      []string{"--reviewer"},
+		FlagTypes:  map[string]string{"--reviewer": "string"},
+	}
+	if err := store.Append(req); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	form := url.Values{"apply": {"1"}}
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/requests/"+req.ID+"/approve", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	srv.Handler().ServeHTTP(rr, r)
+
+	data, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(data), "type: string") {
+		t.Errorf("proposed type not applied without override; config:\n%s", data)
 	}
 }
 

@@ -32,13 +32,14 @@
       </div>
       {{if .Rationale}}<div class="rationale"><div class="label">Rationale</div>{{.Rationale}}</div>{{end}}
       {{if .Enables}}<div class="enables"><div class="label">Enables</div>{{.Enables}}</div>{{end}}
-      {{if .FlagTypes}}<div class="flagtypes"><div class="label">Proposed flag types</div>{{range $flag, $type := .FlagTypes}}<code class="ft">{{$flag}}: {{$type}}</code>{{end}}</div>{{end}}
+      {{if and .FlagTypes (ne .Status "pending")}}<div class="flagtypes"><div class="label">Proposed flag types</div>{{range $flag, $type := .FlagTypes}}<code class="ft">{{$flag}}: {{if $type}}{{$type}}{{else}}untyped{{end}}</code>{{end}}</div>{{end}}
       {{if .DeniedCommand}}<div class="kv">denied: <code>{{.DeniedCommand}}</code></div>{{end}}
       {{if .DenyReason}}<div class="kv">deny reason: <code>{{.DenyReason}}</code></div>{{end}}
       {{if .SessionID}}<div class="kv">session: <code>{{.SessionID}}</code></div>{{end}}
       {{if eq .Status "pending"}}
       <div class="actions">
         <form method="post" action="/requests/{{.ID}}/approve">
+          {{if .FlagTypes}}<div class="ftedit"><div class="label">Flag types</div>{{range $flag, $type := .FlagTypes}}<label class="ft"><code>{{$flag}}</code><select name="ftype:{{$flag}}"><option value=""{{if eq $type ""}} selected{{end}}>untyped</option><option value="string"{{if eq $type "string"}} selected{{end}}>string</option><option value="integer"{{if eq $type "integer"}} selected{{end}}>integer</option><option value="boolean"{{if eq $type "boolean"}} selected{{end}}>boolean</option></select></label>{{end}}</div>{{end}}
           <label class="chk"><input type="checkbox" name="apply" value="1" checked> apply to config</label>
           <button class="approve" type="submit">Approve</button>
         </form>

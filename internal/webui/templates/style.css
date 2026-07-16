@@ -66,6 +66,10 @@ main { padding: 1.5rem; max-width: 980px; margin: 0 auto; }
 .enables { margin-top: 0.5rem; }
 .flagtypes { margin-top: 0.5rem; }
 .flagtypes .ft { color: var(--amber); font-size: 0.85rem; margin-right: 0.35rem; }
+.ftedit { margin-bottom: 0.5rem; }
+.ftedit .label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.ftedit .ft { display: inline-flex; align-items: center; gap: 0.3rem; margin: 0.25rem 0.5rem 0 0; }
+.ftedit .ft code { color: var(--amber); font-size: 0.85rem; }
 .kv { color: var(--muted); font-size: 0.8rem; margin-top: 0.5rem; }
 .kv code { color: var(--text); }
 .actions {

@@ -11,6 +11,7 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -278,7 +279,7 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := config.ApplyRequest(s.configPath, req.Tool, req.Subcommand, req.Flags, req.FlagTypes)
+	result, err := config.ApplyRequest(s.configPath, req.Tool, req.Subcommand, req.Flags, flagTypeOverrides(req.FlagTypes, r))
 	if err != nil {
 		// Status is already approved; report the apply failure so the
 		// operator can edit the config by hand.
@@ -294,6 +295,38 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — capability was already allowed; no config change.", id), "")
 	}
+}
+
+// flagTypeOverrides merges the operator's per-flag type selections (form
+// fields named "ftype:<flag>", submitted by the approve form) over the
+// requester's proposed FlagTypes, so the operator's choice at approval time
+// wins. A submitted empty value clears the proposal — applyFlagTypes writes no
+// constraint for an empty type, leaving that flag unconstrained. Returns nil
+// when there is nothing to apply, matching the pre-override behaviour.
+//
+// Reads r.PostForm (POST body only), not r.Form: an approve is a POST, so a
+// stray ?ftype:... query parameter must not influence the applied types.
+// ParseForm is called explicitly (idempotent) so PostForm is populated
+// regardless of whether the caller already touched the form.
+func flagTypeOverrides(proposed map[string]string, r *http.Request) map[string]string {
+	if err := r.ParseForm(); err != nil {
+		// Non-fatal: proceed with whatever PostForm holds, but leave a trace so
+		// a mangled body that drops the operator's overrides is diagnosable.
+		log.Printf("webui: parsing approve form: %s", err)
+	}
+	merged := make(map[string]string, len(proposed))
+	maps.Copy(merged, proposed)
+	for key, vals := range r.PostForm {
+		flag, ok := strings.CutPrefix(key, "ftype:")
+		if !ok || flag == "" || len(vals) == 0 {
+			continue // skip non-ftype keys and a malformed "ftype:" with no flag
+		}
+		merged[flag] = vals[0]
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
 }
 
 func (s *Server) handleDeny(w http.ResponseWriter, r *http.Request) {
