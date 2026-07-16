@@ -20,6 +20,19 @@
 </header>
 <main>
   {{with .Flash}}<div class="flash {{.Kind}}">{{.Message}}{{if .Detail}}<pre>{{.Detail}}</pre>{{end}}</div>{{end}}
+  {{if .Revocations}}
+  <div class="ruleset-label">Revocations</div>
+  {{range .Revocations}}
+  <div class="card">
+    <div class="top">
+      <span class="cmd"><code>{{.Target}}</code></span>
+      <span class="badge denied">revoked {{.Kind}}</span>
+      <span class="meta">{{.ID}} · {{.When}}</span>
+    </div>
+  </div>
+  {{end}}
+  <div class="ruleset-label">Tool calls</div>
+  {{end}}
   {{if not .Calls}}
     <div class="empty">No tool calls recorded.</div>
   {{else}}

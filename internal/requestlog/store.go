@@ -107,6 +107,32 @@ func (s *Store) AppendMCPToolCall(serverName, toolName string, arguments map[str
 	return s.AppendToolCall(evt)
 }
 
+// AppendRevocation records an operator removing a capability as a
+// capability_revoked event. It stamps evt.ID/Timestamp in place.
+func (s *Store) AppendRevocation(evt *RevocationEvent) error {
+	evt.ID = "rev_" + uuid.New().String()[:8]
+	evt.Timestamp = time.Now().UTC()
+	return s.appendEvent(EventCapabilityRevoked, evt.Timestamp, evt)
+}
+
+// ListRevocations returns every recorded revocation, oldest first.
+func (s *Store) ListRevocations() ([]RevocationEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var revs []RevocationEvent
+	err := s.eachEventLocked(func(e Event) {
+		if e.Type != EventCapabilityRevoked {
+			return
+		}
+		var rv RevocationEvent
+		if json.Unmarshal(e.Data, &rv) == nil {
+			revs = append(revs, rv)
+		}
+	})
+	return revs, err
+}
+
 // UpdateStatus records an approval or denial as a new event. The request must
 // already exist. The log is not rewritten; List/Get fold the decision in.
 func (s *Store) UpdateStatus(id string, status Status, reason string) error {
@@ -226,7 +252,7 @@ func (s *Store) foldRequestsLocked() (map[string]*CapabilityRequest, []string, e
 					req.DenyReason = d.Reason
 				}
 			}
-		case EventToolCall:
+		case EventToolCall, EventCapabilityRevoked:
 			// audit-only events; not part of capability-request state, so they
 			// are ignored when folding requests.
 		}

@@ -26,6 +26,11 @@ const (
 	EventCapabilityDenied   EventType = "capability_denied"
 	// EventToolCall carries a ToolCallEvent.
 	EventToolCall EventType = "tool_call"
+	// EventCapabilityRevoked carries a RevocationEvent — an operator removing a
+	// previously-allowed capability (a rule or a whole tool) via the Web UI. It
+	// is the audit counterpart of an approval: the append-only log records the
+	// removal rather than silently dropping it from the config.
+	EventCapabilityRevoked EventType = "capability_revoked"
 )
 
 // Event is the append-only log envelope. The log is a single JSONL stream of
@@ -67,6 +72,25 @@ type ToolCallEvent struct {
 	Source    string         `json:"source,omitempty"`    // "cli" | "mcp"; empty => cli
 	Server    string         `json:"server,omitempty"`    // mcp_servers.<name>, only set when Source=="mcp"
 	Arguments map[string]any `json:"arguments,omitempty"` // raw MCP call arguments; empty for CLI
+}
+
+// RevocationKind names what was removed.
+type RevocationKind string
+
+const (
+	RevokeTool      RevocationKind = "tool"
+	RevokeAllowRule RevocationKind = "allow_rule"
+	RevokeDenyRule  RevocationKind = "deny_rule"
+)
+
+// RevocationEvent records an operator removing a capability from the config via
+// the Web UI, for audit. It carries what was removed, not a config diff.
+type RevocationEvent struct {
+	ID         string         `json:"id"`
+	Timestamp  time.Time      `json:"timestamp"`
+	Tool       string         `json:"tool"`
+	Kind       RevocationKind `json:"kind"`
+	Subcommand []string       `json:"subcommand,omitempty"` // for a rule; empty for a whole-tool removal
 }
 
 // CapabilityRequest represents a request to add a new capability to the whitelist.

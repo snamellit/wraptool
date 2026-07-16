@@ -191,6 +191,41 @@ func TestCLILegacyLineStillParses(t *testing.T) {
 	}
 }
 
+func TestRevocationRoundTripAndFoldIgnored(t *testing.T) {
+	store := newTestStore(t)
+
+	// A revocation event coexists with a capability request without perturbing
+	// the request's projected state.
+	req := &CapabilityRequest{Tool: "git", Subcommand: []string{"push"}, Rationale: "x"}
+	if err := store.Append(req); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	rev := &RevocationEvent{Tool: "git", Kind: RevokeAllowRule, Subcommand: []string{"status"}}
+	if err := store.AppendRevocation(rev); err != nil {
+		t.Fatalf("AppendRevocation: %v", err)
+	}
+	if rev.ID == "" || rev.Timestamp.IsZero() {
+		t.Error("AppendRevocation did not stamp ID/Timestamp")
+	}
+
+	revs, err := store.ListRevocations()
+	if err != nil {
+		t.Fatalf("ListRevocations: %v", err)
+	}
+	if len(revs) != 1 || revs[0].Tool != "git" || revs[0].Kind != RevokeAllowRule {
+		t.Fatalf("revocations = %+v", revs)
+	}
+
+	// The request list is unaffected by the revocation event.
+	reqs, err := store.List("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 || reqs[0].Status != StatusPending {
+		t.Errorf("request state perturbed by revocation: %+v", reqs)
+	}
+}
+
 func TestUpdateStatusUnknownRequest(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.UpdateStatus("req_missing", StatusApproved, ""); err == nil {
