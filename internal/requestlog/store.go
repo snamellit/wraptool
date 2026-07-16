@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -126,9 +127,13 @@ func (s *Store) ListRevocations() ([]RevocationEvent, error) {
 			return
 		}
 		var rv RevocationEvent
-		if json.Unmarshal(e.Data, &rv) == nil {
-			revs = append(revs, rv)
+		if uerr := json.Unmarshal(e.Data, &rv); uerr != nil {
+			// A corrupt audit line must not vanish quietly — surface it so the
+			// gap is visible rather than silently shrinking the trail.
+			log.Printf("requestlog: skipping unparseable revocation event: %s", uerr)
+			return
 		}
+		revs = append(revs, rv)
 	})
 	return revs, err
 }

@@ -278,12 +278,20 @@ func TestRuleDeleteAuditsRevocation(t *testing.T) {
 		t.Fatalf("expected one allow-rule revocation, got %+v", revs)
 	}
 
-	// It renders on the audit page.
+	// It renders on the unfiltered audit page.
 	rr := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls", nil))
 	body := rr.Body.String()
 	if !strings.Contains(body, "Revocations") || !strings.Contains(body, "revoked allow_rule") {
 		t.Errorf("revocation not rendered on /calls:\n%s", body)
+	}
+
+	// A call-status filter (allowed/denied) must not show revocations — they are
+	// config-change events, not allowed/denied calls.
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls?status=allowed", nil))
+	if strings.Contains(rr.Body.String(), "Revocations") {
+		t.Error("revocations should not render under an allowed/denied filter")
 	}
 }
 

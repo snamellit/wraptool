@@ -245,10 +245,24 @@ func (s *Server) handleCalls(w http.ResponseWriter, r *http.Request) {
 		fviews[i] = filterView{Label: f.Label, Value: f.Value, Active: f.Value == only}
 	}
 
+	// Revocations are config-change events, not allowed/denied calls, so they
+	// belong only on the unfiltered ("All") view — showing them under an
+	// allowed/denied filter would misrepresent them.
+	var revocations []revocationView
+	if only == "" {
+		revocations, err = s.revocationViews()
+		if err != nil {
+			// The audit trail failing to read is not silently glossed — the
+			// operator must know the view is incomplete.
+			http.Error(w, "reading revocations: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
 	data := callsView{
 		Filters:     fviews,
 		Calls:       views,
-		Revocations: s.revocationViews(),
+		Revocations: revocations,
 		StatusOnly:  only,
 		Flash:       flashFromQuery(q),
 	}
@@ -258,14 +272,13 @@ func (s *Server) handleCalls(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// revocationViews reads the revocation audit trail, newest first. A read error
-// is non-fatal — the calls page still renders its tool calls — so it is logged
-// and an empty list returned.
-func (s *Server) revocationViews() []revocationView {
+// revocationViews reads the revocation audit trail, newest first. The read error
+// is returned (not swallowed) so the caller can surface an incomplete audit view
+// rather than silently showing an empty one.
+func (s *Server) revocationViews() ([]revocationView, error) {
 	revs, err := s.store.ListRevocations()
 	if err != nil {
-		log.Printf("webui: reading revocations: %s", err)
-		return nil
+		return nil, err
 	}
 	views := make([]revocationView, 0, len(revs))
 	for _, rv := range revs {
@@ -281,7 +294,7 @@ func (s *Server) revocationViews() []revocationView {
 		})
 	}
 	slices.Reverse(views) // newest first
-	return views
+	return views, nil
 }
 
 // formatCommand renders a tool call as an approximate command line for display.
@@ -504,7 +517,10 @@ func (s *Server) handleToolDelete(w http.ResponseWriter, r *http.Request) {
 		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Delete tool %s failed: %s", tool, err), "")
 		return
 	}
-	s.auditRevocation(&requestlog.RevocationEvent{Tool: tool, Kind: requestlog.RevokeTool})
+	if err := s.auditRevocation(&requestlog.RevocationEvent{Tool: tool, Kind: requestlog.RevokeTool}); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Deleted tool %s, but recording it to the audit log FAILED — note this manually: %s", tool, err), "")
+		return
+	}
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Deleted tool %s. Server will hot-reload.", tool), "")
 }
 
@@ -559,17 +575,24 @@ func (s *Server) handleRuleDelete(w http.ResponseWriter, r *http.Request) {
 	if kind == config.KindDeny {
 		revKind = requestlog.RevokeDenyRule
 	}
-	s.auditRevocation(&requestlog.RevocationEvent{Tool: tool, Kind: revKind, Subcommand: expect})
+	if err := s.auditRevocation(&requestlog.RevocationEvent{Tool: tool, Kind: revKind, Subcommand: expect}); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Deleted %s rule %s, but recording it to the audit log FAILED — note this manually: %s", kind, tool, err), "")
+		return
+	}
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Deleted %s rule %s. Server will hot-reload.", kind, tool), "")
 }
 
-// auditRevocation records a capability removal in the request log. It is
-// best-effort — a logging failure must not block the config edit that already
-// succeeded — so the error is logged, not returned.
-func (s *Server) auditRevocation(evt *requestlog.RevocationEvent) {
+// auditRevocation records a capability removal in the request log. The config
+// edit has already succeeded and cannot be rolled back, so a failure here can't
+// block it — but an audit trail that loses records silently is worse than none,
+// so the error is returned for the caller to surface to the operator (and
+// logged) rather than swallowed.
+func (s *Server) auditRevocation(evt *requestlog.RevocationEvent) error {
 	if err := s.store.AppendRevocation(evt); err != nil {
 		log.Printf("webui: recording revocation: %s", err)
+		return err
 	}
+	return nil
 }
 
 // argMaxString renders a rule's positional-arg limit for the editor: the number
