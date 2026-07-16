@@ -167,4 +167,9 @@ form.rule.add { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px dashed 
 form.rule input[type=text] { font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; }
 form.rule .sub-in { width: 14rem; }
 form.rule .flags-in { flex: 1; min-width: 12rem; }
+form.rule .num-in { width: 4rem; font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; }
 .rule-empty { color: var(--muted); font-size: 0.85rem; font-style: italic; margin-bottom: 0.4rem; }
+details.constraints { margin: 0 0 0.6rem 1rem; }
+details.constraints summary { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer; margin-bottom: 0.35rem; }
+form.rule.constraint select { font: inherit; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text); padding: 0.35rem 0.4rem; }
+form.rule.constraint .chk { font-size: 0.8rem; }

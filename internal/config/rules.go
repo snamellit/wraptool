@@ -151,6 +151,82 @@ func newRule(kind string, subcommand, flags []string) *yaml.Node {
 	return rule
 }
 
+// SetFlagConstraint sets (creating or replacing) the flag_constraints entry for
+// flag on the allow rule at index. expect guards against concurrent edits (see
+// UpdateRule). Only allow rules carry constraints. The entry is written with
+// just the fields that are set on fc, so an all-zero constraint yields an empty
+// mapping (pattern-only/untyped); the edit is round-trip validated before write,
+// so an illegal type or a flag absent from the rule's flags is rejected there.
+func SetFlagConstraint(path, toolName string, index int, expect []string, flag string, fc FlagConstraint) error {
+	if flag == "" {
+		return fmt.Errorf("flag name is required")
+	}
+	return editConfig(path, func(doc *yaml.Node) error {
+		rule, err := ruleAt(doc, toolName, KindAllow, index, expect)
+		if err != nil {
+			return err
+		}
+		fcNode := mapGet(rule, "flag_constraints")
+		if fcNode == nil {
+			fcNode = &yaml.Node{Kind: yaml.MappingNode}
+			mapSet(rule, "flag_constraints", fcNode)
+		} else if fcNode.Kind != yaml.MappingNode {
+			return fmt.Errorf("tool %q allow rule %d `flag_constraints` is not a mapping", toolName, index)
+		}
+		mapSet(fcNode, flag, flagConstraintNode(fc))
+		return nil
+	})
+}
+
+// DeleteFlagConstraint removes the flag_constraints entry for flag on the allow
+// rule at index, dropping the flag_constraints key entirely when it empties.
+// expect guards against concurrent edits. It is not an error for the entry to
+// be absent — the desired end state (no constraint for flag) already holds.
+func DeleteFlagConstraint(path, toolName string, index int, expect []string, flag string) error {
+	return editConfig(path, func(doc *yaml.Node) error {
+		rule, err := ruleAt(doc, toolName, KindAllow, index, expect)
+		if err != nil {
+			return err
+		}
+		fcNode := mapGet(rule, "flag_constraints")
+		if fcNode == nil || fcNode.Kind != yaml.MappingNode {
+			return nil
+		}
+		mapDelete(fcNode, flag)
+		if len(fcNode.Content) == 0 {
+			mapDelete(rule, "flag_constraints")
+		}
+		return nil
+	})
+}
+
+// flagConstraintNode builds a YAML mapping for fc, emitting only the fields that
+// are set so the written config stays minimal. Ints and bools use untagged
+// scalars (resolve to their type); the pattern is string-tagged so a regex that
+// would misparse as YAML is quoted.
+func flagConstraintNode(fc FlagConstraint) *yaml.Node {
+	n := &yaml.Node{Kind: yaml.MappingNode}
+	if fc.Type != "" {
+		mapSet(n, "type", scalarNode(string(fc.Type)))
+	}
+	if fc.Min != nil {
+		mapSet(n, "min", intNode(*fc.Min))
+	}
+	if fc.Max != nil {
+		mapSet(n, "max", intNode(*fc.Max))
+	}
+	if fc.Pattern != "" {
+		mapSet(n, "pattern", strNode(fc.Pattern))
+	}
+	if fc.Required {
+		mapSet(n, "required", boolNode(true))
+	}
+	if fc.Deny {
+		mapSet(n, "deny", boolNode(true))
+	}
+	return n
+}
+
 // pruneFlagConstraints removes flag_constraints entries whose flag is not in
 // keepFlags, and drops the flag_constraints key entirely when it empties.
 func pruneFlagConstraints(rule *yaml.Node, keepFlags []string) {

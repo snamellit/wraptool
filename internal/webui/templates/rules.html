@@ -18,8 +18,9 @@
 <main>
   {{with .Flash}}<div class="flash {{.Kind}}">{{.Message}}{{if .Detail}}<pre>{{.Detail}}</pre>{{end}}</div>{{end}}
   <p class="hint">Subcommand and flags are space-separated. Edits validate and
-  hot-reload the running server. Rules marked <span class="tag">adv</span> carry
-  flag_constraints / arg_constraints — edit those in the YAML directly.</p>
+  hot-reload the running server. Flag constraints are editable per allow rule
+  below. Rules marked <span class="tag">adv</span> also carry arg_constraints /
+  deny_flags — edit those in the YAML directly.</p>
 
   {{range .Tools}}
   <div class="card tool">
@@ -40,14 +41,24 @@
 <div class="ruleset">
   <div class="ruleset-label">{{.Label}}</div>
   {{range .Rules}}
+  {{$rule := .}}
   <form class="rule" method="post" action="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/update">
     <input type="hidden" name="expect" value="{{.Subcommand}}">
     <input type="text" name="subcommand" value="{{.Subcommand}}" placeholder="subcommand" class="sub-in">
     {{if $.HasFlags}}<input type="text" name="flags" value="{{.Flags}}" placeholder="flags" class="flags-in">{{end}}
-    {{if .Advanced}}<span class="tag" title="has flag_constraints / arg_constraints">adv</span>{{end}}
+    {{if .Advanced}}<span class="tag" title="has arg_constraints / deny_flags">adv</span>{{end}}
     <button type="submit">Save</button>
     <button type="submit" class="deny" formaction="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/delete" formnovalidate>Delete</button>
   </form>
+  {{if $.HasFlags}}
+  <details class="constraints"{{if .Constraints}} open{{end}}>
+    <summary>flag constraints{{if .Constraints}} · {{len .Constraints}}{{end}}</summary>
+    {{range .Constraints}}
+    {{template "constraintform" dict "Tool" $.Tool "Index" $rule.Index "Subcommand" $rule.Subcommand "C" .}}
+    {{end}}
+    {{template "constraintform" dict "Tool" $.Tool "Index" $rule.Index "Subcommand" $rule.Subcommand "C" (emptyConstraint) "Add" true}}
+  </details>
+  {{end}}
   {{else}}
   <div class="rule-empty">none</div>
   {{end}}
@@ -57,4 +68,24 @@
     <button type="submit" class="approve">Add {{.Label}}</button>
   </form>
 </div>
+{{end}}
+
+{{define "constraintform"}}
+<form class="rule constraint{{if .Add}} add{{end}}" method="post" action="/rules/{{.Tool}}/allow/{{.Index}}/constraint/set">
+  <input type="hidden" name="expect" value="{{.Subcommand}}">
+  <input type="text" name="flag" value="{{.C.Flag}}" placeholder="--flag" class="sub-in"{{if .C.Flag}} readonly{{end}}>
+  <select name="type">
+    <option value=""{{if eq .C.Type ""}} selected{{end}}>untyped</option>
+    <option value="string"{{if eq .C.Type "string"}} selected{{end}}>string</option>
+    <option value="integer"{{if eq .C.Type "integer"}} selected{{end}}>integer</option>
+    <option value="boolean"{{if eq .C.Type "boolean"}} selected{{end}}>boolean</option>
+  </select>
+  <input type="text" name="min" value="{{.C.Min}}" placeholder="min" class="num-in">
+  <input type="text" name="max" value="{{.C.Max}}" placeholder="max" class="num-in">
+  <input type="text" name="pattern" value="{{.C.Pattern}}" placeholder="pattern" class="flags-in">
+  <label class="chk"><input type="checkbox" name="required" value="1"{{if .C.Required}} checked{{end}}> req</label>
+  <label class="chk"><input type="checkbox" name="deny" value="1"{{if .C.Deny}} checked{{end}}> deny</label>
+  <button type="submit">{{if .Add}}Add{{else}}Save{{end}}</button>
+  {{if .C.Flag}}<button type="submit" class="deny" formaction="/rules/{{.Tool}}/allow/{{.Index}}/constraint/delete" formnovalidate>Delete</button>{{end}}
+</form>
 {{end}}
