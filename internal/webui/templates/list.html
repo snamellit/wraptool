@@ -32,7 +32,7 @@
       </div>
       {{if .Rationale}}<div class="rationale"><div class="label">Rationale</div>{{.Rationale}}</div>{{end}}
       {{if .Enables}}<div class="enables"><div class="label">Enables</div>{{.Enables}}</div>{{end}}
-      {{if .FlagTypes}}<div class="flagtypes"><div class="label">Proposed flag types</div>{{range $flag, $type := .FlagTypes}}<code class="ft">{{$flag}}: {{$type}}</code> {{end}}</div>{{end}}
+      {{if .FlagTypes}}<div class="flagtypes"><div class="label">Proposed flag types</div>{{range $flag, $type := .FlagTypes}}<code class="ft">{{$flag}}: {{$type}}</code>{{end}}</div>{{end}}
       {{if .DeniedCommand}}<div class="kv">denied: <code>{{.DeniedCommand}}</code></div>{{end}}
       {{if .DenyReason}}<div class="kv">deny reason: <code>{{.DenyReason}}</code></div>{{end}}
       {{if .SessionID}}<div class="kv">session: <code>{{.SessionID}}</code></div>{{end}}
