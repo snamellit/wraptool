@@ -36,10 +36,14 @@ func TestAddTool_MissingBinaryRejected(t *testing.T) {
 	}
 }
 
-func TestAddTool_EmptyNameRejected(t *testing.T) {
+func TestAddTool_InvalidNameRejected(t *testing.T) {
 	cfgPath, binPath := writeTestConfig(t, rulesBaseConfig)
-	if err := AddTool(cfgPath, "", binPath); err == nil {
-		t.Fatal("expected error for empty tool name")
+	// Empty, a path separator (would break the /tools/{tool}/... routes), and a
+	// space are all rejected by the MCP name charset.
+	for _, bad := range []string{"", "my/tool", "has space"} {
+		if err := AddTool(cfgPath, bad, binPath); err == nil {
+			t.Errorf("expected error for invalid tool name %q", bad)
+		}
 	}
 }
 

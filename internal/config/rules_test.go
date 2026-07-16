@@ -135,7 +135,7 @@ func TestDeleteRule_Deny(t *testing.T) {
 	}
 }
 
-func TestDeleteRule_AllAllowedTooInert(t *testing.T) {
+func TestDeleteRule_AllAllowedToolInert(t *testing.T) {
 	// A tool may be emptied of allow rules: it becomes inert (registers no MCP
 	// tools, default-denies), a valid intermediate state, so deleting the last
 	// allow rule is no longer refused.

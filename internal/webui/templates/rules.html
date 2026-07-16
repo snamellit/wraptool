@@ -38,8 +38,8 @@
   {{end}}
 
   <form class="rule add tool-add" method="post" action="/tools/add">
-    <input type="text" name="name" placeholder="new tool name" class="sub-in">
-    <input type="text" name="binary" placeholder="/absolute/path/to/binary" class="flags-in">
+    <input type="text" name="name" placeholder="new tool name" class="sub-in" pattern="[a-zA-Z0-9_.\-]{1,64}" title="letters, digits, _ . - (max 64)" required>
+    <input type="text" name="binary" placeholder="/absolute/path/to/binary" class="flags-in" required>
     <button type="submit" class="approve">Add tool</button>
   </form>
 </main>
