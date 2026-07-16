@@ -248,9 +248,9 @@ func applyFlagTypes(rule *yaml.Node, flags []string, flagTypes map[string]string
 		if mapGet(fcNode, f) != nil {
 			continue // don't clobber an existing constraint
 		}
-		entry := &yaml.Node{Kind: yaml.MappingNode}
-		mapSet(entry, "type", scalarNode(t))
-		mapSet(fcNode, f, entry)
+		// flagConstraintNode is the single builder for a constraint entry; here
+		// only the type is known (a request supplies just the value type).
+		mapSet(fcNode, f, flagConstraintNode(FlagConstraint{Type: ConstraintType(t)}))
 	}
 }
 

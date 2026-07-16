@@ -56,7 +56,7 @@
     {{range .Constraints}}
     {{template "constraintform" dict "Tool" $.Tool "Index" $rule.Index "Subcommand" $rule.Subcommand "C" .}}
     {{end}}
-    {{template "constraintform" dict "Tool" $.Tool "Index" $rule.Index "Subcommand" $rule.Subcommand "C" (emptyConstraint) "Add" true}}
+    {{template "constraintform" dict "Tool" $.Tool "Index" $rule.Index "Subcommand" $rule.Subcommand "C" (emptyConstraint)}}
   </details>
   {{end}}
   {{else}}
@@ -71,7 +71,7 @@
 {{end}}
 
 {{define "constraintform"}}
-<form class="rule constraint{{if .Add}} add{{end}}" method="post" action="/rules/{{.Tool}}/allow/{{.Index}}/constraint/set">
+<form class="rule constraint{{if not .C.Flag}} add{{end}}" method="post" action="/rules/{{.Tool}}/allow/{{.Index}}/constraint/set">
   <input type="hidden" name="expect" value="{{.Subcommand}}">
   <input type="text" name="flag" value="{{.C.Flag}}" placeholder="--flag" class="sub-in"{{if .C.Flag}} readonly{{end}}>
   <select name="type">
@@ -85,7 +85,7 @@
   <input type="text" name="pattern" value="{{.C.Pattern}}" placeholder="pattern" class="flags-in">
   <label class="chk"><input type="checkbox" name="required" value="1"{{if .C.Required}} checked{{end}}> req</label>
   <label class="chk"><input type="checkbox" name="deny" value="1"{{if .C.Deny}} checked{{end}}> deny</label>
-  <button type="submit">{{if .Add}}Add{{else}}Save{{end}}</button>
+  <button type="submit">{{if .C.Flag}}Save{{else}}Add{{end}}</button>
   {{if .C.Flag}}<button type="submit" class="deny" formaction="/rules/{{.Tool}}/allow/{{.Index}}/constraint/delete" formnovalidate>Delete</button>{{end}}
 </form>
 {{end}}
