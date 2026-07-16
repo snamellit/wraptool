@@ -27,12 +27,21 @@
     <div class="top">
       <span class="cmd"><span class="tool">{{.Name}}</span></span>
       <span class="meta">{{.Binary}}</span>
+      <form method="post" action="/tools/{{.Name}}/delete" class="tool-del" onsubmit="return confirm('Delete tool {{.Name}} and all its rules?')">
+        <button type="submit" class="deny" formnovalidate>Delete tool</button>
+      </form>
     </div>
 
     {{template "ruleset" dict "Tool" .Name "Kind" "allow" "Label" "Allow" "Rules" .Allow "HasFlags" true}}
     {{template "ruleset" dict "Tool" .Name "Kind" "deny" "Label" "Deny" "Rules" .Deny "HasFlags" false}}
   </div>
   {{end}}
+
+  <form class="rule add tool-add" method="post" action="/tools/add">
+    <input type="text" name="name" placeholder="new tool name" class="sub-in" pattern="[a-zA-Z0-9_.\-]{1,64}" title="letters, digits, _ . - (max 64)" required>
+    <input type="text" name="binary" placeholder="/absolute/path/to/binary" class="flags-in" required>
+    <button type="submit" class="approve">Add tool</button>
+  </form>
 </main>
 </body>
 </html>{{end}}

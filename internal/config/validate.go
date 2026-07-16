@@ -153,10 +153,9 @@ func validateTool(tc *ToolConfig) error {
 		return fmt.Errorf("binary %q (resolved to %q) is not a regular file", tc.Binary, resolved)
 	}
 
-	if len(tc.Allow) == 0 {
-		return fmt.Errorf("at least one allow rule is required")
-	}
-
+	// A tool with no allow rules is permitted: it is inert (registers no MCP
+	// tools and default-denies every call), so it is a safe intermediate state
+	// while bootstrapping a tool and adding its rules incrementally.
 	for i, rule := range tc.Allow {
 		if len(rule.Subcommand) == 0 {
 			return fmt.Errorf("allow rule %d: subcommand is required", i)

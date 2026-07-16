@@ -111,7 +111,9 @@ func TestValidate_RelativeBinaryPath(t *testing.T) {
 	}
 }
 
-func TestValidate_NoAllowRules(t *testing.T) {
+func TestValidate_NoAllowRulesIsInert(t *testing.T) {
+	// A tool with no allow rules is valid: it registers no MCP tools and
+	// default-denies, a safe intermediate state while bootstrapping a tool.
 	dir := t.TempDir()
 	binPath := filepath.Join(dir, "git")
 	os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0755)
@@ -122,9 +124,8 @@ func TestValidate_NoAllowRules(t *testing.T) {
 			"git": {Binary: binPath, Allow: []AllowRule{}},
 		},
 	}
-	err := cfg.Validate()
-	if err == nil {
-		t.Error("expected error for no allow rules")
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("a rule-less tool should validate, got %v", err)
 	}
 }
 

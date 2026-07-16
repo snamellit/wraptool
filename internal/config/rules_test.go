@@ -135,24 +135,21 @@ func TestDeleteRule_Deny(t *testing.T) {
 	}
 }
 
-func TestDeleteRule_LastAllowRejectedByValidation(t *testing.T) {
-	// A tool must keep >=1 allow rule; deleting both should be refused by the
-	// round-trip validation, leaving the file unchanged.
+func TestDeleteRule_AllAllowedToolInert(t *testing.T) {
+	// A tool may be emptied of allow rules: it becomes inert (registers no MCP
+	// tools, default-denies), a valid intermediate state, so deleting the last
+	// allow rule is no longer refused.
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
-	before := readFile(t, cfgPath)
 	if err := DeleteRule(cfgPath, "git", KindAllow, 1, []string{"log"}); err != nil {
 		t.Fatalf("first delete: %v", err)
 	}
-	err := DeleteRule(cfgPath, "git", KindAllow, 0, []string{"status"})
-	if err == nil || !strings.Contains(err.Error(), "validation") {
-		t.Fatalf("expected validation error deleting last allow rule, got %v", err)
+	if err := DeleteRule(cfgPath, "git", KindAllow, 0, []string{"status"}); err != nil {
+		t.Fatalf("deleting last allow rule should be allowed now, got %v", err)
 	}
-	// File still has the status rule (the failed delete did not write).
 	got := readFile(t, cfgPath)
-	if !strings.Contains(got, "[status]") {
-		t.Errorf("status rule should survive a rejected delete:\n%s", got)
+	if strings.Contains(got, "[status]") {
+		t.Errorf("status rule should be gone:\n%s", got)
 	}
-	_ = before
 }
 
 func TestDeleteRule_DriftRejected(t *testing.T) {
