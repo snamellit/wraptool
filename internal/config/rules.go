@@ -40,13 +40,13 @@ func AddRule(path, toolName, kind string, subcommand, flags []string) error {
 	})
 }
 
-// UpdateRule replaces the subcommand (and, for allow rules, the flags) of the
-// rule at index in a tool's allow or deny sequence. expect is the rule's
-// current subcommand as the operator last saw it; if it no longer matches the
-// edit is refused so a concurrent change is not silently clobbered. For an
-// allow rule, an empty flags slice removes the `flags` key; other keys
-// (flag_constraints, deny_flags, comments) are preserved.
-func UpdateRule(path, toolName, kind string, index int, expect, subcommand, flags []string) error {
+// UpdateRule replaces the subcommand (and, for allow rules, the flags and
+// deny_flags) of the rule at index in a tool's allow or deny sequence. expect
+// is the rule's current subcommand as the operator last saw it; if it no longer
+// matches the edit is refused so a concurrent change is not silently clobbered.
+// For an allow rule, an empty flags or denyFlags slice removes the respective
+// key; other keys (flag_constraints, arg_constraints, comments) are preserved.
+func UpdateRule(path, toolName, kind string, index int, expect, subcommand, flags, denyFlags []string) error {
 	if err := validKind(kind); err != nil {
 		return err
 	}
@@ -57,17 +57,24 @@ func UpdateRule(path, toolName, kind string, index int, expect, subcommand, flag
 		}
 		mapSet(rule, "subcommand", stringSeq(subcommand))
 		if kind == KindAllow {
-			if len(flags) > 0 {
-				mapSet(rule, "flags", stringSeq(flags))
-			} else {
-				mapDelete(rule, "flags")
-			}
+			setOrDeleteSeq(rule, "flags", flags)
+			setOrDeleteSeq(rule, "deny_flags", denyFlags)
 			// Drop flag_constraints for flags that no longer exist so the
 			// config does not accumulate orphaned entries.
 			pruneFlagConstraints(rule, flags)
 		}
 		return nil
 	})
+}
+
+// setOrDeleteSeq writes values as a flow-style sequence under key, or removes
+// the key when values is empty — the pattern both flags and deny_flags follow.
+func setOrDeleteSeq(rule *yaml.Node, key string, values []string) {
+	if len(values) > 0 {
+		mapSet(rule, key, stringSeq(values))
+	} else {
+		mapDelete(rule, key)
+	}
 }
 
 // DeleteRule removes the rule at index from a tool's allow or deny sequence.
