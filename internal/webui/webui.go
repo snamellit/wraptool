@@ -543,19 +543,23 @@ func parseFlagConstraintForm(r *http.Request) (config.FlagConstraint, error) {
 		Required: r.FormValue("required") == "1",
 		Deny:     r.FormValue("deny") == "1",
 	}
-	if v := strings.TrimSpace(r.FormValue("min")); v != "" {
+	parseInt := func(name string) (*int, error) {
+		v := strings.TrimSpace(r.FormValue(name))
+		if v == "" {
+			return nil, nil
+		}
 		n, err := strconv.Atoi(v)
 		if err != nil {
-			return fc, fmt.Errorf("min must be an integer: %w", err)
+			return nil, fmt.Errorf("%s must be an integer: %w", name, err)
 		}
-		fc.Min = &n
+		return &n, nil
 	}
-	if v := strings.TrimSpace(r.FormValue("max")); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
-			return fc, fmt.Errorf("max must be an integer: %w", err)
-		}
-		fc.Max = &n
+	var err error
+	if fc.Min, err = parseInt("min"); err != nil {
+		return fc, err
+	}
+	if fc.Max, err = parseInt("max"); err != nil {
+		return fc, err
 	}
 	return fc, nil
 }
