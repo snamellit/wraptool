@@ -122,7 +122,8 @@ func TestHandleListRendersFlagTypesReadOnlyWhenDecided(t *testing.T) {
 	srv, store, _ := newTestServer(t)
 	req := &requestlog.CapabilityRequest{
 		Tool: "glab", Subcommand: []string{"mr", "update"},
-		Flags: []string{"--reviewer"}, FlagTypes: map[string]string{"--reviewer": "string"},
+		Flags:     []string{"--reviewer", "--draft"},
+		FlagTypes: map[string]string{"--reviewer": "string", "--draft": ""},
 	}
 	if err := store.Append(req); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -137,6 +138,10 @@ func TestHandleListRendersFlagTypesReadOnlyWhenDecided(t *testing.T) {
 	// Decided requests show the types read-only, with no editable select.
 	if !strings.Contains(body, "--reviewer: string") {
 		t.Errorf("approved card missing read-only flag types:\n%s", body)
+	}
+	// An empty type renders as "untyped", not a naked trailing colon.
+	if !strings.Contains(body, "--draft: untyped") {
+		t.Errorf("empty flag type not rendered as untyped:\n%s", body)
 	}
 	if strings.Contains(body, `name="ftype:--reviewer"`) {
 		t.Error("decided request should not render an editable flag-type select")

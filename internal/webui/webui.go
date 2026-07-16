@@ -303,13 +303,19 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 // wins. A submitted empty value clears the proposal — applyFlagTypes writes no
 // constraint for an empty type, leaving that flag unconstrained. Returns nil
 // when there is nothing to apply, matching the pre-override behaviour.
+//
+// Reads r.PostForm (POST body only), not r.Form: an approve is a POST, so a
+// stray ?ftype:... query parameter must not influence the applied types.
+// ParseForm is called explicitly (idempotent) so PostForm is populated
+// regardless of whether the caller already touched the form.
 func flagTypeOverrides(proposed map[string]string, r *http.Request) map[string]string {
+	_ = r.ParseForm()
 	merged := make(map[string]string, len(proposed))
 	maps.Copy(merged, proposed)
-	for key, vals := range r.Form {
+	for key, vals := range r.PostForm {
 		flag, ok := strings.CutPrefix(key, "ftype:")
-		if !ok || len(vals) == 0 {
-			continue
+		if !ok || flag == "" || len(vals) == 0 {
+			continue // skip non-ftype keys and a malformed "ftype:" with no flag
 		}
 		merged[flag] = vals[0]
 	}
