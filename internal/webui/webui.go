@@ -98,6 +98,7 @@ func (s *Server) Handler() http.Handler {
 	// flag_constraints are allow-only, so these routes are not parameterised on kind.
 	mux.HandleFunc("POST /rules/{tool}/allow/{index}/constraint/set", s.handleRuleConstraintSet)
 	mux.HandleFunc("POST /rules/{tool}/allow/{index}/constraint/delete", s.handleRuleConstraintDelete)
+	mux.HandleFunc("POST /rules/{tool}/allow/{index}/args/set", s.handleRuleArgsSet)
 	mux.Handle("GET /static/", s.static)
 	return mux
 }
@@ -379,8 +380,8 @@ type ruleView struct {
 	Subcommand  string // space-joined tokens
 	Flags       string // space-joined tokens
 	DenyFlags   string // space-joined tokens
+	ArgMax      string // arg_constraints.positional_max, "" when unset (unlimited)
 	Constraints []constraintView
-	Advanced    bool // has arg_constraints (still edit those in YAML directly)
 }
 
 // constraintView is a flag_constraints entry rendered for the rules editor.
@@ -431,10 +432,8 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 				Subcommand:  strings.Join(rule.Subcommand, " "),
 				Flags:       strings.Join(rule.Flags, " "),
 				DenyFlags:   strings.Join(rule.DenyFlags, " "),
+				ArgMax:      argMaxString(rule.ArgConstraints),
 				Constraints: constraintViews(rule.FlagConstraints),
-				// flags, deny_flags and flag_constraints are editable inline;
-				// only arg_constraints still requires a YAML edit.
-				Advanced: rule.ArgConstraints != nil,
 			})
 		}
 		for i, rule := range tc.Deny {
@@ -523,6 +522,16 @@ func (s *Server) handleRuleDelete(w http.ResponseWriter, r *http.Request) {
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Deleted %s rule %s. Server will hot-reload.", kind, tool), "")
 }
 
+// argMaxString renders a rule's positional-arg limit for the editor: the number
+// when arg_constraints is set (including 0, which forbids positional args), or
+// "" when unset (unlimited).
+func argMaxString(ac *config.ArgConstraints) string {
+	if ac == nil {
+		return ""
+	}
+	return strconv.Itoa(ac.PositionalMax)
+}
+
 // constraintViews renders a rule's flag_constraints map into a stable,
 // flag-sorted slice for the template. An unset numeric bound becomes an empty
 // string so its input renders blank.
@@ -607,6 +616,31 @@ func (s *Server) handleRuleConstraintSet(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Set constraint on %s %s. Server will hot-reload.", tool, flag), "")
+}
+
+func (s *Server) handleRuleArgsSet(w http.ResponseWriter, r *http.Request) {
+	tool := r.PathValue("tool")
+	index, err := strconv.Atoi(r.PathValue("index"))
+	if err != nil {
+		s.redirect(w, r, "/rules", "err", "invalid rule index", "")
+		return
+	}
+	expect := strings.Fields(r.FormValue("expect"))
+	// An empty field means "unlimited" — remove the arg_constraints block.
+	var positionalMax *int
+	if v := strings.TrimSpace(r.FormValue("positional_max")); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			s.redirect(w, r, "/rules", "err", fmt.Sprintf("Set arg limit failed: positional max must be an integer: %s", err), "")
+			return
+		}
+		positionalMax = &n
+	}
+	if err := config.SetArgConstraints(s.configPath, tool, index, expect, positionalMax); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Set arg limit failed: %s", err), "")
+		return
+	}
+	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Set positional arg limit on %s. Server will hot-reload.", tool), "")
 }
 
 func (s *Server) handleRuleConstraintDelete(w http.ResponseWriter, r *http.Request) {

@@ -236,6 +236,35 @@ func TestSetFlagConstraint_DriftRejected(t *testing.T) {
 	}
 }
 
+func TestSetArgConstraints_SetZeroThenRemove(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	// 0 is meaningful — it forbids positional args — and must be written, not
+	// treated as "unset".
+	zero := 0
+	if err := SetArgConstraints(cfgPath, "git", 0, []string{"status"}, &zero); err != nil {
+		t.Fatalf("SetArgConstraints: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	if !strings.Contains(got, "arg_constraints") || !strings.Contains(got, "positional_max: 0") {
+		t.Errorf("arg_constraints not written:\n%s", got)
+	}
+	// nil removes the block (unlimited).
+	if err := SetArgConstraints(cfgPath, "git", 0, []string{"status"}, nil); err != nil {
+		t.Fatalf("SetArgConstraints remove: %v", err)
+	}
+	if strings.Contains(readFile(t, cfgPath), "arg_constraints") {
+		t.Errorf("arg_constraints not removed when nil")
+	}
+}
+
+func TestSetArgConstraints_NegativeRejected(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	neg := -1
+	if err := SetArgConstraints(cfgPath, "git", 0, []string{"status"}, &neg); err == nil {
+		t.Fatal("expected error for negative positional_max")
+	}
+}
+
 func TestDeleteFlagConstraint_RemovesBlockWhenEmpty(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
 	if err := DeleteFlagConstraint(cfgPath, "git", 0, []string{"status"}, "--short"); err != nil {

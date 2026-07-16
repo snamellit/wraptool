@@ -18,9 +18,8 @@
 <main>
   {{with .Flash}}<div class="flash {{.Kind}}">{{.Message}}{{if .Detail}}<pre>{{.Detail}}</pre>{{end}}</div>{{end}}
   <p class="hint">Subcommand and flags are space-separated. Edits validate and
-  hot-reload the running server. Flags, deny flags and per-flag constraints are
-  editable per allow rule below. Rules marked <span class="tag">adv</span> also
-  carry arg_constraints — edit those in the YAML directly.</p>
+  hot-reload the running server. Flags, deny flags, per-flag constraints and the
+  positional-args limit are all editable per allow rule below.</p>
 
   {{range .Tools}}
   <div class="card tool">
@@ -56,11 +55,15 @@
     <input type="text" name="subcommand" value="{{.Subcommand}}" placeholder="subcommand" class="sub-in">
     {{if $.HasFlags}}<input type="text" name="flags" value="{{.Flags}}" placeholder="flags" class="flags-in">
     <input type="text" name="deny_flags" value="{{.DenyFlags}}" placeholder="deny flags" class="flags-in">{{end}}
-    {{if .Advanced}}<span class="tag" title="has arg_constraints">adv</span>{{end}}
     <button type="submit">Save</button>
     <button type="submit" class="deny" formaction="/rules/{{$.Tool}}/{{.Kind}}/{{.Index}}/delete" formnovalidate>Delete</button>
   </form>
   {{if and $.HasFlags (eq .Kind "allow")}}
+  <form class="rule args" method="post" action="/rules/{{$.Tool}}/allow/{{.Index}}/args/set">
+    <input type="hidden" name="expect" value="{{.Subcommand}}">
+    <label class="argmax">positional args max <input type="text" name="positional_max" value="{{.ArgMax}}" placeholder="unlimited" class="num-in"></label>
+    <button type="submit">Save</button>
+  </form>
   <details class="constraints"{{if .Constraints}} open{{end}}>
     <summary>flag constraints{{if .Constraints}} · {{len .Constraints}}{{end}}</summary>
     {{range .Constraints}}
