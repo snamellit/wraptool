@@ -172,13 +172,26 @@ func SetArgConstraints(path, toolName string, index int, expect []string, positi
 		if err != nil {
 			return err
 		}
+		ac := mapGet(rule, "arg_constraints")
+		if ac != nil && ac.Kind != yaml.MappingNode {
+			return fmt.Errorf("tool %q allow rule %d `arg_constraints` is not a mapping", toolName, index)
+		}
+		// Touch only positional_max so any sibling keys added later survive.
 		if positionalMax == nil {
-			mapDelete(rule, "arg_constraints")
+			if ac == nil {
+				return nil
+			}
+			mapDelete(ac, "positional_max")
+			if len(ac.Content) == 0 {
+				mapDelete(rule, "arg_constraints")
+			}
 			return nil
 		}
-		ac := &yaml.Node{Kind: yaml.MappingNode}
+		if ac == nil {
+			ac = &yaml.Node{Kind: yaml.MappingNode}
+			mapSet(rule, "arg_constraints", ac)
+		}
 		mapSet(ac, "positional_max", intNode(*positionalMax))
-		mapSet(rule, "arg_constraints", ac)
 		return nil
 	})
 }
