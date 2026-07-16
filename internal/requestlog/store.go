@@ -128,8 +128,10 @@ func (s *Store) ListRevocations() ([]RevocationEvent, error) {
 		}
 		var rv RevocationEvent
 		if uerr := json.Unmarshal(e.Data, &rv); uerr != nil {
-			// A corrupt audit line must not vanish quietly — surface it so the
-			// gap is visible rather than silently shrinking the trail.
+			// A corrupt audit line is logged (a server-side trace of the
+			// corruption) rather than dropped without any record; the remaining
+			// parsed entries are still returned. The log — not the UI list — is
+			// the integrity surface here.
 			log.Printf("requestlog: skipping unparseable revocation event: %s", uerr)
 			return
 		}

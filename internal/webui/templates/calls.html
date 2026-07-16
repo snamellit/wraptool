@@ -31,6 +31,8 @@
     </div>
   </div>
   {{end}}
+  {{/* The "Tool calls" separator is only needed when a Revocations section
+       precedes it, so it lives inside this if-block. */}}
   <div class="ruleset-label">Tool calls</div>
   {{end}}
   {{if not .Calls}}
