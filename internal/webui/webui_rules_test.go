@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/pti/wraptool/internal/requestlog"
 )
 
 func postRule(t *testing.T, srv *Server, path string, form url.Values) *httptest.ResponseRecorder {
@@ -255,6 +257,67 @@ func TestRuleConstraintDeleteEmptyFlagRejected(t *testing.T) {
 	})
 	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
 		t.Errorf("expected error for empty flag on delete, got %s", loc)
+	}
+}
+
+func TestRuleDeleteAuditsRevocation(t *testing.T) {
+	srv, store, _ := newTestServer(t)
+	// Add a second allow rule so the delete is permitted, then delete [log].
+	if rr := postRule(t, srv, "/rules/git/allow/add", url.Values{"subcommand": {"status"}}); rr.Code != http.StatusSeeOther {
+		t.Fatalf("add: %d", rr.Code)
+	}
+	if rr := postRule(t, srv, "/rules/git/allow/0/delete", url.Values{"expect": {"log"}}); strings.Contains(rr.Header().Get("Location"), "kind=err") {
+		t.Fatalf("delete failed: %s", rr.Header().Get("Location"))
+	}
+
+	revs, err := store.ListRevocations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revs) != 1 || revs[0].Tool != "git" || revs[0].Kind != requestlog.RevokeAllowRule {
+		t.Fatalf("expected one allow-rule revocation, got %+v", revs)
+	}
+
+	// It renders on the unfiltered audit page.
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls", nil))
+	body := rr.Body.String()
+	if !strings.Contains(body, "Revocations") || !strings.Contains(body, "revoked allow_rule") {
+		t.Errorf("revocation not rendered on /calls:\n%s", body)
+	}
+
+	// A call-status filter (allowed/denied) must not show revocations — they are
+	// config-change events, not allowed/denied calls.
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/calls?status=allowed", nil))
+	if strings.Contains(rr.Body.String(), "Revocations") {
+		t.Error("revocations should not render under an allowed/denied filter")
+	}
+}
+
+func TestToolDeleteAuditsRevocation(t *testing.T) {
+	srv, store, cfgPath := newTestServer(t)
+	// Add a second tool so deleting the first is allowed.
+	data, _ := os.ReadFile(cfgPath)
+	var binPath string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		if strings.Contains(line, "binary:") {
+			binPath = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "binary:"))
+		}
+	}
+	if rr := postRule(t, srv, "/tools/add", url.Values{"name": {"kubectl"}, "binary": {binPath}}); rr.Code != http.StatusSeeOther {
+		t.Fatalf("tool add: %d", rr.Code)
+	}
+	if rr := postRule(t, srv, "/tools/git/delete", nil); strings.Contains(rr.Header().Get("Location"), "kind=err") {
+		t.Fatalf("tool delete failed: %s", rr.Header().Get("Location"))
+	}
+
+	revs, err := store.ListRevocations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(revs) != 1 || revs[0].Kind != requestlog.RevokeTool || revs[0].Tool != "git" {
+		t.Fatalf("expected one tool revocation, got %+v", revs)
 	}
 }
 

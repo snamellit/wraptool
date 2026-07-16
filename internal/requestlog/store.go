@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -105,6 +106,38 @@ func (s *Store) AppendMCPToolCall(serverName, toolName string, arguments map[str
 		Arguments:     arguments,
 	}
 	return s.AppendToolCall(evt)
+}
+
+// AppendRevocation records an operator removing a capability as a
+// capability_revoked event. It stamps evt.ID/Timestamp in place.
+func (s *Store) AppendRevocation(evt *RevocationEvent) error {
+	evt.ID = "rev_" + uuid.New().String()[:8]
+	evt.Timestamp = time.Now().UTC()
+	return s.appendEvent(EventCapabilityRevoked, evt.Timestamp, evt)
+}
+
+// ListRevocations returns every recorded revocation, oldest first.
+func (s *Store) ListRevocations() ([]RevocationEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var revs []RevocationEvent
+	err := s.eachEventLocked(func(e Event) {
+		if e.Type != EventCapabilityRevoked {
+			return
+		}
+		var rv RevocationEvent
+		if uerr := json.Unmarshal(e.Data, &rv); uerr != nil {
+			// A corrupt audit line is logged (a server-side trace of the
+			// corruption) rather than dropped without any record; the remaining
+			// parsed entries are still returned. The log — not the UI list — is
+			// the integrity surface here.
+			log.Printf("requestlog: skipping unparseable revocation event: %s", uerr)
+			return
+		}
+		revs = append(revs, rv)
+	})
+	return revs, err
 }
 
 // UpdateStatus records an approval or denial as a new event. The request must
@@ -226,7 +259,7 @@ func (s *Store) foldRequestsLocked() (map[string]*CapabilityRequest, []string, e
 					req.DenyReason = d.Reason
 				}
 			}
-		case EventToolCall:
+		case EventToolCall, EventCapabilityRevoked:
 			// audit-only events; not part of capability-request state, so they
 			// are ignored when folding requests.
 		}
