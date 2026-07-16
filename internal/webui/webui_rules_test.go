@@ -352,6 +352,42 @@ func TestToolAddMissingBinary(t *testing.T) {
 	}
 }
 
+func TestToolMetadataSetAndRender(t *testing.T) {
+	srv, _, cfgPath := newTestServer(t)
+	rr := postRule(t, srv, "/tools/git/metadata", url.Values{
+		"working_dir": {"/srv/project"}, "timeout": {"45s"}, "env_files": {"/srv/project/.env"},
+	})
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", rr.Code)
+	}
+	if loc := rr.Header().Get("Location"); strings.Contains(loc, "kind=err") {
+		t.Fatalf("metadata update reported error: %s", loc)
+	}
+	got, _ := os.ReadFile(cfgPath)
+	for _, want := range []string{"working_dir:", "/srv/project", "timeout: 45s", "env_files:"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("config missing %q:\n%s", want, got)
+		}
+	}
+	// The page renders the metadata form pre-filled.
+	rr = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/rules", nil))
+	body := rr.Body.String()
+	for _, want := range []string{`name="working_dir" value="/srv/project"`, `name="timeout" value="45s"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metadata not rendered pre-filled: missing %q", want)
+		}
+	}
+}
+
+func TestToolMetadataBadTimeout(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	rr := postRule(t, srv, "/tools/git/metadata", url.Values{"timeout": {"soon"}})
+	if loc := rr.Header().Get("Location"); !strings.Contains(loc, "kind=err") {
+		t.Errorf("expected error for bad timeout, got %s", loc)
+	}
+}
+
 func TestToolDeleteLastRejected(t *testing.T) {
 	srv, _, cfgPath := newTestServer(t)
 	before, _ := os.ReadFile(cfgPath)

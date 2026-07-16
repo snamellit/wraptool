@@ -179,3 +179,5 @@ form.rule.constraint select { font: inherit; background: var(--bg); border: 1px 
 form.rule.constraint .chk { font-size: 0.8rem; }
 form.rule.args { margin: 0 0 0.4rem 1rem; }
 form.rule.args .argmax { color: var(--muted); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.4rem; }
+form.rule.meta { margin: 0.25rem 0 0.6rem; }
+form.rule.meta .metafield { color: var(--muted); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.4rem; }

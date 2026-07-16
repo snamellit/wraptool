@@ -83,22 +83,26 @@ Web UI rule editor").
 
 ## Stage 4 — new management tools: make the UI feature-complete
 
-After Stages 1–3 the UI reviews requests and authors allow/deny rules with flag
-constraints, but full policy management still requires YAML for several things.
-This stage adds the missing management surfaces so the operator never has to
-leave the UI. Each is an independent tool/page sharing the existing
-`editConfig` node-tree editor (comment-preserving, round-trip-validated, atomic
-write, hot-reload):
+Status: **done**. After Stages 1–3 the UI reviews requests and authors
+allow/deny rules with flag constraints, but full policy management still
+required YAML for several things. This stage added the missing management
+surfaces so the operator never has to leave the UI. Each is an independent
+tool/page sharing the existing `editConfig` node-tree editor
+(comment-preserving, round-trip-validated, atomic write, hot-reload):
 
-- **Whole-tool CRUD** — add/remove a wrapped tool (name + binary + env) from the
-  UI; today only rules within an existing tool are editable.
-- **`arg_constraints` editor** — positional-argument constraints (count,
-  pattern), the remaining `adv` field not covered by Stage 3.
-- **`deny_flags` editor** — per-rule denied flags, currently YAML-only.
-- **Revoke an approved capability** — remove a flag or an entire allow rule that
-  a prior approval added, closing the loop opposite to `ApplyRequest` (audit the
-  revocation in the request log).
-- **Environment / tool metadata** — description overrides, allowed env vars.
+- **Whole-tool CRUD** ✅ — add/remove a wrapped tool (name + binary) from the
+  UI. Also relaxed validation so a rule-less tool is a valid (inert) state,
+  enabling a create-then-add-rules bootstrap.
+- **`arg_constraints` editor** ✅ — positional-args limit; retired the `adv` tag.
+- **`deny_flags` editor** ✅ — per-rule denied flags, edited in the rule form.
+- **Revoke an approved capability** ✅ — rule/tool deletes append a
+  `capability_revoked` audit event (loud on failure), shown on the Calls page.
+- **Environment / tool metadata** ✅ — working_dir, timeout, and **env_files
+  paths only**. Inline `env` *values* are deliberately **not** editable: secrets
+  belong in a per-folder `.env`/`.envrc` referenced by `env_files`, so the
+  shared config never becomes a plaintext secret store (the Web UI reproduces
+  the per-directory env a developer gets on the CLI). See the note in
+  `internal/config/tools.go` (`SetToolMetadata`).
 
 Whether any of these is *also* exposed as an MCP tool (AI-facing) vs. Web-UI-only
 (operator-facing) follows the existing boundary: authoring/policy mutation is
