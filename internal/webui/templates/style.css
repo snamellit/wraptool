@@ -62,8 +62,10 @@ main { padding: 1.5rem; max-width: 980px; margin: 0 auto; }
 .badge.denied { color: var(--red); border-color: var(--red); }
 .meta { color: var(--muted); font-size: 0.8rem; margin-left: auto; }
 .rationale { margin: 0.75rem 0 0; }
-.rationale .label, .enables .label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.rationale .label, .enables .label, .flagtypes .label { color: var(--muted); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .enables { margin-top: 0.5rem; }
+.flagtypes { margin-top: 0.5rem; }
+.flagtypes .ft { color: var(--amber); font-size: 0.85rem; margin-right: 0.35rem; }
 .kv { color: var(--muted); font-size: 0.8rem; margin-top: 0.5rem; }
 .kv code { color: var(--text); }
 .actions {
