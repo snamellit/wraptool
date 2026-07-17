@@ -181,3 +181,4 @@ form.rule.args { margin: 0 0 0.4rem 1rem; }
 form.rule.args .argmax { color: var(--muted); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.4rem; }
 form.rule.meta { margin: 0.25rem 0 0.6rem; }
 form.rule.meta .metafield { color: var(--muted); font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.4rem; }
+form.rule.meta textarea { font: inherit; font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text); padding: 0.35rem 0.6rem; resize: vertical; }

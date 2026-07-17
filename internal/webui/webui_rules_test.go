@@ -354,8 +354,11 @@ func TestToolAddMissingBinary(t *testing.T) {
 
 func TestToolMetadataSetAndRender(t *testing.T) {
 	srv, _, cfgPath := newTestServer(t)
+	// Two env-file paths, one per line, and one containing a space — the space
+	// must survive the form round-trip (not get split into two paths).
 	rr := postRule(t, srv, "/tools/git/metadata", url.Values{
-		"working_dir": {"/srv/project"}, "timeout": {"45s"}, "env_files": {"/srv/project/.env"},
+		"working_dir": {"/srv/project"}, "timeout": {"45s"},
+		"env_files": {"/srv/project/.env\n/opt/my secrets/.envrc"},
 	})
 	if rr.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", rr.Code)
@@ -364,19 +367,33 @@ func TestToolMetadataSetAndRender(t *testing.T) {
 		t.Fatalf("metadata update reported error: %s", loc)
 	}
 	got, _ := os.ReadFile(cfgPath)
-	for _, want := range []string{"working_dir:", "/srv/project", "timeout: 45s", "env_files:"} {
+	for _, want := range []string{"working_dir:", "/srv/project", "timeout: 45s", "env_files:", "my secrets/.envrc"} {
 		if !strings.Contains(string(got), want) {
 			t.Errorf("config missing %q:\n%s", want, got)
 		}
 	}
-	// The page renders the metadata form pre-filled.
+
+	// The page renders the metadata form pre-filled; the spaced path survives
+	// as a single entry (one path per line in the textarea).
 	rr = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/rules", nil))
 	body := rr.Body.String()
-	for _, want := range []string{`name="working_dir" value="/srv/project"`, `name="timeout" value="45s"`} {
+	for _, want := range []string{`name="working_dir" value="/srv/project"`, `name="timeout" value="45s"`, "/opt/my secrets/.envrc"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metadata not rendered pre-filled: missing %q", want)
 		}
+	}
+
+	// Re-save without change must not shred the spaced path.
+	if rr = postRule(t, srv, "/tools/git/metadata", url.Values{
+		"working_dir": {"/srv/project"}, "timeout": {"45s"},
+		"env_files": {"/srv/project/.env\n/opt/my secrets/.envrc"},
+	}); strings.Contains(rr.Header().Get("Location"), "kind=err") {
+		t.Fatalf("re-save failed: %s", rr.Header().Get("Location"))
+	}
+	got, _ = os.ReadFile(cfgPath)
+	if strings.Count(string(got), "my secrets/.envrc") != 1 {
+		t.Errorf("spaced env-file path did not round-trip cleanly:\n%s", got)
 	}
 }
 

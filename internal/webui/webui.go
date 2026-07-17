@@ -450,7 +450,7 @@ type toolRulesView struct {
 	Binary     string
 	WorkingDir string
 	Timeout    string // effective duration, e.g. "30s"
-	EnvFiles   string // space-joined paths
+	EnvFiles   string // newline-joined paths (a path may contain spaces)
 	Allow      []ruleView
 	Deny       []ruleView
 }
@@ -481,7 +481,7 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 			Binary:     tc.Binary,
 			WorkingDir: tc.WorkingDir,
 			Timeout:    tc.Timeout.String(),
-			EnvFiles:   strings.Join(tc.EnvFiles, " "),
+			EnvFiles:   strings.Join(tc.EnvFiles, "\n"), // one path per line (paths may contain spaces)
 		}
 		for i, rule := range tc.Allow {
 			tv.Allow = append(tv.Allow, ruleView{
@@ -525,13 +525,28 @@ func (s *Server) handleToolMetadata(w http.ResponseWriter, r *http.Request) {
 	tool := r.PathValue("tool")
 	workingDir := strings.TrimSpace(r.FormValue("working_dir"))
 	timeout := strings.TrimSpace(r.FormValue("timeout"))
-	envFiles := strings.Fields(r.FormValue("env_files")) // space-separated paths
+	// One path per line, not space-separated: an env-file path may contain
+	// spaces, so splitting on whitespace would shred it on the round-trip.
+	envFiles := splitLines(r.FormValue("env_files"))
 
 	if err := config.SetToolMetadata(s.configPath, tool, workingDir, timeout, envFiles); err != nil {
 		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Update %s metadata failed: %s", tool, err), "")
 		return
 	}
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Updated metadata for tool %s. Server will hot-reload.", tool), "")
+}
+
+// splitLines splits a textarea value into trimmed, non-empty lines. Used for
+// list inputs whose items may contain spaces (e.g. env-file paths), where a
+// whitespace split would break an item.
+func splitLines(s string) []string {
+	var out []string
+	for line := range strings.SplitSeq(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleToolDelete(w http.ResponseWriter, r *http.Request) {

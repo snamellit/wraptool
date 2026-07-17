@@ -20,9 +20,9 @@
   <p class="hint">Subcommand and flags are space-separated. Edits validate and
   hot-reload the running server. Flags, deny flags, per-flag constraints and the
   positional-args limit are all editable per allow rule below. Per tool you can
-  set working dir, timeout and env files (paths to a per-project .env/.envrc —
-  secret <em>values</em> stay in those files, never in this config). A blank
-  timeout resets to the default.</p>
+  set working dir, timeout and env files (one path per line, to a per-project
+  .env/.envrc — secret <em>values</em> stay in those files, never in this
+  config). A blank timeout resets to the default.</p>
 
   {{range .Tools}}
   <div class="card tool">
@@ -37,7 +37,7 @@
     <form class="rule meta" method="post" action="/tools/{{.Name}}/metadata">
       <label class="metafield">working dir <input type="text" name="working_dir" value="{{.WorkingDir}}" placeholder="unset" class="flags-in"></label>
       <label class="metafield">timeout <input type="text" name="timeout" value="{{.Timeout}}" placeholder="30s" class="num-in"></label>
-      <label class="metafield">env files <input type="text" name="env_files" value="{{.EnvFiles}}" placeholder="paths, space-separated" class="flags-in"></label>
+      <label class="metafield">env files <textarea name="env_files" rows="2" placeholder="one path per line" class="flags-in">{{.EnvFiles}}</textarea></label>
       <button type="submit">Save</button>
     </form>
 
