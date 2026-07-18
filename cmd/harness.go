@@ -33,7 +33,7 @@ func newHarnessListCmd() *cobra.Command {
 		Short: "List known harnesses and their pool install status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, poolBin, _, err := ensureHarnessPool()
+			_, poolBin, _, _, err := ensureHarnessPool()
 			if err != nil {
 				return err
 			}
@@ -75,7 +75,7 @@ func newHarnessInstallCmd() *cobra.Command {
 				return fmt.Errorf("%q is a host-side IDE/extension, not a container CLI; "+
 					"configure it with `wraptool init --harness %s`", name, name)
 			}
-			pool, poolBin, _, err := ensureHarnessPool()
+			pool, poolBin, _, _, err := ensureHarnessPool()
 			if err != nil {
 				return err
 			}

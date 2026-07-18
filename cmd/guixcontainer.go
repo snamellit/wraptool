@@ -113,7 +113,7 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	// installs happen host-side via `wraptool harness install`); home/ is the
 	// harness HOME so its config/auth persist (writable). It is the developer's
 	// toolbox — not the project (manifest.scm) and not host credentials.
-	pool, poolBin, poolHome, err := ensureHarnessPool()
+	pool, poolBin, poolLib, poolHome, err := ensureHarnessPool()
 	if err != nil {
 		return err
 	}
@@ -134,10 +134,11 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		"shell", "--container", "--network",
 		"--emulate-fhs",                // FHS layout (/usr/bin/env, /lib64/ld-linux-*)
 		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
-		// Harness pool, split by trust: bin/ is read-only (--expose) so a compromised
-		// agent in one project can't trojan the binaries other projects run; home/
+		// Harness pool, split by trust: bin/ and lib/ are read-only (--expose) so a compromised
+		// agent in one project can't trojan the binaries/libraries other projects run; home/
 		// (auth + state) stays writable (--share) so login/config persist per session.
 		"--expose=" + poolBin + "=" + poolBin,
+		"--expose=" + poolLib + "=" + poolLib,
 		"--share=" + poolHome + "=" + poolHome,
 		"--preserve=^WRAPTOOL_",  // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
 		"--preserve=^COLORTERM$", // truecolor detection for the harness
@@ -173,18 +174,19 @@ const devcontainerPoolHome = "/home/wraptool-harness"
 // state, shared into every container.
 func harnessPoolDir() string { return filepath.Join(paths.DataDir(), "harness-pool") }
 
-// ensureHarnessPool creates and returns the pool root plus its bin/ (PATH) and
-// home/ (harness HOME) subdirectories.
-func ensureHarnessPool() (pool, bin, home string, err error) {
+// ensureHarnessPool creates and returns the pool root plus its bin/ (PATH),
+// lib/ (node_modules), and home/ (harness HOME) subdirectories.
+func ensureHarnessPool() (pool, bin, lib, home string, err error) {
 	pool = harnessPoolDir()
 	bin = filepath.Join(pool, "bin")
+	lib = filepath.Join(pool, "lib")
 	home = filepath.Join(pool, "home")
-	for _, d := range []string{bin, home} {
+	for _, d := range []string{bin, lib, home} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
-			return "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
+			return "", "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
 		}
 	}
-	return pool, bin, home, nil
+	return pool, bin, lib, home, nil
 }
 
 // shellQuote wraps s as a single-quoted POSIX shell word.

@@ -324,7 +324,7 @@ func bringUpContainer(root, token string, shell bool) error {
 	// config persist across every project (the developer toolbox, installed once).
 	// Binary provisioning is the feature's job (per image); this is state only.
 	// See design/harness-descriptor.md §7.
-	_, _, poolHome, err := ensureHarnessPool()
+	_, _, _, poolHome, err := ensureHarnessPool()
 	if err != nil {
 		return err
 	}
