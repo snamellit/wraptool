@@ -53,6 +53,7 @@ type registrar struct {
 	cliRegistered []string
 	cliTools      []string
 	mcp           map[string]*mcpSourceEntry // by mcp_servers key
+	cfg           *config.Config             // most recently loaded config, replaced wholesale on reload
 }
 
 // mcpSourceEntry is one live MCP source plus what the registrar needs to
@@ -94,6 +95,7 @@ func (r *registrar) start(cfg *config.Config) error {
 		return err
 	}
 	r.cliRegistered = names
+	r.cfg = cfg
 
 	for name := range cfg.MCPServers {
 		srv := cfg.MCPServers[name] // fresh copy; source holds &srv
@@ -125,6 +127,7 @@ func (r *registrar) reload(newCfg *config.Config) {
 		log.Printf("reload: registering cli tools: %s", err)
 	}
 	r.cliRegistered = names
+	r.cfg = newCfg
 
 	// MCP sources: name-keyed reconcile so unchanged children are left running.
 	for name := range newCfg.MCPServers {
@@ -167,6 +170,16 @@ func (r *registrar) CLIToolNames() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.cliTools...)
+}
+
+// config returns the most recently loaded config. Reload replaces the whole
+// *config.Config rather than mutating the live one, so taking the lock for the
+// pointer read is enough — the returned config is immutable from here on, and
+// readers never observe a half-applied reload.
+func (r *registrar) config() *config.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cfg
 }
 
 // reregister re-lists a single MCP source and swaps only its registrations. It

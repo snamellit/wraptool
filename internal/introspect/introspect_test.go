@@ -1,8 +1,12 @@
 package introspect
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"testing"
+
+	"github.com/pti/wraptool/internal/config"
 )
 
 func readTestData(t *testing.T, name string) string {
@@ -189,5 +193,66 @@ Use --help for more information.`
 	// --help should be filtered out.
 	if _, ok := flags["--help"]; ok {
 		t.Error("--help should be filtered out")
+	}
+}
+
+// gitStyleHelp is a cobra/git-style listing: two-column, indented subcommands.
+const gitStyleHelp = `usage: fj <command> [<args>]
+
+Available commands:
+  pr        manage pull requests
+  issue     manage issues
+  repo      manage repositories
+`
+
+// flagsOnlyHelp is a GNU-style help with no subcommands at all.
+const flagsOnlyHelp = `Usage: widget [OPTION]... [FILE]...
+
+  -a, --append         append to the file
+  -v, --verbose        explain what is being done
+      --help           display this help and exit
+`
+
+func TestBestParseSubcommands(t *testing.T) {
+	subs := BestParseSubcommands(gitStyleHelp)
+	if len(subs) != 3 {
+		t.Fatalf("got %d subcommands, want 3: %v", len(subs), subs)
+	}
+	if got := subs["pr"]; got != "manage pull requests" {
+		t.Errorf("pr description = %q, want %q", got, "manage pull requests")
+	}
+
+	// A flags-only help must yield no catalog rather than mistaking option
+	// lines for subcommands — a bogus catalog would send capability requests
+	// after subcommands the tool does not have.
+	if subs := BestParseSubcommands(flagsOnlyHelp); len(subs) != 0 {
+		t.Errorf("flags-only help produced a catalog: %v", subs)
+	}
+}
+
+// A tool with no allow rules is inert, but must still be discoverable — that
+// is the whole bootstrap path for requesting its first capability.
+func TestIntrospectCollectsCatalogWithoutAllowRules(t *testing.T) {
+	isolateCacheDir(t)
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fj")
+	script := "#!/bin/sh\ncat <<'HELP'\n" + gitStyleHelp + "HELP\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	schema, err := Introspect(context.Background(), "fj", &config.ToolConfig{Binary: bin})
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+	if len(schema.Subcommands) != 0 {
+		t.Errorf("no allow rules, but %d subcommands introspected", len(schema.Subcommands))
+	}
+	if len(schema.Available) != 3 {
+		t.Fatalf("Available = %v, want 3 entries", schema.Available)
+	}
+	if got := schema.Available["issue"]; got != "manage issues" {
+		t.Errorf("issue description = %q, want %q", got, "manage issues")
 	}
 }
