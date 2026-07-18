@@ -239,7 +239,7 @@ wraptool up          # running bare `wraptool` in a repo does the same
 
 It is idempotent and does three things:
 
-1. **Ensures the shared host server is running.** If `wraptool serve` isn't up,
+1. **Ensures the shared host server is running.** If the server isn't up,
    it starts it detached (pidfile + lock under `$XDG_RUNTIME_DIR`, auto-generating
    the auth token) and waits for it to become reachable.
 2. **Brings up this project's container** — a native Guix container on a Guix

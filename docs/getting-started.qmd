@@ -86,7 +86,7 @@ See [Configuration reference](configuration.qmd) for every field.
 ## 3. Start the server
 
 ```bash
-wraptool serve
+wraptool server start
 ```
 
 The available transports:
