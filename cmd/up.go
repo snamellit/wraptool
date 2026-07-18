@@ -29,8 +29,16 @@ type upOptions struct {
 	harness     string // which harness to wire in the container (guix runtime)
 }
 
+func defaultUpOptions() upOptions {
+	return upOptions{
+		shell:   "auto",
+		runtime: "auto",
+		harness: "claude",
+	}
+}
+
 func newUpCmd() *cobra.Command {
-	opts := upOptions{}
+	opts := defaultUpOptions()
 
 	cmd := &cobra.Command{
 		Use:   "up",
@@ -53,10 +61,10 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 	cmd.Flags().BoolVar(&opts.noServer, "no-server", false, "do not start the server (assume it is already running)")
 	cmd.Flags().BoolVar(&opts.noContainer, "no-container", false, "only ensure the server; do not touch the container")
-	cmd.Flags().StringVar(&opts.shell, "shell", "auto", "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
+	cmd.Flags().StringVar(&opts.shell, "shell", opts.shell, "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
-	cmd.Flags().StringVar(&opts.runtime, "runtime", "auto", "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
-	cmd.Flags().StringVar(&opts.harness, "harness", "claude", "coding harness to wire in the container (guix runtime): "+strings.Join(harness.Names(), ", "))
+	cmd.Flags().StringVar(&opts.runtime, "runtime", opts.runtime, "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
+	cmd.Flags().StringVar(&opts.harness, "harness", opts.harness, "coding harness to wire in the container (guix runtime): "+strings.Join(harness.Names(), ", "))
 
 	return cmd
 }

@@ -26,7 +26,7 @@ environment (equivalent to 'wraptool up').`,
 			if _, err := gitToplevel(); err != nil {
 				return cmd.Help()
 			}
-			return runUp(upOptions{})
+			return runUp(defaultUpOptions())
 		},
 	}
 
