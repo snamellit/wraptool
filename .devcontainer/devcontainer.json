@@ -15,7 +15,7 @@
 
 	// add Claude Code
         "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-        "ghcr.io/stu-bell/devcontainer-features/open-code:latest": {}
+        "ghcr.io/stu-bell/devcontainer-features/open-code:0.1.0": {}
     },
 
     // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.
