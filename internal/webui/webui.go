@@ -92,6 +92,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /rules", s.handleRules)
 	mux.HandleFunc("POST /tools/add", s.handleToolAdd)
 	mux.HandleFunc("POST /tools/{tool}/delete", s.handleToolDelete)
+	mux.HandleFunc("POST /tools/{tool}/metadata", s.handleToolMetadata)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/add", s.handleRuleAdd)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/update", s.handleRuleUpdate)
 	mux.HandleFunc("POST /rules/{tool}/{kind}/{index}/delete", s.handleRuleDelete)
@@ -445,10 +446,13 @@ type constraintView struct {
 }
 
 type toolRulesView struct {
-	Name   string
-	Binary string
-	Allow  []ruleView
-	Deny   []ruleView
+	Name       string
+	Binary     string
+	WorkingDir string
+	Timeout    string // effective duration, e.g. "30s"
+	EnvFiles   string // newline-joined paths (a path may contain spaces)
+	Allow      []ruleView
+	Deny       []ruleView
 }
 
 type rulesView struct {
@@ -472,7 +476,13 @@ func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
 	tools := make([]toolRulesView, 0, len(names))
 	for _, name := range names {
 		tc := cfg.Tools[name]
-		tv := toolRulesView{Name: name, Binary: tc.Binary}
+		tv := toolRulesView{
+			Name:       name,
+			Binary:     tc.Binary,
+			WorkingDir: tc.WorkingDir,
+			Timeout:    tc.Timeout.String(),
+			EnvFiles:   strings.Join(tc.EnvFiles, "\n"), // one path per line (paths may contain spaces)
+		}
 		for i, rule := range tc.Allow {
 			tv.Allow = append(tv.Allow, ruleView{
 				Kind:        config.KindAllow,
@@ -509,6 +519,34 @@ func (s *Server) handleToolAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Added tool %s. Add allow rules to expose it; the server will hot-reload.", name), "")
+}
+
+func (s *Server) handleToolMetadata(w http.ResponseWriter, r *http.Request) {
+	tool := r.PathValue("tool")
+	workingDir := strings.TrimSpace(r.FormValue("working_dir"))
+	timeout := strings.TrimSpace(r.FormValue("timeout"))
+	// One path per line, not space-separated: an env-file path may contain
+	// spaces, so splitting on whitespace would shred it on the round-trip.
+	envFiles := splitLines(r.FormValue("env_files"))
+
+	if err := config.SetToolMetadata(s.configPath, tool, workingDir, timeout, envFiles); err != nil {
+		s.redirect(w, r, "/rules", "err", fmt.Sprintf("Update %s metadata failed: %s", tool, err), "")
+		return
+	}
+	s.redirect(w, r, "/rules", "ok", fmt.Sprintf("Updated metadata for tool %s. Server will hot-reload.", tool), "")
+}
+
+// splitLines splits a textarea value into trimmed, non-empty lines. Used for
+// list inputs whose items may contain spaces (e.g. env-file paths), where a
+// whitespace split would break an item.
+func splitLines(s string) []string {
+	var out []string
+	for line := range strings.SplitSeq(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleToolDelete(w http.ResponseWriter, r *http.Request) {

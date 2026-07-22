@@ -47,6 +47,44 @@ func TestAddTool_InvalidNameRejected(t *testing.T) {
 	}
 }
 
+func TestSetToolMetadata_SetAndClear(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	if err := SetToolMetadata(cfgPath, "git", "/srv/project", "45s", []string{"/srv/project/.env"}); err != nil {
+		t.Fatalf("SetToolMetadata: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	for _, want := range []string{"working_dir:", "/srv/project", "timeout: 45s", "env_files:", ".env"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("config missing %q:\n%s", want, got)
+		}
+	}
+	// Empty values remove the keys.
+	if err := SetToolMetadata(cfgPath, "git", "", "", nil); err != nil {
+		t.Fatalf("SetToolMetadata clear: %v", err)
+	}
+	got = readFile(t, cfgPath)
+	for _, gone := range []string{"working_dir", "timeout", "env_files"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("%s not removed when cleared:\n%s", gone, got)
+		}
+	}
+}
+
+func TestSetToolMetadata_BadTimeoutRejected(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	// A non-duration timeout fails the round-trip validation.
+	if err := SetToolMetadata(cfgPath, "git", "", "notaduration", nil); err == nil {
+		t.Fatal("expected error for an unparseable timeout")
+	}
+}
+
+func TestSetToolMetadata_UnknownToolRejected(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
+	if err := SetToolMetadata(cfgPath, "nope", "/x", "", nil); err == nil {
+		t.Fatal("expected error for an unconfigured tool")
+	}
+}
+
 func TestDeleteTool_RemovesTool(t *testing.T) {
 	cfgPath, binPath := writeTestConfig(t, rulesBaseConfig)
 	// Add a second tool so removing the first still leaves a valid config.
