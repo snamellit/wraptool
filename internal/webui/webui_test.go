@@ -398,6 +398,32 @@ func TestMCPTokenCannotApproveRequest(t *testing.T) {
 	}
 }
 
+func TestMCPTokenCannotAddRule(t *testing.T) {
+	srv, _, cfgPath := newTestServer(t)
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"subcommand": {"status"}, "flags": {"--short"}}
+	req := httptest.NewRequest("POST", "/rules/git/allow/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer mcp-token")
+	rr := httptest.NewRecorder()
+	srv.AuthMiddleware("admin-token", srv.Handler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("MCP token rule-add status = %d, want 401", rr.Code)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("MCP token changed the config through rule CRUD")
+	}
+}
+
 func TestAuthMiddlewareQueryTokenSetsCookie(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })

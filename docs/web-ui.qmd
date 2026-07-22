@@ -68,7 +68,9 @@ authorization boundary.
 
 ::: {.callout-note}
 The token is written to the server log as part of the click-through
-URL. Fine for local development; avoid shipping those logs anywhere.
+URL. Treat that log as secret material: `wraptool up` writes `serve.log`
+under the XDG data directory with mode `0600`, but direct `wraptool serve`
+uses its caller's output destination. Do not ship, share, or collect either.
 :::
 
 ## Reviewing requests
