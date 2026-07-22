@@ -27,7 +27,7 @@ func writeTestConfig(t *testing.T, body string) (configPath, binPath string) {
 
 func TestApplyRequest_NewRule(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, `# my config
-server:
+mcp:
   transport: stdio
 tools:
   git:
@@ -76,7 +76,7 @@ func ruleFor(t *testing.T, cfg *Config, tool string, subcommand []string) AllowR
 }
 
 func TestApplyRequest_WritesFlagConstraints(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -109,7 +109,7 @@ tools:
 }
 
 func TestApplyRequest_KeepsExistingConstraint(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -137,7 +137,7 @@ tools:
 }
 
 func TestApplyRequest_RejectsInvalidFlagType(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -154,7 +154,7 @@ tools:
 }
 
 func TestApplyRequest_ExtendExistingRule(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -186,7 +186,7 @@ tools:
 }
 
 func TestApplyRequest_NoChangeWhenAlreadyAllowed(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -215,7 +215,7 @@ tools:
 }
 
 func TestApplyRequest_DenyConflict(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -241,7 +241,7 @@ tools:
 }
 
 func TestApplyRequest_UnknownTool(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -265,7 +265,7 @@ tools:
 }
 
 func TestApplyRequest_MultiLevelSubcommand(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -291,7 +291,7 @@ tools:
 func TestApplyRequest_ValidationFailureLeavesFile(t *testing.T) {
 	// Make config invalid by removing the binary file after writing the
 	// config; ApplyRequest should refuse to overwrite.
-	cfgPath, binPath := writeTestConfig(t, `server:
+	cfgPath, binPath := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -315,7 +315,7 @@ tools:
 }
 
 func TestApplyRequest_NoAllowSection(t *testing.T) {
-	cfgPath, _ := writeTestConfig(t, `server:
+	cfgPath, _ := writeTestConfig(t, `mcp:
   transport: stdio
 tools:
   git:
@@ -328,7 +328,7 @@ tools:
 	// Skip: edit-only path needs at least one allow rule per validate.
 	// Instead, test that ApplyRequest succeeds and adds first rule when
 	// allow exists but is empty.
-	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf(`server:
+	if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf(`mcp:
   transport: stdio
 tools:
   git:

@@ -36,8 +36,8 @@ func newServerStatusCmd() *cobra.Command {
 			alive := pid > 0 && processAlive(pid)
 
 			var probe string
-			if cfg, err := config.Load(configOrDefault(configPath)); err == nil && cfg.Server.Listen != "" {
-				probe = probeAddr(cfg.Server.Listen)
+			if cfg, err := config.Load(configOrDefault(configPath)); err == nil && cfg.MCP.Listen != "" {
+				probe = probeAddr(cfg.MCP.Listen)
 			}
 			reachable := probe != "" && dialOK(probe)
 

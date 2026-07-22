@@ -7,7 +7,7 @@ import (
 )
 
 const rulesBaseConfig = `# config
-server:
+mcp:
   transport: stdio
 tools:
   git:

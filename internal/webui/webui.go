@@ -784,11 +784,13 @@ const sessionCookie = "wraptool_session"
 // session cookie and redirects to a clean URL, so subsequent requests carry
 // the cookie. When unauthenticated, browsers get a login form; the /static/
 // assets are served without auth so that form renders styled. All token
-// comparisons are constant-time. If token is empty, next is returned unwrapped
-// (localhost-trust mode).
+// comparisons are constant-time. An empty token is a configuration error at
+// startup; reject it here as defense in depth rather than trusting loopback.
 func (s *Server) AuthMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
-		return next
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "Web UI authentication is not configured", http.StatusServiceUnavailable)
+		})
 	}
 	want := []byte(token)
 	ok := func(got string) bool {

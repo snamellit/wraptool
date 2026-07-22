@@ -10,7 +10,7 @@ import (
 // running test executable (guaranteed to be an absolute, regular file).
 func baseConfig(flags []string) *Config {
 	return &Config{
-		Server: ServerConfig{Transport: "stdio"},
+		MCP: MCPConfig{Transport: "stdio"},
 		Tools: map[string]ToolConfig{
 			"git": {
 				Binary: os.Args[0],

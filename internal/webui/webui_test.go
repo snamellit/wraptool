@@ -27,7 +27,7 @@ func newTestServer(t *testing.T) (*Server, *requestlog.Store, string) {
 	}
 
 	cfg := "" +
-		"server:\n" +
+		"mcp:\n" +
 		"  transport: stdio\n" +
 		"tools:\n" +
 		"  git:\n" +
@@ -364,6 +364,40 @@ func TestAuthMiddlewareCookieAndBearer(t *testing.T) {
 	}
 }
 
+func TestMCPTokenCannotApproveRequest(t *testing.T) {
+	srv, store, cfgPath := newTestServer(t)
+	id := appendReq(t, store, "git", []string{"status"}, []string{"--short"})
+	before, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := url.Values{"apply": {"1"}}
+	req := httptest.NewRequest("POST", "/requests/"+id+"/approve", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer mcp-token")
+	rr := httptest.NewRecorder()
+	srv.AuthMiddleware("admin-token", srv.Handler()).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("MCP token approval status = %d, want 401", rr.Code)
+	}
+	got, err := store.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != requestlog.StatusPending {
+		t.Errorf("request status = %q, want pending", got.Status)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("MCP token changed the config through the admin UI")
+	}
+}
+
 func TestAuthMiddlewareQueryTokenSetsCookie(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) })
@@ -449,13 +483,17 @@ func TestAuthMiddlewareStaticBypass(t *testing.T) {
 	}
 }
 
-func TestAuthMiddlewareEmptyTokenPassthrough(t *testing.T) {
+func TestAuthMiddlewareEmptyTokenRejected(t *testing.T) {
 	srv, _, _ := newTestServer(t)
 	called := false
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
 	h := srv.AuthMiddleware("", next)
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
-	if !called {
-		t.Error("empty token should pass through unauthenticated")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest("GET", "/", nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
+	}
+	if called {
+		t.Error("empty token reached the protected handler")
 	}
 }

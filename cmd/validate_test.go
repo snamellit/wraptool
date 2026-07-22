@@ -48,7 +48,7 @@ func runValidate(t *testing.T, args ...string) (string, error) {
 // host running the test (see toolBinary).
 func goodConfig(t *testing.T) string {
 	return fmt.Sprintf(`
-server:
+mcp:
   transport: stdio
 tools:
   git:
@@ -106,7 +106,7 @@ tools:
 
 func TestConfigValidateRejectsBadSemantics(t *testing.T) {
 	body := fmt.Sprintf(`
-server:
+mcp:
   transport: carrier-pigeon
 tools:
   git:

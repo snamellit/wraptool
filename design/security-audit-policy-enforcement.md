@@ -245,6 +245,6 @@ host-side against:
 1. ~~**F1** — `serve` + reload use `LoadStrict`.~~ ✅ done (`1adb80b`) — chose hard-fail over warn-only; lenient `Load` kept for read-only consumers.
 2. ~~**F2** — executor rejects option-like (`-`-leading) flag values.~~ ✅ done (`1adb80b`) — `SanitizeFlagValues`.
 3. ~~**F6** — auto-anchor constraint patterns.~~ ✅ done (`1adb80b`) — `^(?:…)$` in `validateValue`.
-4. ~~**F5** — contain `cwd` to allowed roots; reject escapes.~~ ✅ done (`32903be`) — `server.allowed_cwd_roots`, warn-only when unset (non-breaking).
+4. ~~**F5** — contain `cwd` to allowed roots; reject escapes.~~ ✅ done (`32903be`) — `mcp.allowed_cwd_roots`, warn-only when unset (non-breaking).
 5. **F3** — optional per-positional pattern in `ArgConstraints`. Larger; enables real least-privilege on positionals. *(open)*
 6. **F4 / M1 / M2** — prefix-deny (or doc), skip zero-tool spawns, sanitize introspection args. *(open)*

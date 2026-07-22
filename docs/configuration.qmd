@@ -4,8 +4,15 @@ title: "Configuration reference"
 
 ## Top-level shape
 
+::: {.callout-warning}
+Configuration uses top-level `mcp` and `admin` sections. The former `server`
+section and its nested `web` section are not supported: move MCP settings from
+`server` to `mcp`, and move Web UI settings from `server.web` to `admin`.
+:::
+
 ```yaml
-server:       # how the MCP transport is exposed
+mcp:          # how the MCP transport is exposed
+admin:        # operator-only request review UI
 tools:        # one entry per wrapped CLI tool
 mcp_servers:  # experimental — see below
 ```
@@ -17,7 +24,7 @@ exists (`command`/`args`/`working_dir`/`env`/`env_files`/`timeout`, plus
 editors, and rule CRUD do not operate on it yet, until extended in a later
 phase.
 
-## `server`
+## `mcp`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -27,14 +34,13 @@ phase.
 | `log_level` | string | `info` | log verbosity |
 | `request_log` | string | XDG data dir | path to capability-request JSONL |
 | `allowed_cwd_roots` | `[]string` | — | when non-empty, constrains a client-supplied cwd to these roots (symlinks resolved); a cwd outside them is refused. Empty = no containment |
-| `web` | map | — | operator request-review Web UI (see below) |
 
 The `sse`/`unix` TCP listener serves both MCP HTTP transports on the one port —
 legacy SSE at `/sse` and Streamable HTTP at `/mcp` — behind the same
 `auth_token_file` Bearer check. Clients hit whichever their generated config
 targets.
 
-### `server.web`
+## `admin`
 
 Starts an operator-facing Web UI for reviewing capability requests inside
 the `serve` process, on its own listener — independent of the MCP
@@ -43,15 +49,16 @@ transport, so it works even under `stdio`. Leave `listen` empty to disable.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `listen` | string | — | `host:port` for the UI; **bind `127.0.0.1`** — it is not AI-facing |
-| `auth_token_file` | string | — | optional shared token. Browsers authenticate via `?token=` or a login form ⇒ an `HttpOnly` session cookie; scripts send it as a `Bearer` header. Empty ⇒ localhost-trust, no auth |
+| `auth_token_file` | string | — | required token, distinct from `mcp.auth_token_file`. Browsers authenticate via `?token=` or a login form ⇒ an `HttpOnly` session cookie; scripts send it as a `Bearer` header |
 
 ```yaml
-server:
+mcp:
   transport: sse
   listen: 127.0.0.1:8717
-  web:
-    listen: 127.0.0.1:8718
-    auth_token_file: ~/.config/wraptool/web-token
+  auth_token_file: ~/.config/wraptool/mcp-token
+admin:
+  listen: 127.0.0.1:8718
+  auth_token_file: ~/.config/wraptool/admin-token
 ```
 
 Approving with *apply to config* runs the same `config.ApplyRequest` merge

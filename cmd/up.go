@@ -84,13 +84,18 @@ func runUp(opts upOptions) error {
 	}
 	root, _ = filepath.Abs(root)
 
-	cfg, err := config.Load(configOrDefault(opts.configPath))
+	configPath := opts.configPath
+	if configPath == "" {
+		configPath = os.Getenv("WRAPTOOL_CONFIG")
+	}
+	configPath = configOrDefault(configPath)
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
 	if !opts.noServer {
-		if err := ensureServer(cfg, configOrDefault(opts.configPath)); err != nil {
+		if err := ensureServer(cfg, configPath); err != nil {
 			return err
 		}
 	}
@@ -112,7 +117,10 @@ func runUp(opts upOptions) error {
 	shell := wantShell(opts.shell)
 	switch rt {
 	case runtimeGuix:
-		return bringUpGuixContainer(root, token, cfg.Server.Listen, opts.harness, shell)
+		if err := validateGuixConfigOutsideWorkspace(configPath, root); err != nil {
+			return err
+		}
+		return bringUpGuixContainer(root, token, cfg.MCP.Listen, opts.harness, shell)
 	case runtimeDevcontainer:
 		return bringUpContainer(root, token, shell)
 	}
@@ -150,13 +158,13 @@ func configOrDefault(p string) string {
 // ensureServer makes the shared MCP server reachable, starting it detached if
 // it is not. Idempotent and safe against a concurrent `up` via a file lock.
 func ensureServer(cfg *config.Config, configPath string) error {
-	if cfg.Server.Transport != "sse" {
-		return fmt.Errorf("`up` requires server.transport: sse (got %q) so the container can connect over the network", cfg.Server.Transport)
+	if cfg.MCP.Transport != "sse" {
+		return fmt.Errorf("`up` requires mcp.transport: sse (got %q) so the container can connect over the network", cfg.MCP.Transport)
 	}
-	if cfg.Server.Listen == "" {
-		return fmt.Errorf("server.listen is required (e.g. 0.0.0.0:8717)")
+	if cfg.MCP.Listen == "" {
+		return fmt.Errorf("mcp.listen is required (e.g. 127.0.0.1:8717)")
 	}
-	probe := probeAddr(cfg.Server.Listen)
+	probe := probeAddr(cfg.MCP.Listen)
 
 	if dialOK(probe) {
 		fmt.Printf("wraptool server already running (%s)\n", probe)
@@ -270,9 +278,16 @@ func lockRuntime() (func(), error) {
 // --- auth token ---
 
 func ensureAuthToken(cfg *config.Config) error {
-	path := expandTilde(cfg.Server.AuthTokenFile)
+	if err := ensureTokenFile(cfg.MCP.AuthTokenFile, "MCP"); err != nil {
+		return err
+	}
+	return ensureTokenFile(cfg.Admin.AuthTokenFile, "admin UI")
+}
+
+func ensureTokenFile(path, name string) error {
+	path = expandTilde(path)
 	if path == "" {
-		return nil // no auth configured; server trusts localhost
+		return nil
 	}
 	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) > 0 {
 		return nil
@@ -287,12 +302,12 @@ func ensureAuthToken(cfg *config.Config) error {
 	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(buf)+"\n"), 0600); err != nil {
 		return fmt.Errorf("writing auth token: %w", err)
 	}
-	fmt.Printf("generated auth token -> %s\n", path)
+	fmt.Printf("generated %s auth token -> %s\n", name, path)
 	return nil
 }
 
 func readAuthToken(cfg *config.Config) (string, error) {
-	path := expandTilde(cfg.Server.AuthTokenFile)
+	path := expandTilde(cfg.MCP.AuthTokenFile)
 	if path == "" {
 		return "", nil
 	}
@@ -310,6 +325,27 @@ func expandTilde(p string) string {
 		}
 	}
 	return p
+}
+
+// validateGuixConfigOutsideWorkspace ensures an untrusted Guix container cannot
+// rewrite the server's policy through its writable workspace mount.
+func validateGuixConfigOutsideWorkspace(configPath, root string) error {
+	resolvedConfig, err := filepath.EvalSymlinks(configPath)
+	if err != nil {
+		return fmt.Errorf("resolving config path %s: %w", configPath, err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolving workspace path %s: %w", root, err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolvedConfig)
+	if err != nil {
+		return fmt.Errorf("checking config location: %w", err)
+	}
+	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("refusing Guix container: config %s is inside writable workspace %s", resolvedConfig, resolvedRoot)
+	}
+	return nil
 }
 
 // --- container ---

@@ -44,7 +44,7 @@ func getStore(configPath *string) (*requestlog.Store, error) {
 		return nil, err
 	}
 
-	return requestlog.NewStore(cfg.Server.RequestLog), nil
+	return requestlog.NewStore(cfg.MCP.RequestLog), nil
 }
 
 func newRequestsListCmd(configPath *string) *cobra.Command {

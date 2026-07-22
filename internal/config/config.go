@@ -17,28 +17,29 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig               `yaml:"server"`
+	MCP        MCPConfig                  `yaml:"mcp"`
+	Admin      AdminConfig                `yaml:"admin"`
 	Tools      map[string]ToolConfig      `yaml:"tools"`
 	MCPServers map[string]MCPServerConfig `yaml:"mcp_servers"`
 }
 
-type ServerConfig struct {
-	Transport     string    `yaml:"transport"`
-	Listen        string    `yaml:"listen"`
-	AuthTokenFile string    `yaml:"auth_token_file"`
-	LogLevel      string    `yaml:"log_level"`
-	RequestLog    string    `yaml:"request_log"`
-	Web           WebConfig `yaml:"web"`
+// MCPConfig configures the AI-facing MCP listener and request audit log.
+type MCPConfig struct {
+	Transport     string `yaml:"transport"`
+	Listen        string `yaml:"listen"`
+	AuthTokenFile string `yaml:"auth_token_file"`
+	LogLevel      string `yaml:"log_level"`
+	RequestLog    string `yaml:"request_log"`
 	// AllowedCWDRoots, when non-empty, constrains a client-supplied working
 	// directory to these roots (symlinks resolved); a cwd outside them is
 	// refused. Empty = no containment (warn-only). See security audit F5.
 	AllowedCWDRoots []string `yaml:"allowed_cwd_roots"`
 }
 
-// WebConfig configures the operator-facing request-review Web UI. It runs
-// in the serve process on its own listener, independent of the AI-facing
-// MCP transport. Leave Listen empty to disable the Web UI.
-type WebConfig struct {
+// AdminConfig configures the operator-facing request-review UI. It runs in the
+// serve process but is a separate listener and authentication boundary from MCP.
+// Leave Listen empty to disable the administration UI.
+type AdminConfig struct {
 	Listen        string `yaml:"listen"`          // e.g. 127.0.0.1:8718 (bind localhost only)
 	AuthTokenFile string `yaml:"auth_token_file"` // optional; Basic-auth password or Bearer token
 }
@@ -254,22 +255,22 @@ func SeedHelpFlags(flags, denyFlags []string) []string {
 }
 
 func (c *Config) applyDefaults() {
-	if c.Server.Transport == "" {
-		c.Server.Transport = "stdio"
+	if c.MCP.Transport == "" {
+		c.MCP.Transport = "stdio"
 	}
-	if c.Server.LogLevel == "" {
-		c.Server.LogLevel = "info"
+	if c.MCP.LogLevel == "" {
+		c.MCP.LogLevel = "info"
 	}
-	if c.Server.RequestLog == "" {
-		c.Server.RequestLog = paths.DefaultRequestLog()
+	if c.MCP.RequestLog == "" {
+		c.MCP.RequestLog = paths.DefaultRequestLog()
 	} else {
-		c.Server.RequestLog = expandPath(c.Server.RequestLog)
+		c.MCP.RequestLog = expandPath(c.MCP.RequestLog)
 	}
-	if c.Server.AuthTokenFile != "" {
-		c.Server.AuthTokenFile = expandPath(c.Server.AuthTokenFile)
+	if c.MCP.AuthTokenFile != "" {
+		c.MCP.AuthTokenFile = expandPath(c.MCP.AuthTokenFile)
 	}
-	if c.Server.Web.AuthTokenFile != "" {
-		c.Server.Web.AuthTokenFile = expandPath(c.Server.Web.AuthTokenFile)
+	if c.Admin.AuthTokenFile != "" {
+		c.Admin.AuthTokenFile = expandPath(c.Admin.AuthTokenFile)
 	}
 
 	for name, tool := range c.Tools {

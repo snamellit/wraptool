@@ -78,7 +78,7 @@ func runServe(configPath string) error {
 
 	policy := whitelist.NewPolicy(configPointers(cfg.Tools))
 	mcpPolicy := whitelist.NewMCPPolicy(configPointers(cfg.MCPServers))
-	store := requestlog.NewStore(cfg.Server.RequestLog)
+	store := requestlog.NewStore(cfg.MCP.RequestLog)
 
 	// Create MCP server. serverInfo.version carries the stamped build identity so
 	// clients can see which wraptool binary is serving.
@@ -113,7 +113,7 @@ func runServe(configPath string) error {
 	// Start the operator-facing Web UI on its own listener, if configured.
 	// It runs in this process but is independent of the MCP transport, so
 	// it works even under stdio.
-	if cfg.Server.Web.Listen != "" {
+	if cfg.Admin.Listen != "" {
 		if err := startWebUI(cfg, store, configPath); err != nil {
 			return fmt.Errorf("starting web ui: %w", err)
 		}
@@ -126,7 +126,7 @@ func runServe(configPath string) error {
 	// touch the shared pidfile. A default-signal exit skips defers, so also clear
 	// the pidfile (and tear down MCP children) on SIGINT/SIGTERM — e.g. from
 	// `wraptool server stop`.
-	if cfg.Server.Transport != "stdio" {
+	if cfg.MCP.Transport != "stdio" {
 		if err := writePidFile(); err != nil {
 			return err
 		}
@@ -142,7 +142,7 @@ func runServe(configPath string) error {
 	}
 
 	// Start the appropriate transport.
-	switch cfg.Server.Transport {
+	switch cfg.MCP.Transport {
 	case "stdio":
 		return serveStdio(s)
 	case "sse":
@@ -150,7 +150,7 @@ func runServe(configPath string) error {
 	case "unix":
 		return serveUnix(s, cfg)
 	default:
-		return fmt.Errorf("unknown transport: %q (expected stdio, sse, or unix)", cfg.Server.Transport)
+		return fmt.Errorf("unknown transport: %q (expected stdio, sse, or unix)", cfg.MCP.Transport)
 	}
 }
 
@@ -180,7 +180,7 @@ func configPointers[T any](m map[string]T) map[string]*T {
 // endpoint. Callers may pass extra transport-specific options.
 func newSSEServer(s *server.MCPServer, allowedCWDRoots []string, extra ...server.SSEOption) *server.SSEServer {
 	if len(allowedCWDRoots) == 0 {
-		log.Printf("warning: server.allowed_cwd_roots is unset — a client-supplied cwd is not " +
+		log.Printf("warning: mcp.allowed_cwd_roots is unset — a client-supplied cwd is not " +
 			"contained and may point at any host directory the server can access. See F5 in " +
 			"design/security-audit-policy-enforcement.md.")
 	}
@@ -222,9 +222,9 @@ func newStreamableServer(s *server.MCPServer, allowedCWDRoots []string) *server.
 // hit the same listener with the same tool registry and auth.
 func newMCPHTTPHandler(s *server.MCPServer, cfg *config.Config, sseExtra ...server.SSEOption) (http.Handler, error) {
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", newStreamableServer(s, cfg.Server.AllowedCWDRoots))
-	mux.Handle("/", newSSEServer(s, cfg.Server.AllowedCWDRoots, sseExtra...))
-	return authWrapped(mux, cfg.Server.AuthTokenFile)
+	mux.Handle("/mcp", newStreamableServer(s, cfg.MCP.AllowedCWDRoots))
+	mux.Handle("/", newSSEServer(s, cfg.MCP.AllowedCWDRoots, sseExtra...))
+	return authWrapped(mux, cfg.MCP.AuthTokenFile)
 }
 
 // authWrapped wraps handler with Bearer-token auth when tokenFile is set,
@@ -243,8 +243,8 @@ func serveStdio(s *server.MCPServer) error {
 }
 
 func serveSSE(s *server.MCPServer, cfg *config.Config) error {
-	if cfg.Server.Listen == "" {
-		return fmt.Errorf("server.listen is required for sse transport (e.g. 127.0.0.1:8717)")
+	if cfg.MCP.Listen == "" {
+		return fmt.Errorf("mcp.listen is required for sse transport (e.g. 127.0.0.1:8717)")
 	}
 
 	handler, err := newMCPHTTPHandler(s, cfg)
@@ -252,10 +252,10 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 		return err
 	}
 
-	log.Printf("wraptool MCP server starting on %s (SSE at /sse, Streamable HTTP at /mcp)", cfg.Server.Listen)
+	log.Printf("wraptool MCP server starting on %s (SSE at /sse, Streamable HTTP at /mcp)", cfg.MCP.Listen)
 
 	srv := &http.Server{
-		Addr:    cfg.Server.Listen,
+		Addr:    cfg.MCP.Listen,
 		Handler: handler,
 	}
 
@@ -263,11 +263,11 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 }
 
 func serveUnix(s *server.MCPServer, cfg *config.Config) error {
-	if cfg.Server.Listen == "" {
-		return fmt.Errorf("server.listen is required for unix transport (e.g. /run/wraptool.sock)")
+	if cfg.MCP.Listen == "" {
+		return fmt.Errorf("mcp.listen is required for unix transport (e.g. /run/wraptool.sock)")
 	}
 
-	sockPath := cfg.Server.Listen
+	sockPath := cfg.MCP.Listen
 
 	// Remove stale socket file if it exists.
 	if _, err := os.Stat(sockPath); err == nil {
@@ -323,19 +323,17 @@ func startWebUI(cfg *config.Config, store *requestlog.Store, configPath string) 
 	}
 
 	handler := srv.Handler()
-	var token string
-	if cfg.Server.Web.AuthTokenFile != "" {
-		token, err = webui.LoadToken(cfg.Server.Web.AuthTokenFile)
-		if err != nil {
-			return err
-		}
-		handler = srv.AuthMiddleware(token, handler)
-	} else {
-		log.Printf("web ui: no auth_token_file set — relying on localhost bind for access control")
+	if cfg.Admin.AuthTokenFile == "" {
+		return fmt.Errorf("admin.auth_token_file is required when admin.listen is set")
 	}
+	token, err := webui.LoadToken(cfg.Admin.AuthTokenFile)
+	if err != nil {
+		return err
+	}
+	handler = srv.AuthMiddleware(token, handler)
 
-	httpSrv := &http.Server{Addr: cfg.Server.Web.Listen, Handler: handler}
-	log.Printf("wraptool web ui: %s", webURL(cfg.Server.Web.Listen, token))
+	httpSrv := &http.Server{Addr: cfg.Admin.Listen, Handler: handler}
+	log.Printf("wraptool admin ui: %s", webURL(cfg.Admin.Listen, token))
 	go func() {
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("web ui server stopped: %s", err)

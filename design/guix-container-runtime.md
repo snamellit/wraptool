@@ -356,7 +356,7 @@ All commands run on the Guix host, 2026-07-07, against a real
 ### 10.1 Baseline — wraptool `unix` transport speaks SSE over a socket
 
 ```
-$ wraptool serve --config wt.yaml   # server.transport: unix, listen: $PWD/wt.sock
+$ wraptool serve --config wt.yaml   # mcp.transport: unix, listen: $PWD/wt.sock
 $ curl -s --max-time 1 --unix-socket wt.sock http://localhost/sse
 event: endpoint
 data: http://localhost/message?sessionId=5dbd5160-...

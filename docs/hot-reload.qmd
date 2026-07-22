@@ -81,7 +81,7 @@ wraptool requests deny  req_01a2b3c4 \
 ```
 
 The same review workflow is available in the browser via the
-[Web UI](web-ui.qmd) — enable it with a `server.web` block.
+[Web UI](web-ui.qmd) — enable it with an `admin` block.
 
 ### `--apply`
 

@@ -48,7 +48,7 @@ flow below reads the same file. `wraptool` reads YAML from
 overrides).
 
 ```yaml
-server:
+mcp:
   transport: sse
   listen: 127.0.0.1:8717
 
@@ -101,7 +101,7 @@ generated config points at the endpoint it speaks.
 For SSE and Unix transports, add an auth token:
 
 ```yaml
-server:
+mcp:
   transport: sse
   listen: 127.0.0.1:8717
   auth_token_file: ~/.config/wraptool/auth_token

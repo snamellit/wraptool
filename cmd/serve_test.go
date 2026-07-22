@@ -26,7 +26,7 @@ func newTestHandler(t *testing.T) http.Handler {
 	}
 	s := server.NewMCPServer("wraptool-test", "0.0.0")
 	cfg := &config.Config{}
-	cfg.Server.AuthTokenFile = tokenFile
+	cfg.MCP.AuthTokenFile = tokenFile
 	h, err := newMCPHTTPHandler(s, cfg)
 	if err != nil {
 		t.Fatalf("newMCPHTTPHandler: %v", err)
