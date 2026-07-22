@@ -10,6 +10,16 @@ section and its nested `web` section are not supported: move MCP settings from
 `server` to `mcp`, and move Web UI settings from `server.web` to `admin`.
 :::
 
+| Previous key | Replacement |
+|--------------|-------------|
+| `server.transport` | `mcp.transport` |
+| `server.listen` | `mcp.listen` |
+| `server.auth_token_file` | `mcp.auth_token_file` |
+| `server.request_log` | `mcp.request_log` |
+| `server.allowed_cwd_roots` | `mcp.allowed_cwd_roots` |
+| `server.web.listen` | `admin.listen` |
+| `server.web.auth_token_file` | `admin.auth_token_file` |
+
 ```yaml
 mcp:          # how the MCP transport is exposed
 admin:        # operator-only request review UI

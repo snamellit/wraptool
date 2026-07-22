@@ -53,13 +53,13 @@ func TestSelectRuntime(t *testing.T) {
 	}
 }
 
-func TestValidateGuixConfigOutsideWorkspace(t *testing.T) {
+func TestValidateConfigOutsideWorkspace(t *testing.T) {
 	root := t.TempDir()
 	inside := filepath.Join(root, "config.yaml")
 	if err := os.WriteFile(inside, []byte("mcp: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateGuixConfigOutsideWorkspace(inside, root); err == nil {
+	if err := validateConfigOutsideWorkspace(inside, root); err == nil {
 		t.Fatal("config inside workspace was accepted")
 	}
 
@@ -67,7 +67,7 @@ func TestValidateGuixConfigOutsideWorkspace(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("mcp: {}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateGuixConfigOutsideWorkspace(outside, root); err != nil {
+	if err := validateConfigOutsideWorkspace(outside, root); err != nil {
 		t.Fatalf("config outside workspace rejected: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestValidateGuixConfigOutsideWorkspace(t *testing.T) {
 	if err := os.Symlink(inside, alias); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateGuixConfigOutsideWorkspace(alias, root); err == nil {
+	if err := validateConfigOutsideWorkspace(alias, root); err == nil {
 		t.Fatal("symlinked config inside workspace was accepted")
 	}
 }

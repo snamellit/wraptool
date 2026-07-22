@@ -94,6 +94,19 @@ func runUp(opts upOptions) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	var rt containerRuntime
+	if !opts.noContainer {
+		rt, err = selectRuntime(opts.runtime, root)
+		if err != nil {
+			return err
+		}
+		// Both container backends receive a writable workspace mount. Keep the
+		// active policy outside it before starting a credential-holding server.
+		if err := validateConfigOutsideWorkspace(configPath, root); err != nil {
+			return err
+		}
+	}
+
 	if !opts.noServer {
 		if err := ensureServer(cfg, configPath); err != nil {
 			return err
@@ -109,17 +122,10 @@ func runUp(opts upOptions) error {
 		return err
 	}
 
-	rt, err := selectRuntime(opts.runtime, root)
-	if err != nil {
-		return err
-	}
 	fmt.Printf("container runtime: %s\n", rt)
 	shell := wantShell(opts.shell)
 	switch rt {
 	case runtimeGuix:
-		if err := validateGuixConfigOutsideWorkspace(configPath, root); err != nil {
-			return err
-		}
 		return bringUpGuixContainer(root, token, cfg.MCP.Listen, opts.harness, shell)
 	case runtimeDevcontainer:
 		return bringUpContainer(root, token, shell)
@@ -185,6 +191,9 @@ func ensureServer(cfg *config.Config, configPath string) error {
 
 	if err := ensureAuthToken(cfg); err != nil {
 		return err
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("validating config after token setup: %w", err)
 	}
 	if err := spawnServer(configPath); err != nil {
 		return err
@@ -327,9 +336,9 @@ func expandTilde(p string) string {
 	return p
 }
 
-// validateGuixConfigOutsideWorkspace ensures an untrusted Guix container cannot
-// rewrite the server's policy through its writable workspace mount.
-func validateGuixConfigOutsideWorkspace(configPath, root string) error {
+// validateConfigOutsideWorkspace ensures an untrusted container cannot rewrite
+// the server's policy through its writable workspace mount.
+func validateConfigOutsideWorkspace(configPath, root string) error {
 	resolvedConfig, err := filepath.EvalSymlinks(configPath)
 	if err != nil {
 		return fmt.Errorf("resolving config path %s: %w", configPath, err)
@@ -343,7 +352,7 @@ func validateGuixConfigOutsideWorkspace(configPath, root string) error {
 		return fmt.Errorf("checking config location: %w", err)
 	}
 	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("refusing Guix container: config %s is inside writable workspace %s", resolvedConfig, resolvedRoot)
+		return fmt.Errorf("refusing container: config %s is inside writable workspace %s", resolvedConfig, resolvedRoot)
 	}
 	return nil
 }

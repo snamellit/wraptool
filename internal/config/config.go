@@ -41,7 +41,7 @@ type MCPConfig struct {
 // Leave Listen empty to disable the administration UI.
 type AdminConfig struct {
 	Listen        string `yaml:"listen"`          // e.g. 127.0.0.1:8718 (bind localhost only)
-	AuthTokenFile string `yaml:"auth_token_file"` // optional; Basic-auth password or Bearer token
+	AuthTokenFile string `yaml:"auth_token_file"` // required when Listen is set; Bearer token for UI access
 }
 
 type ToolConfig struct {
