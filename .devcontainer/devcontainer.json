@@ -14,8 +14,8 @@
 	"forge.snamellit.com/pti/wraptool/wraptool-connect:0": {},
 
 	// add Claude Code
-        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
-
+        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
+        "ghcr.io/stu-bell/devcontainer-features/open-code:latest": {}
     },
 
     // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.
