@@ -18,11 +18,9 @@ import (
 // configured CLI tool, when its --help schema was last introspected — so a
 // client can confirm which binary is serving and whether a just-shipped
 // introspection fix is actually live, in one call instead of fingerprinting
-// tool schemas. toolNames is the set of wrapped CLI tools to report freshness
-// for.
-func RegisterInfoTool(s *server.MCPServer, toolNames []string) {
-	names := append([]string(nil), toolNames...)
-	sort.Strings(names)
+// tool schemas. toolNames returns the live wrapped CLI tool set, including
+// tools added by config reload after this handler was registered.
+func RegisterInfoTool(s *server.MCPServer, toolNames func() []string) {
 
 	tool := mcp.NewTool("wraptool_info",
 		mcp.WithDescription("Report the running wraptool server's build identity (version, git revision, "+
@@ -32,6 +30,8 @@ func RegisterInfoTool(s *server.MCPServer, toolNames []string) {
 	)
 
 	handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		names := toolNames()
+		sort.Strings(names)
 		type toolFreshness struct {
 			IntrospectedAt any    `json:"introspected_at"` // RFC3339 time, or null if not cached
 			ConfigHash     string `json:"config_hash,omitempty"`
