@@ -70,7 +70,7 @@ own path via the server's per-connection cwd.`,
 }
 
 func runUp(opts upOptions) error {
-	if inContainer() {
+	if isInContainer() {
 		return fmt.Errorf("refusing to run inside a container; run `wraptool up` on the host")
 	}
 
@@ -106,7 +106,7 @@ func runUp(opts upOptions) error {
 		if err := validateConfigOutsideWorkspace(configPath, root); err != nil {
 			return err
 		}
-		if cfg.Admin.Listen != "" && cfg.Admin.AuthTokenFile != "" {
+		if cfg.Admin.AuthTokenFile != "" {
 			if err := validatePathOutsideWorkspace(cfg.Admin.AuthTokenFile, "admin auth token", root); err != nil {
 				return err
 			}
@@ -508,6 +508,10 @@ func gitToplevel() (string, error) {
 	}
 	return strings.TrimSpace(string(out)), nil
 }
+
+// isInContainer is a variable so runUp tests can exercise host-only startup
+// validation without depending on the test runner's container environment.
+var isInContainer = inContainer
 
 func inContainer() bool {
 	if _, err := os.Stat("/.dockerenv"); err == nil {
