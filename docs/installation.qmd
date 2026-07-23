@@ -31,8 +31,8 @@ GOTOOLCHAIN=local go build -o wraptool .
 
 ## Build with Guix
 
-The repository's flat `manifest.scm` supplies Go, Git, Quarto, Node, the linter,
-and shell utilities used by development and containers:
+The repository's flat `manifest.scm` supplies Go, Git, Node, the linter, and
+shell utilities used by development and containers:
 
 ```bash
 guix shell -m manifest.scm -- go build -o wraptool .
@@ -42,6 +42,11 @@ guix shell -m manifest.scm -- ./wraptool version
 Guix package versions depend on the caller's channel state; the repository does
 not currently include a `channels.scm` lock. Review changes to `manifest.scm`
 before evaluating it because Guix manifests are executable Scheme.
+
+Documentation additionally requires Quarto. The Pages workflow downloads
+Quarto 1.5.57 from the upstream release and verifies its published SHA-256;
+local contributors can install Quarto through their system package or upstream
+installer.
 
 ## Verify the checkout
 

@@ -54,6 +54,6 @@
 
 (concatenate-manifests
  (list (specifications->manifest
-        (append '("go" "git" "node" "quarto-bin") ; toolchain, docs + harness runtime
+        (append '("go" "git" "node" "tar") ; toolchain + docs/archive plumbing
                  %plumbing))
        (packages->manifest (list golangci-lint))))

@@ -34,16 +34,16 @@ GOTOOLCHAIN=local go test ./...
 
 ## Documentation
 
-Quarto is included in `manifest.scm`. Preview from the repository root:
+Install Quarto locally, then preview from the repository root:
 
 ```bash
-guix shell -m manifest.scm -- quarto preview docs
+quarto preview docs
 ```
 
 Build exactly as the Pages workflow does:
 
 ```bash
-guix shell -m manifest.scm -- quarto render docs
+quarto render docs
 ```
 
 The command writes `docs/_site/`. Generated output and Quarto caches are ignored
