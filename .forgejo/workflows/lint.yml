@@ -16,9 +16,8 @@ on:
 jobs:
   lint:
     # Native (host-mode) Guix runner, same as the publish workflow. All tools
-    # come from manifest.scm via `guix shell` — go, git and golangci-lint are
-    # pinned there, so the check is reproducible regardless of the host profile
-    # and stays in lockstep with local `guix shell -m manifest.scm` development.
+    # come from manifest.scm, evaluated at the revisions in channels.scm, so the
+    # check is reproducible regardless of the host profile.
     # (The first invocation builds the profile; Guix caches it for later steps.)
     runs-on: guix
     steps:
@@ -30,7 +29,7 @@ jobs:
       # the job.
       - name: gofmt + go vet + golangci-lint + go test
         run: |
-          guix shell -m manifest.scm -- sh -ec '
+          guix time-machine -C channels.scm -- shell -m manifest.scm -- sh -ec '
             export GOTOOLCHAIN=local   # use the manifest Go; never silently download a toolchain
             unformatted=$(gofmt -l $(git ls-files "*.go"))
             test -z "$unformatted" || { echo "gofmt needed on:"; echo "$unformatted"; exit 1; }

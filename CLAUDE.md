@@ -18,7 +18,7 @@ golangci-lint run ./...   # config: .golangci.yml (standard set minus errcheck, 
 
 CI runs gofmt + `go vet` + `golangci-lint` on every branch — GitLab (`.gitlab-ci.yml`, `lint` job) and Forgejo (`.forgejo/workflows/lint.yml`, on the `guix` runner). The `exhaustive` linter is enabled so a `switch` over a typed-const enum must name every member (see `design/flag-constraint-type-single-source.md`).
 
-`manifest.scm` is the single source of truth for the toolchain — one **flat** list (go/git/golangci-lint/node + a shell/coreutils/nss-certs plumbing var; golangci-lint is a pinned pre-built binary since Guix has no package), no build-time toggles. It is used verbatim by: local dev (`guix shell -m manifest.scm`), Forgejo lint (same, native), the GitLab CI image (`guix pack -f docker -m manifest.scm` via `.forgejo/workflows/publish-ci-image.yml`, path-filtered on `manifest.scm`, pushed to `forge.snamellit.com/pti/wraptool/ci-toolchain`), and the `wraptool up` guix container. Same toolchain everywhere; credential isolation is the mount/user namespace, not the package set.
+`manifest.scm` is the single source of truth for the package set (go/git/golangci-lint/node/quarto plus shell/coreutils/nss-certs plumbing), with no build-time toggles. `channels.scm` pins Guix, Snamguix, and Nonguix; local development and Forgejo evaluate the manifest with `guix time-machine -C channels.scm -- ...`, and the CI image workflow rebuilds when either file changes. `wraptool up` uses the same manifest with the developer's configured channels. Same packages everywhere; credential isolation is the mount/user namespace, not the package set.
 
 ## Architecture
 

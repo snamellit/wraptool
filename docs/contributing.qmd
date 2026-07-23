@@ -8,7 +8,7 @@ The repository toolchain is described by `manifest.scm` and used by the Forgejo
 `guix` runner:
 
 ```bash
-guix shell -m manifest.scm
+guix time-machine -C channels.scm -- shell -m manifest.scm
 ```
 
 The manifest is executable Scheme. Review changes before running it; the
@@ -38,13 +38,13 @@ Quarto is included in `manifest.scm` through the Snamguix channel. Preview from
 the repository root:
 
 ```bash
-guix shell -m manifest.scm -- quarto preview docs
+guix time-machine -C channels.scm -- shell -m manifest.scm -- quarto preview docs
 ```
 
 Build exactly as the Pages workflow does:
 
 ```bash
-guix shell -m manifest.scm -- quarto render docs
+guix time-machine -C channels.scm -- shell -m manifest.scm -- quarto render docs
 ```
 
 The command writes `docs/_site/`. Generated output and Quarto caches are ignored

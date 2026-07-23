@@ -6,14 +6,14 @@ name: Publish CI toolchain image
 # Docker-executor CI that can't run Guix natively (GitLab) consumes this image,
 # so manifest.scm stays the single source of truth for the pinned toolchain.
 #
-# Path-filtered on manifest.scm: dormant on ordinary pushes, so it never adds
-# latency to the normal lint/build/docs pipelines — it only rebuilds when the
-# toolchain definition actually changes. Also runnable on demand.
+# Path-filtered on the manifest and channel lock: dormant on ordinary pushes,
+# rebuilding only when the toolchain definition or package revisions change.
 on:
   push:
     branches: [main]
     paths:
       - manifest.scm
+      - channels.scm
   workflow_dispatch:
 
 jobs:
@@ -29,7 +29,7 @@ jobs:
           # -S /bin=bin              → /bin/sh + coreutils on PATH for the runner
           # -S /etc/ssl/certs=...    → CA bundle where Go looks by default (HTTPS
           #                            module fetches), verified in podman.
-          img=$(guix pack -f docker \
+          img=$(guix time-machine -C channels.scm -- pack -f docker \
                   -S /bin=bin -S /etc/ssl/certs=etc/ssl/certs \
                   -m manifest.scm)
           echo "IMG=$img" >> "$GITHUB_ENV"
@@ -45,7 +45,7 @@ jobs:
           # One `guix shell` wrapping the loop → skopeo profile resolved once,
           # not per tag. Push :latest and the short commit sha (blobs dedup by
           # digest, so the second tag reuses the first's upload).
-          guix shell skopeo -- sh -c '
+          guix time-machine -C channels.scm -- shell skopeo -- sh -c '
             dest="forge.snamellit.com/${{ github.repository }}/ci-toolchain"
             for tag in latest "${GITHUB_SHA:0:12}"; do
               skopeo copy --dest-creds "$REGISTRY_USER:$REGISTRY_TOKEN" \

@@ -36,13 +36,12 @@ and shell utilities used by development and containers. Quarto comes from the
 configured Snamguix channel:
 
 ```bash
-guix shell -m manifest.scm -- go build -o wraptool .
-guix shell -m manifest.scm -- ./wraptool version
+guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wraptool .
+guix time-machine -C channels.scm -- shell -m manifest.scm -- ./wraptool version
 ```
 
-Guix package versions depend on the caller's channel state; the repository does
-not currently include a `channels.scm` lock. Review changes to `manifest.scm`
-before evaluating it because Guix manifests are executable Scheme.
+`channels.scm` pins Guix, Snamguix, and Nonguix so a clean checkout resolves the
+same packages. Review changes to both Scheme files before evaluating them.
 
 ## Verify the checkout
 

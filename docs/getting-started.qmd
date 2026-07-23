@@ -37,7 +37,7 @@ On Guix systems, the bundled manifest gives you a reproducible
 toolchain:
 
 ```bash
-guix shell -m manifest.scm -- go build -o wraptool .
+guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wraptool .
 ```
 
 ## 2. Create a config {#create-a-config}
