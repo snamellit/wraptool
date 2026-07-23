@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -102,4 +103,28 @@ func TestDevcontainerDeclaresPoolMount(t *testing.T) {
 			t.Error("no config → no declared mount")
 		}
 	})
+}
+
+func TestRunUpRejectsAdminTokenInsideWorkspaceWhenDisabled(t *testing.T) {
+	origIsInContainer := isInContainer
+	isInContainer = func() bool { return false }
+	t.Cleanup(func() { isInContainer = origIsInContainer })
+
+	workspace := t.TempDir()
+	configDir := t.TempDir()
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte("admin:\n  auth_token_file: "+filepath.Join(workspace, "admin-token")+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runUp(upOptions{
+		configPath: configPath,
+		noServer:   true,
+		workspace:  workspace,
+		runtime:    "devcontainer",
+		shell:      "never",
+	})
+	if err == nil || !strings.Contains(err.Error(), "admin auth token resolves to") {
+		t.Fatalf("disabled admin token inside workspace was not rejected: %v", err)
+	}
 }

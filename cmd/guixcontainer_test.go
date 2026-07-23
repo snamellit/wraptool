@@ -79,3 +79,69 @@ func TestValidateConfigOutsideWorkspace(t *testing.T) {
 		t.Fatal("symlinked config inside workspace was accepted")
 	}
 }
+
+func TestValidateAdminTokenOutsideWorkspace(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "admin-token")
+	if err := os.WriteFile(inside, []byte("token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(inside, "admin auth token", root); err == nil {
+		t.Fatal("admin token inside workspace was accepted")
+	}
+
+	alias := filepath.Join(t.TempDir(), "admin-token-link")
+	if err := os.Symlink(inside, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(alias, "admin auth token", root); err == nil {
+		t.Fatal("symlinked admin token inside workspace was accepted")
+	}
+
+	missing := filepath.Join(root, "new-admin-token")
+	if err := validatePathOutsideWorkspace(missing, "admin auth token", root); err == nil {
+		t.Fatal("missing admin token inside workspace was accepted")
+	}
+	danglingAlias := filepath.Join(t.TempDir(), "new-admin-token-link")
+	if err := os.Symlink(missing, danglingAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(danglingAlias, "admin auth token", root); err == nil {
+		t.Fatal("dangling symlink to admin token inside workspace was accepted")
+	}
+
+	outside := t.TempDir()
+	existing := filepath.Join(outside, "admin-token")
+	if err := os.WriteFile(existing, []byte("token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		existing,
+		filepath.Join(outside, "missing-admin-token"),
+	} {
+		if err := validatePathOutsideWorkspace(path, "admin auth token", root); err != nil {
+			t.Fatalf("admin token outside workspace rejected: %v", err)
+		}
+	}
+
+	outsideAlias := filepath.Join(t.TempDir(), "admin-token-link")
+	if err := os.Symlink(existing, outsideAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(outsideAlias, "admin auth token", root); err != nil {
+		t.Fatalf("symlinked admin token outside workspace rejected: %v", err)
+	}
+	outsideParentAlias := filepath.Join(t.TempDir(), "tokens")
+	if err := os.Symlink(outside, outsideParentAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(filepath.Join(outsideParentAlias, "generated-admin-token"), "admin auth token", root); err != nil {
+		t.Fatalf("missing admin token under symlinked external parent rejected: %v", err)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := validatePathOutsideWorkspace("~/.config/wraptool/admin-token", "admin auth token", root); err != nil {
+		t.Fatalf("tilde-expanded admin token outside workspace rejected: %v", err)
+	}
+}

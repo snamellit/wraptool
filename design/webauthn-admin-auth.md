@@ -127,8 +127,10 @@ creates configured missing token files securely. The WebAuthn implementation
 replaces ordinary token login after enrollment; the separate token remains only
 for bootstrap and recovery.
 
-Guix startup additionally rejects a config file under the writable workspace.
-Otherwise a container could alter the YAML directly and rely on hot reload.
+`wraptool up` additionally rejects a config file or admin token file under the
+writable workspace, including through symlinks. Otherwise a container could
+alter the YAML directly and rely on hot reload, or use the admin token to
+authenticate to the loopback UI.
 
 ## Implementation Phases
 
