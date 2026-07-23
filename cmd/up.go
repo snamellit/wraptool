@@ -351,6 +351,7 @@ func validateConfigOutsideWorkspace(configPath, root string) error {
 // validatePathOutsideWorkspace ensures a container cannot access a host-side
 // credential or policy through its writable workspace mount.
 func validatePathOutsideWorkspace(path, name, root string) error {
+	path = expandTilde(path)
 	resolvedPath, err := resolvePath(path)
 	if err != nil {
 		return fmt.Errorf("resolving %s path %s: %w", name, path, err)
@@ -364,7 +365,7 @@ func validatePathOutsideWorkspace(path, name, root string) error {
 		return fmt.Errorf("checking %s location: %w", name, err)
 	}
 	if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("refusing container: %s %s is inside writable workspace %s", name, resolvedPath, resolvedRoot)
+		return fmt.Errorf("refusing container: %s resolves to %s inside writable workspace %s", name, resolvedPath, resolvedRoot)
 	}
 	return nil
 }

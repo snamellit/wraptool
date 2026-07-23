@@ -109,4 +109,32 @@ func TestValidateAdminTokenOutsideWorkspace(t *testing.T) {
 	if err := validatePathOutsideWorkspace(danglingAlias, "admin auth token", root); err == nil {
 		t.Fatal("dangling symlink to admin token inside workspace was accepted")
 	}
+
+	outside := t.TempDir()
+	existing := filepath.Join(outside, "admin-token")
+	if err := os.WriteFile(existing, []byte("token\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{
+		existing,
+		filepath.Join(outside, "missing-admin-token"),
+	} {
+		if err := validatePathOutsideWorkspace(path, "admin auth token", root); err != nil {
+			t.Fatalf("admin token outside workspace rejected: %v", err)
+		}
+	}
+
+	outsideAlias := filepath.Join(t.TempDir(), "admin-token-link")
+	if err := os.Symlink(existing, outsideAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(outsideAlias, "admin auth token", root); err != nil {
+		t.Fatalf("symlinked admin token outside workspace rejected: %v", err)
+	}
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := validatePathOutsideWorkspace("~/.config/wraptool/admin-token", "admin auth token", root); err != nil {
+		t.Fatalf("tilde-expanded admin token outside workspace rejected: %v", err)
+	}
 }
