@@ -131,6 +131,13 @@ func TestValidateAdminTokenOutsideWorkspace(t *testing.T) {
 	if err := validatePathOutsideWorkspace(outsideAlias, "admin auth token", root); err != nil {
 		t.Fatalf("symlinked admin token outside workspace rejected: %v", err)
 	}
+	outsideParentAlias := filepath.Join(t.TempDir(), "tokens")
+	if err := os.Symlink(outside, outsideParentAlias); err != nil {
+		t.Fatal(err)
+	}
+	if err := validatePathOutsideWorkspace(filepath.Join(outsideParentAlias, "generated-admin-token"), "admin auth token", root); err != nil {
+		t.Fatalf("missing admin token under symlinked external parent rejected: %v", err)
+	}
 
 	home := t.TempDir()
 	t.Setenv("HOME", home)
