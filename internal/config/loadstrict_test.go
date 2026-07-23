@@ -26,7 +26,7 @@ func validBody(t *testing.T) string {
 		t.Fatalf("writing dummy binary: %v", err)
 	}
 	return `
-server:
+mcp:
   transport: stdio
 tools:
   git:
@@ -48,8 +48,8 @@ func TestLoadStrictAcceptsValidConfig(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate failed on a valid config: %v", err)
 	}
-	if cfg.Server.Transport != "stdio" {
-		t.Errorf("defaults not applied: transport = %q", cfg.Server.Transport)
+	if cfg.MCP.Transport != "stdio" {
+		t.Errorf("defaults not applied: transport = %q", cfg.MCP.Transport)
 	}
 }
 
@@ -82,6 +82,24 @@ tools:
 	}
 }
 
+func TestLoadStrictRejectsLegacyServerSection(t *testing.T) {
+	p := writeConfig(t, `
+server:
+  transport: sse
+  listen: 127.0.0.1:8717
+tools:
+  git:
+    binary: /usr/bin/git
+    allow:
+      - subcommand: [status]
+`)
+
+	_, err := LoadStrict(p)
+	if err == nil || !strings.Contains(err.Error(), "field server not found") {
+		t.Fatalf("legacy server section error = %v", err)
+	}
+}
+
 func TestLoadStrictEmptyFileIsZeroConfig(t *testing.T) {
 	// An empty document must not be a parse error; it yields a zero config with
 	// defaults applied (matching the previous yaml.Unmarshal behaviour).
@@ -89,8 +107,8 @@ func TestLoadStrictEmptyFileIsZeroConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStrict errored on an empty file: %v", err)
 	}
-	if cfg.Server.Transport != "stdio" {
-		t.Errorf("defaults not applied to empty config: transport = %q", cfg.Server.Transport)
+	if cfg.MCP.Transport != "stdio" {
+		t.Errorf("defaults not applied to empty config: transport = %q", cfg.MCP.Transport)
 	}
 }
 

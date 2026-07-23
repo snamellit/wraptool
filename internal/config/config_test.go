@@ -19,7 +19,7 @@ func TestLoad_ValidConfig(t *testing.T) {
 	}
 
 	cfgContent := `
-server:
+mcp:
   transport: stdio
   log_level: debug
 tools:
@@ -47,8 +47,8 @@ tools:
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Server.Transport != "stdio" {
-		t.Errorf("transport = %q, want stdio", cfg.Server.Transport)
+	if cfg.MCP.Transport != "stdio" {
+		t.Errorf("transport = %q, want stdio", cfg.MCP.Transport)
 	}
 
 	git, ok := cfg.Tools["git"]
@@ -75,7 +75,7 @@ tools:
 
 func TestValidate_InvalidTransport(t *testing.T) {
 	cfg := &Config{
-		Server: ServerConfig{Transport: "grpc"},
+		MCP: MCPConfig{Transport: "grpc"},
 		Tools: map[string]ToolConfig{
 			"git": {Binary: "/usr/bin/git", Allow: []AllowRule{{Subcommand: []string{"status"}}}},
 		},
@@ -87,7 +87,7 @@ func TestValidate_InvalidTransport(t *testing.T) {
 
 func TestValidate_SSERequiresListen(t *testing.T) {
 	cfg := &Config{
-		Server: ServerConfig{Transport: "sse"},
+		MCP: MCPConfig{Transport: "sse"},
 		Tools: map[string]ToolConfig{
 			"git": {Binary: "/usr/bin/git", Allow: []AllowRule{{Subcommand: []string{"status"}}}},
 		},
@@ -98,9 +98,53 @@ func TestValidate_SSERequiresListen(t *testing.T) {
 	}
 }
 
+func TestValidate_WebUIRequiresSeparateToken(t *testing.T) {
+	dir := t.TempDir()
+	mcpToken := filepath.Join(dir, "mcp-token")
+	webToken := filepath.Join(dir, "web-token")
+	for _, path := range []string{mcpToken, webToken} {
+		if err := os.WriteFile(path, []byte("secret\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	newConfig := func(webTokenPath string) *Config {
+		return &Config{
+			MCP: MCPConfig{
+				Transport:     "stdio",
+				AuthTokenFile: mcpToken,
+			},
+			Admin: AdminConfig{
+				Listen:        "127.0.0.1:8718",
+				AuthTokenFile: webTokenPath,
+			},
+			Tools: map[string]ToolConfig{
+				"git": {Binary: os.Args[0], Allow: []AllowRule{{Subcommand: []string{"status"}}}},
+			},
+		}
+	}
+
+	if err := newConfig("").Validate(); err == nil || !strings.Contains(err.Error(), "admin.auth_token_file is required") {
+		t.Fatalf("missing Web UI token error = %v", err)
+	}
+	if err := newConfig(mcpToken).Validate(); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("shared token error = %v", err)
+	}
+	alias := filepath.Join(dir, "web-token-alias")
+	if err := os.Symlink(mcpToken, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := newConfig(alias).Validate(); err == nil || !strings.Contains(err.Error(), "must differ") {
+		t.Fatalf("aliased token error = %v", err)
+	}
+	if err := newConfig(webToken).Validate(); err != nil {
+		t.Fatalf("distinct Web UI token rejected: %v", err)
+	}
+}
+
 func TestValidate_RelativeBinaryPath(t *testing.T) {
 	cfg := &Config{
-		Server: ServerConfig{Transport: "stdio"},
+		MCP: MCPConfig{Transport: "stdio"},
 		Tools: map[string]ToolConfig{
 			"git": {Binary: "git", Allow: []AllowRule{{Subcommand: []string{"status"}}}},
 		},
@@ -119,7 +163,7 @@ func TestValidate_NoAllowRulesIsInert(t *testing.T) {
 	os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0755)
 
 	cfg := &Config{
-		Server: ServerConfig{Transport: "stdio"},
+		MCP: MCPConfig{Transport: "stdio"},
 		Tools: map[string]ToolConfig{
 			"git": {Binary: binPath, Allow: []AllowRule{}},
 		},
@@ -135,7 +179,7 @@ func TestValidate_EmptySubcommand(t *testing.T) {
 	os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0755)
 
 	cfg := &Config{
-		Server: ServerConfig{Transport: "stdio"},
+		MCP: MCPConfig{Transport: "stdio"},
 		Tools: map[string]ToolConfig{
 			"git": {Binary: binPath, Allow: []AllowRule{{Subcommand: []string{}}}},
 		},
@@ -187,7 +231,7 @@ func TestLoad_ValidMCPConfig(t *testing.T) {
 	}
 
 	cfgContent := `
-server:
+mcp:
   transport: stdio
 tools:
   git:
@@ -301,7 +345,7 @@ func TestResolvedEnvMCP(t *testing.T) {
 // customizable set of MCP servers.
 func mcpBaseConfig(servers map[string]MCPServerConfig) *Config {
 	return &Config{
-		Server: ServerConfig{Transport: "stdio"},
+		MCP: MCPConfig{Transport: "stdio"},
 		Tools: map[string]ToolConfig{
 			"git": {
 				Binary: os.Args[0],
@@ -388,7 +432,7 @@ func TestValidate_MixedToolsAndMCPServers(t *testing.T) {
 func TestValidate_MCPServersOnly(t *testing.T) {
 	// A config with no CLI tools but at least one MCP server is valid.
 	cfg := &Config{
-		Server: ServerConfig{Transport: "stdio"},
+		MCP: MCPConfig{Transport: "stdio"},
 		MCPServers: map[string]MCPServerConfig{
 			"github": {Command: "/bin/x", NamePrefix: "gh"},
 		},

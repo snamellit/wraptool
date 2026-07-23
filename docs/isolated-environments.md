@@ -62,7 +62,7 @@ reproducible isolated environment using Linux namespaces (no Docker needed).
 # Create the config
 mkdir -p ~/.config/wraptool
 cat > ~/.config/wraptool/config.yaml << 'EOF'
-server:
+mcp:
   transport: unix
   listen: /run/user/1000/wraptool.sock
 
@@ -199,7 +199,7 @@ Use SSE transport (simpler with Docker networking):
 
 ```yaml
 # ~/.config/wraptool/config.yaml
-server:
+mcp:
   transport: sse
   listen: 127.0.0.1:8717
   auth_token_file: ~/.config/wraptool/auth_token

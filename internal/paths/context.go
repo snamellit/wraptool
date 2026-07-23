@@ -91,5 +91,5 @@ func containCWD(dir string, roots []string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("working directory %q is outside the configured server.allowed_cwd_roots", dir)
+	return fmt.Errorf("working directory %q is outside the configured mcp.allowed_cwd_roots", dir)
 }

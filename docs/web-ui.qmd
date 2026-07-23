@@ -21,25 +21,27 @@ design — the AI never reaches it.
 
 ## Enabling it
 
-Add a `web` block under `server`:
+Add an `admin` block separate from the MCP listener:
 
 ```yaml
-server:
+mcp:
   transport: sse
   listen: 127.0.0.1:8717          # AI-facing MCP transport
-  web:
-    listen: 127.0.0.1:8718        # operator-facing UI — localhost only
-    auth_token_file: ~/.config/wraptool/auth_token
+  auth_token_file: ~/.config/wraptool/mcp-token
+admin:
+  listen: 127.0.0.1:8718          # operator-facing UI — localhost only
+  auth_token_file: ~/.config/wraptool/admin-token
 ```
 
-Leave `web.listen` empty (or omit the block) to disable the UI. The
-`auth_token_file` may be the **same token file** used by the MCP
-transport's `auth_token_file` — there is no need for a second secret.
+Omit `admin` (or leave `admin.listen` empty) to disable the UI. Its
+`auth_token_file` is required and must be different from
+`mcp.auth_token_file`; the MCP token is forwarded to coding containers,
+whereas the admin token must remain host-only.
 
 On startup wraptool logs a click-through URL with the token embedded:
 
 ```
-wraptool web ui: http://127.0.0.1:8718/requests?token=…
+wraptool admin ui: http://127.0.0.1:8718/requests?token=…
 ```
 
 A wildcard bind (`0.0.0.0` / `::`) is rewritten to `127.0.0.1` in that
@@ -47,7 +49,7 @@ URL so the link is followable from the operator's machine.
 
 ## Authentication
 
-When `web.auth_token_file` is set, access is granted from any of:
+With `admin.auth_token_file`, access is granted from any of:
 
 | Method | Use |
 |--------|-----|
@@ -60,13 +62,15 @@ All comparisons are constant-time. The session cookie is `HttpOnly`,
 `SameSite=Lax`. Static assets (CSS) are served without auth so the
 login page renders styled.
 
-With **no** `auth_token_file`, the UI runs unauthenticated and relies
-solely on the localhost bind for access control — acceptable on a
-single-operator workstation, but prefer a token otherwise.
+The admin UI never runs without authentication. Loopback is reachable from
+Guix containers that share the host network namespace and is not an
+authorization boundary.
 
 ::: {.callout-note}
 The token is written to the server log as part of the click-through
-URL. Fine for local development; avoid shipping those logs anywhere.
+URL. Treat that log as secret material: `wraptool up` writes `serve.log`
+under the XDG data directory with mode `0600`, but direct `wraptool serve`
+uses its caller's output destination. Do not ship, share, or collect either.
 :::
 
 ## Reviewing requests

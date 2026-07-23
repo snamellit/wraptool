@@ -51,6 +51,7 @@ type registrar struct {
 
 	mu            sync.Mutex
 	cliRegistered []string
+	cliTools      []string
 	mcp           map[string]*mcpSourceEntry // by mcp_servers key
 }
 
@@ -87,6 +88,7 @@ func (r *registrar) start(cfg *config.Config) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	r.cliTools = toolNames(cfg)
 	names, err := r.registerSource(mcptools.NewCLISource(cfg, r.policy, r.store))
 	if err != nil {
 		return err
@@ -114,6 +116,7 @@ func (r *registrar) reload(newCfg *config.Config) {
 	r.mcpPolicy.Reload(configPointers(newCfg.MCPServers))
 
 	// CLI source: cheap wholesale swap.
+	r.cliTools = toolNames(newCfg)
 	if len(r.cliRegistered) > 0 {
 		r.server.DeleteTools(r.cliRegistered...)
 	}
@@ -156,6 +159,14 @@ func (r *registrar) reload(newCfg *config.Config) {
 			r.removeMCPLocked(name)
 		}
 	}
+}
+
+// CLIToolNames returns a snapshot of the configured CLI tools for status
+// reporting. It is safe to call while reload is replacing the CLI source.
+func (r *registrar) CLIToolNames() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.cliTools...)
 }
 
 // reregister re-lists a single MCP source and swaps only its registrations. It

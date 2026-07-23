@@ -24,28 +24,46 @@ func flagParamName(flag string) string {
 }
 
 func (c *Config) Validate() error {
-	switch c.Server.Transport {
+	switch c.MCP.Transport {
 	case "stdio", "sse", "unix":
 		// valid
 	default:
-		return fmt.Errorf("server.transport must be stdio, sse, or unix, got %q", c.Server.Transport)
+		return fmt.Errorf("mcp.transport must be stdio, sse, or unix, got %q", c.MCP.Transport)
 	}
 
-	if c.Server.Transport == "sse" || c.Server.Transport == "unix" {
-		if c.Server.Listen == "" {
-			return fmt.Errorf("server.listen is required for %s transport", c.Server.Transport)
+	if c.MCP.Transport == "sse" || c.MCP.Transport == "unix" {
+		if c.MCP.Listen == "" {
+			return fmt.Errorf("mcp.listen is required for %s transport", c.MCP.Transport)
 		}
 	}
 
-	if c.Server.AuthTokenFile != "" {
-		if _, err := os.Stat(c.Server.AuthTokenFile); err != nil {
-			return fmt.Errorf("server.auth_token_file %q: %w", c.Server.AuthTokenFile, err)
+	if c.MCP.AuthTokenFile != "" {
+		if _, err := os.Stat(c.MCP.AuthTokenFile); err != nil {
+			return fmt.Errorf("mcp.auth_token_file %q: %w", c.MCP.AuthTokenFile, err)
+		}
+	}
+	if c.Admin.Listen != "" {
+		if c.Admin.AuthTokenFile == "" {
+			return fmt.Errorf("admin.auth_token_file is required when admin.listen is set")
+		}
+		adminInfo, err := os.Stat(c.Admin.AuthTokenFile)
+		if err != nil {
+			return fmt.Errorf("admin.auth_token_file %q: %w", c.Admin.AuthTokenFile, err)
+		}
+		if c.MCP.AuthTokenFile != "" {
+			mcpInfo, err := os.Stat(c.MCP.AuthTokenFile)
+			if err != nil {
+				return fmt.Errorf("mcp.auth_token_file %q: %w", c.MCP.AuthTokenFile, err)
+			}
+			if os.SameFile(mcpInfo, adminInfo) {
+				return fmt.Errorf("admin.auth_token_file must differ from mcp.auth_token_file")
+			}
 		}
 	}
 
-	for _, root := range c.Server.AllowedCWDRoots {
+	for _, root := range c.MCP.AllowedCWDRoots {
 		if !filepath.IsAbs(root) {
-			return fmt.Errorf("server.allowed_cwd_roots: %q must be an absolute path", root)
+			return fmt.Errorf("mcp.allowed_cwd_roots: %q must be an absolute path", root)
 		}
 	}
 

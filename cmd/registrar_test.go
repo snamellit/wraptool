@@ -220,6 +220,28 @@ func TestReconcileAddAndRemove(t *testing.T) {
 	}
 }
 
+func TestCLIToolNamesFollowReload(t *testing.T) {
+	reg, _ := newTestRegistrar(t)
+	if err := reg.start(serverCfg()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got := reg.CLIToolNames(); len(got) != 0 {
+		t.Fatalf("initial CLI tools = %v, want none", got)
+	}
+
+	updated := serverCfg()
+	updated.Tools = map[string]config.ToolConfig{
+		"fj": {
+			Binary: "/nonexistent/fj",
+			Allow:  []config.AllowRule{{Subcommand: []string{"pr", "create"}}},
+		},
+	}
+	reg.reload(updated)
+	if got := reg.CLIToolNames(); len(got) != 1 || got[0] != "fj" {
+		t.Errorf("CLI tools after reload = %v, want [fj]", got)
+	}
+}
+
 func TestAddClosesSourceWhenRegistrationFails(t *testing.T) {
 	reg, fakes := newTestRegistrar(t)
 	// A source whose Tools() errors after "spawning" its child. addMCPLocked

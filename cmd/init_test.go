@@ -17,7 +17,7 @@ func TestInitEmbedsAuthHeader(t *testing.T) {
 		t.Fatalf("write token: %v", err)
 	}
 	cfgFile := filepath.Join(dir, "config.yaml")
-	cfg := "server:\n  listen: 127.0.0.1:8717\n  auth_token_file: " + tokenFile + "\n"
+	cfg := "mcp:\n  listen: 127.0.0.1:8717\n  auth_token_file: " + tokenFile + "\n"
 	if err := os.WriteFile(cfgFile, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
