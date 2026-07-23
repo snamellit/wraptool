@@ -40,8 +40,9 @@ guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wrapto
 guix time-machine -C channels.scm -- shell -m manifest.scm -- ./wraptool version
 ```
 
-`channels.scm` pins Guix, Snamguix, and Nonguix so a clean checkout resolves the
-same packages. Review changes to both Scheme files before evaluating them.
+`channels.scm` pins Snamguix and brings in its declared Nonguix dependency so a
+clean checkout can resolve `quarto-bin`. Review changes to both Scheme files
+before evaluating them.
 
 ## Verify the checkout
 
