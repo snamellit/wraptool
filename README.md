@@ -116,8 +116,8 @@ Full documentation lives in `docs/`, is rendered with
 ### Build the site locally
 
 ```bash
-quarto preview docs
-quarto render docs
+guix shell -m manifest.scm -- quarto preview docs
+guix shell -m manifest.scm -- quarto render docs
 ```
 
 The render writes `docs/_site/`, which is ignored and must not be committed to

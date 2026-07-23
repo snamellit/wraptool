@@ -19,6 +19,7 @@
 (use-modules (guix packages)
              (guix download)
              (guix build-system copy)
+             (snamellit packages quarto-bin)
              ((guix licenses) #:prefix license:))
 
 (define %golangci-lint-version "2.12.2")
@@ -54,6 +55,6 @@
 
 (concatenate-manifests
  (list (specifications->manifest
-        (append '("go" "git" "node" "tar") ; toolchain + docs/archive plumbing
+        (append '("go" "git" "node")   ; toolchain + AI harness runtime
                  %plumbing))
-       (packages->manifest (list golangci-lint))))
+       (packages->manifest (list golangci-lint quarto-bin))))
