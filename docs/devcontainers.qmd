@@ -277,8 +277,9 @@ wraptool server status
 wraptool server stop
 ```
 
-Because the server scopes each container to its own host path, several worktrees
-(parallel branches) can each `wraptool up` independently and stay isolated.
+Several worktrees can each use `wraptool up`; their generated connections send
+different host paths. This is routing, not automatic isolation: configure
+`mcp.allowed_cwd_roots` to reject a client that supplies another path.
 
 ::: {.callout-note}
 `wraptool up` is the recommended path — the raw `export WRAPTOOL_TOKEN=… &&

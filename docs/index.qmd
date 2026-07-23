@@ -1,91 +1,83 @@
 ---
-title: "wraptool"
-subtitle: "Credential-isolated MCP gateway for CLI tools"
+title: "The privilege line for agentic development"
+subtitle: "Wraptool exposes selected host CLI operations over MCP without placing host credentials in the coding environment."
+page-layout: full
+toc: false
 ---
 
-**wraptool** is a Go-based [Model Context Protocol](https://modelcontextprotocol.io/)
-server that wraps CLI tools (`git`, `gcloud`, `kubectl`, ...) behind a
-security whitelist, so AI coding assistants can use them without ever
-seeing the underlying credentials.
+::: {.hero-actions}
+[Get started](getting-started.qmd){.btn .btn-primary .btn-lg}
+[Read the security model](security.qmd){.btn .btn-outline-light .btn-lg}
+:::
 
-## Why
+::: {.boundary-strip}
+::: {.boundary-zone}
+**UNTRUSTED WORKSPACE**
 
-AI coding assistants need CLI tools to be productive, but giving them
-direct access exposes API keys, SSH keys, kubeconfigs, and service
-account credentials to the model context. wraptool sits between the
-assistant and the tools:
+AI harness · source tree · builds · dependencies
+:::
+::: {.boundary-gate}
+**WRAPTOOL**
 
-- **Credentials stay isolated** — wraptool runs on the **host** with the
-  secrets; the assistant runs in an **isolated container** (user/mount
-  namespace) that never mounts your `$HOME`, SSH keys, or tokens. Anything
-  privileged (`git push`, private fetch, `gcloud`, `kubectl`) crosses the
-  boundary only through wraptool's policed MCP tools.
-- **Subcommand-level whitelisting** — allow `git commit` but deny
-  `git push --force`, with flag-level granularity and value
-  constraints. Deny always beats allow.
-- **Auto-discovery** — wraptool parses `--help` output to generate
-  MCP tool schemas with real descriptions, so the AI knows what each
-  flag does.
-- **Structured denial workflow** — when a command is denied, the AI
-  can submit a capability request that an operator reviews and approves
-  — from the **command line** (`wraptool requests`) or a browser-based
-  **[Web UI](web-ui.qmd)** (approve/deny, live rule editing, tool-call audit).
-- **One-command setup** — `wraptool up` in a repo starts the shared
-  server, **auto-provisions** the assistant's MCP config (with the auth
-  header), and drops you into the isolated container. No manual wiring.
+deny → allow → constraints
+:::
+::: {.boundary-zone .boundary-zone-host}
+**TRUSTED HOST**
 
-## High-level architecture
+CLI binaries · policy · credentials
+:::
+:::
 
-The assistant lives in an isolated box with **no credentials**; secrets and
-the privileged tools stay on the host, reachable only through the policy engine.
+## One boundary, one job
 
-```{mermaid}
-flowchart LR
-  subgraph box["🔒 Isolated container — no credentials"]
-    ai[AI Coding<br/>Assistant]
-    localgit[local git<br/>status / diff / commit]
-  end
+Wraptool is a Go [Model Context Protocol](https://modelcontextprotocol.io/)
+server for a specific deployment pattern: keep the AI harness and project code
+in a credential-free container, while a host process mediates the few operations
+that need SSH keys, cloud credentials, or kubeconfig.
 
-  subgraph host["Host — credentials live here"]
-    wt[wraptool<br/>server]
-    policy["Policy Engine<br/>deny &gt; allow &gt; constraints"]
-    exec[Sandboxed Exec<br/>+ credential scrub]
-    cli[Privileged CLI<br/>git push / gcloud / kubectl]
-    creds[("Credentials<br/>SSH keys · tokens · kubeconfig")]
-    op[Operator review<br/>CLI + Web UI]
-  end
+::: {.feature-grid}
+::: {.feature-card}
+### Exact policy
+Unknown operations default-deny. Rules match exact subcommand token sequences,
+then enforce allowed flags, denied flags, value constraints, and optional
+positional limits.
+:::
+::: {.feature-card}
+### Explicit execution
+Commands run as argument arrays through `exec.CommandContext`, never through a
+shell. Calls have timeouts, bounded CLI output, result scrubbing, and an audit
+event.
+:::
+::: {.feature-card}
+### Human escalation
+Denied calls can become capability requests. An operator reviews them through
+the CLI or local admin UI; accepted changes hot-reload without exposing the
+admin boundary to the harness.
+:::
+:::
 
-  ai -- "MCP tool call<br/>Bearer auth" --> wt
-  wt --> policy
-  policy -- "allowed" --> exec
-  exec --> cli
-  cli -.-> creds
-  exec -- "scrubbed output" --> wt
-  wt -- "result" --> ai
-  policy -- "denied" --> req[Capability<br/>request]
-  req --> op
-  op -- "approve / deny" --> policy
+## Primary workflow
 
-  style box fill:#eef,stroke:#3a3ad0
-  style creds fill:#fee,stroke:#E60028
-  style policy fill:#fef,stroke:#666
+```bash
+# From a Git worktree, after installing wraptool and creating its config:
+wraptool up
 ```
 
-Local, non-privileged git runs inside the box; only credentialed operations
-cross into wraptool. The container boundary is a user/mount namespace — your
-`$HOME` and secrets are never shared in.
+`up` ensures the shared host server is running, chooses the Guix or Dev Container
+runtime, wires the selected harness to MCP, and opens a shell when attached to a
+terminal. Local compilation, tests, and ordinary Git can stay inside the box;
+credentialed operations cross the policy boundary.
 
-## Next steps
+::: {.callout-warning title="A bounded capability system, not a sandbox for everything"}
+The workspace retains its source tree and network access. It can read the MCP
+token and invoke every capability granted to the harness. CWD containment is
+only enforced when `mcp.allowed_cwd_roots` is configured, and output scrubbing is
+heuristic. Read [Security model](security.qmd) before exposing real credentials.
+:::
 
-- [Getting started](getting-started.qmd) — install, configure, connect.
-- [Configuration reference](configuration.qmd) — schema, allow/deny,
-  constraints, environment files.
-- [Security model](security.qmd) — threat model, sandboxing, scrubbing.
-- [Hot-reload & capability requests](hot-reload.qmd) — operational
-  workflow.
-- [Web UI](web-ui.qmd) — browser-based request review.
-- [Slides](presentation.qmd) — overview deck.
+## Choose your next step
 
-## License
-
-GPLv3 — see [LICENSE](https://forge.snamellit.com/pti/wraptool/src/branch/main/LICENSE).
+- [Install from source](installation.qmd) and verify the binary.
+- [Create the first policy](getting-started.qmd#create-a-config).
+- [Connect an MCP client](mcp-integration.qmd).
+- [Inspect architecture and trust boundaries](architecture.qmd).

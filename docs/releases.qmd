@@ -1,0 +1,27 @@
+---
+title: "Releases and changes"
+---
+
+Wraptool does not currently maintain a separate changelog file or publish binary
+release artifacts. The authoritative history is the repository:
+
+- [Tags and releases](https://forge.snamellit.com/pti/wraptool/releases)
+- [Commit history](https://forge.snamellit.com/pti/wraptool/commits/branch/main)
+- [Open and completed work](https://forge.snamellit.com/pti/wraptool/issues)
+
+The in-binary version is derived from Go build VCS information:
+
+```bash
+wraptool version
+```
+
+It reports the project version, revision when available, whether the checkout
+was dirty at build time, and the Go version. The MCP `wraptool_info` tool reports
+the running server's build identity and introspection freshness, which is useful
+when a long-lived server may not match the binary currently on `PATH`.
+
+::: {.callout-note}
+Design files under `design/` can contain roadmaps and audit findings. They are
+not a release ledger; verify shipped behavior in source, tests, CLI help, and the
+documentation pages marked as current reference.
+:::

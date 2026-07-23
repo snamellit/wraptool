@@ -1,0 +1,101 @@
+---
+title: "Practical examples"
+---
+
+## Read-only repository inspection
+
+```yaml
+tools:
+  git:
+    binary: /usr/bin/git
+    allow:
+      - subcommand: [status]
+        flags: ["--short", "--branch", "--porcelain"]
+        arg_constraints:
+          positional_max: 0
+      - subcommand: [log]
+        flags: ["--oneline", "--graph", "-n"]
+        flag_constraints:
+          "-n": { type: integer, min: 1, max: 100 }
+        arg_constraints:
+          positional_max: 1
+      - subcommand: [diff]
+        flags: ["--stat", "--name-only", "--staged"]
+        arg_constraints:
+          positional_max: 2
+```
+
+An absent `arg_constraints` means unlimited positional arguments. Set
+`positional_max: 0` when a command needs none.
+
+## Constrained push
+
+```yaml
+tools:
+  git:
+    binary: /usr/bin/git
+    allow:
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+        arg_constraints:
+          positional_max: 2
+    deny:
+      - subcommand: [remote, set-url]
+      - subcommand: [remote, add]
+      - subcommand: [config]
+```
+
+Deny subcommands contain command tokens only. A rule such as `[config,
+"--global"]` does not deny a flag and should not be used.
+
+Git can execute repository-controlled hooks, filters, helpers, and config. The
+subcommand allowlist does not neutralize those mechanisms; apply the dedicated
+[Git hardening](git-hardening.qmd) guidance.
+
+## Restrict client CWD
+
+```yaml
+mcp:
+  transport: sse
+  listen: 127.0.0.1:8717
+  auth_token_file: ~/.config/wraptool/mcp-token
+  allowed_cwd_roots:
+    - /home/alice/src/current-project
+```
+
+Use absolute paths. Symlinks are resolved before containment is checked. An
+empty list disables this boundary.
+
+## Separate tool credentials
+
+```yaml
+tools:
+  kubectl:
+    binary: /usr/bin/kubectl
+    working_dir: /home/alice/src/current-project
+    env_files:
+      - ~/.config/wraptool/kubectl.env
+    env:
+      HOME: /var/lib/wraptool/kubectl-home
+      KUBECONFIG: /var/lib/wraptool/kubeconfig
+    allow:
+      - subcommand: [get]
+        flags: ["--namespace", "--output"]
+```
+
+Environment files are simple `KEY=VALUE` lines. They do not implement dotenv
+quoting, interpolation, or `export` syntax. Later files override earlier files;
+inline values win last.
+
+## Review a denied request
+
+```bash
+wraptool requests list
+wraptool requests approve req_23ae3793 --apply
+wraptool config validate
+```
+
+Approval and policy application are separate events. If `--apply` fails, the
+request remains approved but the policy is unchanged; inspect the reported error
+and edit the YAML manually.

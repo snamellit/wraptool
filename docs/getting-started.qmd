@@ -200,11 +200,85 @@ and does three things:
 
 Force one with `--runtime=guix|devcontainer|auto`.
 
-Credentials never enter the container either way — the isolation is the
-mount/user namespace (your `$HOME`, SSH keys, and tokens are not mounted). git is
-available inside for local work (status/diff/commit/branch), but anything needing
-credentials (push, private fetch) goes through wraptool's policed MCP git tool on
-the host. See [`design/guix-container-runtime.md`](https://forge.snamellit.com/pti/wraptool/src/branch/main/design/guix-container-runtime.md).
+Host CLI credentials never enter the container either way — the isolation is the
+mount/user namespace (your normal `$HOME`, SSH keys, kubeconfig, and cloud tokens
+are not mounted). git is available inside for local work
+(status/diff/commit/branch), but anything needing credentials (push, private
+fetch) goes through wraptool's policed MCP git tool on the host. The Guix runtime
+intentionally shares the harness pool and host network as described below. See
+[`design/guix-container-runtime.md`](https://forge.snamellit.com/pti/wraptool/src/branch/main/design/guix-container-runtime.md).
+
+### Guix: convenience versus isolation
+
+The Guix defaults deliberately retain three conveniences that weaken isolation.
+They avoid a separate environment definition, repeated harness setup, and a
+Docker Compose stack for every local service. Understand these boundaries before
+running untrusted projects.
+
+#### Approve executable Guix inputs with direnv
+
+`manifest.scm` and `channels.scm` are executable Scheme, not inert lock files.
+Guix evaluates them on the host while constructing the environment. A container
+can modify the writable worktree, including `manifest.scm`, so use direnv's
+required-file approval before `use guix`:
+
+```bash
+require_allowed manifest.scm
+if [[ -f channels.scm ]]; then
+  require_allowed channels.scm
+fi
+
+use guix
+```
+
+`require_allowed` watches the files and records their content as part of
+`direnv allow`. If either changes, direnv refuses to run `use guix` again until
+you review the change and explicitly run:
+
+```bash
+direnv allow
+```
+
+This adds no prompt when the files are unchanged and one normal direnv approval
+after an intentional edit. It protects the direnv workflow only: direct
+`guix shell -m manifest.scm`, automation, and the current implementation of
+`wraptool up` do not consult direnv's approval database. Use a direnv release
+that provides `require_allowed`; do not replace it with an unconditional custom
+`use_guix` wrapper.
+
+#### Host localhost is reachable
+
+The Guix runtime uses `--network`, which shares the host network namespace.
+Processes in the container can therefore connect to services bound only to host
+loopback, including local PostgreSQL, Redis, MongoDB, and test HTTP servers. This
+is intentional: those services can be reused directly without constructing a
+per-project Docker Compose environment.
+
+Loopback is consequently a reachability boundary, not an authorization boundary.
+Assume untrusted project code can probe and use every host localhost service:
+
+- Require authentication where the service supports it.
+- Do not keep production data or privileged unauthenticated admin endpoints on
+  ports reachable during a session.
+- Use separate test databases and least-privilege test accounts.
+- Keep wraptool's admin UI authenticated; its token is intentionally not passed
+  to the container.
+
+#### Harness HOME is shared and writable
+
+Every project receives the same writable harness HOME from
+`$XDG_DATA_HOME/wraptool/harness-pool/home`. This is also intentional: harness
+login, configuration, history, and skills are maintained once and persist across
+projects. Harness binaries and libraries are mounted read-only, but HOME state is
+read-write.
+
+The consequence is that all projects using the pool form one harness-state trust
+domain. A compromised project can read or alter that state and leave persistent
+configuration for later projects. Keep unrelated credentials out of the pool,
+review shared skills/configuration before using high-risk repositories, and
+remove or recreate the pool when you need a clean trust boundary. Choose a
+separate XDG data directory or OS account when projects must not share harness
+state.
 
 The shell opens automatically when you run `up` from a terminal. Control it with
 `--shell`:
@@ -214,8 +288,9 @@ wraptool up --shell=always   # always open a shell
 wraptool up --shell=never    # just bring the container up (e.g. in scripts/CI)
 ```
 
-One shared server serves every project and worktree; each container is scoped to
-its own path, so parallel branches (git worktrees) just work.
+One shared server can serve multiple projects and worktrees. The generated
+connection sends each host path as `?cwd=`, but the client controls that value;
+configure `mcp.allowed_cwd_roots` when the server must enforce a path boundary.
 
 Shut the project's container down again with the counterpart command:
 

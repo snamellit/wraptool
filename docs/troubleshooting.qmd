@@ -1,0 +1,72 @@
+---
+title: "Troubleshooting"
+---
+
+## `up` cannot find or start the server
+
+Validate the same config path first:
+
+```bash
+wraptool config validate
+wraptool server status
+```
+
+`up` requires an existing config and its server orchestration requires
+`mcp.transport: sse`. Detached-server logs are under the wraptool XDG data
+directory, normally `~/.local/share/wraptool/logs/serve.log` on Linux. Treat the
+log as sensitive because it can contain the admin click-through token.
+
+## The container cannot connect
+
+Container `127.0.0.1` is not the host's loopback. Let `wraptool up` and the Dev
+Container feature detect the gateway, or bind the MCP server to a reachable
+gateway/wildcard address and require `auth_token_file`.
+
+Confirm the client uses `/sse` for legacy SSE or `/mcp` for Streamable HTTP.
+Antigravity generation targets `/mcp` automatically.
+
+## Tools appear stale after an edit
+
+An invalid edit is rejected and the old policy remains active. Check server logs
+and run:
+
+```bash
+wraptool config validate
+```
+
+Clients that do not honor `notifications/tools/list_changed` need to reconnect.
+Listener, auth, CWD-root, admin, and request-log changes require a server restart.
+
+## A flag has the wrong MCP type
+
+Set an explicit `flag_constraints.<flag>.type` in policy. Introspection is
+syntactic and can be ambiguous when CLI help omits value placeholders. You can
+also supply an `introspection.overrides_file`; changing it, the binary, policy,
+or wraptool binary invalidates the relevant cache stamp.
+
+## A wrapped command cannot find a helper
+
+Wraptool prepends the configured binary's directory to the server's inherited
+`PATH`. Start the server with a `PATH` containing genuine runtime dependencies,
+or use absolute tool-specific configuration. Other parent environment variables
+are not inherited, except host `HOME`; declare required values in `env` or
+`env_files`.
+
+## Guix was not selected
+
+`--runtime=auto` chooses Guix only when both `guix` is on `PATH` and the
+worktree contains `manifest.scm`. Otherwise it chooses Dev Container. Use
+`--runtime=guix` to request Guix explicitly and receive the direct failure.
+
+## `down` did not stop a Guix environment
+
+`down` manages persistent Docker/Dev Containers. A Guix container exists only
+while its shell command runs. Also note that `up --shell=never` on Guix realizes
+the profile but does not leave a container running.
+
+## Request approval did not change policy
+
+`requests approve ID --apply` records approval before editing the config. A deny
+conflict, unknown tool, or invalid resulting config can leave the request marked
+approved without changing policy. Correct the YAML and rely on hot reload, or
+submit/review a new request.

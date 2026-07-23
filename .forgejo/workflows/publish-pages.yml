@@ -1,0 +1,67 @@
+name: Publish documentation
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: wraptool-pages
+  cancel-in-progress: true
+
+# The job pushes one generated commit to refs/heads/pages. It does not publish
+# packages, alter repository settings, or use an external deployment credential.
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    # Native runner convention used by the other Forgejo workflows. Quarto comes
+    # from the same manifest as local development and the project container.
+    runs-on: guix
+    steps:
+      - name: Check out main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Render website
+        run: |
+          guix shell -m manifest.scm -- quarto render docs
+
+      - name: Validate publication tree
+        run: |
+          guix shell -m manifest.scm -- sh -ec '
+            test -f docs/_site/index.html
+            test -f docs/_site/search.json
+            suspicious=$(rg --files docs/_site | rg -i "(^|/)([.]env($|[.])|[.]envrc$|.*credential.*|.*token.*|.*[.](map|pem|key|p12|pfx))$" || true)
+            test -z "$suspicious" || {
+              echo "Refusing to publish a source map or sensitive-looking artifact:" >&2
+              echo "$suspicious" >&2
+              exit 1
+            }
+          '
+
+      - name: Publish orphan pages branch
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+          PUSH_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          SOURCE_SHA=$(git rev-parse HEAD)
+          site_dir=$(mktemp -d)
+          cp -a docs/_site/. "$site_dir/"
+
+          git checkout --orphan pages
+          git rm -rf .
+          git clean -fdx
+          cp -a "$site_dir/." .
+          touch .nojekyll
+
+          git add --all
+          git config user.name 'wraptool pages bot'
+          git config user.email 'wraptool-pages@users.noreply.snamellit.com'
+          git commit -m "docs: publish ${SOURCE_SHA}"
+
+          trap 'git remote set-url origin "$PUSH_URL"' EXIT
+          git remote set-url origin "${PUSH_URL/\/\//\/\/x-access-token:${FORGEJO_TOKEN}@}"
+          git push --force origin HEAD:refs/heads/pages

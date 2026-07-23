@@ -31,9 +31,11 @@ to wraptool running on the host, where credentials live.
 └─────────────────────────────────────────────┘
 ```
 
-The key insight: **credentials never enter the isolated environment**.
-The AI assistant calls tools via MCP, wraptool validates the request
-against the whitelist, and executes the command on the host.
+The key insight: **host CLI credentials never enter the isolated environment**.
+The AI assistant calls tools via MCP, wraptool validates the request against the
+whitelist, and executes the command on the host. Credentials deliberately owned
+by the harness, such as its pooled login state and MCP bearer token, are available
+inside the environment.
 
 Be clear on what this does and does not buy you. The container still has
 network access and the full source tree bind-mounted, and any code running in
@@ -43,6 +45,13 @@ whitelisted host tools the agent can. So wraptool protects **credentials**
 and **bounds operations** by the whitelist policy — it does **not** protect
 source confidentiality or restrict network egress. For those, add container
 network controls of your own.
+
+For the Guix runtime specifically, `--network` shares the host network namespace,
+so host localhost services are reachable, and the harness pool HOME is shared
+read-write across projects. These are intentional convenience tradeoffs, not
+isolation boundaries. See [Guix: convenience versus
+isolation](getting-started.qmd#guix-convenience-versus-isolation) for the
+manifest approval workflow and operational guidance.
 
 ## Option 1: Guix Shell Container
 
@@ -102,7 +111,7 @@ tools:
         flags: ["-c"]
     deny:
       - subcommand: [remote, set-url]
-      - subcommand: [config, "--global"]
+      - subcommand: [config]
 EOF
 
 # Start wraptool (runs in foreground, use tmux/screen or & for background)
@@ -122,10 +131,17 @@ guix shell --container \
 
 Flags explained:
 - `--container`: full namespace isolation (PID, mount, user)
-- `--network`: allow network access (needed for SSE transport; not needed for Unix socket but harmless)
+- `--network`: share the host network namespace; this provides internet and host
+  loopback access, including local databases and test services
 - `--share=...`: bind-mount your project directory read-write
 - `--expose=...`: expose the wraptool socket read-only into the container
 - The package list contains only basic tools — no git, no cloud CLIs, no SSH
+
+`--network` is not harmless even when MCP uses a Unix socket: every service on
+host localhost becomes reachable from untrusted container code. wraptool accepts
+this tradeoff by default because direct access to local PostgreSQL, Redis,
+MongoDB, and test servers substantially reduces development setup. Authenticate
+those services and use test-only data/accounts.
 
 ### Step 3: Configure Claude Code inside the container
 
@@ -279,7 +295,9 @@ docker run -it --rm \
 ```
 
 Using `--network none` fully isolates the container from the network.
-The only external communication channel is the wraptool Unix socket.
+The wraptool Unix socket is the intended external communication channel. This
+assumes no other bind mounts, inherited devices, or container-runtime escape
+paths are present.
 
 ## Option 3: Unix socket with SSE transport
 
@@ -326,8 +344,9 @@ At container-create the feature's `connect.sh` writes `.mcp.json` pointing at
 wraptool, auto-detecting the host as the container's default-route gateway — so
 there's no `host.docker.internal` or `--add-host` to manage, and it works across
 docker networks and git worktrees. The token stays out of image layers (passed
-via `remoteEnv`), and `WRAPTOOL_CWD=${localWorkspaceFolder}` scopes host tools to
-this worktree.
+via `remoteEnv`), and `WRAPTOOL_CWD=${localWorkspaceFolder}` selects this
+worktree as the host CWD. Configure `mcp.allowed_cwd_roots` if the client must be
+prevented from selecting a different host path.
 
 ### Shared harness pool and toggles
 
@@ -350,25 +369,13 @@ See [Dev containers for AI harnesses](devcontainers.qmd) for the full feature
 reference (every option, the base-image-plus-features rationale, and the
 `wraptool up`/`down` lifecycle).
 
-### Drive it yourself
+### Legacy hand-rolled example
 
-If you'd rather not use the feature, a hand-rolled template lives in
-[`examples/devcontainer/`](../examples/devcontainer/): a minimal client image
-(no git, no credentials) pointed at the host wraptool, plus a
-`test-connection.sh` isolation + MCP-reachability smoke test. Copy it into your
-project as `.devcontainer/`, then "Reopen in Container".
-
-```bash
-cp -r examples/devcontainer /path/to/your-project/.devcontainer
-export WRAPTOOL_TOKEN=$(cat ~/.config/wraptool/auth_token)
-# VS Code: "Reopen in Container"  — or:  devcontainer up --workspace-folder .
-.devcontainer/test-connection.sh   # verify isolation + connectivity
-```
-
-Because the container lives in its own network namespace, host `127.0.0.1` is
-not reachable — wraptool must listen on the docker gateway or `0.0.0.0` (e.g.
-`listen: 0.0.0.0:8717`). Override `WRAPTOOL_URL` in `devcontainer.json` to target
-a specific gateway. See `examples/devcontainer/README.md` for details.
+[`examples/devcontainer/`](https://forge.snamellit.com/pti/wraptool/src/branch/main/examples/devcontainer)
+is retained as a transport and isolation smoke-test fixture. Its hand-written
+setup predates the merged `wraptool` feature and current harness configuration;
+do not copy it as a new project template. Use `wraptool init devcontainer` for a
+current starting point.
 
 ## Security Checklist
 

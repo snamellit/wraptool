@@ -37,9 +37,20 @@ tools the agent can. wraptool therefore:
   through wraptool's policed, constrained subcommands on the host.
 
 It does **not** protect source confidentiality or network egress, and a
-compromised dependency inherits the agent's (policed) tool access. The
-guarantee is that untrusted workspace code **cannot steal credentials or
-exceed the policy** — not that it can do nothing.
+compromised dependency inherits the agent's tool access. The intended design is
+to keep raw host credential files out of the workspace and mediate host
+operations through policy — not to make the workspace harmless. Resources
+deliberately shared with the container, including the MCP token and harness-pool
+state, are outside that confidentiality boundary. The [known
+limitations](#known-limitations) below further qualify policy and scrubbing.
+
+On the Guix runtime, two resources intentionally cross project/container
+boundaries for developer convenience: `--network` exposes host localhost
+services, and the writable harness-pool HOME shares harness authentication,
+configuration, and skills across projects. Neither is a security boundary. Host
+CLI credentials such as SSH keys, kubeconfig, and cloud credentials remain
+outside the container. See [Guix: convenience versus
+isolation](getting-started.qmd#guix-convenience-versus-isolation).
 
 ## Trust boundary
 
@@ -68,12 +79,10 @@ the boundary. The AI sees:
 - Stdout/stderr of executed commands, **after scrubbing**.
 - Structured error messages on denial.
 
-It never sees:
-
-- Any environment variable except those a tool explicitly exposes via
-  its own output.
-- Filesystem paths outside what tools print.
-- The wraptool config file.
+The MCP response does not directly include the wraptool config or child
+environment. Wrapped tools can still print environment values, filesystem paths,
+or file contents available to their host process, so policy and tool-specific
+hardening remain part of the boundary.
 
 ## Defenses
 
@@ -117,9 +126,9 @@ in stdout of a wrapped command.
 
 ### Output limits
 
-stdout/stderr are capped at **1 MB per command**. Excess is dropped
-with a marker so the AI can't drain memory by issuing a single
-unbounded request.
+stdout and stderr are each capped independently at **1 MiB per CLI call**.
+Excess is dropped with a marker. Proxied MCP-server output does not currently
+have the same cap.
 
 ### Timeout enforcement
 
@@ -130,8 +139,9 @@ Every call uses `context.WithTimeout` based on the tool's `timeout`
 
 Child processes get `HOME`, `PATH`, and `LANG` plus the configured
 `env` / `env_files`. `HOME` and `PATH` are inherited from wraptool's own
-environment; **nothing else is**, so credentials in the parent
-environment cannot leak to a wrapped command.
+environment; no other parent variable is copied. Host `HOME` can expose normal
+user-global configuration and credential files to the wrapped process. Override
+it and tool-specific config paths when the process requires a dedicated profile.
 
 `PATH` is the tool binary's own directory prepended to the **server's
 inherited `PATH`** (`os.Getenv("PATH")`, falling back to `/usr/bin:/bin`
@@ -172,6 +182,34 @@ Denied commands return a structured error pointing the AI at
 operator reviews and approves out-of-band. This makes the policy
 **evolvable** without giving the AI a path to bypass it.
 
+## Known limitations
+
+- **The MCP token is capability-equivalent to the harness.** Any process in the
+  workspace that can read it can invoke all tools exposed on that listener.
+- **CWD containment is optional.** Client-supplied `?cwd=` is unrestricted when
+  `mcp.allowed_cwd_roots` is empty. Containment checks also cannot eliminate all
+  filesystem race conditions.
+- **Positionals are count-only.** With no `arg_constraints`, they are unlimited;
+  there is no positional path, URL, or regular-expression constraint.
+- **Schema validation is not an enforcement boundary.** The server does not
+  enable MCP input-schema validation. Current boolean and empty-string handling
+  has known argument-shape ambiguities; keep policy narrow and avoid assuming
+  declared JSON types alone reject malformed calls.
+- **Scrubbing is heuristic.** It can miss unknown, encoded, split, short, or
+  structured secrets. Proxied MCP non-text content is not scrubbed.
+- **Introspection is trusted-host activity.** Help/version probes currently use
+  the server environment and their raw output is cached.
+- **Network auth is optional in validation.** A TCP listener without
+  `auth_token_file` is unauthenticated. HTTP body and server timeout hardening is
+  limited; bind narrowly and use another network boundary when exposed.
+- **Upstream MCP filtering is name-only.** Allowed tool arguments pass through
+  unchanged, and `mcp_servers.*.working_dir` is not currently applied.
+- **Shared harness HOME persists across projects.** One project can alter state
+  observed by later projects using the same pool.
+
+These are current implementation limits, not planned guarantees. Track changes
+through [releases and repository history](releases.qmd).
+
 ## Deployment patterns
 
 The recommended default is `wraptool up`: from any git repo it brings up
@@ -193,5 +231,7 @@ systemd recipes.
 
 ## Reporting
 
-Security issues: file a confidential issue at
-[forge.snamellit.com/pti/wraptool](https://forge.snamellit.com/pti/wraptool).
+The project does not currently publish a private security-reporting channel.
+Do not place credentials, exploit details, or other sensitive material in a
+public issue. This is an unresolved project gap, tracked alongside other work in
+the [issue tracker](https://forge.snamellit.com/pti/wraptool/issues).

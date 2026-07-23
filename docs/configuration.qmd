@@ -24,15 +24,14 @@ section and its nested `web` section are not supported: move MCP settings from
 mcp:          # how the MCP transport is exposed
 admin:        # operator-only request review UI
 tools:        # one entry per wrapped CLI tool
-mcp_servers:  # experimental — see below
+mcp_servers:  # local stdio MCP servers, filtered by tool name
 ```
 
-`mcp_servers` (map keyed by server name) declares local stdio MCP servers that
-wraptool spawns and polices. It is **present but experimental**: the config type
-exists (`command`/`args`/`working_dir`/`env`/`env_files`/`timeout`, plus
-`allow`/`deny` lists of upstream tool names), but the policy engine, config
-editors, and rule CRUD do not operate on it yet, until extended in a later
-phase.
+`mcp_servers` declares local stdio MCP servers that wraptool spawns and filters.
+Only explicitly allowed upstream tool names are exposed; deny wins. Argument
+schemas and values pass through without CLI-style constraints. Capability
+requests and the config editors do not manage these rules. See [MCP
+integration](mcp-integration.qmd#proxy-local-mcp-servers).
 
 ## `mcp`
 
@@ -41,7 +40,7 @@ phase.
 | `transport` | `stdio` \| `sse` \| `unix` | `stdio` | MCP transport |
 | `listen`    | string | — | `host:port` (sse) or socket path (unix) |
 | `auth_token_file` | string | — | Bearer token file for sse/unix |
-| `log_level` | string | `info` | log verbosity |
+| `log_level` | string | `info` | parsed and defaulted; currently does not change logging |
 | `request_log` | string | XDG data dir | path to capability-request JSONL |
 | `allowed_cwd_roots` | `[]string` | — | when non-empty, constrains a client-supplied cwd to these roots (symlinks resolved); a cwd outside them is refused. Empty = no containment |
 
@@ -184,11 +183,10 @@ wraptool config validate ./config.yaml   # an explicit file
 ```
 
 It exits non-zero with a message on the first problem, and touches nothing —
-no server, no spawned tools. Unlike the lenient load the running server does
-(which ignores unknown keys for forward-compatibility), validation **strictly
-decodes** the YAML: a misspelled key such as `flag_constraint` (instead of
-`flag_constraints`) is reported rather than silently dropped. It then applies
-defaults and runs the same semantic checks `serve` does at startup.
+no server, no spawned tools. Validation, server startup, and hot reload all
+**strictly decode** the YAML: a misspelled key such as `flag_constraint`
+(instead of `flag_constraints`) is reported rather than silently dropped. It
+then applies defaults and runs the same semantic checks `serve` does at startup.
 
 Handy before an edit that the server would otherwise hot-reload: a config that
 fails validation is rejected on reload and the previous policy stays in effect,
@@ -224,16 +222,32 @@ subcommands:
 Each child process gets a minimal base environment:
 
 - `PATH` — the tool binary's own directory prepended to the **server's
-  inherited `PATH`** (falling back to `/usr/bin:/bin` only when that is unset).
-  PATH is the one variable inherited from wraptool's environment — nothing else
-  is — so a tool finds both co-located helpers (e.g. `kubectl` →
+  inherited `PATH`** (falling back to `/usr/bin:/bin` only when that is unset),
+  so a tool finds both co-located helpers (e.g. `kubectl` →
   `gke-gcloud-auth-plugin`) and genuine runtime deps in a separate prefix (e.g.
-  `git` → `ssh` on a store-based distro like Guix), without leaking credentials
-- `HOME`, `LANG`
+  `git` → `ssh` on a store-based distro like Guix)
+- `HOME` — copied from the server environment; override it in tool `env` when
+  user-global configuration or credentials must not be visible
+- `LANG=C.UTF-8`
 - Variables from `env_files` (merged in order)
 - Variables from inline `env` (override `env_files`)
 
-Nothing from the parent shell leaks unless explicitly listed.
+No other parent variable is inherited. This minimizes ambient environment
+exposure, but inheriting `HOME` means it is not by itself credential isolation
+for host-side child processes.
+
+## `mcp_servers.<name>`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | required | Child command; resolved by `exec`, not required to be absolute |
+| `args` | `[]string` | — | Child arguments |
+| `working_dir` | string | — | Parsed, but currently not applied to the child process |
+| `env`, `env_files` | map, list | — | Child environment additions |
+| `timeout` | duration | `30s` | Per-tool-call timeout |
+| `init_timeout` | duration | `10s` | Initialization budget |
+| `name_prefix` | string | map key | Prefix for exposed tools |
+| `allow`, `deny` | list of `{tool: name}` | — | Exact upstream names; default-deny and deny-first |
 
 ## Platform paths
 

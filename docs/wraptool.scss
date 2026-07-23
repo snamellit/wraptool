@@ -1,59 +1,178 @@
-// wraptool brand overlay for zephyr.
-// TODO: replace placeholder values with exact tokens from the official
-// wraptool styleguide (logo SVG, exact hex codes, type stack).
+// Industrial boundary-marker visual language: dark host surfaces, safety amber,
+// and a monospace accent for policy and command material.
 
 /*-- scss:defaults --*/
 
-$wraptool-red:     #E60028;   // TODO: confirm exact brand red
-$wraptool-black:   #1A1A1A;
-$wraptool-grey:    #4A4A4A;
-$wraptool-grey-2:  #E5E5E5;
+$wraptool-amber:   #f5b942;
+$wraptool-orange:  #d97706;
+$wraptool-black:   #111820;
+$wraptool-ink:     #26313d;
+$wraptool-grey:    #586575;
+$wraptool-grey-2:  #e8edf2;
+$wraptool-paper:   #f7f8f6;
 
-$primary:         $wraptool-red;
+$primary:         $wraptool-orange;
 $body-color:      $wraptool-black;
-$body-bg:         #FFFFFF;
-$link-color:      $wraptool-red;
-$link-hover-color: darken($wraptool-red, 10%);
+$body-bg:         $wraptool-paper;
+$link-color:      #9a4d00;
+$link-hover-color: #713800;
 
-$font-family-sans-serif: "Source Sans 3", "Inter", "Helvetica Neue", Arial, sans-serif;
+$font-family-sans-serif: "IBM Plex Sans", "Aptos", "Segoe UI", sans-serif;
+$font-family-monospace: "IBM Plex Mono", "Cascadia Code", "Liberation Mono", monospace;
 $headings-font-weight:   600;
 $headings-color:         $wraptool-black;
 
 $navbar-bg:              $wraptool-black;
 $navbar-fg:              #FFFFFF;
-$navbar-hl:              $wraptool-red;
+$navbar-hl:              $wraptool-amber;
 
-$code-color:             $wraptool-red;
+$code-color:             #8a4200;
 $code-bg:                $wraptool-grey-2;
 
 // Mermaid diagram theming. Without an explicit $mermaid-edge-color the
 // flowchart edge lines resolve to an (effectively invisible) stroke on
 // the white background, leaving only the arrowheads visible. Setting the
 // full set keeps nodes/labels/edges legible and on-brand.
-$mermaid-bg-color:        #FFFFFF;
+$mermaid-bg-color:        $wraptool-paper;
 $mermaid-fg-color:        $wraptool-black;
 $mermaid-edge-color:      $wraptool-grey;
 $mermaid-node-bg-color:   $wraptool-grey-2;
 $mermaid-node-fg-color:   $wraptool-black;
-$mermaid-label-bg-color:  #FFFFFF;
+$mermaid-label-bg-color:  $wraptool-paper;
 $mermaid-label-fg-color:  $wraptool-black;
 
 /*-- scss:rules --*/
 
 .navbar-brand {
   font-weight: 700;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
 }
 
 .sidebar-title {
-  color: $wraptool-red;
+  color: $wraptool-orange;
 }
 
-h1, h2 {
-  border-bottom: 2px solid $wraptool-red;
-  padding-bottom: 0.2em;
+h1, h2, h3 {
+  letter-spacing: -0.025em;
 }
 
 a code {
   color: inherit;
+}
+
+.navbar {
+  border-bottom: 3px solid $wraptool-amber;
+}
+
+.quarto-title-banner {
+  background:
+    linear-gradient(105deg, rgba(17, 24, 32, .98), rgba(28, 39, 50, .94)),
+    repeating-linear-gradient(135deg, transparent 0 18px, rgba(245, 185, 66, .12) 18px 36px);
+  color: #fff;
+  padding-block: clamp(3rem, 8vw, 7rem);
+}
+
+.quarto-title-banner .title,
+.quarto-title-banner .subtitle {
+  color: #fff;
+  max-width: 900px;
+}
+
+.quarto-title-banner .title {
+  font-size: clamp(2.5rem, 7vw, 5.6rem);
+  line-height: .98;
+}
+
+.quarto-title-banner .subtitle {
+  color: #ced7df;
+  font-size: clamp(1.1rem, 2vw, 1.5rem);
+  margin-top: 1.25rem;
+}
+
+.hero-actions {
+  background: $wraptool-black;
+  display: flex;
+  flex-wrap: wrap;
+  gap: .8rem;
+  padding: 0 max(1rem, calc((100vw - 1320px) / 2)) 2.5rem;
+}
+
+.hero-actions .btn-primary {
+  background: $wraptool-amber;
+  border-color: $wraptool-amber;
+  color: $wraptool-black;
+  font-weight: 700;
+}
+
+.boundary-strip {
+  display: grid;
+  grid-template-columns: 1fr minmax(190px, .6fr) 1fr;
+  margin: 2.5rem auto 4rem;
+  max-width: 1100px;
+  border: 1px solid #bcc6cf;
+  box-shadow: 0 14px 35px rgba(17, 24, 32, .09);
+}
+
+.boundary-zone,
+.boundary-gate {
+  padding: 1.35rem;
+}
+
+.boundary-zone {
+  background: #fff;
+}
+
+.boundary-zone-host {
+  background: $wraptool-ink;
+  color: #fff;
+}
+
+.boundary-gate {
+  background: repeating-linear-gradient(135deg, $wraptool-amber 0 12px, #151d25 12px 24px);
+  color: #fff;
+  text-align: center;
+  text-shadow: 0 1px 3px #000;
+}
+
+.boundary-zone p,
+.boundary-gate p {
+  margin-bottom: 0;
+}
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0 3rem;
+}
+
+.feature-card {
+  background: #fff;
+  border-top: 4px solid $wraptool-amber;
+  padding: 1.25rem;
+  box-shadow: 0 8px 24px rgba(17, 24, 32, .07);
+}
+
+.feature-card h3 {
+  margin-top: 0;
+}
+
+pre.sourceCode {
+  border-left: 4px solid $wraptool-amber;
+}
+
+.callout {
+  background: #fff;
+}
+
+@media (max-width: 767px) {
+  .boundary-strip,
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .boundary-gate {
+    background: repeating-linear-gradient(135deg, $wraptool-amber 0 10px, #151d25 10px 20px);
+  }
 }

@@ -1,0 +1,132 @@
+---
+title: "CLI reference"
+description: "Commands and flags validated against the current Cobra command tree."
+---
+
+This reference is validated against the Cobra command tree in `cmd/` and the
+output of `go run . <command> --help`. `wraptool --help` remains authoritative
+for the binary you have installed.
+
+## Top level
+
+| Command | Purpose |
+|---|---|
+| `wraptool` | In a Git repository, run `up` with defaults; outside one, show help |
+| `wraptool serve` | Start the MCP server |
+| `wraptool up` | Ensure the shared server and enter a project container |
+| `wraptool down` | Stop or remove this worktree's Dev Container |
+| `wraptool init` | Generate harness MCP configuration |
+| `wraptool init devcontainer` | Scaffold a new Dev Container config |
+| `wraptool harness` | Inspect or install shared harness binaries |
+| `wraptool requests` | Review capability requests |
+| `wraptool server` | Inspect or stop the shared server |
+| `wraptool config validate` | Strictly decode and validate configuration |
+| `wraptool version` | Print build version, revision, dirty state, and Go version |
+| `wraptool completion` | Generate shell completion for bash, fish, PowerShell, or zsh |
+
+`--version` prints the compact version. `version` prints the fuller build
+identity.
+
+## Server and container lifecycle
+
+### `serve`
+
+```text
+wraptool serve [-c|--config PATH]
+```
+
+Config path precedence is flag, `WRAPTOOL_CONFIG`, then the XDG default. The
+configured transport determines whether the process uses stdio, TCP HTTP, or a
+Unix socket.
+
+### `up`
+
+```text
+wraptool up [--config PATH] [--no-server] [--no-container]
+            [--runtime auto|guix|devcontainer]
+            [--shell auto|always|never] [--workspace PATH]
+            [--harness NAME]
+```
+
+`--runtime` defaults to `auto`; it selects Guix only when `guix` is on `PATH`
+and the worktree contains `manifest.scm`, otherwise Dev Container. `--harness`
+defaults to `claude`. Orchestration currently requires `mcp.transport: sse`.
+
+### `down`
+
+```text
+wraptool down [--workspace PATH] [--rm]
+```
+
+This finds a Dev Container by its workspace label. `--rm` removes it with force;
+without the flag it is stopped. Guix containers are transient and are not
+managed by `down`. The shared wraptool server remains running.
+
+### `server`
+
+```text
+wraptool server status [-c|--config PATH]
+wraptool server stop
+```
+
+`status` combines PID-file liveness with TCP reachability. `stop` sends SIGTERM
+to the process recorded by the shared PID file.
+
+## Client configuration
+
+### `init`
+
+```text
+wraptool init --harness NAME[,NAME...] [--transport stdio|sse|unix]
+              [--url URL] [--socket PATH] [--global] [--config PATH]
+```
+
+`--harness` is required and repeatable; comma-separated values and `all` are
+accepted. Known names are `agy`, `claude`, `cursor`, `opencode`, `gemini`, `pi`,
+and `roo`. Project output is merged into each harness's JSON file when that file
+contains valid JSON.
+
+::: {.callout-warning}
+Unix client generation is incomplete: `--socket` does not create a bridge and
+most listed harnesses expect an HTTP URL. Use an explicit bridge such as `socat`
+or choose TCP. Authenticated Roo SSE generation is not verified and is rejected.
+:::
+
+### `init devcontainer`
+
+```text
+wraptool init devcontainer [--harness claude|opencode|pi|agy|gemini]
+  [--lang go,node,java,python,rust] [--base ubuntu|debian|alpine|IMAGE]
+  [--out PATH] [--name NAME] [--force]
+```
+
+The command writes a new JSONC file and refuses to overwrite by default. npm
+harnesses automatically add the Node feature. It is a scaffold, not a merger.
+
+### `harness`
+
+```text
+wraptool harness list
+wraptool harness install HARNESS
+```
+
+`install` manages container CLI harnesses in the developer harness pool. It does
+not install host IDEs. Gemini currently has no automated installer.
+
+## Requests and validation
+
+```text
+wraptool requests list [--status pending|approved|denied|""]
+wraptool requests approve REQUEST_ID [--apply]
+wraptool requests deny REQUEST_ID [--reason TEXT]
+wraptool config validate [PATH]
+wraptool config validate --config PATH
+```
+
+The default request-list filter is `pending`; an empty status displays all.
+`approve --apply` first records approval, then attempts the atomic config edit.
+If editing fails, request status remains approved while policy remains unchanged.
+
+The positional config path and `--config` cannot be used together. Validation
+strictly rejects unknown YAML keys and performs the same semantic checks used by
+`serve`, without starting a server or wrapped tools.

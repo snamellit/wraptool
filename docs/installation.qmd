@@ -1,0 +1,70 @@
+---
+title: "Installation"
+description: "Build and install Wraptool from source with Go or the repository Guix manifest."
+---
+
+## Current distribution status
+
+Wraptool is currently installed from source. The repository does not yet publish
+versioned binary archives or packages, so do not rely on a download URL or a
+package-manager name.
+
+## Build with Go
+
+Clone the repository, then build the main package with Go 1.26.0 or newer (the
+version declared by `go.mod`):
+
+```bash
+git clone https://forge.snamellit.com/pti/wraptool.git
+cd wraptool
+go build -o wraptool .
+./wraptool version
+```
+
+Move the resulting binary to a directory on your `PATH` using the installation
+conventions for your system. Using `GOTOOLCHAIN=local` makes a version mismatch
+fail rather than downloading a toolchain implicitly.
+
+```bash
+GOTOOLCHAIN=local go build -o wraptool .
+```
+
+## Build with Guix
+
+The repository's flat `manifest.scm` supplies Go, Git, Quarto, Node, the linter,
+and shell utilities used by development and containers:
+
+```bash
+guix shell -m manifest.scm -- go build -o wraptool .
+guix shell -m manifest.scm -- ./wraptool version
+```
+
+Guix package versions depend on the caller's channel state; the repository does
+not currently include a `channels.scm` lock. Review changes to `manifest.scm`
+before evaluating it because Guix manifests are executable Scheme.
+
+## Verify the checkout
+
+```bash
+go test ./...
+go vet ./...
+go build -o wraptool .
+./wraptool --help
+```
+
+The full contributor checks, including formatting and `golangci-lint`, are in
+[Contributing](contributing.qmd).
+
+## Runtime dependencies
+
+Wraptool itself is a Go binary. Individual features need additional host tools:
+
+| Feature | Host dependency |
+|---|---|
+| Wrapped CLI | The configured absolute binary and any helpers it launches |
+| `up --runtime=guix` | `guix`, plus `manifest.scm` in the worktree |
+| `up --runtime=devcontainer` | `devcontainer` and its container runtime |
+| Harness installation | Guix for automated pool installers; otherwise use the Dev Container feature |
+
+Proceed to [Getting started](getting-started.qmd) to create a policy and launch
+the server.

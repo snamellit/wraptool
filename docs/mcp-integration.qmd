@@ -1,0 +1,98 @@
+---
+title: "MCP integration"
+description: "Connect MCP harnesses and proxy local MCP servers through Wraptool."
+---
+
+## Endpoints and transports
+
+| Server transport | Endpoint | Notes |
+|---|---|---|
+| `stdio` | process stdin/stdout | Per-session; no shared PID file |
+| `sse` | `/sse` and `/mcp` on configured TCP listener | Persistent server |
+| `unix` | `/sse` and `/mcp` over a Unix socket | Persistent; client support usually needs a bridge |
+
+The HTTP listener serves legacy SSE at `/sse` and Streamable HTTP at `/mcp`.
+One optional Bearer-token wrapper covers both. Network authentication is not
+mandatory in validation, so configure `auth_token_file` whenever the listener is
+reachable beyond a trusted loopback boundary.
+
+## Generate client configuration
+
+For a host-side Claude Code client:
+
+```bash
+wraptool init --harness claude \
+  --url http://127.0.0.1:8717/sse
+```
+
+For multiple clients:
+
+```bash
+wraptool init --harness claude,cursor,opencode \
+  --url http://127.0.0.1:8717/sse
+```
+
+The generator reads the configured MCP token and writes a Bearer header for
+network clients. Project-level URLs include `?cwd=<current-directory>`. That
+value is client-controlled; set `mcp.allowed_cwd_roots` to enforce a host-side
+boundary.
+
+Generated files can contain the MCP token and should be treated as secrets. Do
+not commit `.mcp.json`, `opencode.json`, or equivalent harness configuration.
+
+## Harness locations
+
+| Harness | Project file | Global file |
+|---|---|---|
+| Antigravity (`agy`) | `.agents/mcp_config.json` | `~/.gemini/antigravity-cli/mcp_config.json` |
+| Claude Code | `.mcp.json` | `~/.claude.json` |
+| Cursor | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
+| OpenCode | `opencode.json` | `~/.config/opencode/config.json` |
+| Gemini CLI | `.gemini/settings.json` | `~/.gemini/settings.json` |
+| Pi | `.pi/mcp.json` | `~/.pi/agent/mcp.json` |
+| Roo Code | `.roo/mcp.json` | no global target |
+
+Antigravity uses Streamable HTTP, so generation changes the supplied endpoint
+path to `/mcp`. Pi integration uses the third-party `pi-mcp-adapter` because Pi
+does not natively expose this MCP client configuration.
+
+## Container clients
+
+Container loopback is not host loopback. Prefer `wraptool up`, which injects the
+token and worktree path and handles runtime-specific addressing. For a manually
+wired Dev Container, bind the server to the Docker gateway or a wildcard address
+and require Bearer authentication. See [Dev containers](devcontainers.qmd).
+
+## Proxy local MCP servers
+
+Wraptool can spawn a local stdio MCP server and expose only selected upstream
+tool names:
+
+```yaml
+mcp_servers:
+  issue_tracker:
+    command: /absolute/path/to/server
+    args: ["--stdio"]
+    timeout: 30s
+    init_timeout: 10s
+    name_prefix: tracker
+    env_files:
+      - ~/.config/wraptool/tracker.env
+    allow:
+      - tool: list_issues
+      - tool: get_issue
+    deny:
+      - tool: delete_issue
+```
+
+The exposed names become `tracker_list_issues` and `tracker_get_issue`. Deny
+wins and unlisted names are hidden. Arguments and input schemas pass through
+unchanged: unlike wrapped CLI tools, upstream MCP policy has no per-argument
+constraints. Text results and errors are scrubbed, but non-text MCP content is
+not scrubbed and MCP output has no equivalent of the CLI output cap.
+
+::: {.callout-warning title="Current limitations"}
+`mcp_servers.*.working_dir` is parsed but is not currently assigned to the child
+process. Capability-request apply and Web UI rule editing only manage CLI rules,
+not proxied MCP rules. Treat both as planned work, not active controls.
+:::

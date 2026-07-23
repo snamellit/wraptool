@@ -1,0 +1,73 @@
+---
+title: "Contributing"
+---
+
+## Development environment
+
+The repository toolchain is described by `manifest.scm` and used by the Forgejo
+`guix` runner:
+
+```bash
+guix shell -m manifest.scm
+```
+
+The manifest is executable Scheme. Review changes before running it; the
+repository `.envrc` uses `require_allowed` to make changed executable inputs
+require a fresh direnv approval.
+
+## Build and test
+
+```bash
+go build -o wraptool .
+go test ./...
+go vet ./...
+golangci-lint run ./...
+```
+
+Format changed Go files with `gofmt`. CI also checks that all tracked Go files
+are formatted. Do not let Go download a different toolchain silently in
+reproducibility checks:
+
+```bash
+GOTOOLCHAIN=local go test ./...
+```
+
+## Documentation
+
+Quarto is included in `manifest.scm`. Preview from the repository root:
+
+```bash
+guix shell -m manifest.scm -- quarto preview docs
+```
+
+Build exactly as the Pages workflow does:
+
+```bash
+guix shell -m manifest.scm -- quarto render docs
+```
+
+The command writes `docs/_site/`. Generated output and Quarto caches are ignored
+and must not be committed to `main`. Use relative links for repository pages and
+assets so the site works below the production `/wraptool/` path.
+
+## Documentation accuracy
+
+CLI reference changes should be checked against both Cobra source and live help:
+
+```bash
+go run . --help
+go run . up --help
+go run . init --help
+```
+
+Security documentation must distinguish implemented controls from planned work
+and list known limitations. Design documents may describe future phases; they
+are not automatically statements of current behavior.
+
+## Change workflow
+
+Open issues and pull requests at the [Forgejo
+repository](https://forge.snamellit.com/pti/wraptool). Keep changes focused and
+include tests beside the Go package they exercise. The project does not currently
+publish a private security-reporting channel; do not place secrets or exploit
+details in a public issue.

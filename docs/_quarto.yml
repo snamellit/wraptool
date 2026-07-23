@@ -1,49 +1,85 @@
 project:
   type: website
   output-dir: _site
+  render:
+    - "*.qmd"
+    - "*.md"
+    - "!presentation.qmd"
 
 website:
   title: "wraptool"
-  description: "MCP server that wraps CLI tools behind a security whitelist."
+  description: "A credential boundary between AI coding environments and privileged CLI tools."
+  site-url: https://pti.pages.snamellit.com/wraptool/
   repo-url: https://forge.snamellit.com/pti/wraptool
-  repo-actions: [source, issue]
+  repo-subdir: docs
+  page-navigation: true
+  back-to-top-navigation: true
+  search:
+    location: navbar
+    type: overlay
+    copy-button: true
   navbar:
+    background: dark
     left:
       - href: index.qmd
         text: Home
       - href: getting-started.qmd
         text: Getting Started
-      - href: devcontainers.qmd
-        text: Dev Containers
-      - href: configuration.qmd
-        text: Configuration
+      - text: Reference
+        menu:
+          - installation.qmd
+          - configuration.qmd
+          - cli-reference.qmd
+          - mcp-integration.qmd
       - href: security.qmd
         text: Security
-      - href: hot-reload.qmd
-        text: Hot-Reload
-      - href: web-ui.qmd
-        text: Web UI
-      - href: git-hardening.qmd
-        text: Git hardening
-      - href: presentation.qmd
-        text: Slides
+      - text: Operations
+        menu:
+          - examples.qmd
+          - troubleshooting.qmd
+          - hot-reload.qmd
+          - web-ui.qmd
     right:
       - icon: git
         href: https://forge.snamellit.com/pti/wraptool
+        aria-label: Wraptool source repository
   sidebar:
     style: docked
+    search: true
     contents:
       - index.qmd
-      - getting-started.qmd
-      - devcontainers.qmd
-      - configuration.qmd
-      - security.qmd
-      - hot-reload.qmd
-      - web-ui.qmd
-      - git-hardening.qmd
-      - isolated-environments.md
-      - text: "---"
-      - presentation.qmd
+      - section: Start
+        contents:
+          - getting-started.qmd
+          - installation.qmd
+      - section: Reference
+        contents:
+          - configuration.qmd
+          - cli-reference.qmd
+          - mcp-integration.qmd
+      - section: Trust boundary
+        contents:
+          - architecture.qmd
+          - security.qmd
+          - isolated-environments.md
+          - git-hardening.qmd
+      - section: Operate
+        contents:
+          - examples.qmd
+          - hot-reload.qmd
+          - web-ui.qmd
+          - troubleshooting.qmd
+      - section: Project
+        contents:
+          - contributing.qmd
+          - releases.qmd
+  page-footer:
+    left: "Wraptool is GPLv3-licensed software."
+    right:
+      - text: Source
+        href: https://forge.snamellit.com/pti/wraptool
+      - text: Issues
+        href: https://forge.snamellit.com/pti/wraptool/issues
 
 format:
   html:
@@ -55,6 +91,7 @@ format:
     code-overflow: wrap
     anchor-sections: true
     smooth-scroll: true
+    link-external-newwindow: true
 
 # Presentation slides use revealjs; declared in the file's own
 # frontmatter rather than at project level so the website pages do

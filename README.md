@@ -94,26 +94,35 @@ hot-reloads the change. See [`docs/web-ui.qmd`](docs/web-ui.qmd).
 
 ## Documentation
 
-Full documentation lives in `docs/` and is rendered with
-[Quarto](https://quarto.org/) to a website (published via GitLab
-Pages):
+Full documentation lives in `docs/`, is rendered with
+[Quarto](https://quarto.org/), and is published at
+<https://pti.pages.snamellit.com/wraptool/> from the Forgejo `pages` branch:
 
 | Page | Source |
 |------|--------|
 | Getting started | [`docs/getting-started.qmd`](docs/getting-started.qmd) |
+| Installation | [`docs/installation.qmd`](docs/installation.qmd) |
 | Configuration reference | [`docs/configuration.qmd`](docs/configuration.qmd) |
+| CLI reference | [`docs/cli-reference.qmd`](docs/cli-reference.qmd) |
+| MCP integration | [`docs/mcp-integration.qmd`](docs/mcp-integration.qmd) |
+| Architecture | [`docs/architecture.qmd`](docs/architecture.qmd) |
 | Security model | [`docs/security.qmd`](docs/security.qmd) |
 | Hot-reload & capability requests | [`docs/hot-reload.qmd`](docs/hot-reload.qmd) |
 | Request-review Web UI | [`docs/web-ui.qmd`](docs/web-ui.qmd) |
 | Isolated environments | [`docs/isolated-environments.md`](docs/isolated-environments.md) |
-| Overview slides | [`docs/presentation.qmd`](docs/presentation.qmd) |
+| Troubleshooting | [`docs/troubleshooting.qmd`](docs/troubleshooting.qmd) |
+| Contributing | [`docs/contributing.qmd`](docs/contributing.qmd) |
 
 ### Build the site locally
 
 ```bash
-quarto preview docs        # live-reloading dev server
-quarto render  docs        # produce docs/_site/
+guix shell -m manifest.scm -- quarto preview docs
+guix shell -m manifest.scm -- quarto render docs
 ```
+
+The render writes `docs/_site/`, which is ignored and must not be committed to
+`main`. The deployment workflow publishes only that generated tree to the
+orphan `pages` branch.
 
 ## License
 
