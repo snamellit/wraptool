@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,19 @@ func TestSelectRuntime(t *testing.T) {
 				t.Fatalf("runtime = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBringUpGuixContainerReportsMissingGuixDuringWarmup(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "manifest.scm"), []byte("()"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+
+	err := bringUpGuixContainer(root, "", "127.0.0.1:8717", "claude", false)
+	if err == nil || !strings.Contains(err.Error(), "realizing guix container profile") {
+		t.Fatalf("missing guix warm-up error not reported: %v", err)
 	}
 }
 
