@@ -1,6 +1,4 @@
 ;; Channels required to evaluate manifest.scm from a clean checkout.
-(use-modules (guix channels))
-
 (cons*
  (channel
   (name 'snamellit)
