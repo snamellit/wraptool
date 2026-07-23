@@ -103,7 +103,9 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		fmt.Println("realizing container profile ...")
 		pre := exec.Command("guix", "shell", "-m", manifest, "--", "true")
 		pre.Stdout, pre.Stderr = os.Stdout, os.Stderr
-		_ = pre.Run() // best-effort cache warm; non-fatal
+		if err := pre.Run(); err != nil {
+			return fmt.Errorf("realizing guix container profile: %w", err)
+		}
 		fmt.Printf("\nguix container prepared. Enter it with:\n  wraptool up --runtime=guix\n")
 		return nil
 	}
