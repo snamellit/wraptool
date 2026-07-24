@@ -44,6 +44,11 @@ the complete fingerprint above. CI imports the committed key into a temporary
 keyring and rejects an invalid, unsigned, wrong-key, or wrong-commit tag before
 building release artifacts.
 
+If release infrastructure fails after the signed tag is published, do not move
+or recreate the tag. Run **Publish release binaries** manually from Forgejo
+Actions and supply the existing tag name; the workflow restores and verifies
+the original annotated tag before retrying publication.
+
 The tag is the only source of the release version. The Forgejo workflow derives
 the artifact names and linker-injected binary version from an exact-match
 `git describe`; no version number is maintained in Go source.
