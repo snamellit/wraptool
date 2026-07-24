@@ -44,7 +44,7 @@ internal/
   requestlog/                   append-only JSONL event log (capability requests + tool-call audit); state is a projection folded over the stream, never rewritten in place
   webui/                        operator-facing request-review Web UI (stdlib net/http + html/template, go:embed)
   paths/                        XDG platform paths via adrg/xdg
-  buildinfo/                    build identity stamped from `runtime/debug.ReadBuildInfo` (VCS revision + dirty flag, no ldflags needed; default `-buildvcs`). Version = `0.1.0+<short-sha>[-dirty]`. Feeds MCP `serverInfo.version` + upstream ClientInfo, `wraptool --version`/`wraptool version`, and the `wraptool_info` MCP tool (`mcptools/info_tool.go`) which reports build identity + per-tool introspection freshness (`introspect.CacheStamp`) so a client can confirm which binary is serving and whether an introspection change is live — instead of fingerprinting tool schemas.
+  buildinfo/                    build identity from a release-tag version injected with `go build -ldflags -X` plus `runtime/debug.ReadBuildInfo` VCS revision/dirty state. Tagged builds report exact SemVer; local builds report `devel+<short-sha>[-dirty]`. The tag is the sole release-version source. Feeds MCP `serverInfo.version` + upstream ClientInfo, `wraptool --version`/`wraptool version`, and the `wraptool_info` MCP tool (`mcptools/info_tool.go`) which reports build identity + per-tool introspection freshness (`introspect.CacheStamp`) so a client can confirm which binary is serving and whether an introspection change is live — instead of fingerprinting tool schemas.
 ```
 
 ## Key Design Decisions

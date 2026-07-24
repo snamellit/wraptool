@@ -11,9 +11,27 @@ history is the repository:
 
 Tags named `wraptool-v*` publish precompiled binaries for Linux, macOS, and
 Windows on AMD64 and ARM64. Each Forgejo release also includes a
-`checksums.txt` file containing SHA-256 checksums for its binaries.
+`checksums.txt` file containing SHA-256 checksums and `build-info.txt` recording
+the source commit, Go version, and hashes of the pinned Guix inputs.
 
-The in-binary version is derived from Go build VCS information:
+Create a release from a clean `main` branch that exactly matches `origin/main`:
+
+```bash
+./release-version patch
+```
+
+The argument can be `patch`, `minor`, `major`, or an explicit stable SemVer such
+as `0.2.0`. The script fetches release tags, calculates and validates the next
+version, runs the test suite, asks for confirmation, and pushes an annotated
+`wraptool-v*` tag. Use `--dry-run` to verify a release without creating a tag or
+`--yes` for a non-interactive release.
+
+The tag is the only source of the release version. The Forgejo workflow derives
+the artifact names and linker-injected binary version from an exact-match
+`git describe`; no version number is maintained in Go source.
+
+The in-binary version is derived from the release tag and Go build VCS
+information:
 
 ```bash
 wraptool version

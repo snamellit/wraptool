@@ -29,7 +29,10 @@ jobs:
 
             go test ./...
             mkdir dist
-            version=${GITHUB_REF_NAME#wraptool-v}
+            description=$(git describe --tags --match "wraptool-v[0-9]*" --exact-match)
+            printf "%s\n" "$description" | grep -Eq "^wraptool-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+            version=${description#wraptool-v}
+            ldflags="-X github.com/pti/wraptool/internal/buildinfo.version=$version"
 
             for target in \
               linux/amd64 linux/arm64 \
@@ -43,10 +46,17 @@ jobs:
                 output="$output.exe"
               fi
 
-              GOOS=$goos GOARCH=$goarch go build -trimpath -o "$output" .
+              GOOS=$goos GOARCH=$goarch go build -trimpath -ldflags "$ldflags" -o "$output" .
             done
 
-            (cd dist && sha256sum wraptool_* > checksums.txt)
+            {
+              echo "version=$version"
+              echo "tag=$description"
+              echo "commit=$(git rev-parse HEAD)"
+              go version
+              sha256sum channels.scm manifest.scm
+            } > dist/build-info.txt
+            (cd dist && sha256sum wraptool_* build-info.txt > checksums.txt)
           '
 
       - name: Publish Forgejo release
@@ -54,4 +64,4 @@ jobs:
         with:
           direction: upload
           release-dir: dist
-          release-notes: Precompiled wraptool binaries and SHA-256 checksums.
+          release-notes: Precompiled wraptool binaries, build metadata, and SHA-256 checksums.

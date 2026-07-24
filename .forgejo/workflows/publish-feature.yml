@@ -7,10 +7,10 @@ name: Publish dev container feature
 # feature in the dir; each is tagged from the `version` in its own
 # devcontainer-feature.json (:X, :X.Y, :X.Y.Z, :latest).
 #
-# To release: bump `version` in the feature's devcontainer-feature.json, then push
-# a tag (any trigger republishes the whole dir):
-#   git tag wraptool-v0.1.1 && git push origin wraptool-v0.1.1
-# or run this workflow manually.
+# Application release tags republish the current feature versions:
+#   ./release-version patch
+# To release only a feature, bump its devcontainer-feature.json version and push
+# a matching feature tag, or run this workflow manually.
 on:
   push:
     tags:
