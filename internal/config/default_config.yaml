@@ -20,7 +20,9 @@ mcp:
   # a direct `wraptool serve`, create it first (it must exist at config load):
   #   auth_token_file: ~/.config/wraptool/mcp-token
 
-# Operator review Web UI. NOT AI-facing — bind localhost only.
+# Operator review UI. NOT AI-facing — bind localhost only. `wraptool up` enables
+# this automatically at 127.0.0.1:8718 with a generated token; uncomment to
+# configure it explicitly, or run `wraptool up --no-admin` to disable it.
 # admin:
 #   listen: 127.0.0.1:8718
 #   auth_token_file: ~/.config/wraptool/admin-token

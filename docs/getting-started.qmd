@@ -182,7 +182,10 @@ and does three things:
 
 1. **Ensures the shared server is running** — if it isn't, it starts `wraptool
    serve` detached (pidfile + lock under `$XDG_RUNTIME_DIR`, auto-generating the
-   auth token), and waits for it to become reachable.
+   auth token), and waits for it to become reachable. It also brings up the
+   **operator review UI** at `127.0.0.1:8718` with its own generated token (so
+   you can approve the AI's capability requests) and prints its URL — disable
+   with `--no-admin`. The review UI is host-facing and always stays on loopback.
 2. **Brings up the project's container**, injecting the connection info: the auth
    token and this worktree's host path. On a Guix host it uses a **native Guix
    container** built from your project's `manifest.scm`; elsewhere it falls back
