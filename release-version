@@ -61,6 +61,10 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
   echo "local main must exactly match origin/main before releasing" >&2
   exit 1
 fi
+if ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
+  echo "Git user.name and user.email must be configured to create an annotated release tag" >&2
+  exit 1
+fi
 
 semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 latest=""
