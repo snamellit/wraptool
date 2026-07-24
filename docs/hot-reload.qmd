@@ -96,9 +96,9 @@ advertises in its own `--help` but policy does not yet permit:
 The AI reads the catalog, then names a real subcommand in its
 request. Appearing in `available` grants nothing: the subcommand is
 still denied until an operator approves it below. The catalog comes
-from the introspection cache, populated by a fixed `--help` argv at
-introspection time — no argument from the AI ever reaches a command
-line.
+from cache-backed introspection. A missing or stale cache may run the
+tool with a fixed `-h`, `--help`, or `help` argv; no argument from the
+AI ever reaches that command line.
 
 ### Operator workflow
 

@@ -36,10 +36,10 @@ type toolDiscovery struct {
 //
 // This reports policy; it does not change or bypass it. Every name here still
 // has to go through the capability-request flow and an operator's approval
-// before it can be called. The subcommand catalog is read from the server-side
-// introspection cache (populated by a fixed `--help` argv at introspection
-// time); nothing in this handler executes the wrapped binary on demand, and no
-// argument from the caller ever reaches an argv.
+// before it can be called. The subcommand catalog comes from cache-backed
+// introspection. A missing or stale cache may run the wrapped binary with a
+// fixed `-h` / `--help` / `help` argv; no argument from the caller ever reaches
+// that argv.
 //
 // liveConfig yields the current config, so a reload that adds a tool or an
 // allow rule is reflected without re-registering this tool.
