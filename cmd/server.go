@@ -5,7 +5,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
@@ -72,7 +71,7 @@ func newServerStopCmd() *cobra.Command {
 				fmt.Printf("server (pid %d) was not running; cleared stale pidfile\n", pid)
 				return nil
 			}
-			if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+			if err := terminateProcess(pid); err != nil {
 				return fmt.Errorf("signaling pid %d: %w", pid, err)
 			}
 			// Give it a moment to exit, then clean up.
@@ -112,11 +111,6 @@ func readPidFile() (int, error) {
 		return 0, err
 	}
 	return strconv.Atoi(strings.TrimSpace(string(b)))
-}
-
-// processAlive reports whether a process with the given pid exists (signal 0).
-func processAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
 }
 
 func addrSuffix(probe string) string {

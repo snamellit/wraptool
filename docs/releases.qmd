@@ -2,12 +2,16 @@
 title: "Releases and changes"
 ---
 
-Wraptool does not currently maintain a separate changelog file or publish binary
-release artifacts. The authoritative history is the repository:
+Wraptool does not currently maintain a separate changelog file. The authoritative
+history is the repository:
 
 - [Tags and releases](https://forge.snamellit.com/pti/wraptool/releases)
 - [Commit history](https://forge.snamellit.com/pti/wraptool/commits/branch/main)
 - [Open and completed work](https://forge.snamellit.com/pti/wraptool/issues)
+
+Tags named `wraptool-v*` publish precompiled binaries for Linux, macOS, and
+Windows on AMD64 and ARM64. Each Forgejo release also includes a
+`checksums.txt` file containing SHA-256 checksums for its binaries.
 
 The in-binary version is derived from Go build VCS information:
 

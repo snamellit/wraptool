@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
@@ -257,7 +256,7 @@ func spawnServer(configPath string) error {
 	cmd := exec.Command(exe, "serve", "--config", configPath)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // detach into its own session
+	configureDetached(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting server: %w", err)
 	}
@@ -280,12 +279,12 @@ func lockRuntime() (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening lock: %w", err)
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("locking: %w", err)
 	}
 	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = unlockFile(f)
 		f.Close()
 	}, nil
 }

@@ -2,24 +2,13 @@ package cmd
 
 import (
 	"log"
-	"os"
-	"os/signal"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
 
 	"github.com/fsnotify/fsnotify"
 )
-
-func handleSIGHUP(configPath string, reg *registrar) {
-	sighup := make(chan os.Signal, 1)
-	signal.Notify(sighup, syscall.SIGHUP)
-	for range sighup {
-		reloadConfig(configPath, reg, "SIGHUP")
-	}
-}
 
 // watchConfigFile watches the config file's parent directory for changes
 // and triggers a reload. Watching the directory (not the file) survives

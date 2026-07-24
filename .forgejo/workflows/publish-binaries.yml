@@ -1,0 +1,57 @@
+name: Publish release binaries
+
+# A wraptool release tag produces portable, statically linked binaries for the
+# common desktop/server platforms and uploads them to the matching Forgejo
+# release. Go cross-compiles every target on the native Guix runner.
+on:
+  push:
+    tags:
+      - 'wraptool-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: guix
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Test and build release binaries
+        run: |
+          guix time-machine -C channels.scm -- shell -m manifest.scm -- sh -ec '
+            export GOTOOLCHAIN=local
+            export CGO_ENABLED=0
+
+            go test ./...
+            mkdir dist
+            version=${GITHUB_REF_NAME#wraptool-v}
+
+            for target in \
+              linux/amd64 linux/arm64 \
+              darwin/amd64 darwin/arm64 \
+              windows/amd64 windows/arm64
+            do
+              goos=${target%/*}
+              goarch=${target#*/}
+              output="dist/wraptool_${version}_${goos}_${goarch}"
+              if test "$goos" = windows; then
+                output="$output.exe"
+              fi
+
+              GOOS=$goos GOARCH=$goarch go build -trimpath -o "$output" .
+            done
+
+            (cd dist && sha256sum wraptool_* > checksums.txt)
+          '
+
+      - name: Publish Forgejo release
+        uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        with:
+          direction: upload
+          release-dir: dist
+          release-notes: Precompiled wraptool binaries and SHA-256 checksums.

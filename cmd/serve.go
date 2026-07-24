@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/pti/wraptool/internal/buildinfo"
 	"github.com/pti/wraptool/internal/config"
@@ -132,7 +131,7 @@ func runServe(configPath string) error {
 		}
 		defer removePidFile()
 		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(sigCh, terminationSignals()...)
 		go func() {
 			<-sigCh
 			reg.closeAll()
@@ -302,7 +301,7 @@ func serveUnix(s *server.MCPServer, cfg *config.Config) error {
 	// Clean up socket on shutdown signals.
 	go func() {
 		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(sigCh, terminationSignals()...)
 		<-sigCh
 		log.Println("shutting down...")
 		srv.Close()
