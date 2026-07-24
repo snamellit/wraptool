@@ -120,6 +120,13 @@ release:binaries:
     GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
     CGO_ENABLED: "0"
     GOTOOLCHAIN: "local"
+  cache:
+    # Make the "same cache posture as lint" note above actually true: persist
+    # the in-project Go module/build cache across release runs (the module set
+    # is fixed per tag, so this only speeds up retries).
+    key: go-release
+    paths:
+      - .cache/
   script:
     # Tag-name format only — signature verification is Forgejo's job.
     - |
