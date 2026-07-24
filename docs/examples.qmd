@@ -2,31 +2,22 @@
 title: "Practical examples"
 ---
 
-## Read-only repository inspection
+## Keep credential-free operations local
 
-```yaml
-tools:
-  git:
-    binary: /usr/bin/git
-    allow:
-      - subcommand: [status]
-        flags: ["--short", "--branch", "--porcelain"]
-        arg_constraints:
-          positional_max: 0
-      - subcommand: [log]
-        flags: ["--oneline", "--graph", "-n"]
-        flag_constraints:
-          "-n": { type: integer, min: 1, max: 100 }
-        arg_constraints:
-          positional_max: 1
-      - subcommand: [diff]
-        flags: ["--stat", "--name-only", "--staged"]
-        arg_constraints:
-          positional_max: 2
+Read-only Git is not normally a Wraptool use case. Commands such as `git status`,
+`git log`, and `git diff` do not need host credentials, so run them directly in
+the isolated development container:
+
+```bash
+git status --short --branch
+git log --oneline -n 20
+git diff --stat
 ```
 
-An absent `arg_constraints` means unlimited positional arguments. Set
-`positional_max: 0` when a command needs none.
+This keeps the MCP surface smaller and avoids paying a policy and host-process
+boundary for work the container can already do safely. Use Wraptool for the
+operations that need host-only credentials or privileged configuration: private
+fetches, pushes, cloud APIs, cluster access, and credentialed MCP servers.
 
 ## Constrained push
 
@@ -52,6 +43,9 @@ Deny subcommands contain command tokens only. A rule such as `[config,
 Git can execute repository-controlled hooks, filters, helpers, and config. The
 subcommand allowlist does not neutralize those mechanisms; apply the dedicated
 [Git hardening](git-hardening.qmd) guidance.
+
+An absent `arg_constraints` means unlimited positional arguments. Set
+`positional_max: 0` when a command needs none.
 
 ## Restrict client CWD
 
@@ -87,6 +81,45 @@ tools:
 Environment files are simple `KEY=VALUE` lines. They do not implement dotenv
 quoting, interpolation, or `export` syntax. Later files override earlier files;
 inline values win last.
+
+## Proxy a credentialed MCP server
+
+Wraptool can also place a local stdio MCP server behind the credential boundary.
+This is useful when the upstream server needs a token that should remain on the
+host, and only a subset of its tools should reach the coding environment:
+
+```yaml
+mcp_servers:
+  issue_tracker:
+    command: /absolute/path/to/issue-tracker-mcp
+    args: ["--stdio"]
+    timeout: 30s
+    init_timeout: 10s
+    name_prefix: tracker
+    env_files:
+      - ~/.config/wraptool/issue-tracker.env
+    allow:
+      - tool: list_issues
+      - tool: get_issue
+      - tool: add_comment
+    deny:
+      - tool: delete_issue
+```
+
+Wraptool starts the child with a curated environment, discovers its tools, and
+registers the allowed set as `tracker_list_issues`, `tracker_get_issue`, and
+`tracker_add_comment`. Unlisted tools are hidden and deny wins.
+
+::: {.callout-warning title="MCP policy is coarser than CLI policy"}
+The upstream input schema and arguments pass through unchanged. MCP-server rules
+filter by exact tool name only; they do not provide CLI-style flag or argument
+constraints. Text results and errors are scrubbed, but non-text content is not,
+and proxied MCP output has no CLI-equivalent size cap. Capability requests and
+Web UI rule editing currently apply only to CLI rules.
+:::
+
+See [MCP integration](mcp-integration.qmd#proxy-local-mcp-servers) for lifecycle
+and current `working_dir` limitations.
 
 ## Review a denied request
 
