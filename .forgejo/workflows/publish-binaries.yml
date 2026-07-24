@@ -101,10 +101,42 @@ jobs:
           '
 
       - name: Publish Forgejo release
-        uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
-        with:
-          direction: upload
-          tag: ${{ inputs.tag || github.ref_name }}
-          sha: ${{ steps.build.outputs.commit }}
-          release-dir: dist
-          release-notes: Precompiled wraptool binaries, build metadata, and SHA-256 checksums.
+        env:
+          FORGEJO_TOKEN: ${{ github.token }}
+          FORGEJO_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ steps.build.outputs.commit }}
+        run: |
+          guix time-machine -C channels.scm -- shell curl jq nss-certs coreutils -- sh -ec '
+            api="${FORGEJO_URL%/}/api/v1/repos/$REPOSITORY"
+            auth="Authorization: token $FORGEJO_TOKEN"
+
+            if ! release=$(curl --silent --show-error --fail \
+              --header "$auth" "$api/releases/tags/$RELEASE_TAG"); then
+              payload=$(jq -n \
+                --arg tag "$RELEASE_TAG" \
+                --arg sha "$RELEASE_COMMIT" \
+                --arg body "Precompiled wraptool binaries, build metadata, and SHA-256 checksums." \
+                "{tag_name: \$tag, target_commitish: \$sha, name: \$tag, body: \$body, draft: false, prerelease: false}")
+              release=$(curl --silent --show-error --fail-with-body \
+                --request POST --header "$auth" --header "Content-Type: application/json" \
+                --data "$payload" "$api/releases")
+            fi
+            release_id=$(printf "%s\n" "$release" | jq -er ".id")
+
+            assets=$(curl --silent --show-error --fail --header "$auth" \
+              "$api/releases/$release_id/assets")
+            for asset in dist/*; do
+              name=${asset##*/}
+              existing_id=$(printf "%s\n" "$assets" | jq -r --arg name "$name" \
+                "first(.[] | select(.name == \$name) | .id) // empty")
+              if test -n "$existing_id"; then
+                curl --silent --show-error --fail --request DELETE --header "$auth" \
+                  "$api/releases/$release_id/assets/$existing_id"
+              fi
+              curl --silent --show-error --fail-with-body --retry 2 --retry-all-errors \
+                --request POST --header "$auth" --header "Content-Type: application/octet-stream" \
+                --data-binary "@$asset" "$api/releases/$release_id/assets?name=$name" \
+                >/dev/null
+            done
+          '
