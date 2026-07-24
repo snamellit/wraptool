@@ -26,6 +26,18 @@ jobs:
           guix time-machine -C channels.scm -- shell -m manifest.scm -- sh -ec '
             export GOTOOLCHAIN=local
             export CGO_ENABLED=0
+            expected_fingerprint=C8ABC91CAB2DC195B9763877DFABC43C55F2E63A
+
+            export GNUPGHOME=$(mktemp -d)
+            chmod 700 "$GNUPGHOME"
+            trap "rm -rf \"$GNUPGHOME\"" EXIT
+            fingerprint=$(gpg --batch --with-colons --import-options show-only \
+              --import release-signing-key.asc 2>/dev/null | \
+              grep "^fpr:" | cut -d: -f10 | sed -n "1p")
+            test "$fingerprint" = "$expected_fingerprint"
+            gpg --batch --import release-signing-key.asc
+            git verify-tag "$GITHUB_REF_NAME"
+            test "$(git rev-list -n1 "$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
 
             go test ./...
             mkdir dist

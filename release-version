@@ -16,6 +16,7 @@ EOF
 dry_run=false
 assume_yes=false
 requested=""
+signing_fingerprint=C8ABC91CAB2DC195B9763877DFABC43C55F2E63A
 
 for arg in "$@"; do
   case "$arg" in
@@ -63,6 +64,24 @@ if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
 fi
 if ! git var GIT_COMMITTER_IDENT >/dev/null 2>&1; then
   echo "Git user.name and user.email must be configured to create an annotated release tag" >&2
+  exit 1
+fi
+if ! command -v gpg >/dev/null 2>&1; then
+  echo "gpg is required to create a signed release tag" >&2
+  exit 1
+fi
+
+public_fingerprint=$(
+  gpg --batch --with-colons --import-options show-only \
+    --import release-signing-key.asc 2>/dev/null |
+    grep '^fpr:' | cut -d: -f10 | sed -n '1p'
+)
+if [[ "$public_fingerprint" != "$signing_fingerprint" ]]; then
+  echo "release-signing-key.asc does not contain expected key $signing_fingerprint" >&2
+  exit 1
+fi
+if ! gpg --batch --list-secret-keys "$signing_fingerprint" >/dev/null 2>&1; then
+  echo "secret release key $signing_fingerprint is not available in the host keyring" >&2
   exit 1
 fi
 
@@ -144,7 +163,7 @@ if [[ "$dry_run" == true ]]; then
   exit 0
 fi
 
-git tag -a "$tag" -m "wraptool $version"
+git tag -s -u "$signing_fingerprint" "$tag" -m "wraptool $version"
 if ! git push origin "$tag"; then
   git tag -d "$tag" >/dev/null
   echo "tag push failed; removed local $tag so the release can be retried" >&2

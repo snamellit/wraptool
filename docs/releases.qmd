@@ -22,9 +22,20 @@ Create a release from a clean `main` branch that exactly matches `origin/main`:
 
 The argument can be `patch`, `minor`, `major`, or an explicit stable SemVer such
 as `0.2.0`. The script fetches release tags, calculates and validates the next
-version, runs the test suite, asks for confirmation, and pushes an annotated
-`wraptool-v*` tag. Use `--dry-run` to verify a release without creating a tag or
-`--yes` for a non-interactive release.
+version, verifies that the release signing key is available, runs the test
+suite, asks for confirmation, and pushes a signed `wraptool-v*` tag. Run it on
+the trusted host where the GPG agent and private key are available, not inside
+the isolated harness container. Use `--dry-run` to verify a release without
+creating a tag or `--yes` for a non-interactive release.
+
+Release tags are signed by
+`C8ABC91CAB2DC195B9763877DFABC43C55F2E63A`. The public key is committed as
+[`release-signing-key.asc`](https://forge.snamellit.com/pti/wraptool/src/branch/main/release-signing-key.asc), making CI verification
+reproducible and independent of keyserver availability. The same key may be
+obtained from a public keyserver for independent verification, but always check
+the complete fingerprint above. CI imports the committed key into a temporary
+keyring and rejects an invalid, unsigned, wrong-key, or wrong-commit tag before
+building release artifacts.
 
 The tag is the only source of the release version. The Forgejo workflow derives
 the artifact names and linker-injected binary version from an exact-match
