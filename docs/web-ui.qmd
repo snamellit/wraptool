@@ -8,7 +8,7 @@ requests — the same approve / deny / apply workflow as the
 browser.
 
 It runs **inside the `serve` process** on its own listener,
-independent of the MCP transport, so it works even under `stdio`. It
+independent of the MCP transport, so it works regardless of transport. It
 reads the JSONL request log and applies approvals to the YAML config
 via the same merge as `requests approve --apply`; the running server
 then [hot-reloads](hot-reload.qmd) the change.

@@ -211,7 +211,7 @@ tools:
 
 ## Network transports
 
-- `stdio`, `sse`, `unix`.
+- `sse`, `unix`.
 - The HTTP listener serves **both** legacy SSE at `/sse` **and**
   Streamable HTTP at `/mcp` behind one Bearer wrapper (Antigravity
   negotiates the latter).

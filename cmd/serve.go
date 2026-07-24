@@ -39,12 +39,11 @@ func newServeCmd(use string, hidden bool) *cobra.Command {
 		Long: `Start the wraptool MCP server.
 
 Supported transports:
-  stdio  - communicate over stdin/stdout (default, for direct MCP client launch)
-  sse    - HTTP Server-Sent Events on a TCP address (e.g. 127.0.0.1:8717)
-  unix   - HTTP Server-Sent Events on a Unix domain socket (e.g. /run/wraptool.sock)
+  sse   - HTTP Server-Sent Events on a TCP address (default, e.g. 127.0.0.1:8717)
+  unix  - HTTP Server-Sent Events on a Unix domain socket (e.g. /run/wraptool.sock)
 
-For sse and unix transports, wraptool runs as an independent process.
-Claude Code connects to it via the mcpServers config:
+wraptool runs as an independent process. Claude Code connects to it via the
+mcpServers config:
 
   {"mcpServers": {"wraptool": {"url": "http://127.0.0.1:8717/sse"}}}
 

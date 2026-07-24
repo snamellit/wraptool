@@ -36,7 +36,7 @@ wraptool serve [-c|--config PATH]
 ```
 
 Config path precedence is flag, `WRAPTOOL_CONFIG`, then the XDG default. The
-configured transport determines whether the process uses stdio, TCP HTTP, or a
+configured transport determines whether the process uses a TCP HTTP listener or a
 Unix socket.
 
 ### `up`
@@ -77,7 +77,7 @@ to the process recorded by the shared PID file.
 ### `init`
 
 ```text
-wraptool init --harness NAME[,NAME...] [--transport stdio|sse|unix]
+wraptool init --harness NAME[,NAME...] [--transport sse|unix]
               [--url URL] [--socket PATH] [--global] [--config PATH]
 ```
 

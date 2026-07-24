@@ -107,8 +107,8 @@ func TestLoadStrictEmptyFileIsZeroConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStrict errored on an empty file: %v", err)
 	}
-	if cfg.MCP.Transport != "stdio" {
-		t.Errorf("defaults not applied to empty config: transport = %q", cfg.MCP.Transport)
+	if cfg.MCP.Transport != "sse" || cfg.MCP.Listen != "127.0.0.1:8717" {
+		t.Errorf("defaults not applied to empty config: transport=%q listen=%q", cfg.MCP.Transport, cfg.MCP.Listen)
 	}
 }
 
