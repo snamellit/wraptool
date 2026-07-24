@@ -50,10 +50,17 @@ func EnsureConfigFile(path string) (created bool, err error) {
 		}
 		return false, fmt.Errorf("creating config %q: %w", path, err)
 	}
-	defer f.Close()
-
-	if _, err := f.Write(renderDefaultConfig()); err != nil {
-		return false, fmt.Errorf("writing default config: %w", err)
+	// Check the Close error too: a buffered write can surface ENOSPC/quota only
+	// on close, and a partial file must not be left behind reporting success —
+	// the next startup would see it, skip re-creation, and fail to parse it.
+	if _, werr := f.Write(renderDefaultConfig()); werr != nil {
+		f.Close()
+		os.Remove(path)
+		return false, fmt.Errorf("writing default config: %w", werr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		os.Remove(path)
+		return false, fmt.Errorf("writing default config: %w", cerr)
 	}
 	return true, nil
 }

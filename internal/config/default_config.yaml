@@ -8,15 +8,18 @@
 # Docs:                    https://forge.snamellit.com/pti/wraptool
 
 mcp:
-  # Transport the MCP server listens on: stdio | sse | unix.
-  transport: stdio
+  # Transport the MCP server listens on: sse | unix | stdio. sse (a loopback TCP
+  # listener) is the default because `wraptool up` needs to reach the server from
+  # inside the container over the network. For a harness that launches wraptool
+  # as a stdio subprocess instead, set `transport: stdio` and remove `listen`.
+  transport: sse
+  listen: 127.0.0.1:8717
   # Log verbosity: debug | info | warn | error.
   log_level: info
-  # For a network transport, set a listen address and (recommended) a bearer
-  # token file — without one, a non-loopback bind is unauthenticated:
-  #   transport: sse
-  #   listen: 127.0.0.1:8717
-  #   auth_token_file: ~/.config/wraptool/token
+  # Recommended beyond a loopback bind — an unauthenticated non-loopback listener
+  # is open to the network. `wraptool up` generates this token file for you; for
+  # a direct `wraptool serve`, create it first (it must exist at config load):
+  #   auth_token_file: ~/.config/wraptool/mcp-token
 
 # Operator review Web UI. NOT AI-facing — bind localhost only.
 # admin:
