@@ -7,9 +7,24 @@ stages:
   - test
   - build
   - deploy
+  - release
 
 variables:
   QUARTO_VERSION: "1.5.57"
+  # Pinned toolchain image, built from manifest.scm by the Forgejo
+  # `Publish CI toolchain image` workflow. Single source of truth for both the
+  # lint and the release-binary jobs so Go/git/golangci-lint versions never
+  # drift between them. Pinned by immutable digest, NOT :latest — the image is
+  # rebuilt (and gets a fresh digest) even when manifest.scm is unchanged, since
+  # `guix pack` is not bit-reproducible, so a floating tag would silently shift
+  # the toolchain under CI. This digest is the image for main commit
+  # dcf2cc20138a. To bump: rebuild the image, then repoint to the new
+  # `ci-toolchain@sha256:...` digest here.
+  CI_TOOLCHAIN_IMAGE: "forge.snamellit.com/pti/wraptool/ci-toolchain@sha256:71d3b689287cb467f781d7c4b47000aaba9a6303914589e2c2def5464a6aac43"
+  # Generic package registry namespace holding the release binaries. The release
+  # jobs append /<version>/<file>. References predefined CI vars only, so it
+  # expands cleanly everywhere it is used.
+  PKG_BASE: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool"
 
 # Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
 # + the standard set, per .golangci.yml). Runs on every branch. The image is
@@ -18,7 +33,7 @@ variables:
 # have a single source of truth shared with local `guix shell` development.
 lint:
   stage: test
-  image: forge.snamellit.com/pti/wraptool/ci-toolchain:latest
+  image: $CI_TOOLCHAIN_IMAGE
   interruptible: true
   variables:
     # The image has no HOME; point Go's and golangci-lint's caches at the
@@ -84,3 +99,116 @@ pages:
     paths:
       - public
     expire_in: 30 days
+
+# --- Internal release of precompiled binaries ---------------------------------
+# GitLab-side counterpart of the Forgejo `publish-binaries.yml`. Forgejo stays
+# the canonical signing authority: the annotated tag is GPG-verified there, so
+# here we only assert the tag-NAME format and trust that a `wraptool-v*` tag on
+# this mirror already passed Forgejo verification. GitLab runners have no guix,
+# so `guix time-machine` is dropped — the pinned ci-toolchain image (built from
+# manifest.scm) IS the toolchain pin. The build cross-compiles the same six
+# targets with the same ldflags version stamp, uploads every artifact to the
+# project's generic package registry, then cuts a GitLab Release linking them.
+# Both jobs fire only for a release tag.
+.release-rules: &release-rules
+  - if: $CI_COMMIT_TAG =~ /^wraptool-v/
+
+release:binaries:
+  stage: release
+  image: $CI_TOOLCHAIN_IMAGE
+  rules: *release-rules
+  variables:
+    # Same cache/toolchain posture as `lint`: no HOME in the image, pinned Go,
+    # never auto-download a toolchain, CGO off (pure-Go deps).
+    GOPATH: "$CI_PROJECT_DIR/.cache/go"
+    GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+    CGO_ENABLED: "0"
+    GOTOOLCHAIN: "local"
+  cache:
+    # Make the "same cache posture as lint" note above actually true: persist
+    # the in-project Go module/build cache across release runs (the module set
+    # is fixed per tag, so this only speeds up retries).
+    key: go-release
+    paths:
+      - .cache/
+  script:
+    # Tag-name format only — signature verification is Forgejo's job.
+    - |
+      printf '%s\n' "$CI_COMMIT_TAG" | grep -Eq '^wraptool-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+        || { echo "tag '$CI_COMMIT_TAG' is not a wraptool-vX.Y.Z release tag"; exit 1; }
+    - version=${CI_COMMIT_TAG#wraptool-v}
+    - ldflags="-X github.com/pti/wraptool/internal/buildinfo.version=$version"
+    - go test ./...
+    - mkdir -p dist
+    - |
+      for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+        goos=${target%/*}; goarch=${target#*/}
+        output="dist/wraptool_${version}_${goos}_${goarch}"
+        if [ "$goos" = windows ]; then output="${output}.exe"; fi
+        GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags "$ldflags" -o "$output" .
+      done
+    - |
+      {
+        echo "version=$version"
+        echo "tag=$CI_COMMIT_TAG"
+        echo "commit=$CI_COMMIT_SHA"
+        # On GitLab the toolchain is pinned by the image digest, not a guix
+        # channels lock (channels.scm is not used here), so record the image
+        # and the manifest hash as the build provenance.
+        echo "toolchain_image=$CI_TOOLCHAIN_IMAGE"
+        go version
+        sha256sum manifest.scm
+      } > dist/build-info.txt
+    - (cd dist && sha256sum wraptool_* build-info.txt > checksums.txt)
+    # Upload every artifact to the project's generic package registry.
+    - |
+      pkg="${PKG_BASE}/${version}"
+      for f in dist/*; do
+        name=${f##*/}
+        curl --fail-with-body --silent --show-error --retry 2 --retry-all-errors \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "${pkg}/${name}"
+      done
+    # Hand the resolved version to the release job.
+    - echo "version=$version" > release.env
+  artifacts:
+    paths:
+      - dist
+    reports:
+      dotenv: release.env
+    expire_in: 30 days
+
+release:publish:
+  stage: release
+  # release-cli is required for the `release:` keyword. Pinned so an upstream
+  # push cannot change release behaviour mid-flight. If this Melexis GitLab
+  # instance cannot reach registry.gitlab.com, mirror the image internally and
+  # repoint this line.
+  image: registry.gitlab.com/gitlab-org/release-cli:v0.24.0
+  needs:
+    - job: release:binaries
+      artifacts: true
+  rules: *release-rules
+  script:
+    - echo "Cutting GitLab release $CI_COMMIT_TAG (version $version)"
+  release:
+    tag_name: $CI_COMMIT_TAG
+    name: $CI_COMMIT_TAG
+    description: "Precompiled wraptool binaries, build metadata, and SHA-256 checksums."
+    assets:
+      links:
+        - name: "wraptool_${version}_linux_amd64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_linux_amd64"
+        - name: "wraptool_${version}_linux_arm64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_linux_arm64"
+        - name: "wraptool_${version}_darwin_amd64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_darwin_amd64"
+        - name: "wraptool_${version}_darwin_arm64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_darwin_arm64"
+        - name: "wraptool_${version}_windows_amd64.exe"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_windows_amd64.exe"
+        - name: "wraptool_${version}_windows_arm64.exe"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_windows_arm64.exe"
+        - name: "checksums.txt"
+          url: "${PKG_BASE}/${version}/checksums.txt"
+        - name: "build-info.txt"
+          url: "${PKG_BASE}/${version}/build-info.txt"
