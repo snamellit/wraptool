@@ -1,13 +1,105 @@
 ---
 title: "Installation"
-description: "Build and install Wraptool from source with Go or the repository Guix manifest."
+description: "Install a precompiled Wraptool release or build it from source with Go or Guix."
 ---
 
-## Current distribution status
+## Precompiled releases
 
-Wraptool is currently installed from source. The repository does not yet publish
-versioned binary archives or packages, so do not rely on a download URL or a
-package-manager name.
+Each [Forgejo release](https://forge.snamellit.com/pti/wraptool/releases) provides
+standalone binaries for Linux, macOS, and Windows on AMD64 and ARM64. Builds are
+statically linked with `CGO_ENABLED=0`; no Go installation is required.
+
+| Platform | AMD64 asset | ARM64 asset |
+|---|---|---|
+| Linux | `wraptool_VERSION_linux_amd64` | `wraptool_VERSION_linux_arm64` |
+| macOS | `wraptool_VERSION_darwin_amd64` | `wraptool_VERSION_darwin_arm64` |
+| Windows | `wraptool_VERSION_windows_amd64.exe` | `wraptool_VERSION_windows_arm64.exe` |
+
+Replace the example version below with the version shown on the
+[latest release](https://forge.snamellit.com/pti/wraptool/releases/latest).
+
+### Linux or macOS
+
+The following commands detect the platform and architecture, download the
+matching binary, verify its SHA-256 checksum, and install it under
+`~/.local/bin`:
+
+```bash
+version=0.2.1
+
+case "$(uname -s)" in
+  Linux) os=linux ;;
+  Darwin) os=darwin ;;
+  *) echo "unsupported operating system: $(uname -s)" >&2; exit 1 ;;
+esac
+
+case "$(uname -m)" in
+  x86_64) arch=amd64 ;;
+  arm64|aarch64) arch=arm64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
+asset="wraptool_${version}_${os}_${arch}"
+release="https://forge.snamellit.com/pti/wraptool/releases/download/wraptool-v${version}"
+curl -fLO "$release/$asset"
+curl -fLO "$release/checksums.txt"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  grep "  $asset$" checksums.txt | sha256sum -c -
+else
+  grep "  $asset$" checksums.txt | shasum -a 256 -c -
+fi
+
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "$asset" "$HOME/.local/bin/wraptool"
+export PATH="$HOME/.local/bin:$PATH"
+wraptool version
+```
+
+Add `$HOME/.local/bin` to your shell's `PATH` configuration if it is not already
+present. macOS release binaries are not currently notarized by Apple; use the
+source-build path below if local policy requires notarized software.
+
+### Windows PowerShell
+
+This example detects AMD64 versus ARM64, verifies the downloaded executable,
+and installs it under `%USERPROFILE%\bin`:
+
+```powershell
+$Version = "0.2.1"
+$Arch = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
+  "X64"   { "amd64" }
+  "Arm64" { "arm64" }
+  default { throw "Unsupported architecture: $_" }
+}
+
+$Asset = "wraptool_${Version}_windows_${Arch}.exe"
+$Release = "https://forge.snamellit.com/pti/wraptool/releases/download/wraptool-v${Version}"
+Invoke-WebRequest "$Release/$Asset" -OutFile $Asset
+Invoke-WebRequest "$Release/checksums.txt" -OutFile checksums.txt
+
+$ChecksumLine = Get-Content checksums.txt | Where-Object { $_.EndsWith($Asset) }
+if (-not $ChecksumLine) { throw "Checksum for $Asset not found" }
+$Expected = ($ChecksumLine -split '\s+')[0]
+$Actual = (Get-FileHash $Asset -Algorithm SHA256).Hash
+if ($Actual -ne $Expected) { throw "SHA-256 checksum mismatch" }
+
+$InstallDir = Join-Path $HOME "bin"
+New-Item -ItemType Directory -Force $InstallDir | Out-Null
+Move-Item -Force $Asset (Join-Path $InstallDir "wraptool.exe")
+$env:Path = "$InstallDir;$env:Path"
+wraptool version
+```
+
+Add `%USERPROFILE%\bin` to the user `PATH` to make `wraptool` available in future
+PowerShell sessions. Windows binaries are not currently Authenticode-signed.
+
+::: {.callout-note title="Release verification"}
+`checksums.txt` verifies the downloaded bytes against the release manifest.
+`build-info.txt` records the source commit, Go version, and hashes of the pinned
+Guix inputs. Release tags are PGP-signed; see [Releases and
+changes](releases.qmd) for the signing fingerprint and trust model.
+:::
 
 ## Build with Go
 
