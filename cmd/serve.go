@@ -30,7 +30,7 @@ import (
 // generated .mcp.json files and documented systemd units invoke `serve`, and
 // those live on disk long after an upgrade, so the spelling can't be dropped).
 func newServeCmd(use string, hidden bool) *cobra.Command {
-	var configPath string
+	var configPath, listen, authTokenFile string
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -49,16 +49,21 @@ mcpServers config:
 
 This keeps credentials isolated in the wraptool process.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(configPath)
+			return runServe(configPath, listen, authTokenFile)
 		},
 	}
 
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
+	// Override the config's mcp.listen / mcp.auth_token_file. `wraptool up` uses
+	// these to bind a runtime-appropriate address (0.0.0.0 for a bridged
+	// container) with an auth token, without rewriting the user's config file.
+	cmd.Flags().StringVar(&listen, "listen", "", "override mcp.listen (host:port)")
+	cmd.Flags().StringVar(&authTokenFile, "auth-token-file", "", "override mcp.auth_token_file")
 
 	return cmd
 }
 
-func runServe(configPath string) error {
+func runServe(configPath, listenOverride, authTokenOverride string) error {
 	if configPath == "" {
 		configPath = os.Getenv("WRAPTOOL_CONFIG")
 	}
@@ -81,6 +86,15 @@ func runServe(configPath string) error {
 	cfg, err := config.LoadStrict(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
+	}
+
+	// Apply CLI overrides (used by `wraptool up` for runtime-appropriate binds)
+	// before validation, so the effective address/token are what gets checked.
+	if listenOverride != "" {
+		cfg.MCP.Listen = listenOverride
+	}
+	if authTokenOverride != "" {
+		cfg.MCP.AuthTokenFile = authTokenOverride
 	}
 
 	if err := cfg.Validate(); err != nil {

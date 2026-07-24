@@ -208,6 +208,20 @@ and does three things:
 
 Force one with `--runtime=guix|devcontainer|auto`.
 
+The runtime also determines how the server is bound, so the container can
+actually reach it — you don't configure this per platform:
+
+- **`guix`** shares the host network namespace, so a loopback bind
+  (`127.0.0.1:8717`) is reachable from inside the container. `up` leaves it as
+  configured — no LAN exposure.
+- **`devcontainer`** runs on a bridge network, where the container reaches the
+  host via the bridge **gateway**, not the host's loopback. So `up` rebinds a
+  loopback `mcp.listen` to `0.0.0.0` (same port) and, since a non-loopback bind
+  is reachable off-host, **auto-generates an MCP auth token** (defaulting
+  `mcp.auth_token_file` if unset). The container's harness config is wired to the
+  detected gateway with that token. A direct `wraptool serve` on a non-loopback
+  bind requires `mcp.auth_token_file` — it will not start unauthenticated.
+
 Host CLI credentials never enter the container either way — the isolation is the
 mount/user namespace (your normal `$HOME`, SSH keys, kubeconfig, and cloud tokens
 are not mounted). git is available inside for local work

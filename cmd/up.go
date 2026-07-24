@@ -121,6 +121,9 @@ func runUp(opts upOptions) error {
 	}
 
 	if !opts.noServer {
+		if err := adjustServerBindForRuntime(cfg, rt); err != nil {
+			return err
+		}
 		if err := ensureServer(cfg, configPath); err != nil {
 			return err
 		}
@@ -174,6 +177,37 @@ func configOrDefault(p string) string {
 
 // --- server supervision ---
 
+// adjustServerBindForRuntime widens the MCP bind for a bridged (devcontainer)
+// runtime, whose container reaches the host over the bridge gateway — not the
+// host's loopback — so a loopback bind is unreachable from inside it. A loopback
+// listen is rebound to 0.0.0.0 on the same port, and because a non-loopback bind
+// is reachable off-host it must be authenticated, so a token file is defaulted
+// in when the operator did not configure one (ensureServer then generates it).
+// The guix runtime shares the host netns, so loopback already works there and is
+// left untouched (no LAN exposure) — this is a no-op for it.
+func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
+	if rt != runtimeDevcontainer || cfg.MCP.Transport != "sse" {
+		return nil
+	}
+	if config.ListenIsLoopback(cfg.MCP.Listen) {
+		_, port, err := net.SplitHostPort(cfg.MCP.Listen)
+		if err != nil {
+			return fmt.Errorf("parsing mcp.listen %q: %w", cfg.MCP.Listen, err)
+		}
+		cfg.MCP.Listen = net.JoinHostPort("0.0.0.0", port)
+		fmt.Printf("devcontainer: binding %s so the container can reach the server via its bridge gateway\n", cfg.MCP.Listen)
+	}
+	if cfg.MCP.AuthTokenFile == "" {
+		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
+		fmt.Printf("devcontainer: enabling an MCP auth token at %s (a non-loopback bind must be authenticated)\n", cfg.MCP.AuthTokenFile)
+	}
+	return nil
+}
+
+func defaultMCPTokenFile() string {
+	return filepath.Join(paths.ConfigDir(), "mcp-token")
+}
+
 // ensureServer makes the shared MCP server reachable, starting it detached if
 // it is not. Idempotent and safe against a concurrent `up` via a file lock.
 func ensureServer(cfg *config.Config, configPath string) error {
@@ -208,7 +242,7 @@ func ensureServer(cfg *config.Config, configPath string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validating config after token setup: %w", err)
 	}
-	if err := spawnServer(configPath); err != nil {
+	if err := spawnServer(configPath, cfg.MCP.Listen, cfg.MCP.AuthTokenFile); err != nil {
 		return err
 	}
 
@@ -246,7 +280,7 @@ func dialOK(addr string) bool {
 	return true
 }
 
-func spawnServer(configPath string) error {
+func spawnServer(configPath, listen, authTokenFile string) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locating wraptool binary: %w", err)
@@ -261,7 +295,17 @@ func spawnServer(configPath string) error {
 	}
 	defer logf.Close()
 
-	cmd := exec.Command(exe, "serve", "--config", configPath)
+	// up is authoritative for the effective bind/token (runtime-adjusted), so
+	// pass them as overrides rather than relying on the config file the detached
+	// serve re-reads.
+	args := []string{"serve", "--config", configPath}
+	if listen != "" {
+		args = append(args, "--listen", listen)
+	}
+	if authTokenFile != "" {
+		args = append(args, "--auth-token-file", authTokenFile)
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	configureDetached(cmd)

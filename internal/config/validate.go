@@ -37,6 +37,14 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// A non-loopback sse bind is reachable off-host, so it must be
+	// authenticated — otherwise anyone who can route to the port reaches the
+	// credential-backed tools. (unix is a filesystem socket, guarded by perms.)
+	if c.MCP.Transport == "sse" && c.MCP.Listen != "" &&
+		!ListenIsLoopback(c.MCP.Listen) && c.MCP.AuthTokenFile == "" {
+		return fmt.Errorf("mcp.auth_token_file is required for a non-loopback mcp.listen %q: an unauthenticated non-loopback bind is reachable off-host", c.MCP.Listen)
+	}
+
 	if c.MCP.AuthTokenFile != "" {
 		if _, err := os.Stat(c.MCP.AuthTokenFile); err != nil {
 			return fmt.Errorf("mcp.auth_token_file %q: %w", c.MCP.AuthTokenFile, err)
