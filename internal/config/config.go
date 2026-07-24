@@ -256,7 +256,12 @@ func SeedHelpFlags(flags, denyFlags []string) []string {
 
 func (c *Config) applyDefaults() {
 	if c.MCP.Transport == "" {
-		c.MCP.Transport = "stdio"
+		// sse on loopback is the user-facing default. stdio is a TEST-ONLY
+		// transport and is never selected implicitly — see CLAUDE.md.
+		c.MCP.Transport = "sse"
+		if c.MCP.Listen == "" {
+			c.MCP.Listen = "127.0.0.1:8717"
+		}
 	}
 	if c.MCP.LogLevel == "" {
 		c.MCP.LogLevel = "info"

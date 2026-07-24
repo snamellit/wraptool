@@ -37,7 +37,7 @@ integration](mcp-integration.qmd#proxy-local-mcp-servers).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `transport` | `stdio` \| `sse` \| `unix` | `stdio` | MCP transport |
+| `transport` | `sse` \| `unix` | `sse` | MCP transport |
 | `listen`    | string | — | `host:port` (sse) or socket path (unix) |
 | `auth_token_file` | string | — | Bearer token file for sse/unix |
 | `log_level` | string | `info` | parsed and defaulted; currently does not change logging |
@@ -53,7 +53,7 @@ targets.
 
 Starts an operator-facing Web UI for reviewing capability requests inside
 the `serve` process, on its own listener — independent of the MCP
-transport, so it works even under `stdio`. Leave `listen` empty to disable.
+transport, so it works regardless of transport. Leave `listen` empty to disable.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

@@ -75,7 +75,7 @@ flowchart LR
   style trusted   fill:#efe,stroke:#2a7
 ```
 
-The MCP transport (stdio / SSE / Unix socket) is the only path across
+The MCP transport (SSE / Unix socket) is the only path across
 the boundary. The AI sees:
 
 - The schema of allowed CLI tools and allowed upstream MCP tools.

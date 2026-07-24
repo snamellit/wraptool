@@ -6,7 +6,7 @@ title: "Architecture and trust boundaries"
 
 ```{mermaid}
 flowchart LR
-  U["Untrusted workspace<br/>harness + project code"] -->|"MCP tool call"| T["Transport<br/>stdio / SSE / HTTP"]
+  U["Untrusted workspace<br/>harness + project code"] -->|"MCP tool call"| T["Transport<br/>SSE / HTTP"]
   T --> K{"Capability source"}
   K --> P["CLI policy<br/>deny > allow > constraints"]
   P -->|allowed| E["Executor<br/>explicit argv + timeout"]

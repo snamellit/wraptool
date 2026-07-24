@@ -93,7 +93,6 @@ The available transports:
 
 | Transport | Config | Use case |
 |-----------|--------|----------|
-| `stdio`   | `transport: stdio` | Harness launches wraptool directly |
 | `sse`     | `transport: sse`, `listen: host:port` | Independent process, TCP |
 | `unix`    | `transport: unix`, `listen: /path/to.sock` | Independent process, Unix socket |
 
