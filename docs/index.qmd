@@ -87,7 +87,7 @@ heuristic. Read [Security model](security.qmd) before exposing real credentials.
 
 ## Choose your next step
 
-- [Install from source](installation.qmd) and verify the binary.
+- [Install wraptool](installation.qmd) and verify the binary.
 - [Create the first policy](getting-started.qmd#create-a-config).
 - [Connect an MCP client](mcp-integration.qmd).
 - [Inspect architecture and trust boundaries](architecture.qmd).

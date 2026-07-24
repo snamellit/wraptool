@@ -40,7 +40,9 @@ code they trigger — as untrusted**, and bounds what it can reach:
 
 ## Quick start
 
-Build it (on Guix: `guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wraptool .`):
+Install a precompiled Linux, macOS, or Windows binary by following the
+[installation guide](docs/installation.qmd), or build it from source (on Guix:
+`guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wraptool .`):
 
 ```bash
 go build -o wraptool .
