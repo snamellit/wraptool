@@ -1,45 +1,61 @@
-// Industrial boundary-marker visual language: dark host surfaces, safety amber,
-// and a monospace accent for policy and command material.
+// Tokyo Night-inspired security boundary theme: layered navy surfaces, cool
+// execution-path accents, and safety amber for trust-boundary warnings.
 
 /*-- scss:defaults --*/
 
-$wraptool-amber:   #f5b942;
-$wraptool-orange:  #d97706;
-$wraptool-black:   #111820;
-$wraptool-ink:     #26313d;
-$wraptool-grey:    #586575;
-$wraptool-grey-2:  #e8edf2;
-$wraptool-paper:   #f7f8f6;
+$wraptool-bg:      #1a1b26;
+$wraptool-panel:   #1f2335;
+$wraptool-surface: #24283b;
+$wraptool-line:    #3b4261;
+$wraptool-text:    #c0caf5;
+$wraptool-muted:   #a9b1d6;
+$wraptool-blue:    #7aa2f7;
+$wraptool-cyan:    #7dcfff;
+$wraptool-violet:  #bb9af7;
+$wraptool-green:   #9ece6a;
+$wraptool-amber:   #e0af68;
+$wraptool-orange:  #ff9e64;
+$wraptool-red:     #f7768e;
 
-$primary:         $wraptool-orange;
-$body-color:      $wraptool-black;
-$body-bg:         $wraptool-paper;
-$link-color:      #9a4d00;
-$link-hover-color: #713800;
+$primary:          $wraptool-blue;
+$body-color:       $wraptool-text;
+$body-bg:          $wraptool-bg;
+$body-secondary-color: $wraptool-muted;
+$body-secondary-bg: $wraptool-panel;
+$border-color:     $wraptool-line;
+$link-color:       $wraptool-blue;
+$link-hover-color: $wraptool-cyan;
 
 $font-family-sans-serif: "IBM Plex Sans", "Aptos", "Segoe UI", sans-serif;
 $font-family-monospace: "IBM Plex Mono", "Cascadia Code", "Liberation Mono", monospace;
 $headings-font-weight:   600;
-$headings-color:         $wraptool-black;
+$headings-color:         $wraptool-text;
 
-$navbar-bg:              $wraptool-black;
-$navbar-fg:              #FFFFFF;
-$navbar-hl:              $wraptool-amber;
+$navbar-bg:              #16161e;
+$navbar-fg:              $wraptool-text;
+$navbar-hl:              $wraptool-cyan;
 
-$code-color:             #8a4200;
-$code-bg:                $wraptool-grey-2;
+$code-color:             $wraptool-violet;
+$code-bg:                #16161e;
+$card-bg:                $wraptool-surface;
+$dropdown-bg:            $wraptool-panel;
+$popover-bg:             $wraptool-panel;
+$input-bg:               $wraptool-panel;
+$input-color:            $wraptool-text;
+$table-color:            $wraptool-text;
+$table-bg:               transparent;
 
 // Mermaid diagram theming. Without an explicit $mermaid-edge-color the
 // flowchart edge lines resolve to an (effectively invisible) stroke on
 // the white background, leaving only the arrowheads visible. Setting the
 // full set keeps nodes/labels/edges legible and on-brand.
-$mermaid-bg-color:        $wraptool-paper;
-$mermaid-fg-color:        $wraptool-black;
-$mermaid-edge-color:      $wraptool-grey;
-$mermaid-node-bg-color:   $wraptool-grey-2;
-$mermaid-node-fg-color:   $wraptool-black;
-$mermaid-label-bg-color:  $wraptool-paper;
-$mermaid-label-fg-color:  $wraptool-black;
+$mermaid-bg-color:        $wraptool-bg;
+$mermaid-fg-color:        $wraptool-text;
+$mermaid-edge-color:      $wraptool-blue;
+$mermaid-node-bg-color:   $wraptool-surface;
+$mermaid-node-fg-color:   $wraptool-text;
+$mermaid-label-bg-color:  $wraptool-panel;
+$mermaid-label-fg-color:  $wraptool-text;
 
 /*-- scss:rules --*/
 
@@ -50,7 +66,7 @@ $mermaid-label-fg-color:  $wraptool-black;
 }
 
 .sidebar-title {
-  color: $wraptool-orange;
+  color: $wraptool-cyan;
 }
 
 h1, h2, h3 {
@@ -62,20 +78,20 @@ a code {
 }
 
 .navbar {
-  border-bottom: 3px solid $wraptool-amber;
+  border-bottom: 3px solid $wraptool-blue;
 }
 
 .quarto-title-banner {
   background:
-    linear-gradient(105deg, rgba(17, 24, 32, .98), rgba(28, 39, 50, .94)),
-    repeating-linear-gradient(135deg, transparent 0 18px, rgba(245, 185, 66, .12) 18px 36px);
-  color: #fff;
+    linear-gradient(105deg, rgba(22, 22, 30, .98), rgba(31, 35, 53, .94)),
+    repeating-linear-gradient(135deg, transparent 0 18px, rgba(122, 162, 247, .12) 18px 36px);
+  color: $wraptool-text;
   padding-block: clamp(3rem, 8vw, 7rem);
 }
 
 .quarto-title-banner .title,
 .quarto-title-banner .subtitle {
-  color: #fff;
+  color: $wraptool-text;
   max-width: 900px;
 }
 
@@ -85,13 +101,13 @@ a code {
 }
 
 .quarto-title-banner .subtitle {
-  color: #ced7df;
+  color: $wraptool-muted;
   font-size: clamp(1.1rem, 2vw, 1.5rem);
   margin-top: 1.25rem;
 }
 
 .hero-actions {
-  background: $wraptool-black;
+  background: #16161e;
   display: flex;
   flex-wrap: wrap;
   gap: .8rem;
@@ -99,9 +115,9 @@ a code {
 }
 
 .hero-actions .btn-primary {
-  background: $wraptool-amber;
-  border-color: $wraptool-amber;
-  color: $wraptool-black;
+  background: $wraptool-blue;
+  border-color: $wraptool-blue;
+  color: #16161e;
   font-weight: 700;
 }
 
@@ -110,8 +126,8 @@ a code {
   grid-template-columns: 1fr minmax(190px, .6fr) 1fr;
   margin: 2.5rem auto 4rem;
   max-width: 1100px;
-  border: 1px solid #bcc6cf;
-  box-shadow: 0 14px 35px rgba(17, 24, 32, .09);
+  border: 1px solid $wraptool-line;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, .28);
 }
 
 .boundary-zone,
@@ -120,16 +136,16 @@ a code {
 }
 
 .boundary-zone {
-  background: #fff;
+  background: $wraptool-surface;
 }
 
 .boundary-zone-host {
-  background: $wraptool-ink;
-  color: #fff;
+  background: #16161e;
+  color: $wraptool-text;
 }
 
 .boundary-gate {
-  background: repeating-linear-gradient(135deg, $wraptool-amber 0 12px, #151d25 12px 24px);
+  background: repeating-linear-gradient(135deg, $wraptool-amber 0 12px, #16161e 12px 24px);
   color: #fff;
   text-align: center;
   text-shadow: 0 1px 3px #000;
@@ -148,10 +164,11 @@ a code {
 }
 
 .feature-card {
-  background: #fff;
-  border-top: 4px solid $wraptool-amber;
+  background: $wraptool-surface;
+  border: 1px solid $wraptool-line;
+  border-top: 4px solid $wraptool-blue;
   padding: 1.25rem;
-  box-shadow: 0 8px 24px rgba(17, 24, 32, .07);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .2);
 }
 
 .feature-card h3 {
@@ -159,11 +176,58 @@ a code {
 }
 
 pre.sourceCode {
-  border-left: 4px solid $wraptool-amber;
+  border: 1px solid $wraptool-line;
+  border-left: 4px solid $wraptool-violet;
 }
 
 .callout {
-  background: #fff;
+  background: $wraptool-panel;
+  border-color: $wraptool-line;
+}
+
+.sidebar,
+.sidebar-navigation,
+.quarto-secondary-nav,
+.quarto-search-results,
+.aa-DetachedOverlay,
+.aa-Panel {
+  background-color: $wraptool-panel;
+}
+
+.sidebar nav[role="doc-toc"] ul > li > a.active,
+.sidebar-navigation .sidebar-item-container .active {
+  color: $wraptool-cyan;
+  border-left-color: $wraptool-cyan;
+}
+
+table,
+.table {
+  --bs-table-bg: transparent;
+  --bs-table-color: #{$wraptool-text};
+  --bs-table-border-color: #{$wraptool-line};
+  --bs-table-striped-bg: rgba(122, 162, 247, .06);
+  --bs-table-hover-bg: rgba(125, 207, 255, .08);
+}
+
+blockquote {
+  color: $wraptool-muted;
+  border-left-color: $wraptool-violet;
+}
+
+hr {
+  border-color: $wraptool-line;
+  opacity: 1;
+}
+
+.page-footer {
+  background: #16161e;
+  border-top: 1px solid $wraptool-line;
+  color: $wraptool-muted;
+}
+
+::selection {
+  background: rgba(122, 162, 247, .35);
+  color: #fff;
 }
 
 @media (max-width: 767px) {
@@ -173,6 +237,6 @@ pre.sourceCode {
   }
 
   .boundary-gate {
-    background: repeating-linear-gradient(135deg, $wraptool-amber 0 10px, #151d25 10px 20px);
+    background: repeating-linear-gradient(135deg, $wraptool-amber 0 10px, #16161e 10px 20px);
   }
 }
