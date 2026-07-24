@@ -8,10 +8,9 @@
 # Docs:                    https://forge.snamellit.com/pti/wraptool
 
 mcp:
-  # Transport the MCP server listens on: sse | unix | stdio. sse (a loopback TCP
-  # listener) is the default because `wraptool up` needs to reach the server from
-  # inside the container over the network. For a harness that launches wraptool
-  # as a stdio subprocess instead, set `transport: stdio` and remove `listen`.
+  # Transport the MCP server listens on: sse | unix. sse (a loopback TCP listener)
+  # is the default so `wraptool up` can reach the server from inside the
+  # container. Use unix for a filesystem socket instead.
   transport: sse
   listen: 127.0.0.1:8717
   # Log verbosity: debug | info | warn | error.
