@@ -11,6 +11,11 @@ stages:
 
 variables:
   QUARTO_VERSION: "1.5.57"
+  # Pinned toolchain image, built from manifest.scm by the Forgejo
+  # `Publish CI toolchain image` workflow. Single source of truth for both the
+  # lint and the release-binary jobs so Go/git/golangci-lint versions never
+  # drift between them. Repoint the tag (or a @sha256 digest) here to bump.
+  CI_TOOLCHAIN_IMAGE: "forge.snamellit.com/pti/wraptool/ci-toolchain:latest"
 
 # Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
 # + the standard set, per .golangci.yml). Runs on every branch. The image is
@@ -19,7 +24,7 @@ variables:
 # have a single source of truth shared with local `guix shell` development.
 lint:
   stage: test
-  image: forge.snamellit.com/pti/wraptool/ci-toolchain:latest
+  image: $CI_TOOLCHAIN_IMAGE
   interruptible: true
   variables:
     # The image has no HOME; point Go's and golangci-lint's caches at the
@@ -101,7 +106,7 @@ pages:
 
 release:binaries:
   stage: release
-  image: forge.snamellit.com/pti/wraptool/ci-toolchain:latest
+  image: $CI_TOOLCHAIN_IMAGE
   rules: *release-rules
   variables:
     # Same cache/toolchain posture as `lint`: no HOME in the image, pinned Go,
@@ -154,10 +159,11 @@ release:binaries:
 
 release:publish:
   stage: release
-  # release-cli is required for the `release:` keyword. If this Melexis GitLab
+  # release-cli is required for the `release:` keyword. Pinned so an upstream
+  # push cannot change release behaviour mid-flight. If this Melexis GitLab
   # instance cannot reach registry.gitlab.com, mirror the image internally and
   # repoint this line.
-  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  image: registry.gitlab.com/gitlab-org/release-cli:v0.24.0
   needs:
     - job: release:binaries
       artifacts: true
