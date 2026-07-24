@@ -42,10 +42,20 @@ guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wrapto
 
 ## 2. Create a config {#create-a-config}
 
-Both paths need this — `wraptool up` requires an existing config, and the manual
-flow below reads the same file. `wraptool` reads YAML from
-`~/.config/wraptool/config.yaml` (XDG, with `--config` / `WRAPTOOL_CONFIG`
-overrides).
+`wraptool` reads YAML from `~/.config/wraptool/config.yaml` (XDG, with
+`--config` / `WRAPTOOL_CONFIG` overrides).
+
+You usually don't write this from scratch: on first run both `wraptool up` and
+`wraptool serve` **scaffold** a commented starter config at that path if none
+exists (never overwriting one that does) and log where it landed. The starter
+enables a single privileged tool — `git pull` — so the server comes up
+immediately; you then edit the file to expose the tools you want.
+
+Only wrap commands that actually need wraptool. `git pull`, `git fetch`, and
+`git push` reach the network with your host credentials — which the AI never
+sees — so they must go through wraptool. Read-only local git (`status`, `log`,
+`diff`) only touches the working `.git`, needs no credentials, and the assistant
+can run it itself, so there is nothing to gain by wrapping it. A fuller policy:
 
 ```yaml
 mcp:
@@ -57,18 +67,12 @@ tools:
     binary: /usr/bin/git
     timeout: 30s
     allow:
-      - subcommand: [status]
-        flags: ["--short", "--branch", "--porcelain"]
-      - subcommand: [log]
-        flags: ["--oneline", "-n", "--format", "--graph"]
+      - subcommand: [pull]
+        flags: ["--ff-only", "--rebase"]
+      - subcommand: [fetch]
+        flags: ["--prune", "--all", "--depth"]
         flag_constraints:
-          "-n": { type: integer, max: 100 }
-      - subcommand: [diff]
-        flags: ["--stat", "--name-only", "--staged"]
-      - subcommand: [commit]
-        flags: ["--message", "--amend"]
-        flag_constraints:
-          "--message": { required: true }
+          "--depth": { type: integer, max: 100 }
       - subcommand: [push]
         flags: ["--set-upstream"]
         deny_flags: ["--force", "--force-with-lease"]
@@ -76,7 +80,7 @@ tools:
       - subcommand: [remote, set-url]
 ```
 
-This first policy wraps a CLI binary. Wraptool can also spawn credentialed local
+This policy wraps a CLI binary. Wraptool can also spawn credentialed local
 stdio MCP servers and expose selected tool names; see [Proxy local MCP
 servers](mcp-integration.qmd#proxy-local-mcp-servers). Both capability sources
 appear on the same client-facing MCP connection.
@@ -154,9 +158,9 @@ sequenceDiagram
   participant AI as AI assistant
   participant W  as wraptool
   participant G  as git
-  AI->>W: tools/call git_status
+  AI->>W: tools/call git_pull
   W->>W: policy.Evaluate
-  W->>G: exec /usr/bin/git status
+  W->>G: exec /usr/bin/git pull (with host credentials)
   G-->>W: stdout
   W->>W: scrub credentials
   W-->>AI: ToolResult

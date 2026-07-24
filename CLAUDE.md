@@ -49,6 +49,9 @@ internal/
 
 ## Key Design Decisions
 
+- **NEVER SURFACE THE `stdio` MCP TRANSPORT IN EXAMPLES, DOCS, OR SCAFFOLDED DEFAULTS.** wraptool's own `stdio` transport exists for TESTS ONLY. All user-facing config, documentation, and defaults use `sse` (or `unix`). It stays in the code (`cmd/serve.go`) because tests need it, but it must be invisible to users — leaking it into user-visible context has already caused a real bug (a `stdio` scaffold default that `wraptool up` then rejected), and continued leaks will force removing the transport entirely. **Distinct and unrelated:** the `mcp_servers` feature spawns and proxies *upstream* MCP servers that speak stdio ("local stdio MCP servers") — that is a real user-facing concept and stays; only wraptool's own *server transport* stdio is banned from docs.
+
+
 - **No shell execution** — always `exec.CommandContext` with explicit arg arrays
 - **Deny before allow** — deny rules are evaluated first and take absolute precedence
 - **Minimal child env** — child processes get only PATH/HOME/LANG plus configured vars; wraptool's own env is never inherited (except PATH), so credentials don't leak. PATH is the tool binary's own directory prepended to the **server's inherited PATH** (`executor.childPath`; falls back to `/usr/bin:/bin` when unset), so both co-located helpers (kubectl → `gke-gcloud-auth-plugin`) and genuine runtime deps in a separate prefix (git → `ssh` on a store-based distro) resolve. Inheriting only PATH — not the full env — restores real dependencies without leaking secrets.
@@ -70,7 +73,13 @@ internal/
 ## Config Location
 
 Uses XDG: `~/.config/wraptool/config.yaml` (Linux), overridable with
-`--config` or `WRAPTOOL_CONFIG`.
+`--config` or `WRAPTOOL_CONFIG`. First run scaffolds it if absent:
+`serve`/`up` call `config.EnsureConfigFile` (`internal/config/scaffold.go` +
+embedded `default_config.yaml`) which writes a commented starter — one
+privileged example tool, `git pull` (its binary path resolved via `LookPath`
+since the whitelist needs an absolute, existing binary) so first-run `serve`
+both comes up and satisfies the ≥1-tool validation. Never clobbers an existing
+file (create-exclusive).
 
 ## Dependencies
 
