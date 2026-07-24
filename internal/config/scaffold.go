@@ -36,19 +36,13 @@ func renderDefaultConfig() []byte {
 func EnsureConfigFile(path string) (created bool, err error) {
 	path = expandPath(path)
 
-	if _, err := os.Stat(path); err == nil {
-		return false, nil // already present — never clobber
-	} else if !os.IsNotExist(err) {
-		return false, fmt.Errorf("checking config path %q: %w", path, err)
-	}
-
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return false, fmt.Errorf("creating config dir: %w", err)
 	}
 
-	// O_EXCL closes the TOCTOU window between the Stat above and the create: if
-	// another process wrote the file in between, treat it as already present
-	// rather than clobbering it.
+	// O_EXCL is the authoritative, race-free existence check: the file is
+	// created only if it does not already exist, so an existing config is never
+	// clobbered (os.IsExist → created=false) — no separate Stat, no TOCTOU gap.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
