@@ -7,10 +7,8 @@ import (
 
 func TestGet(t *testing.T) {
 	i := Get()
-	// The stamped version always starts with the base version; the VCS suffix is
-	// present in a real build but may be absent under `go test`.
-	if !strings.HasPrefix(i.Version, BaseVersion) {
-		t.Errorf("Version %q must start with base version %q", i.Version, BaseVersion)
+	if !strings.HasPrefix(i.Version, "devel") {
+		t.Errorf("Version %q must identify a development build", i.Version)
 	}
 	if i.GoVersion == "" {
 		t.Error("GoVersion is empty")
@@ -21,6 +19,16 @@ func TestGet(t *testing.T) {
 	// When a revision is stamped, the version encodes its short form.
 	if i.Revision != "" && !strings.Contains(i.Version, i.Revision[:min(12, len(i.Revision))]) {
 		t.Errorf("Version %q should encode revision %q", i.Version, i.Revision)
+	}
+}
+
+func TestGetInjectedReleaseVersion(t *testing.T) {
+	oldVersion := version
+	version = "1.2.3"
+	t.Cleanup(func() { version = oldVersion })
+
+	if got := Get().Version; got != "1.2.3" {
+		t.Errorf("Version = %q, want linker-injected release version", got)
 	}
 }
 
