@@ -29,8 +29,34 @@ import (
 // `server start` (canonical) and as a hidden root-level `serve` (compat —
 // generated .mcp.json files and documented systemd units invoke `serve`, and
 // those live on disk long after an upgrade, so the spelling can't be dropped).
+// serveOverrides carry runtime-computed listener settings from `wraptool up`
+// into the detached serve process, which re-reads the config file — so up stays
+// authoritative for the effective binds/tokens (an sse address widened for a
+// bridged container, an auto-enabled admin UI) without rewriting the user's
+// config. Both the MCP and admin listeners share this listener+token shape.
+type serveOverrides struct {
+	mcpListen, mcpAuthTokenFile     string
+	adminListen, adminAuthTokenFile string
+}
+
+func (o serveOverrides) apply(cfg *config.Config) {
+	if o.mcpListen != "" {
+		cfg.MCP.Listen = o.mcpListen
+	}
+	if o.mcpAuthTokenFile != "" {
+		cfg.MCP.AuthTokenFile = o.mcpAuthTokenFile
+	}
+	if o.adminListen != "" {
+		cfg.Admin.Listen = o.adminListen
+	}
+	if o.adminAuthTokenFile != "" {
+		cfg.Admin.AuthTokenFile = o.adminAuthTokenFile
+	}
+}
+
 func newServeCmd(use string, hidden bool) *cobra.Command {
 	var configPath string
+	var ov serveOverrides
 
 	cmd := &cobra.Command{
 		Use:    use,
@@ -49,16 +75,22 @@ mcpServers config:
 
 This keeps credentials isolated in the wraptool process.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runServe(configPath)
+			return runServe(configPath, ov)
 		},
 	}
 
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
+	// Config overrides used by `wraptool up` to bind runtime-appropriate
+	// addresses with tokens without rewriting the user's config file.
+	cmd.Flags().StringVar(&ov.mcpListen, "listen", "", "override mcp.listen (host:port)")
+	cmd.Flags().StringVar(&ov.mcpAuthTokenFile, "auth-token-file", "", "override mcp.auth_token_file")
+	cmd.Flags().StringVar(&ov.adminListen, "admin-listen", "", "override admin.listen (host:port)")
+	cmd.Flags().StringVar(&ov.adminAuthTokenFile, "admin-auth-token-file", "", "override admin.auth_token_file")
 
 	return cmd
 }
 
-func runServe(configPath string) error {
+func runServe(configPath string, ov serveOverrides) error {
 	if configPath == "" {
 		configPath = os.Getenv("WRAPTOOL_CONFIG")
 	}
@@ -82,6 +114,10 @@ func runServe(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+
+	// Apply CLI overrides (used by `wraptool up` for runtime-appropriate binds)
+	// before validation, so the effective addresses/tokens are what gets checked.
+	ov.apply(cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validating config: %w", err)

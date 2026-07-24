@@ -15,6 +15,7 @@ import (
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
+	"github.com/pti/wraptool/internal/webui"
 
 	"github.com/spf13/cobra"
 )
@@ -23,6 +24,7 @@ type upOptions struct {
 	configPath  string
 	noServer    bool
 	noContainer bool
+	noAdmin     bool
 	shell       string // "auto" | "always" | "never"
 	workspace   string
 	runtime     string // "auto" | "guix" | "devcontainer"
@@ -61,6 +63,7 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().StringVarP(&opts.configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 	cmd.Flags().BoolVar(&opts.noServer, "no-server", false, "do not start the server (assume it is already running)")
 	cmd.Flags().BoolVar(&opts.noContainer, "no-container", false, "only ensure the server; do not touch the container")
+	cmd.Flags().BoolVar(&opts.noAdmin, "no-admin", false, "do not auto-enable the operator review UI")
 	cmd.Flags().StringVar(&opts.shell, "shell", opts.shell, "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", opts.runtime, "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
@@ -121,8 +124,19 @@ func runUp(opts upOptions) error {
 	}
 
 	if !opts.noServer {
+		if err := adjustServerBindForRuntime(cfg, rt); err != nil {
+			return err
+		}
+		if !opts.noAdmin {
+			enableAdminDefault(cfg)
+		}
 		if err := ensureServer(cfg, configPath); err != nil {
 			return err
+		}
+		if cfg.Admin.Listen != "" && cfg.Admin.AuthTokenFile != "" {
+			if adminToken, err := webui.LoadToken(cfg.Admin.AuthTokenFile); err == nil {
+				fmt.Printf("review UI: %s\n", webURL(cfg.Admin.Listen, adminToken))
+			}
 		}
 	}
 
@@ -174,6 +188,57 @@ func configOrDefault(p string) string {
 
 // --- server supervision ---
 
+// adjustServerBindForRuntime widens the MCP bind for a bridged (devcontainer)
+// runtime, whose container reaches the host over the bridge gateway — not the
+// host's loopback — so a loopback bind is unreachable from inside it. A loopback
+// listen is rebound to 0.0.0.0 on the same port, and because a non-loopback bind
+// is reachable off-host it must be authenticated, so a token file is defaulted
+// in when the operator did not configure one (ensureServer then generates it).
+// The guix runtime shares the host netns, so loopback already works there and is
+// left untouched (no LAN exposure) — this is a no-op for it.
+func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
+	if rt != runtimeDevcontainer || cfg.MCP.Transport != "sse" {
+		return nil
+	}
+	if config.ListenIsLoopback(cfg.MCP.Listen) {
+		_, port, err := net.SplitHostPort(cfg.MCP.Listen)
+		if err != nil {
+			return fmt.Errorf("parsing mcp.listen %q: %w", cfg.MCP.Listen, err)
+		}
+		cfg.MCP.Listen = net.JoinHostPort("0.0.0.0", port)
+		fmt.Printf("devcontainer: binding %s so the container can reach the server via its bridge gateway\n", cfg.MCP.Listen)
+	}
+	if cfg.MCP.AuthTokenFile == "" {
+		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
+		fmt.Printf("devcontainer: enabling an MCP auth token at %s (a non-loopback bind must be authenticated)\n", cfg.MCP.AuthTokenFile)
+	}
+	return nil
+}
+
+func defaultMCPTokenFile() string {
+	return filepath.Join(paths.ConfigDir(), "mcp-token")
+}
+
+// enableAdminDefault turns on the operator review UI when the operator has not
+// configured it, so `wraptool up` yields a complete setup: the MCP server for
+// the AI plus the UI to approve its capability requests. Unlike the MCP
+// listener, admin is operator/host-facing and is NEVER widened past loopback —
+// exposing it would let anything that can route to the port approve
+// capabilities and edit policy. A token is defaulted in (ensureServer generates
+// it) so the UI is never unauthenticated. Opt out with --no-admin.
+func enableAdminDefault(cfg *config.Config) {
+	if cfg.Admin.Listen == "" {
+		cfg.Admin.Listen = "127.0.0.1:8718"
+	}
+	if cfg.Admin.AuthTokenFile == "" {
+		cfg.Admin.AuthTokenFile = defaultAdminTokenFile()
+	}
+}
+
+func defaultAdminTokenFile() string {
+	return filepath.Join(paths.ConfigDir(), "admin-token")
+}
+
 // ensureServer makes the shared MCP server reachable, starting it detached if
 // it is not. Idempotent and safe against a concurrent `up` via a file lock.
 func ensureServer(cfg *config.Config, configPath string) error {
@@ -208,7 +273,10 @@ func ensureServer(cfg *config.Config, configPath string) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validating config after token setup: %w", err)
 	}
-	if err := spawnServer(configPath); err != nil {
+	if err := spawnServer(configPath, serveOverrides{
+		mcpListen: cfg.MCP.Listen, mcpAuthTokenFile: cfg.MCP.AuthTokenFile,
+		adminListen: cfg.Admin.Listen, adminAuthTokenFile: cfg.Admin.AuthTokenFile,
+	}); err != nil {
 		return err
 	}
 
@@ -246,7 +314,7 @@ func dialOK(addr string) bool {
 	return true
 }
 
-func spawnServer(configPath string) error {
+func spawnServer(configPath string, ov serveOverrides) error {
 	exe, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locating wraptool binary: %w", err)
@@ -261,7 +329,21 @@ func spawnServer(configPath string) error {
 	}
 	defer logf.Close()
 
-	cmd := exec.Command(exe, "serve", "--config", configPath)
+	// up is authoritative for the effective binds/tokens (runtime-adjusted MCP
+	// address, auto-enabled admin UI), so pass them as overrides rather than
+	// relying on the config file the detached serve re-reads.
+	args := []string{"serve", "--config", configPath}
+	for flag, val := range map[string]string{
+		"--listen":                ov.mcpListen,
+		"--auth-token-file":       ov.mcpAuthTokenFile,
+		"--admin-listen":          ov.adminListen,
+		"--admin-auth-token-file": ov.adminAuthTokenFile,
+	} {
+		if val != "" {
+			args = append(args, flag, val)
+		}
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	configureDetached(cmd)
