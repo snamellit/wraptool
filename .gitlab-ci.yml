@@ -21,6 +21,10 @@ variables:
   # dcf2cc20138a. To bump: rebuild the image, then repoint to the new
   # `ci-toolchain@sha256:...` digest here.
   CI_TOOLCHAIN_IMAGE: "forge.snamellit.com/pti/wraptool/ci-toolchain@sha256:71d3b689287cb467f781d7c4b47000aaba9a6303914589e2c2def5464a6aac43"
+  # Generic package registry namespace holding the release binaries. The release
+  # jobs append /<version>/<file>. References predefined CI vars only, so it
+  # expands cleanly everywhere it is used.
+  PKG_BASE: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool"
 
 # Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
 # + the standard set, per .golangci.yml). Runs on every branch. The image is
@@ -154,7 +158,7 @@ release:binaries:
     - (cd dist && sha256sum wraptool_* build-info.txt > checksums.txt)
     # Upload every artifact to the project's generic package registry.
     - |
-      pkg="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}"
+      pkg="${PKG_BASE}/${version}"
       for f in dist/*; do
         name=${f##*/}
         curl --fail-with-body --silent --show-error --retry 2 --retry-all-errors \
@@ -189,18 +193,18 @@ release:publish:
     assets:
       links:
         - name: "wraptool_${version}_linux_amd64"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/wraptool_${version}_linux_amd64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_linux_amd64"
         - name: "wraptool_${version}_linux_arm64"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/wraptool_${version}_linux_arm64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_linux_arm64"
         - name: "wraptool_${version}_darwin_amd64"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/wraptool_${version}_darwin_amd64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_darwin_amd64"
         - name: "wraptool_${version}_darwin_arm64"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/wraptool_${version}_darwin_arm64"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_darwin_arm64"
         - name: "wraptool_${version}_windows_amd64.exe"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/wraptool_${version}_windows_amd64.exe"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_windows_amd64.exe"
         - name: "wraptool_${version}_windows_arm64.exe"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/wraptool_${version}_windows_arm64.exe"
+          url: "${PKG_BASE}/${version}/wraptool_${version}_windows_arm64.exe"
         - name: "checksums.txt"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/checksums.txt"
+          url: "${PKG_BASE}/${version}/checksums.txt"
         - name: "build-info.txt"
-          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/wraptool/${version}/build-info.txt"
+          url: "${PKG_BASE}/${version}/build-info.txt"
