@@ -33,6 +33,19 @@ schemas and values pass through without CLI-style constraints. Capability
 requests and the config editors do not manage these rules. See [MCP
 integration](mcp-integration.qmd#proxy-local-mcp-servers).
 
+::: {.callout-note}
+## First run scaffolds this file
+
+If no config exists at the resolved path, `wraptool serve` and `wraptool up`
+write a commented starter there (mode `0600`) and log the location, rather than
+erroring. They never overwrite an existing file. The starter enables one
+privileged tool — `git pull` — so the server comes up and demonstrates the
+point of wraptool: it wraps commands that need host credentials the AI never
+sees. Read-only local git (`status`, `log`, `diff`) is intentionally not
+included — it needs no credentials and the assistant can run it itself. Edit the
+file to expose the tools you want; it hot-reloads on save.
+:::
+
 ## `mcp`
 
 | Field | Type | Default | Description |
@@ -77,7 +90,7 @@ file-watch.
 ## `tools.<name>`
 
 Each tool is keyed by the user-visible name (which becomes the MCP
-tool prefix: `git` → `git_status`, `git_commit`, ...).
+tool prefix: `git` → `git_pull`, `git_push`, ...).
 
 ```yaml
 tools:
