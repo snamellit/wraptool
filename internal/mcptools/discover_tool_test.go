@@ -78,6 +78,9 @@ func TestDiscoverReportsAllowedAndUnpermitted(t *testing.T) {
 	if len(d.Tools) != 1 || d.Tools[0] != ToolName("fj", []string{"pr"}) {
 		t.Errorf("Tools = %v, want the registered MCP tool name", d.Tools)
 	}
+	if _, ok := d.Available["pr"]; ok {
+		t.Errorf("Available = %v, permitted pr should be excluded", d.Available)
+	}
 	// `issue` has no allow rule; it must still be visible as requestable.
 	if _, ok := d.Available["issue"]; !ok {
 		t.Errorf("Available = %v, want it to still list the unpermitted issue", d.Available)

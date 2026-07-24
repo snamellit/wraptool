@@ -21,8 +21,8 @@ type toolDiscovery struct {
 	// callable as MCP tools, under the names in Tools.
 	Allowed []string `json:"allowed"`
 	Tools   []string `json:"tools,omitempty"`
-	// Available maps every subcommand the tool advertises in its top-level
-	// help to its one-line description, whether or not policy permits it.
+	// Available maps each advertised subcommand that policy does not permit to
+	// its one-line description.
 	Available map[string]string `json:"available,omitempty"`
 	Note      string            `json:"note,omitempty"`
 }
@@ -78,9 +78,12 @@ func RegisterDiscoverTool(s *server.MCPServer, liveConfig func() *config.Config)
 // the common path re-reads the cached schema rather than re-running --help.
 func discoverTool(ctx context.Context, name string, tc *config.ToolConfig) toolDiscovery {
 	d := toolDiscovery{Allowed: []string{}}
+	allowed := make(map[string]struct{}, len(tc.Allow))
 	for _, rule := range tc.Allow {
-		d.Allowed = append(d.Allowed, strings.Join(rule.Subcommand, " "))
+		subcommand := strings.Join(rule.Subcommand, " ")
+		d.Allowed = append(d.Allowed, subcommand)
 		d.Tools = append(d.Tools, ToolName(name, rule.Subcommand))
+		allowed[subcommand] = struct{}{}
 	}
 	sort.Strings(d.Allowed)
 	sort.Strings(d.Tools)
@@ -91,7 +94,15 @@ func discoverTool(ctx context.Context, name string, tc *config.ToolConfig) toolD
 		return d
 	}
 	if len(schema.Available) > 0 {
-		d.Available = schema.Available
+		d.Available = make(map[string]string, len(schema.Available))
+		for subcommand, description := range schema.Available {
+			if _, ok := allowed[subcommand]; !ok {
+				d.Available[subcommand] = description
+			}
+		}
+		if len(d.Available) == 0 {
+			d.Available = nil
+		}
 	}
 
 	switch {
