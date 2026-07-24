@@ -1,0 +1,37 @@
+# wraptool configuration — generated default.
+#
+# wraptool wraps CLI tools behind a security whitelist: nothing reaches the AI
+# until you allow it under `tools:`. Edits are picked up automatically (the file
+# is watched) or on SIGHUP.
+#
+# Validate after editing:  wraptool config validate
+# Docs:                    https://forge.snamellit.com/pti/wraptool
+
+mcp:
+  # Transport the MCP server listens on: stdio | sse | unix.
+  transport: stdio
+  # Log verbosity: debug | info | warn | error.
+  log_level: info
+  # For a network transport, set a listen address and (recommended) a bearer
+  # token file — without one, a non-loopback bind is unauthenticated:
+  #   transport: sse
+  #   listen: 127.0.0.1:8717
+  #   auth_token_file: ~/.config/wraptool/token
+
+# Operator review Web UI. NOT AI-facing — bind localhost only.
+# admin:
+#   listen: 127.0.0.1:8718
+#   auth_token_file: ~/.config/wraptool/admin-token
+
+# Tools exposed to the AI. Every subcommand/flag not listed here is denied.
+tools:
+  # Starter example: `git pull`. wraptool earns its keep on PRIVILEGED commands —
+  # `git pull` needs the network and your host credentials, which the AI never
+  # sees, so it has to go through wraptool. (Read-only local git like status/log/
+  # diff only touches the working .git and needs no credentials, so there is no
+  # point wrapping it — the AI can run those itself.) Adapt or replace this with
+  # the tools you actually want to expose.
+  git:
+    binary: __GIT_BINARY__
+    allow:
+      - subcommand: [pull]

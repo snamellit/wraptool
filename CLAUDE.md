@@ -70,7 +70,13 @@ internal/
 ## Config Location
 
 Uses XDG: `~/.config/wraptool/config.yaml` (Linux), overridable with
-`--config` or `WRAPTOOL_CONFIG`.
+`--config` or `WRAPTOOL_CONFIG`. First run scaffolds it if absent:
+`serve`/`up` call `config.EnsureConfigFile` (`internal/config/scaffold.go` +
+embedded `default_config.yaml`) which writes a commented starter — one
+privileged example tool, `git pull` (its binary path resolved via `LookPath`
+since the whitelist needs an absolute, existing binary) so first-run `serve`
+both comes up and satisfies the ≥1-tool validation. Never clobbers an existing
+file (create-exclusive).
 
 ## Dependencies
 

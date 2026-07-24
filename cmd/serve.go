@@ -67,6 +67,14 @@ func runServe(configPath string) error {
 		configPath = paths.DefaultConfigFile()
 	}
 
+	// First run: write a deny-by-default starter config if none exists, so serve
+	// comes up instead of erroring on a missing file. Never clobbers.
+	if created, err := config.EnsureConfigFile(configPath); err != nil {
+		return fmt.Errorf("ensuring config: %w", err)
+	} else if created {
+		log.Printf("wrote default config to %s", configPath)
+	}
+
 	// Strict load: reject unknown/misspelled keys rather than silently ignoring
 	// them. A typo'd restrictive key (deny, deny_flags, flag_constraints) would
 	// otherwise be dropped and weaken the policy with no error — see the F1

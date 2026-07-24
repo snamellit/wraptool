@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -88,6 +89,13 @@ func runUp(opts upOptions) error {
 		configPath = os.Getenv("WRAPTOOL_CONFIG")
 	}
 	configPath = configOrDefault(configPath)
+	// First run: write a deny-by-default starter config if none exists, so the
+	// load below (and the spawned server) find a valid file. Never clobbers.
+	if created, err := config.EnsureConfigFile(configPath); err != nil {
+		return fmt.Errorf("ensuring config: %w", err)
+	} else if created {
+		log.Printf("wrote default config to %s", configPath)
+	}
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
