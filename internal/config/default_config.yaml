@@ -34,6 +34,7 @@ tools:
   # point wrapping it — the AI can run those itself.) Adapt or replace this with
   # the tools you actually want to expose.
   git:
-    binary: __GIT_BINARY__
+    # Single-quoted so a Windows-style path with backslashes stays literal.
+    binary: '__GIT_BINARY__'
     allow:
       - subcommand: [pull]

@@ -4,8 +4,43 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
+
+// TestEnsureConfigFileConcurrentCreatesExactlyOne guards the atomic-publish
+// contract: many processes racing to scaffold the same path must yield exactly
+// one create, and every reader must see a complete, parseable file — never a
+// half-written one.
+func TestEnsureConfigFileConcurrentCreatesExactlyOne(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+
+	var created int64
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := EnsureConfigFile(path)
+			if err != nil {
+				t.Errorf("EnsureConfigFile: %v", err)
+			}
+			if c {
+				atomic.AddInt64(&created, 1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if created != 1 {
+		t.Fatalf("created=%d, want exactly 1", created)
+	}
+	// LoadStrict parses the whole document; a partial write would fail here.
+	if _, err := LoadStrict(path); err != nil {
+		t.Fatalf("scaffolded config did not parse (partial write?): %v", err)
+	}
+}
 
 func TestEnsureConfigFileCreatesWhenMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "config.yaml")
