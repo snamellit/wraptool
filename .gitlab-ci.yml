@@ -14,8 +14,13 @@ variables:
   # Pinned toolchain image, built from manifest.scm by the Forgejo
   # `Publish CI toolchain image` workflow. Single source of truth for both the
   # lint and the release-binary jobs so Go/git/golangci-lint versions never
-  # drift between them. Repoint the tag (or a @sha256 digest) here to bump.
-  CI_TOOLCHAIN_IMAGE: "forge.snamellit.com/pti/wraptool/ci-toolchain:latest"
+  # drift between them. Pinned by immutable digest, NOT :latest — the image is
+  # rebuilt (and gets a fresh digest) even when manifest.scm is unchanged, since
+  # `guix pack` is not bit-reproducible, so a floating tag would silently shift
+  # the toolchain under CI. This digest is the image for main commit
+  # dcf2cc20138a. To bump: rebuild the image, then repoint to the new
+  # `ci-toolchain@sha256:...` digest here.
+  CI_TOOLCHAIN_IMAGE: "forge.snamellit.com/pti/wraptool/ci-toolchain@sha256:71d3b689287cb467f781d7c4b47000aaba9a6303914589e2c2def5464a6aac43"
 
 # Go static checks: gofmt, go vet, and golangci-lint (staticcheck + exhaustive
 # + the standard set, per .golangci.yml). Runs on every branch. The image is
