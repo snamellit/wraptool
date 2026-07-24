@@ -49,7 +49,7 @@ Docker/Podman flows in [`docs/isolated-environments.md`](../../docs/isolated-env
    ```bash
    head -c 32 /dev/urandom | base64 > ~/.config/wraptool/auth_token
    chmod 600 ~/.config/wraptool/auth_token
-   wraptool serve
+   wraptool server start
    ```
 
 3. Export the token so the container inherits it, then open the folder in a Dev

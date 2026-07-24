@@ -273,7 +273,7 @@ sequenceDiagram
 
 ::: {.fragment}
 Minimal, no-container fallback: `wraptool init --harness claude`
-to wire a harness at any MCP client, then `wraptool serve` on the host.
+to wire a harness at any MCP client, then `wraptool server start` on the host.
 :::
 
 # Where next

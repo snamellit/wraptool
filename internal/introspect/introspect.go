@@ -107,6 +107,17 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 	// Get version for cache invalidation.
 	schema.VersionOutput = getVersion(ctx, tc)
 
+	// Parse the top-level help for the tool's subcommand catalog. This runs
+	// regardless of the allow rules — a tool with none is inert but still needs
+	// to be discoverable, or there is no way to learn what to request without
+	// guessing. The argv is fixed (`-h` / `--help` / `help`), never AI-supplied.
+	if helpText, err := getHelp(ctx, tc, nil); err != nil {
+		log.Printf("introspect %s: top-level help failed, no subcommand catalog: %v", toolName, err)
+	} else if available := BestParseSubcommands(helpText); len(available) > 0 {
+		schema.Available = available
+		log.Printf("introspect %s: %d subcommands advertised", toolName, len(available))
+	}
+
 	// Introspect each allowed subcommand.
 	for _, rule := range tc.Allow {
 		subcmdKey := strings.Join(rule.Subcommand, " ")

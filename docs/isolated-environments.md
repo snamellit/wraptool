@@ -10,7 +10,7 @@ local MCP-server access to wraptool running on the host, where credentials live.
 ┌─────────────────────────────────────────────┐
 │  Host (privileged)                          │
 │                                             │
-│  wraptool serve                             │
+│  wraptool server start                      │
 │    - has access to ~/.ssh, kubeconfig, etc. │
 │    - listens on Unix socket or TCP          │
 │    - enforces whitelist policy              │
@@ -115,7 +115,7 @@ tools:
 EOF
 
 # Start wraptool (runs in foreground, use tmux/screen or & for background)
-wraptool serve
+wraptool server start
 ```
 
 ### Step 2: Enter the isolated Guix shell
@@ -227,7 +227,7 @@ Generate an auth token:
 ```bash
 head -c 32 /dev/urandom | base64 > ~/.config/wraptool/auth_token
 chmod 600 ~/.config/wraptool/auth_token
-wraptool serve
+wraptool server start
 ```
 
 ### Step 2: Run the coding container
@@ -416,7 +416,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/wraptool serve
+ExecStart=%h/.local/bin/wraptool server start
 Restart=on-failure
 RestartSec=5
 

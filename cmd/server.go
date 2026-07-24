@@ -18,8 +18,9 @@ import (
 func newServerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
-		Short: "Inspect or stop the shared wraptool server",
+		Short: "Start, inspect, or stop the shared wraptool server",
 	}
+	cmd.AddCommand(newServeCmd("start", false))
 	cmd.AddCommand(newServerStatusCmd())
 	cmd.AddCommand(newServerStopCmd())
 	return cmd
