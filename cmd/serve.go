@@ -109,6 +109,7 @@ func runServe(configPath string) error {
 	// Register the capability request tool + the server-info tool.
 	mcptools.RegisterRequestCapabilityTool(s, store)
 	mcptools.RegisterInfoTool(s, reg.CLIToolNames)
+	mcptools.RegisterDiscoverTool(s, reg.config)
 
 	// Set up SIGHUP and file-watch for hot-reload.
 	go handleSIGHUP(configPath, reg)

@@ -13,6 +13,13 @@ type Schema struct {
 	ConfigHash     string                `json:"config_hash,omitempty"`
 	IntrospectedAt time.Time             `json:"introspected_at"`
 	Subcommands    map[string]Subcommand `json:"subcommands"`
+	// Available is the tool's advertised subcommand catalog (name →
+	// description), parsed from its top-level help. Unlike Subcommands it is
+	// independent of the allow rules: it is what the tool *offers*, not what
+	// policy permits, and it is what wraptool_discover serves so an operator's
+	// AI can name a real subcommand in a capability request instead of guessing.
+	// Empty for tools whose help advertises no subcommands (most GNU tools).
+	Available map[string]string `json:"available,omitempty"`
 }
 
 // Subcommand describes a single subcommand of a CLI tool.

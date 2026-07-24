@@ -228,6 +228,9 @@ func TestCLIToolNamesFollowReload(t *testing.T) {
 	if got := reg.CLIToolNames(); len(got) != 0 {
 		t.Fatalf("initial CLI tools = %v, want none", got)
 	}
+	if reg.config() == nil {
+		t.Fatal("initial config is nil")
+	}
 
 	updated := serverCfg()
 	updated.Tools = map[string]config.ToolConfig{
@@ -239,6 +242,9 @@ func TestCLIToolNamesFollowReload(t *testing.T) {
 	reg.reload(updated)
 	if got := reg.CLIToolNames(); len(got) != 1 || got[0] != "fj" {
 		t.Errorf("CLI tools after reload = %v, want [fj]", got)
+	}
+	if got := reg.config(); got != updated {
+		t.Errorf("config after reload = %p, want %p", got, updated)
 	}
 }
 
