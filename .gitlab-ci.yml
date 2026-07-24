@@ -152,8 +152,12 @@ release:binaries:
         echo "version=$version"
         echo "tag=$CI_COMMIT_TAG"
         echo "commit=$CI_COMMIT_SHA"
+        # On GitLab the toolchain is pinned by the image digest, not a guix
+        # channels lock (channels.scm is not used here), so record the image
+        # and the manifest hash as the build provenance.
+        echo "toolchain_image=$CI_TOOLCHAIN_IMAGE"
         go version
-        sha256sum channels.scm manifest.scm
+        sha256sum manifest.scm
       } > dist/build-info.txt
     - (cd dist && sha256sum wraptool_* build-info.txt > checksums.txt)
     # Upload every artifact to the project's generic package registry.
