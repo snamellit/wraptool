@@ -128,14 +128,13 @@ version_gt() {
   return 1
 }
 
-if ! version_gt "$version" "$latest"; then
-  echo "release version $version must be greater than latest release $latest" >&2
-  exit 1
-fi
-
 tag="wraptool-v$version"
 if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; then
   echo "tag $tag already exists" >&2
+  exit 1
+fi
+if ! version_gt "$version" "$latest"; then
+  echo "release version $version must be greater than latest release $latest" >&2
   exit 1
 fi
 

@@ -36,7 +36,15 @@ jobs:
               grep "^fpr:" | cut -d: -f10 | sed -n "1p")
             test "$fingerprint" = "$expected_fingerprint"
             gpg --batch --import release-signing-key.asc
-            git verify-tag "$GITHUB_REF_NAME"
+            if ! verify_output=$(git verify-tag --raw "$GITHUB_REF_NAME" 2>&1); then
+              printf "%s\n" "$verify_output" >&2
+              exit 1
+            fi
+            printf "%s\n" "$verify_output"
+            test "$(printf "%s\n" "$verify_output" | grep -c "^\[GNUPG:\] VALIDSIG ")" -eq 1
+            valid_signature=$(printf "%s\n" "$verify_output" | grep "^\[GNUPG:\] VALIDSIG ")
+            signer_primary_fingerprint=${valid_signature##* }
+            test "$signer_primary_fingerprint" = "$expected_fingerprint"
             test "$(git rev-list -n1 "$GITHUB_REF_NAME")" = "$(git rev-parse HEAD)"
 
             go test ./...

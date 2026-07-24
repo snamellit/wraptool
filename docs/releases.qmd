@@ -28,6 +28,13 @@ the trusted host where the GPG agent and private key are available, not inside
 the isolated harness container. Use `--dry-run` to verify a release without
 creating a tag or `--yes` for a non-interactive release.
 
+Confirm the signing-capable secret key is available on the host before running
+the release command:
+
+```bash
+gpg --list-secret-keys C8ABC91CAB2DC195B9763877DFABC43C55F2E63A
+```
+
 Release tags are signed by
 `C8ABC91CAB2DC195B9763877DFABC43C55F2E63A`. The public key is committed as
 [`release-signing-key.asc`](https://forge.snamellit.com/pti/wraptool/src/branch/main/release-signing-key.asc), making CI verification
