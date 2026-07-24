@@ -1,8 +1,8 @@
 # wraptool
 
-An MCP server that wraps CLI tools behind a security whitelist, so AI
-coding assistants can use tools like `git`, `gcloud`, and `kubectl`
-without direct access to credentials.
+An MCP server that places CLI tools and local stdio MCP servers behind a
+security policy, so AI coding assistants can use credentialed host capabilities
+without direct access to the underlying credentials.
 
 ## Why
 
@@ -30,6 +30,8 @@ code they trigger — as untrusted**, and bounds what it can reach:
 - **Subcommand-level whitelisting** -- allow `git commit` but deny
   `git push --force`, with flag-level granularity and value
   constraints.
+- **MCP-server filtering** -- spawn credentialed local stdio MCP servers and
+  expose only explicitly allowed upstream tool names under a stable prefix.
 - **Auto-discovery** -- wraptool parses `--help` output to generate
   MCP tool schemas with real descriptions.
 - **Structured denial workflow** -- denied commands trigger a

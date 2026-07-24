@@ -1,6 +1,6 @@
 ---
 title: "The privilege line for agentic development"
-subtitle: "Wraptool exposes selected host CLI operations over MCP without placing host credentials in the coding environment."
+subtitle: "Wraptool exposes selected host CLI operations and local MCP-server tools without placing host credentials in the coding environment."
 page-layout: full
 toc: false
 ---
@@ -24,7 +24,7 @@ deny → allow → constraints
 ::: {.boundary-zone .boundary-zone-host}
 **TRUSTED HOST**
 
-CLI binaries · policy · credentials
+CLI binaries · MCP servers · credentials
 :::
 :::
 
@@ -33,14 +33,20 @@ CLI binaries · policy · credentials
 Wraptool is a Go [Model Context Protocol](https://modelcontextprotocol.io/)
 server for a specific deployment pattern: keep the AI harness and project code
 in a credential-free container, while a host process mediates the few operations
-that need SSH keys, cloud credentials, or kubeconfig.
+that need SSH keys, API tokens, cloud credentials, or kubeconfig. Those
+capabilities can come from wrapped CLI commands or local stdio MCP servers.
 
 ::: {.feature-grid}
 ::: {.feature-card}
-### Exact policy
+### Constrained CLI tools
 Unknown operations default-deny. Rules match exact subcommand token sequences,
 then enforce allowed flags, denied flags, value constraints, and optional
 positional limits.
+:::
+::: {.feature-card}
+### Filtered MCP servers
+Wraptool can spawn local stdio MCP servers with host-side credentials and expose
+only named tools under a configured prefix. Deny wins; arguments pass through.
 :::
 ::: {.feature-card}
 ### Explicit execution
@@ -67,6 +73,10 @@ wraptool up
 runtime, wires the selected harness to MCP, and opens a shell when attached to a
 terminal. Local compilation, tests, and ordinary Git can stay inside the box;
 credentialed operations cross the policy boundary.
+
+For credentialed APIs already packaged as MCP servers, Wraptool can proxy their
+allowed tools instead of forcing them through a CLI adapter. See [MCP
+integration](mcp-integration.qmd#proxy-local-mcp-servers).
 
 ::: {.callout-warning title="A bounded capability system, not a sandbox for everything"}
 The workspace retains its source tree and network access. It can read the MCP

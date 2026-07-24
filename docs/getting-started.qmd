@@ -76,6 +76,11 @@ tools:
       - subcommand: [remote, set-url]
 ```
 
+This first policy wraps a CLI binary. Wraptool can also spawn credentialed local
+stdio MCP servers and expose selected tool names; see [Proxy local MCP
+servers](mcp-integration.qmd#proxy-local-mcp-servers). Both capability sources
+appear on the same client-facing MCP connection.
+
 See [Configuration reference](configuration.qmd) for every field.
 
 ## 3. Start the server

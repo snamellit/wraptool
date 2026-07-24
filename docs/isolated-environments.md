@@ -1,8 +1,8 @@
 # Isolated Development Environments with wraptool
 
 This guide shows how to run your AI coding assistant in an isolated
-environment (container or Guix shell) while delegating CLI tool access
-to wraptool running on the host, where credentials live.
+environment (container or Guix shell) while delegating credentialed CLI and
+local MCP-server access to wraptool running on the host, where credentials live.
 
 ## Architecture
 

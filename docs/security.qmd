@@ -17,7 +17,7 @@ reach, the moment you build or test. Any of them may:
 - Stuff shell metacharacters into arguments to escape command parsing.
 - Exfiltrate data via stdout/stderr.
 
-wraptool's job is to make the **set of reachable commands** finite,
+wraptool's job is to make the **set of reachable host capabilities** finite,
 audited, and credential-free from the workspace's point of view. Run
 under `wraptool up`'s throwaway container (see [Deployment
 patterns](#deployment-patterns)) this bounds the blast radius for both
@@ -33,8 +33,9 @@ tools the agent can. wraptool therefore:
 - **Protects host credentials** — SSH keys, gcloud, kubeconfig, and the
   rest of the host environment never enter the container or the AI
   context.
-- **Bounds which operations run** — privileged/remote actions go only
-  through wraptool's policed, constrained subcommands on the host.
+- **Bounds which operations run** — privileged/remote actions go through
+  constrained CLI subcommands or explicitly named tools from local MCP servers.
+  MCP arguments pass through unchanged, so that policy is intentionally coarser.
 
 It does **not** protect source confidentiality or network egress, and a
 compromised dependency inherits the agent's tool access. The intended design is
@@ -63,10 +64,12 @@ flowchart LR
     wt["wraptool<br/>process"]
     creds[("Credentials<br/>SSH / gcloud / kubeconfig")]
     cli["CLI binaries"]
+    upstream["Local stdio<br/>MCP servers"]
   end
   ai <-- "MCP / SSE" --> wt
   wt --- creds
   wt --> cli
+  wt --> upstream
 
   style untrusted fill:#fee,stroke:#E60028
   style trusted   fill:#efe,stroke:#2a7
@@ -75,8 +78,8 @@ flowchart LR
 The MCP transport (stdio / SSE / Unix socket) is the only path across
 the boundary. The AI sees:
 
-- The schema of allowed tools (subcommand + flags + descriptions).
-- Stdout/stderr of executed commands, **after scrubbing**.
+- The schema of allowed CLI tools and allowed upstream MCP tools.
+- CLI stdout/stderr and MCP text results, **after heuristic scrubbing**.
 - Structured error messages on denial.
 
 The MCP response does not directly include the wraptool config or child
@@ -86,7 +89,7 @@ hardening remain part of the boundary.
 
 ## Defenses
 
-### No shell execution
+### No shell execution for CLI tools
 
 Every command runs via `exec.CommandContext` with an **explicit
 argument array**. There is no `sh -c`, `bash -c`, or string template

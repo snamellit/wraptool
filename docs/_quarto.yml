@@ -8,7 +8,7 @@ project:
 
 website:
   title: "wraptool"
-  description: "A credential boundary between AI coding environments and privileged CLI tools."
+  description: "A credential boundary between AI coding environments, privileged CLI tools, and local MCP servers."
   site-url: https://pti.pages.snamellit.com/wraptool/
   repo-url: https://forge.snamellit.com/pti/wraptool
   repo-subdir: docs

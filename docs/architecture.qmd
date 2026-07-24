@@ -7,21 +7,26 @@ title: "Architecture and trust boundaries"
 ```{mermaid}
 flowchart LR
   U["Untrusted workspace<br/>harness + project code"] -->|"MCP tool call"| T["Transport<br/>stdio / SSE / HTTP"]
-  T --> P["Policy<br/>deny > allow > constraints"]
+  T --> K{"Capability source"}
+  K --> P["CLI policy<br/>deny > allow > constraints"]
   P -->|allowed| E["Executor<br/>explicit argv + timeout"]
   E --> C["Host CLI"]
   C --> S["Scrub + output cap"]
   S --> U
+  K --> M["MCP policy<br/>tool-name allow / deny"]
+  M -->|allowed| X["Local stdio<br/>MCP server"]
+  X --> MS["Scrub text results"]
+  MS --> U
   P -->|denied| R["Capability request log"]
   O["Host operator"] --> R
   O --> F["Policy config"]
   F --> P
 ```
 
-The host process, its YAML policy, configured binaries, and host credentials are
-trusted. The harness, writable workspace, builds, tests, and dependencies are
-untrusted. The MCP token is an authorization credential available to the
-container and grants every capability exposed on that MCP listener.
+The host process, its YAML policy, configured binaries, spawned MCP servers, and
+host credentials are trusted. The harness, writable workspace, builds, tests,
+and dependencies are untrusted. The MCP token is an authorization credential
+available to the container and grants every capability exposed on that listener.
 
 ## Components
 
@@ -48,6 +53,12 @@ Wrapped CLI processes run on the host. Their environment includes a curated
 `HOME` is inherited, tools may discover user-global configuration or credentials;
 operators should override `HOME` and tool-specific config variables where a
 dedicated profile is required.
+
+Configured MCP servers also run as host children over stdio with a curated
+environment. Wraptool forwards their declared input schemas and call arguments
+unchanged after filtering exact tool names. This is a coarser boundary than CLI
+rules: there are no per-argument MCP constraints, and only text results and
+errors are scrubbed.
 
 ## Working directory
 
