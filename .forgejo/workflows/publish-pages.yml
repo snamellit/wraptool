@@ -16,7 +16,7 @@ permissions:
 jobs:
   publish:
     # Native runner convention used by the other Forgejo workflows. Quarto comes
-    # from the same manifest as local development and the project container.
+    # from the runner's pulled snamguix channel.
     runs-on: guix
     steps:
       - name: Check out main
@@ -27,11 +27,11 @@ jobs:
 
       - name: Render website
         run: |
-          guix time-machine -C channels.scm -- shell -m manifest.scm -- quarto render docs
+          guix shell quarto-bin -- quarto render docs
 
       - name: Validate publication tree
         run: |
-          guix time-machine -C channels.scm -- shell -m manifest.scm -- sh -ec '
+          guix shell bash coreutils ripgrep -- sh -ec '
             test -f docs/_site/index.html
             test -f docs/_site/search.json
             suspicious=$(rg --files docs/_site | rg -i "(^|/)([.]env($|[.])|[.]envrc$|.*credential.*|.*token.*|.*[.](map|pem|key|p12|pfx))$" || true)
