@@ -80,7 +80,7 @@ box on "Reopen in Container" or `wraptool up`.
 
 ```bash
 wraptool init --harness claude   # writes .mcp.json pointing at localhost
-wraptool serve
+wraptool server start
 ```
 
 The assistant runs on the same host as wraptool, so `127.0.0.1:8717` is reachable.

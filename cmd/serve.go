@@ -25,12 +25,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newServeCmd() *cobra.Command {
+// newServeCmd builds the server-start command. It is registered twice: as
+// `server start` (canonical) and as a hidden root-level `serve` (compat —
+// generated .mcp.json files and documented systemd units invoke `serve`, and
+// those live on disk long after an upgrade, so the spelling can't be dropped).
+func newServeCmd(use string, hidden bool) *cobra.Command {
 	var configPath string
 
 	cmd := &cobra.Command{
-		Use:   "serve",
-		Short: "Start the MCP server",
+		Use:    use,
+		Hidden: hidden,
+		Short:  "Start the MCP server",
 		Long: `Start the wraptool MCP server.
 
 Supported transports:

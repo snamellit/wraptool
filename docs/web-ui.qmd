@@ -129,6 +129,6 @@ constraint blocks themselves require a YAML edit.
 ## Restart to enable
 
 The Web UI listener is bound once at startup. Adding or changing the
-`admin` block requires a **restart** of `wraptool serve` — config
-hot-reload swaps tools and policy but does not start or move the web
-listener.
+`admin` block requires restarting the server (`wraptool server start`) —
+config hot-reload swaps tools and policy but does not start or move the
+web listener.
