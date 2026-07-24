@@ -1,7 +1,8 @@
 # Security Audit: full-surface review (network edge, token at rest, policy semantics, scrubbing, isolation)
 
-Status: **findings — open**
+Status: **revalidated — remediation in progress**
 Date: 2026-07-22
+Revalidated: 2026-07-23 at `d09e8cc`
 Scope: whole codebase (~14.5k LOC Go + `features/` shell). Five parallel
 read-only sweeps: (1) executor + whitelist, (2) webui, (3) transports +
 mcpproxy + mcptools, (4) config + requestlog + paths, (5) container runtime +
@@ -11,6 +12,116 @@ Relationship to prior work: complements `security-audit-policy-enforcement.md`
 (2026-07-08). Where this audit re-touches those findings it says so; F1/F5/F6
 from that audit remain fixed, F3/F4 are re-confirmed open and re-prioritized
 here.
+
+## 2026-07-23 status update
+
+### Changes since the audit
+
+- `07a43c1` split MCP and admin settings, requires authentication whenever the
+  admin listener is enabled, and gives the admin plane a separate credential.
+- `0fc33a1` refuses to start a container when the active policy resolves inside
+  its writable workspace.
+- `92c2fa9`, `29825a6`, `816ee14`, and `e0588ae` keep the admin token outside
+  that workspace, including symlink, missing-file, and disabled-admin cases.
+- `ec14a96` verifies that the MCP token cannot authorize admin rule edits.
+- `77d340a` reports Guix profile warm-up failures instead of claiming success.
+
+The first four changes close the original tokenless Guix self-approval chain.
+They deliberately do not hide the MCP token from the container, because the MCP
+client needs it; the remaining question is how narrowly and safely that token is
+stored and exposed.
+
+### Finding status
+
+| Finding | Current status | Revalidation note |
+|---|---|---|
+| C1 | **Original chain fixed; residual hardening open** | Admin auth is mandatory and distinct, and its file is excluded from the workspace. Guix still shares host networking; different token files may contain equal values; only the workspace, not every writable share, is checked. |
+| C2 | **Open** | TCP MCP authentication is still optional; Host/Origin/CIDR restrictions remain absent. |
+| C3 | **Open** | The live MCP token is still embedded in a `0644` worktree file with no generic Git exclusion. |
+| C4 | **Partially fixed** | Tokenless admin mode is gone. CSRF, Host/Origin checks, security headers, and loopback bind enforcement remain open. |
+| H1-H6 | **Open** | Deny semantics, typed/empty flag values, positional policy, scrubbing, and dangerous-flag guardrails are unchanged. |
+| H7 | **Tracked by H5** | The non-text MCP scrub gap remains, but should not be tracked twice. |
+| M1-M7 | **Open** | Request-log, HTTP, shared-HOME, supply-chain, CWD, edit durability, and worktree-config issues remain. |
+| M8 | **Partially fixed** | Admin/MCP credentials are split and the admin token path is protected; logging, permissions, rotation, and token-content equality remain open. |
+| M9-M10 | **Open** | Server identity probing and absolute upstream command validation are unchanged. |
+| L1-L18 | **Open unless noted** | L7 already has partial collision validation; the remaining P3 observations still reproduce in current code. |
+
+### Additional Guix findings
+
+#### G1. CRITICAL candidate - writable `manifest.scm` is later evaluated by a host Guix process
+
+`bringUpGuixContainer` passes the worktree's `manifest.scm` directly to both
+`guix shell -m` invocations (`cmd/guixcontainer.go:72,104,147`) and mounts the
+worktree read-write (`:138`). Scheme manifests are executable input, not inert
+package lists. A compromised container can therefore replace `manifest.scm`,
+wait for the operator to exit, and target the next host-side `wraptool up` when
+Guix loads the manifest before entering the new container.
+
+This is the Guix equivalent of M7, but with potential host code execution rather
+than only harness configuration poisoning. Confirm the exact evaluation context
+with a harmless marker-file PoC on the Guix runner before assigning a final
+severity. The current development environment used for this revalidation does
+not provide the `guix` executable.
+
+Effective mitigation: store an approved manifest digest outside the worktree and
+refuse changed manifests until the operator explicitly trusts the new digest.
+Copying the file alone is insufficient because it preserves executable content.
+A safe first version can be a fail-closed digest checkpoint with a dedicated
+host-side approval command and an actionable error.
+
+#### G2. HIGH - sensitive-path validation omits the writable harness pool HOME
+
+`runUp` rejects config and admin-token paths only when they resolve below the
+workspace (`cmd/up.go:103-113,345-409`). Guix separately mounts the shared pool
+HOME read-write (`cmd/guixcontainer.go:144`). An operator can place either
+sensitive file under that pool and pass the current check, exposing policy or the
+admin credential to every project container.
+
+Effective mitigation: build the complete set of writable host shares before
+validation and reject policy/admin-token paths beneath any of them. Cover direct,
+symlinked-parent, missing-target, and equality cases in unit tests.
+
+#### G3. HIGH - shared writable HOME is a cross-project persistence boundary
+
+M3 remains open: every Guix project mounts the same pool HOME read-write and
+starts `bash -l` with it (`cmd/guixcontainer.go:124-144`). One project can alter
+shell startup, harness settings, skills, or auth state consumed by another.
+Pool directories are also created `0755` (`:181-190`).
+
+Effective first step: create the pool and HOME with `0700` and repair existing
+permissions. The full fix requires a per-project writable HOME overlay and a
+small, explicit shared-auth/state surface.
+
+#### G4. HIGH - shared host networking amplifies every loopback listener flaw
+
+Guix still unconditionally uses `--network` (`cmd/guixcontainer.go:136`), making
+host loopback reachable by the untrusted workload. Mandatory admin auth removed
+the worst chain, but optional MCP auth (C2), missing HTTP bounds (M2), and any
+other loopback service remain exposed.
+
+Effective mitigation: require MCP authentication for TCP transports first. Then
+make Guix networking an explicit mode or provide a no-host-network path. A warning
+is not a security boundary.
+
+### Effective Guix remediation queue
+
+| Priority | Work item | Benefit | Effort/risk | Guix verification |
+|---|---|---|---|---|
+| 1 | Confirm G1 and add an approved-manifest digest checkpoint | Closes likely host-code-execution persistence | Medium; workflow change | Harmless manifest PoC, digest-change refusal, explicit approval, then container smoke test |
+| 2 | Fix H2/H3 and enable MCP schema validation | Closes direct policy/argv bypasses | Small, low risk | `go test ./internal/whitelist ./internal/mcptools ./cmd` |
+| 3 | Write harness configs `0600`, tighten existing modes, add repository-local Git exclusion | Reduces token theft and accidental commits | Small-medium, low risk | `go test ./internal/harness ./cmd`; inspect mode and `git check-ignore` in a temporary repo |
+| 4 | Validate sensitive paths against every writable share; make pool directories `0700` | Closes G2 and multi-user exposure | Small, low risk | Unit tests plus Guix mount smoke test |
+| 5 | Require auth and resource bounds on TCP MCP; add admin CSRF/Origin protections | Shrinks the network attack surface exposed by `--network` | Medium, medium risk | Host/Guix-container HTTP integration tests; unauthenticated requests must fail |
+| 6 | Give introspection a minimal environment, bounded and scrubbed output | Closes a direct server-environment leak | Small-medium, low risk | Guix is useful here because PATH dependencies span store prefixes |
+| 7 | Expand credential scrubbing and make truncation safe | Reduces high-impact output leaks | Medium, medium risk | Table tests plus secrets split at the output limit |
+| 8 | Prefix-deny, reject option-shaped subcommands, and add positional constraints | Improves least privilege | Medium, compatibility risk | Policy/config tests; migrate examples before changing positional defaults |
+
+Platform-neutral resilience work that is also straightforward to verify on Guix
+follows these items: cap request-log fields and tolerate oversized lines (M1),
+serialize and strictly validate config edits (M6), and require absolute regular
+files for upstream MCP commands (M10).
+
+## Original audit (2026-07-22)
 
 Threat model: the **AI client is untrusted** (prompt-injectable, loops,
 crafts arguments). The operator is trusted but fallible (mis-binds, mis-approves).

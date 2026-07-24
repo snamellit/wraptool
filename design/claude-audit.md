@@ -1,9 +1,48 @@
 # Security Audit — wraptool
 
 Date: 2026-07-22
+Revalidated: 2026-07-23 at `d09e8cc`
 Method: 5 parallel subsystem audits (executor, whitelist policy, web UI, MCP
 transport/auth, config/introspect/requestlog). Each finding verified against
 code; PoCs noted where run. Ranked by exploitability × blast radius.
+
+## 2026-07-23 status update
+
+The findings below preserve the original evidence and recommendations. Since the
+audit, `07a43c1` split MCP and admin configuration, made authentication mandatory
+for an enabled admin listener, and required a distinct admin token file.
+`0fc33a1` prevents `wraptool up` from using policy stored in the writable
+workspace; `92c2fa9`, `29825a6`, `816ee14`, and `e0588ae` apply the same boundary
+to the admin token, including missing files and symlinked parents. This closes
+the original tokenless Guix-to-admin escalation, but does not close the MCP
+listener, policy, executor, or scrubbing findings.
+
+| # | Current status | Revalidation note |
+|---|---|---|
+| 1 | **Open** | Valueless constraints still accept non-empty values; `buildArgs` emits them. |
+| 2 | **Open** | `server.WithInputSchemaValidation` is still not enabled. |
+| 3 | **Partially fixed** | Tokenless admin mode is gone; explicit CSRF and Origin defenses remain absent. |
+| 4 | **Partially fixed** | Admin auth now fails closed; TCP MCP auth remains optional. |
+| 5 | **Open** | Token-bearing harness files are still written `0644` in the shared worktree. |
+| 6 | **Open** | Introspection still inherits the server environment and caches unscrubbed output. |
+| 7 | **Open** | Executor children still receive the host `HOME`. |
+| 8 | **Open** | Output is still truncated before scrubbing and common bare-token forms remain uncovered. |
+| 9 | **Open** | Config-derived subcommand tokens can still begin with `-`. |
+| 10 | **Open** | `env_files` still has no path containment. Mandatory admin auth only reduces reachability. |
+| 11 | **Open** | Unix peer UID and CWD TOCTOU issues remain. |
+| 12 | **Open** | The admin cookie is still the raw token and has no `Secure` flag or expiry. |
+| 13 | **Open** | Config read-modify-write operations are still unserialized. |
+| 14 | **Open** | Admin tokens are still accepted and printed in query-string URLs. |
+
+The low-severity runtime-directory permission concern is narrower than originally
+stated: current pidfile and lock creation paths do create the runtime directory
+with mode `0700`, including the cache fallback. Predictable names and symlink
+hardening remain defense-in-depth concerns.
+
+Guix-specific follow-up and the prioritized remediation queue are maintained in
+the revalidation section of [`kimi-audit.md`](kimi-audit.md).
+
+## Original audit (2026-07-22)
 
 Two recurring themes:
 
