@@ -161,10 +161,23 @@ release:binaries:
       } > dist/build-info.txt
     - (cd dist && sha256sum wraptool_* build-info.txt > checksums.txt)
     # Upload every artifact to the project's generic package registry.
+    # Idempotent: skip any file already published so a re-run after a mid-loop
+    # failure only uploads the missing files. An HTTP PUT is atomic at the
+    # registry, so a file that is present is always complete — this holds
+    # whether the project allows or rejects duplicate generic packages.
     - |
       pkg="${PKG_BASE}/${version}"
       for f in dist/*; do
         name=${f##*/}
+        # Range probe: 200/206 = already published, 404 = missing. Avoids
+        # downloading the whole binary just to test for existence.
+        code=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+          --retry 2 --retry-all-errors \
+          --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --header 'Range: bytes=0-0' \
+          "${pkg}/${name}")
+        case "$code" in
+          200|206) echo "already published, skipping ${name}"; continue ;;
+        esac
         curl --fail-with-body --silent --show-error --retry 2 --retry-all-errors \
           --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "$f" "${pkg}/${name}"
       done
