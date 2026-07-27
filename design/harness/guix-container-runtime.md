@@ -92,12 +92,11 @@ and they are independent:
 | **Filesystem / env** (the actual goal) | mount + user namespace; minimal env | **Strong.** Only `/gnu/store` + the `--share`d workspace are visible. Host `$HOME`, `~/.ssh`, `~/.config`, cloud creds: **not mounted**. Env starts empty; only explicitly-preserved `WRAPTOOL_*` vars pass. |
 | **Network** | net namespace | **Weak under `-N`.** The container shares the host network namespace, so host `127.0.0.1` services are reachable from inside (verified in §10). |
 
-The key insight driving the whole design: **credential isolation is a
-filesystem/env property, not a network property.** It holds regardless of the
-network mode. The network axis is a secondary, defence-in-depth concern here —
-it is *not* what stops the harness reading `~/.aws/credentials` (the mount
-namespace does that). So accepting weak network isolation to satisfy the
-mandatory-internet requirement does not compromise the primary goal.
+The mount and environment boundary prevents direct reads of host credential
+files. It does not protect credentials exposed by host loopback services or
+other network-reachable local APIs. Accepting weak network isolation therefore
+preserves filesystem isolation but weakens the broader credential boundary; it
+requires the mitigations below.
 
 Residual risk under `-N` and its mitigations are in §7.
 
@@ -111,7 +110,9 @@ From `cmd/up.go`, unchanged and backend-agnostic:
   listens on `sse` (`0.0.0.0:8717`) or `unix`.
 - The container-facing contract is two env vars: `WRAPTOOL_TOKEN` (bearer) and
   `WRAPTOOL_CWD` (the **host** worktree path, echoed back to the server as
-  `?cwd=` so tools are scoped to this worktree).
+  `?cwd=` to request that working directory). This is routing metadata, not
+  project authorization when `mcp.allowed_cwd_roots` is empty. The proposed
+  replacement is a server-issued project grant (`project-isolation.md`).
 - `wantShell` / `isTTY`, `inContainer`, and the server-supervision block are
   transport- and backend-agnostic.
 
@@ -222,7 +223,7 @@ Notes:
 
 - `--share=$root=$root` keeps the workspace at its **host path** inside the
   container, so `WRAPTOOL_CWD=$root` is a path the server already understands
-  for `?cwd=` scoping. (A remapped path would break worktree scoping.)
+  for the current `?cwd=` routing. (A remapped path would break that routing.)
 - `--preserve=^WRAPTOOL_` is a regexp; guix containers strip the environment
   otherwise, which is exactly the credential-isolation property we want.
 - Unlike the devcontainer path there is **no image build and no feature
@@ -304,11 +305,12 @@ could have `connect.sh` call a `wraptool connect` subcommand to collapse the two
 ## 7. Risks / caveats
 
 - **Weak network isolation under `-N`** (host loopback shared). Mitigations:
-  (a) credential isolation is unaffected (§3); (b) document that operators
-  running sensitive services should not bind them to `0.0.0.0`/shared loopback
-  where a container could reach them; (c) the strict-net mode (§9) removes this
-  entirely for those who can forgo the always-on-internet convenience or adopt
-  pasta. Surface the caveat in `up`'s output when the guix runtime is selected.
+  (a) filesystem/env credentials remain unmounted (§3); (b) document that
+  operators running sensitive services should not expose them on shared
+  loopback or wildcard listeners; (c) authenticate every reachable local API;
+  (d) the strict-net mode (§9) removes this path for those who can forgo the
+  always-on-internet convenience or adopt pasta. Surface the caveat in `up`'s
+  output when the guix runtime is selected.
 - **Node/Claude Code under Guix** may need `-F` or extra packages (build tools
   for native npm modules). Unverified in the spike; a Phase-1 gate.
 - **`guix` not present / no `manifest.scm`** → `auto` silently falls back to

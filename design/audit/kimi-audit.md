@@ -89,8 +89,9 @@ shell startup, harness settings, skills, or auth state consumed by another.
 Pool directories are also created `0755` (`:181-190`).
 
 Effective first step: create the pool and HOME with `0700` and repair existing
-permissions. The full fix requires a per-project writable HOME overlay and a
-small, explicit shared-auth/state surface.
+permissions. Target design is a read-only operator-curated skills/extensions
+seed plus per-project copy-on-write HOME/config/state. Shared harness
+authentication remains an explicit open decision; see `project-isolation.md`.
 
 #### G4. HIGH - shared host networking amplifies every loopback listener flaw
 
@@ -374,8 +375,11 @@ executes them (`bash -l` sources dotfiles). RO `bin/` mitigates direct binary
 trojaning; HOME reintroduces the same class. 0755 pool exposes harness
 auth/session files to other host users.
 
-Fix: per-project rw overlay for HOME with shared state reduced to a narrow
-subdir; pool `home/` 0700; state the residual trust model in docs.
+Fix: per-project rw overlay for HOME/config/state, with only operator-curated
+skills/extensions shared read-only; pool directories 0700. Authentication
+sharing needs a separate decision. Read-only binaries should be invoked by
+absolute descriptor path or precede writable PATH entries. See
+`project-isolation.md`.
 
 ### M4. Unpinned supply chain for harness binaries; agy installer unconfined
 
@@ -399,9 +403,10 @@ Empty `allowed_cwd_roots` = warn-only; container A runs whitelisted tools in
 worktree B or any host path — breaks the advertised per-worktree scoping
 (`up.go:46-47`). Plus symlink-swap TOCTOU between `EvalSymlinks` and `chdir`.
 
-Fix: default-deny client cwd when roots unset for network transports;
-auto-scope to the `up`-registered worktree; fd-based containment (open +
-fchdir) or re-resolve at exec.
+Fix: have host-side `wraptool up` register a server-side project grant before
+container startup. Its bearer secret maps to immutable worktree CWD; reject
+client-supplied CWD. Apply `allowed_cwd_roots` when issuing grants and retain an
+opened directory through child startup. See `project-isolation.md`.
 
 ### M6. editConfig round-trip validates leniently; serve/reload strict → approvals silently never apply
 
@@ -437,9 +442,10 @@ mark it clearly container-only.
   without 0600 check); `internal/config/validate.go:40-44` (token/env/config
   files only `Stat`ed)
 
-Fix: log URL with token redacted; per-project/per-container tokens validated
-server-side + `wraptool token rotate`; stat-and-warn on loose perms at
-load/read; warn-or-fail when secret-bearing files are group/other-readable.
+Fix: log URL with token redacted; issue project grant bearer secrets that map
+server-side to immutable worktree context; add expiry/revocation/rotation;
+stat-and-warn on loose perms at load/read; warn-or-fail when secret-bearing
+files are group/other-readable. See `project-isolation.md`.
 
 ### M9. `up` treats a bare TCP dial as "server already running"
 
@@ -624,9 +630,10 @@ All RFC1918 / ULA / loopback.
 4. **Resilience (P2):** requestlog append caps + scan tolerance (M1), HTTP
    timeouts + MaxBytesReader (M2), strict round-trip in editConfig + fsync +
    edit lock (M6), upstream command validation (M10).
-5. **Isolation & supply chain (P2):** per-project HOME overlay + pool 0700
-   (M3), version/integrity pinning + agy containerization (M4), cwd
-   default-deny (M5), container-private `.mcp.json` (M7), per-project tokens +
-   rotation + redacted logs (M8), server identity probe (M9).
+5. **Isolation & supply chain (P2):** read-only shared skills/extensions seed +
+   per-project COW HOME/state + pool 0700 (M3), version/integrity pinning + agy
+   containerization (M4), server-issued project grants with immutable CWD (M5,
+   M8), container-private `.mcp.json` (M7), rotation + redacted logs (M8),
+   server identity probe (M9). See `project-isolation.md`.
 6. **Backlog (P3):** pick off L1–L18 opportunistically; L13 shell-script
    fixes pair naturally with M4.

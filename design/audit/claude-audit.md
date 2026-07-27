@@ -229,8 +229,11 @@ tool there. The peer PID comes from `SO_PEERCRED` but nothing asserts
 the peer's cwd is used unchecked. Socket is `0600` (same-UID) so blast radius is
 bounded — hence HIGH not CRITICAL.
 
-Fix: assert the peer UID before trusting it; make `allowed_cwd_roots` containment
-default-on rather than warn-only.
+Fix: assert the peer UID and remove implicit `/proc/<pid>/cwd` discovery. Current
+design direction replaces client-selected CWD with a server-issued project grant
+whose bearer secret maps to immutable worktree context; roots constrain grant
+issuance. Pin the authorized directory through exec to close TOCTOU. See
+`project-isolation.md` and `credential-webui-unix-hardening.md`.
 
 ### 12. MEDIUM — Session cookie is the raw token, no `Secure` flag
 `internal/webui/webui.go:830-836`

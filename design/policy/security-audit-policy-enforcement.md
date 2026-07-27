@@ -48,7 +48,7 @@ allow/deny logic itself.
 |---|---|---|---|---|
 | F1 | 🔴 High | Typo'd restrictive keys are silently dropped (lenient decode); serve & reload fail-open | ✅ fixed `1adb80b` | `config.go:201`, `reload.go:84`, `validate.go` |
 | F2 | 🔴 High | Option injection via unchecked flag *values* (esp. valueless flags) | ✅ fixed `1adb80b` | `sanitize.go:35-45`, `executor.go:132-137`, `constraints.go:50-53`, `handler.go:53-64` |
-| F5 | 🔴 High | Client-supplied `cwd` is used unvalidated → allowed commands run in an attacker-chosen dir (git repo-local config/hook execution) | ✅ fixed `32903be` | `context.go:31-32`, `executor.go:95-98` |
+| F5 | 🔴 High | Client-supplied `cwd` is used unvalidated → allowed commands run in an attacker-chosen dir (git repo-local config/hook execution) | 🟨 partially fixed `32903be`; default-open and TOCTOU remain | `context.go:31-32`, `executor.go:95-98` |
 | F3 | 🟠 Medium | Positional args have no *content* constraint, only a max count | ⬜ open | `policy.go:98` |
 | F6 | 🟠 Medium | Flag-value regex patterns are unanchored (substring match) — constraints weaker than authored | ✅ fixed `1adb80b` | `constraints.go:69` |
 | F4 | 🟡 Low | Deny matches exact subcommand length, not prefix | ⬜ open | `policy.go:119-129` |
@@ -58,10 +58,11 @@ allow/deny logic itself.
 > Validation pass (2026-07-08): F1–F4 re-verified against code, cites confirmed.
 > F5 and F6 were found during that review and added below.
 >
-> Remediation (2026-07-08): F1, F2, F5, F6 fixed on branch
-> `security-policy-hardening` (commits `1adb80b`, `32903be`); build/vet/test
-> green. F3, F4, M1, M2 remain open. The evidence line-cites above describe the
-> *pre-fix* code — see the commits for the fixed state.
+> Remediation (2026-07-08): F1, F2, and F6 fixed; F5 phase 1 added optional
+> containment on branch `security-policy-hardening` (commits `1adb80b`,
+> `32903be`); build/vet/test green. F3, F4, F5 default-open/token-scope/TOCTOU,
+> M1, and M2 remain open. The evidence line-cites above describe the *pre-fix*
+> code — see the commits for the fixed state.
 
 ### F1 — Typo'd security keys are silently dropped (FAIL-OPEN) 🔴
 
@@ -245,6 +246,6 @@ host-side against:
 1. ~~**F1** — `serve` + reload use `LoadStrict`.~~ ✅ done (`1adb80b`) — chose hard-fail over warn-only; lenient `Load` kept for read-only consumers.
 2. ~~**F2** — executor rejects option-like (`-`-leading) flag values.~~ ✅ done (`1adb80b`) — `SanitizeFlagValues`.
 3. ~~**F6** — auto-anchor constraint patterns.~~ ✅ done (`1adb80b`) — `^(?:…)$` in `validateValue`.
-4. ~~**F5** — contain `cwd` to allowed roots; reject escapes.~~ ✅ done (`32903be`) — `mcp.allowed_cwd_roots`, warn-only when unset (non-breaking).
+4. ~~**F5 phase 1** — contain `cwd` to allowed roots; reject escapes.~~ ✅ done (`32903be`) — `mcp.allowed_cwd_roots`, warn-only when unset (non-breaking). Default-open behavior, server-wide token scope, and path TOCTOU remain open as M5 in `kimi-audit.md`; proposed replacement is server-issued project grants in `project-isolation.md`.
 5. **F3** — optional per-positional pattern in `ArgConstraints`. Larger; enables real least-privilege on positionals. *(open)*
 6. **F4 / M1 / M2** — prefix-deny (or doc), skip zero-tool spawns, sanitize introspection args. *(open)*
