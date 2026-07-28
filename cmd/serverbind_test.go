@@ -21,11 +21,9 @@ func TestServeOverridesFlags(t *testing.T) {
 		"--admin-listen", "127.0.0.1:8718",
 		"--admin-auth-token-file", "/t/admin",
 	}
-	// Deterministic across repeated calls (a map would randomize this).
-	for i := 0; i < 20; i++ {
-		if got := full.flags(); !reflect.DeepEqual(got, want) {
-			t.Fatalf("flags() = %v, want %v", got, want)
-		}
+	// Fixed order by construction (the slice literal), so one check suffices.
+	if got := full.flags(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("flags() = %v, want %v", got, want)
 	}
 
 	partial := serveOverrides{mcpListen: "127.0.0.1:8717"}
