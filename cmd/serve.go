@@ -54,6 +54,23 @@ func (o serveOverrides) apply(cfg *config.Config) {
 	}
 }
 
+// flags renders the set overrides as serve CLI flags in a fixed order, so the
+// spawned server's argv is reproducible run to run (a map would randomize it).
+func (o serveOverrides) flags() []string {
+	var out []string
+	for _, p := range []struct{ flag, val string }{
+		{"--listen", o.mcpListen},
+		{"--auth-token-file", o.mcpAuthTokenFile},
+		{"--admin-listen", o.adminListen},
+		{"--admin-auth-token-file", o.adminAuthTokenFile},
+	} {
+		if p.val != "" {
+			out = append(out, p.flag, p.val)
+		}
+	}
+	return out
+}
+
 func newServeCmd(use string, hidden bool) *cobra.Command {
 	var configPath string
 	var ov serveOverrides

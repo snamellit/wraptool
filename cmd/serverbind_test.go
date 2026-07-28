@@ -1,10 +1,39 @@
 package cmd
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/pti/wraptool/internal/config"
 )
+
+func TestServeOverridesFlags(t *testing.T) {
+	// Fixed order, and only set fields are emitted.
+	full := serveOverrides{
+		mcpListen:          "0.0.0.0:8717",
+		mcpAuthTokenFile:   "/t/mcp",
+		adminListen:        "127.0.0.1:8718",
+		adminAuthTokenFile: "/t/admin",
+	}
+	want := []string{
+		"--listen", "0.0.0.0:8717",
+		"--auth-token-file", "/t/mcp",
+		"--admin-listen", "127.0.0.1:8718",
+		"--admin-auth-token-file", "/t/admin",
+	}
+	// Fixed order by construction (the slice literal), so one check suffices.
+	if got := full.flags(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("flags() = %v, want %v", got, want)
+	}
+
+	partial := serveOverrides{mcpListen: "127.0.0.1:8717"}
+	if got := partial.flags(); !reflect.DeepEqual(got, []string{"--listen", "127.0.0.1:8717"}) {
+		t.Errorf("partial flags() = %v", got)
+	}
+	if got := (serveOverrides{}).flags(); len(got) != 0 {
+		t.Errorf("empty flags() = %v, want none", got)
+	}
+}
 
 func TestServeOverridesApply(t *testing.T) {
 	cfg := &config.Config{}
