@@ -332,17 +332,7 @@ func spawnServer(configPath string, ov serveOverrides) error {
 	// up is authoritative for the effective binds/tokens (runtime-adjusted MCP
 	// address, auto-enabled admin UI), so pass them as overrides rather than
 	// relying on the config file the detached serve re-reads.
-	args := []string{"serve", "--config", configPath}
-	for flag, val := range map[string]string{
-		"--listen":                ov.mcpListen,
-		"--auth-token-file":       ov.mcpAuthTokenFile,
-		"--admin-listen":          ov.adminListen,
-		"--admin-auth-token-file": ov.adminAuthTokenFile,
-	} {
-		if val != "" {
-			args = append(args, flag, val)
-		}
-	}
+	args := append([]string{"serve", "--config", configPath}, ov.flags()...)
 	cmd := exec.Command(exe, args...)
 	cmd.Stdout = logf
 	cmd.Stderr = logf
