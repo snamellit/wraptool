@@ -255,5 +255,6 @@ func poolHomeMountSource() string {
 			return "${localEnv:HOME}/" + filepath.ToSlash(rel)
 		}
 	}
-	return poolHome
+	// ToSlash so a Windows path's backslashes don't corrupt the JSON string.
+	return filepath.ToSlash(poolHome)
 }
