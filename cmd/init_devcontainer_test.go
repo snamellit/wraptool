@@ -105,15 +105,22 @@ func TestInitDevcontainer(t *testing.T) {
 		if !ok || len(mounts) != 1 {
 			t.Fatalf("expected one mount; got %v", parseJSONC(t, out)["mounts"])
 		}
-		got, _ := mounts[0].(string)
-		want := "source=" + poolHomeMountSource() + ",target=" + devcontainerPoolHome + ",type=bind"
-		if got != want {
-			t.Errorf("pool mount = %q, want %q", got, want)
+		m, ok := mounts[0].(map[string]any)
+		if !ok {
+			t.Fatalf("mount must be object form {source,target,type}; got %T %v", mounts[0], mounts[0])
+		}
+		if m["source"] != poolHomeMountSource() {
+			t.Errorf("mount source = %v, want %q", m["source"], poolHomeMountSource())
+		}
+		if m["target"] != devcontainerPoolHome || m["type"] != "bind" {
+			t.Errorf("mount target/type = %v/%v, want %q/bind", m["target"], m["type"], devcontainerPoolHome)
 		}
 		// On any host whose data dir is under $HOME, the source must use the
 		// client-expanded ${localEnv:HOME}, never a baked-in absolute home path.
-		if home, err := os.UserHomeDir(); err == nil && strings.Contains(got, home) {
-			t.Errorf("mount source leaks absolute home %q: %q", home, got)
+		if home, err := os.UserHomeDir(); err == nil {
+			if src, _ := m["source"].(string); strings.Contains(src, home) {
+				t.Errorf("mount source leaks absolute home %q: %q", home, src)
+			}
 		}
 	})
 

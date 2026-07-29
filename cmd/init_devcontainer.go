@@ -234,7 +234,11 @@ func renderDevcontainer(name, image string, langs []string, harnessName string, 
 	b.WriteString("\n  // Share the host harness-state pool so the harness's auth/skills/config persist\n")
 	b.WriteString("  // across every project (the developer toolbox, mounted read-write).\n")
 	b.WriteString("  \"mounts\": [\n")
-	fmt.Fprintf(&b, "    \"source=%s,target=/home/wraptool-harness,type=bind\"\n", poolHomeMountSource())
+	// Object form (not the "source=…,target=…" string) so a source path containing
+	// a space — macOS ~/Library/Application Support — can't be mis-split by the
+	// mount-string parser. target reuses devcontainerPoolHome, the single source of
+	// the in-container HOME path.
+	fmt.Fprintf(&b, "    { \"source\": %q, \"target\": %q, \"type\": \"bind\" }\n", poolHomeMountSource(), devcontainerPoolHome)
 	b.WriteString("  ]\n")
 	b.WriteString("}\n")
 	return b.String()
