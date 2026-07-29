@@ -2,6 +2,15 @@
 title: "Getting started"
 ---
 
+::: {.callout-tip title="Just want the shortest path for your OS?"}
+Follow the focused platform guide, then come back here for the full model:
+[Linux](platform-linux.qmd) · [Guix](platform-guix.qmd) ·
+[macOS](platform-macos.qmd) · [Windows](platform-windows.qmd). Each covers the
+prerequisites, install, and — importantly — **where your config file lives on
+that OS** (macOS in particular puts it under `~/Library/Application Support`, not
+`~/.config`).
+:::
+
 ## The recommended path: `wraptool up`
 
 Once wraptool is installed and you have a config, you don't wire anything by
@@ -366,11 +375,20 @@ of `npm`. It writes a fresh file and **refuses to clobber** an existing one (pas
   // Token is a secret → remoteEnv keeps it out of image layers.
   "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
   // Share the host harness-state pool (login/skills once, every project).
+  // Object form so a source path with a space (macOS ~/Library/Application
+  // Support) is never mis-split by the mount-string parser.
   "mounts": [
-    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" }
   ]
 }
 ```
+
+`init devcontainer` writes the mount source for your **host OS** — the
+`.local/share` above is the Linux form; on macOS it is
+`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home`, on
+Windows `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home` (forward
+slashes on every OS). It matches where `wraptool up` creates the pool, so the
+bind never targets a missing directory.
 
 At container create the feature writes the MCP client config pointing at the host
 wraptool, auto-detecting the host as the container's default-route gateway — so

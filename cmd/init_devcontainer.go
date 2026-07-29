@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/pti/wraptool/internal/harness"
+	"github.com/pti/wraptool/internal/paths"
 
 	"github.com/spf13/cobra"
 )
@@ -233,8 +234,33 @@ func renderDevcontainer(name, image string, langs []string, harnessName string, 
 	b.WriteString("\n  // Share the host harness-state pool so the harness's auth/skills/config persist\n")
 	b.WriteString("  // across every project (the developer toolbox, mounted read-write).\n")
 	b.WriteString("  \"mounts\": [\n")
-	b.WriteString("    \"source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind\"\n")
+	// Object form (not the "source=…,target=…" string) so a source path containing
+	// a space — macOS ~/Library/Application Support — can't be mis-split by the
+	// mount-string parser. target reuses devcontainerPoolHome, the single source of
+	// the in-container HOME path.
+	fmt.Fprintf(&b, "    { \"source\": %q, \"target\": %q, \"type\": \"bind\" }\n", poolHomeMountSource(), devcontainerPoolHome)
 	b.WriteString("  ]\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// poolHomeMountSource returns the devcontainer bind-mount source for the shared
+// harness pool home, derived from the host's real data dir so it is correct on
+// every OS — matching where `wraptool up`'s ensureHarnessPool actually creates it
+// (paths.DataDir(): Linux ~/.local/share, macOS ~/Library/Application Support,
+// Windows %LOCALAPPDATA%). A hardcoded ~/.local/share works only on Linux; on
+// macOS it points at a directory wraptool never creates, so the bind mount fails.
+// The $HOME prefix is rewritten to ${localEnv:HOME} so the devcontainer CLI
+// expands it client-side; if the data dir is not under $HOME we emit it literally.
+func poolHomeMountSource() string {
+	poolHome := filepath.Join(paths.DataDir(), "harness-pool", "home")
+	if home, err := os.UserHomeDir(); err == nil {
+		if rel, err := filepath.Rel(home, poolHome); err == nil && !strings.HasPrefix(rel, "..") {
+			return "${localEnv:HOME}/" + filepath.ToSlash(rel)
+		}
+	}
+	// ToSlash for forward slashes across OSes: the emitter uses %q so JSON escaping
+	// is already handled, but a devcontainer/docker bind source is more portable
+	// with forward slashes than Windows backslashes.
+	return filepath.ToSlash(poolHome)
 }

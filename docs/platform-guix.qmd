@@ -1,0 +1,113 @@
+---
+title: "Guix setup"
+description: "Set up wraptool on Guix System: the native container runtime from manifest.scm, direnv input approval, the harness pool, and a first run."
+---
+
+On Guix System `wraptool up` uses the **native Guix container** runtime — no
+Docker, no image build. It runs `guix shell --container --network -m manifest.scm`,
+so the container gets the *same* toolchain you develop with, and the AI harness
+can compile, test, and analyze locally.
+
+## 1. Prerequisites
+
+- `guix` on `PATH` (you have this on Guix System).
+- A `manifest.scm` in the project worktree. `up` auto-selects the guix runtime
+  only when both are present; otherwise it falls back to devcontainer.
+- Optionally `channels.scm` to pin channels; the repo evaluates the manifest with
+  `guix time-machine -C channels.scm -- …`.
+
+## 2. Install wraptool
+
+Build from source with the pinned toolchain (see [Installation](installation.qmd)):
+
+```bash
+guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wraptool .
+install -Dm755 wraptool ~/.local/bin/wraptool
+wraptool version
+```
+
+## 3. Where your config lives on Linux/Guix {#config-location}
+
+wraptool follows the XDG base-directory spec:
+
+```
+~/.config/wraptool/config.yaml
+```
+
+(or `$XDG_CONFIG_HOME/wraptool/config.yaml`). On first run `wraptool up` scaffolds
+a commented starter there and never clobbers an existing one. Keep keys exactly as
+scaffolded — the loader silently ignores unknown keys, so a typo like `auth_token`
+(the real key is `auth_token_file`) fails quietly. A minimal config:
+
+```yaml
+mcp:
+  transport: sse
+  listen: 127.0.0.1:8717
+
+tools:
+  git:
+    binary: /usr/bin/git
+    timeout: 30s
+    allow:
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+    deny:
+      - subcommand: [remote, set-url]
+```
+
+The Guix runtime shares the host network namespace, so a loopback bind
+(`127.0.0.1:8717`) is reachable from inside the container — `up` leaves it as
+configured, with no LAN exposure and no forced token. Validate before launching:
+
+```bash
+wraptool config validate
+```
+
+## 4. Install a harness into the shared pool
+
+On Guix, `wraptool harness install` runs the harness's own installer into a shared
+developer pool (`$XDG_DATA_HOME/wraptool/harness-pool`) mounted into every
+container — so a harness binary and its login persist across all projects, once:
+
+```bash
+wraptool harness list
+wraptool harness install claude
+```
+
+## 5. Approve executable Guix inputs (direnv)
+
+`manifest.scm` and `channels.scm` are executable Scheme evaluated on the host, and
+a container can modify the writable worktree. If you use direnv, gate `use guix`
+behind required-file approval so an edited manifest is re-reviewed before it runs:
+
+```bash
+require_allowed manifest.scm
+if [[ -f channels.scm ]]; then
+  require_allowed channels.scm
+fi
+use guix
+```
+
+After an intentional edit, review it and run `direnv allow`. See
+[Getting started](getting-started.qmd#approve-executable-guix-inputs-with-direnv)
+for the full rationale and the other Guix convenience-vs-isolation boundaries.
+
+## 6. Launch
+
+```bash
+wraptool up
+```
+
+`up` starts the shared server, builds the native Guix container from
+`manifest.scm`, mounts the harness pool, writes `.mcp.json` into the workspace,
+and drops you into a shell. Host credentials are not mounted; privileged git
+(push, private fetch) goes through wraptool's MCP git tool, while local git works
+in-box. Stop with `wraptool down`.
+
+## Next steps
+
+- [Getting started](getting-started.qmd) — the full model, including the Guix
+  convenience-vs-isolation boundaries (host localhost reachable, shared harness
+  HOME) you should understand before running untrusted projects.
+- [Configuration reference](configuration.qmd) — every config field.

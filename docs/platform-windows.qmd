@@ -1,0 +1,110 @@
+---
+title: "Windows setup"
+description: "Set up wraptool on Windows: Docker Desktop with the WSL2 backend, the Dev Containers CLI, config location, and a first run."
+---
+
+On Windows `wraptool up` uses the **devcontainer** runtime, backed by Docker
+Desktop with WSL2. You can drive it from PowerShell, but running from inside a
+WSL2 distribution is the smoother path for the container toolchain.
+
+## 1. Install Docker Desktop with the WSL2 backend
+
+Install [Docker Desktop for Windows](https://www.docker.com/products/docker-desktop/)
+and enable the WSL2 backend (Settings → General → *Use the WSL 2 based engine*).
+Confirm the engine:
+
+```powershell
+docker version
+```
+
+## 2. Install the Dev Containers CLI
+
+`wraptool up` shells out to the `devcontainer` command. Install Node
+([nodejs.org](https://nodejs.org/) or `winget install OpenJS.NodeJS`), then:
+
+```powershell
+npm install -g @devcontainers/cli
+devcontainer --version
+```
+
+## 3. Install wraptool
+
+Follow the [Windows PowerShell install](installation.qmd#windows-powershell) — it
+verifies the checksum and installs `wraptool.exe` under `%USERPROFILE%\bin`. Then:
+
+```powershell
+wraptool version
+```
+
+## 4. Where your config lives on Windows {#config-location}
+
+wraptool follows the XDG base-directory spec, and on Windows the XDG config home
+defaults to your local app data:
+
+```
+%LOCALAPPDATA%\wraptool\config.yaml
+```
+
+Override per-run with `--config` or the `WRAPTOOL_CONFIG` environment variable. On
+first run `wraptool up` scaffolds a commented starter there and never clobbers an
+existing one. Keep keys exactly as scaffolded — the loader silently ignores
+unknown keys, so a typo like `auth_token` (the real key is `auth_token_file`)
+fails quietly. A minimal config:
+
+```yaml
+mcp:
+  transport: sse
+  listen: 127.0.0.1:8717
+
+tools:
+  git:
+    binary: 'C:\Program Files\Git\cmd\git.exe'
+    timeout: 30s
+    allow:
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+    deny:
+      - subcommand: [remote, set-url]
+```
+
+`binary` is single-quoted so the Windows path's backslashes stay literal. Leave
+`mcp.listen` on loopback — for the devcontainer bridge `wraptool up` rebinds it to
+`0.0.0.0` and auto-generates the MCP auth token. Validate before launching:
+
+```powershell
+wraptool config validate
+```
+
+## 5. Scaffold the devcontainer and launch
+
+```powershell
+wraptool init devcontainer --harness claude --lang go
+wraptool up
+```
+
+`up` starts the shared server, brings up the container via `devcontainer up`,
+provisions the harness, wires its MCP config to the host, and drops you into a
+shell. Host credentials are not mounted; privileged git goes through wraptool's
+MCP git tool. Stop with `wraptool down` (`--rm` to remove).
+
+::: {.callout-note title="Set HOME on Windows"}
+The scaffolded harness-pool mount uses `${localEnv:HOME}`, which the Dev
+Containers CLI reads from the host `HOME` environment variable. Windows shells
+(PowerShell, cmd) don't set `HOME` by default — only `USERPROFILE` — so if it's
+unset the mount source expands to a wrong path and the shared pool won't attach.
+Most Windows developers already define `HOME` (Git and many other tools expect
+it); if you don't, set it once to your user profile:
+
+```powershell
+setx HOME %USERPROFILE%
+```
+
+Open a new shell afterward so the variable takes effect.
+:::
+
+## Next steps
+
+- [Getting started](getting-started.qmd) — the full model and every `up` detail.
+- [Dev Containers](devcontainers.qmd) — every feature option.
+- [Configuration reference](configuration.qmd) — every config field.

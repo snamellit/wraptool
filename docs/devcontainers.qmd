@@ -138,6 +138,16 @@ drift between two places:
 }
 ```
 
+::: {.callout-important}
+The `~/.local/share/...` mount source is the **Linux** pool location. Match it to
+your OS or the bind mount fails on a non-existent source. Use forward slashes
+under `${localEnv:HOME}` on every OS (backslashes are invalid in a JSON string):
+**macOS** `${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home`,
+**Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home`. `wraptool
+init devcontainer` and `wraptool up` write/mount the platform-correct path for
+you; only a hand-written `devcontainer.json` needs this adjustment.
+:::
+
 `connect` is **image-agnostic**: it adds no tools of its own, only the MCP client
 config. At container-create it writes `.mcp.json` pointing at wraptool,
 auto-detecting the host as the container's default-route gateway — so there's no

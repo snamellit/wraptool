@@ -1,0 +1,102 @@
+---
+title: "Linux setup"
+description: "Set up wraptool on a non-Guix Linux distribution: a container engine, the Dev Containers CLI, config location, and a first run."
+---
+
+On a non-Guix Linux distribution (Debian/Ubuntu, Fedora, Arch, …) `wraptool up`
+uses the **devcontainer** runtime. If you're on Guix System, follow
+[Guix setup](platform-guix.qmd) instead for the native, no-Docker path.
+
+## 1. Install a container engine
+
+The devcontainer runtime needs Docker (or a compatible engine such as Podman with
+a Docker-compatible socket). Install it from your distribution and confirm:
+
+```bash
+docker version
+```
+
+Add your user to the `docker` group (or use rootless Docker / Podman) so
+`wraptool up` can talk to the daemon without `sudo`.
+
+## 2. Install the Dev Containers CLI
+
+`wraptool up` shells out to the `devcontainer` command on non-Guix hosts. It ships
+as an npm package; install Node, then use a user-owned npm prefix so global
+installs need no `sudo`:
+
+```bash
+npm config set prefix ~/.local
+export PATH="$HOME/.local/bin:$PATH"   # add to your shell rc to persist
+npm install -g @devcontainers/cli
+devcontainer --version
+```
+
+## 3. Install wraptool
+
+Follow [Installation](installation.qmd) — the release script detects `linux` and
+installs to `~/.local/bin`. Then:
+
+```bash
+wraptool version
+```
+
+## 4. Where your config lives on Linux {#config-location}
+
+wraptool follows the XDG base-directory spec. On Linux that is:
+
+```
+~/.config/wraptool/config.yaml
+```
+
+(or `$XDG_CONFIG_HOME/wraptool/config.yaml` if you set that variable). Override
+per-run with `--config` or `WRAPTOOL_CONFIG`.
+
+On first run `wraptool up` scaffolds a commented starter there and never clobbers
+an existing one. Keep the keys exactly as scaffolded — the loader silently ignores
+unknown keys, so a typo like `auth_token` (the real key is `auth_token_file`)
+fails quietly. A minimal, correct config:
+
+```yaml
+mcp:
+  transport: sse
+  listen: 127.0.0.1:8717
+
+tools:
+  git:
+    binary: /usr/bin/git
+    timeout: 30s
+    allow:
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+    deny:
+      - subcommand: [remote, set-url]
+```
+
+Leave `mcp.listen` on loopback — for the devcontainer bridge `wraptool up` rebinds
+it to `0.0.0.0` and auto-generates the MCP auth token. Validate before launching:
+
+```bash
+wraptool config validate
+```
+
+## 5. Scaffold the devcontainer and launch
+
+Pick your harness and languages, scaffold, then bring it up:
+
+```bash
+wraptool init devcontainer --harness claude --lang go
+wraptool up
+```
+
+`up` starts the shared server, brings up the container via `devcontainer up`,
+provisions the harness, wires its MCP config to the host, and drops you into a
+shell. Host credentials are not mounted; privileged git goes through wraptool's
+MCP git tool. Stop with `wraptool down` (`--rm` to remove).
+
+## Next steps
+
+- [Getting started](getting-started.qmd) — the full model and every `up` detail.
+- [Dev Containers](devcontainers.qmd) — every feature option.
+- [Configuration reference](configuration.qmd) — every config field.

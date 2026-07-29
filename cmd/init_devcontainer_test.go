@@ -93,6 +93,38 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 	})
 
+	t.Run("pool mount source tracks the platform data dir", func(t *testing.T) {
+		// The bind source must match where ensureHarnessPool actually creates the
+		// pool (paths.DataDir()), not a hardcoded ~/.local/share — which only holds
+		// on Linux and breaks the mount on macOS (~/Library/Application Support).
+		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
+		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
+			t.Fatalf("scaffold: %v", err)
+		}
+		mounts, ok := parseJSONC(t, out)["mounts"].([]any)
+		if !ok || len(mounts) != 1 {
+			t.Fatalf("expected one mount; got %v", parseJSONC(t, out)["mounts"])
+		}
+		m, ok := mounts[0].(map[string]any)
+		if !ok {
+			t.Fatalf("mount must be object form {source,target,type}; got %T %v", mounts[0], mounts[0])
+		}
+		if m["source"] != poolHomeMountSource() {
+			t.Errorf("mount source = %v, want %q", m["source"], poolHomeMountSource())
+		}
+		if m["target"] != devcontainerPoolHome || m["type"] != "bind" {
+			t.Errorf("mount target/type = %v/%v, want %q/bind", m["target"], m["type"], devcontainerPoolHome)
+		}
+		// On any host whose data dir is under $HOME, the source must use the
+		// client-expanded ${localEnv:HOME}, never a baked-in absolute home path.
+		// Skip home=="/" (minimal containers): every path contains "/".
+		if home, err := os.UserHomeDir(); err == nil && home != "/" {
+			if src, _ := m["source"].(string); strings.Contains(src, home) {
+				t.Errorf("mount source leaks absolute home %q: %q", home, src)
+			}
+		}
+	})
+
 	t.Run("overwrite guard", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
 		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
