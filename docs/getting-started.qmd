@@ -381,6 +381,12 @@ of `npm`. It writes a fresh file and **refuses to clobber** an existing one (pas
 }
 ```
 
+`init devcontainer` writes the mount source for your **host OS** — the
+`~/.local/share/...` above is the Linux form; on macOS it is
+`~/Library/Application Support/wraptool/harness-pool/home`, on Windows under
+`%LOCALAPPDATA%`. It matches where `wraptool up` creates the pool, so the bind
+never targets a missing directory.
+
 At container create the feature writes the MCP client config pointing at the host
 wraptool, auto-detecting the host as the container's default-route gateway — so
 it works across docker networks and worktrees with no `host.docker.internal` or

@@ -96,8 +96,13 @@ standalone "Reopen in Container" (no `wraptool` process), declare it yourself:
 }
 ```
 
-The mount source is your host pool (`$XDG_DATA_HOME/wraptool/harness-pool/home`,
-default `~/.local/share/...`). Only `home/` (state) is shared — the binary lives
+The mount source is your host pool (`$XDG_DATA_HOME/wraptool/harness-pool/home`).
+The `~/.local/share/...` above is the **Linux** location; match your OS or the
+bind fails on a source that does not exist — on **macOS** it is
+`~/Library/Application Support/wraptool/harness-pool/home`, on **Windows**
+`%LOCALAPPDATA%\wraptool\harness-pool\home`. `wraptool init devcontainer` and
+`wraptool up` emit/mount the correct path for your platform automatically; only a
+hand-written mount needs this adjustment. Only `home/` (state) is shared — the binary lives
 in the image, isolated per project. This mirrors the Guix runtime's split; see
 [`design/harness-descriptor.md`](../../design/harness-descriptor.md) §7 for the
 trust model (shared writable `home/` is an accepted residual-risk channel; never
