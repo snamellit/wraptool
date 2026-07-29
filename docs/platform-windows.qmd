@@ -88,6 +88,21 @@ provisions the harness, wires its MCP config to the host, and drops you into a
 shell. Host credentials are not mounted; privileged git goes through wraptool's
 MCP git tool. Stop with `wraptool down` (`--rm` to remove).
 
+::: {.callout-note title="Set HOME on Windows"}
+The scaffolded harness-pool mount uses `${localEnv:HOME}`, which the Dev
+Containers CLI reads from the host `HOME` environment variable. Windows shells
+(PowerShell, cmd) don't set `HOME` by default — only `USERPROFILE` — so if it's
+unset the mount source expands to a wrong path and the shared pool won't attach.
+Most Windows developers already define `HOME` (Git and many other tools expect
+it); if you don't, set it once to your user profile:
+
+```powershell
+setx HOME %USERPROFILE%
+```
+
+Open a new shell afterward so the variable takes effect.
+:::
+
 ## Next steps
 
 - [Getting started](getting-started.qmd) — the full model and every `up` detail.
