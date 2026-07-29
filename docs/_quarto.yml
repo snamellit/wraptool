@@ -23,8 +23,14 @@ website:
     left:
       - href: index.qmd
         text: Home
-      - href: getting-started.qmd
-        text: Getting Started
+      - text: Getting Started
+        menu:
+          - getting-started.qmd
+          - text: "---"
+          - platform-linux.qmd
+          - platform-guix.qmd
+          - platform-macos.qmd
+          - platform-windows.qmd
       - text: Reference
         menu:
           - installation.qmd
@@ -51,6 +57,12 @@ website:
       - section: Start
         contents:
           - getting-started.qmd
+          - section: Platform setup
+            contents:
+              - platform-linux.qmd
+              - platform-guix.qmd
+              - platform-macos.qmd
+              - platform-windows.qmd
           - installation.qmd
       - section: Reference
         contents:

@@ -1,0 +1,154 @@
+---
+title: "macOS setup"
+description: "Set up wraptool on macOS: Docker Desktop, a user-prefixed Node for the Dev Containers CLI, and a first devcontainer run with the agy harness."
+---
+
+macOS has no Guix, so `wraptool up` uses the **devcontainer** runtime. That needs
+a container engine (Docker Desktop) and the `devcontainer` CLI. This page walks
+the whole path from a clean Mac to a running container.
+
+## 1. Install Docker Desktop
+
+The devcontainer runtime builds and runs the project container through Docker.
+Install [Docker Desktop for Mac](https://www.docker.com/products/docker-desktop/)
+(Apple-silicon and Intel builds are both provided), launch it once, and confirm
+the engine is up:
+
+```bash
+docker version
+```
+
+Both the client and server sections must report a version. Leave Docker Desktop
+running whenever you use `wraptool up`.
+
+## 2. Install Node with a user prefix
+
+The `devcontainer` CLI ships as an npm package. Install Node (via
+[the installer](https://nodejs.org/), Homebrew's `brew install node`, or a
+version manager), then point npm's global prefix at a directory you own so
+global installs need no `sudo` and land on your `PATH`:
+
+```bash
+npm config set prefix ~/.local
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc to persist
+```
+
+`~/.local/bin` is the same directory the wraptool install script uses, so one
+`PATH` entry covers both.
+
+## 3. Install the Dev Containers CLI
+
+```bash
+npm install -g @devcontainers/cli
+devcontainer --version
+```
+
+`wraptool up` shells out to this `devcontainer` command on non-Guix hosts; without
+it the devcontainer runtime cannot start.
+
+## 4. Install wraptool
+
+Follow [Installation](installation.qmd) — the Linux/macOS release script detects
+`darwin` and installs to `~/.local/bin`. Then:
+
+```bash
+wraptool version
+```
+
+::: {.callout-note title="Notarization"}
+macOS release binaries are not Apple-notarized. If local policy requires
+notarized software, build from source (see [Installation](installation.qmd)).
+:::
+
+## 5. Where your config lives on macOS {#config-location}
+
+::: {.callout-important}
+wraptool follows the XDG base-directory spec, and on macOS the XDG config home
+defaults to **`~/Library/Application Support`** — *not* `~/.config`. So your
+config is:
+
+```
+~/Library/Application Support/wraptool/config.yaml
+```
+
+A `~/.config/wraptool/config.yaml` is **ignored** on macOS unless you export
+`XDG_CONFIG_HOME=~/.config`. Editing the wrong copy is a common first-run trap —
+run `wraptool config validate` (with no path it resolves the real one) to see
+which file is actually loaded.
+:::
+
+You normally don't write this file by hand: on first run `wraptool up` scaffolds
+a commented starter there (and never clobbers an existing one). Keep the keys
+exactly as scaffolded — the loader silently ignores unknown keys, so a typo like
+`auth_token` (the real key is `auth_token_file`) or `0,0,0,0` (should be
+`0.0.0.0`) fails quietly. A minimal, correct config:
+
+```yaml
+mcp:
+  transport: sse
+  listen: 127.0.0.1:8717
+
+tools:
+  git:
+    binary: /usr/bin/git
+    timeout: 30s
+    allow:
+      - subcommand: [push]
+        flags: ["--set-upstream"]
+        deny_flags: ["--force", "--force-with-lease"]
+    deny:
+      - subcommand: [remote, set-url]
+```
+
+Leave `mcp.listen` on loopback — `wraptool up` rebinds it to `0.0.0.0` for the
+devcontainer bridge and auto-generates the MCP auth token for you. You do not set
+`0.0.0.0` or any `auth_token_file` by hand.
+
+Validate before launching:
+
+```bash
+wraptool config validate
+```
+
+## 6. Scaffold the devcontainer with your harness
+
+Pick which coding assistant runs in the container and which languages the image
+needs. This example wires the **agy** (Antigravity) harness with Go and Java:
+
+```bash
+wraptool init devcontainer --harness agy --lang go,java
+```
+
+That writes a `.devcontainer/devcontainer.json` with the base image, the `go` and
+`java` language features, and the `wraptool` feature (which both installs `agy`
+in the image and wires its MCP config to the host wraptool at container create).
+It refuses to overwrite an existing file — pass `--force` to replace one.
+
+Antigravity speaks the Streamable HTTP MCP transport, so its generated config
+targets the server's `/mcp` endpoint; `wraptool up` handles that automatically.
+
+## 7. Launch
+
+From the repo root:
+
+```bash
+wraptool up
+```
+
+This starts the shared server (widening the bind and generating the token for the
+bridge), brings up the container via `devcontainer up`, provisions `agy`, wires
+its MCP config to the host, and drops you into a shell. Your host credentials
+(SSH keys, cloud tokens, kubeconfig) are **not** mounted — privileged git (push,
+private fetch) goes through wraptool's policed MCP git tool on the host, while
+local git works inside the box.
+
+Stop it with `wraptool down` (add `--rm` to remove the container); the shared
+server keeps running for other projects.
+
+## Next steps
+
+- [Getting started](getting-started.qmd) — the full model: policy, the review UI,
+  runtime selection, and every `up` detail.
+- [Dev Containers](devcontainers.qmd) — every feature option and the container
+  wiring.
+- [Configuration reference](configuration.qmd) — every config field.

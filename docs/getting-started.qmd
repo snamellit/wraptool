@@ -2,6 +2,15 @@
 title: "Getting started"
 ---
 
+::: {.callout-tip title="Just want the shortest path for your OS?"}
+Follow the focused platform guide, then come back here for the full model:
+[Linux](platform-linux.qmd) · [Guix](platform-guix.qmd) ·
+[macOS](platform-macos.qmd) · [Windows](platform-windows.qmd). Each covers the
+prerequisites, install, and — importantly — **where your config file lives on
+that OS** (macOS in particular puts it under `~/Library/Application Support`, not
+`~/.config`).
+:::
+
 ## The recommended path: `wraptool up`
 
 Once wraptool is installed and you have a config, you don't wire anything by
