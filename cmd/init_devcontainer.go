@@ -259,6 +259,8 @@ func poolHomeMountSource() string {
 			return "${localEnv:HOME}/" + filepath.ToSlash(rel)
 		}
 	}
-	// ToSlash so a Windows path's backslashes don't corrupt the JSON string.
+	// ToSlash for forward slashes across OSes: the emitter uses %q so JSON escaping
+	// is already handled, but a devcontainer/docker bind source is more portable
+	// with forward slashes than Windows backslashes.
 	return filepath.ToSlash(poolHome)
 }

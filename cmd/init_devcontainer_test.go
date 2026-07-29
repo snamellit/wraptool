@@ -117,7 +117,8 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 		// On any host whose data dir is under $HOME, the source must use the
 		// client-expanded ${localEnv:HOME}, never a baked-in absolute home path.
-		if home, err := os.UserHomeDir(); err == nil {
+		// Skip home=="/" (minimal containers): every path contains "/".
+		if home, err := os.UserHomeDir(); err == nil && home != "/" {
 			if src, _ := m["source"].(string); strings.Contains(src, home) {
 				t.Errorf("mount source leaks absolute home %q: %q", home, src)
 			}
