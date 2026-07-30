@@ -22,8 +22,6 @@ const (
 	decisionTestStale      = "sha256:stale"   // a recipe_revision that does NOT match current
 )
 
-var decisionTestNow = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-
 var decisionTestPolicy = EffectivePolicy{
 	MinimumReleaseAge:     168 * time.Hour,
 	MinimumObservationAge: 0,
@@ -47,7 +45,7 @@ var decisionTestPolicyWithObservationGate = EffectivePolicy{
 // (published 200h ago, well past the 168h release-age gate); 2.1.224 is the
 // newer of the two.
 func candNewerEligible() []Candidate {
-	old := decisionTestNow.Add(-200 * time.Hour)
+	old := fixedNow.Add(-200 * time.Hour)
 	return []Candidate{
 		{Version: "2.1.220", PublishedAt: old, FirstSeenAt: old},
 		{Version: "2.1.224", PublishedAt: old, FirstSeenAt: old},
@@ -57,7 +55,7 @@ func candNewerEligible() []Candidate {
 // candOnlySameVersionEligible: exactly one eligible candidate, 2.1.220 — the
 // version an "agrees fully" lock is already pinned to.
 func candOnlySameVersionEligible() []Candidate {
-	old := decisionTestNow.Add(-200 * time.Hour)
+	old := fixedNow.Add(-200 * time.Hour)
 	return []Candidate{{Version: "2.1.220", PublishedAt: old, FirstSeenAt: old}}
 }
 
@@ -65,7 +63,7 @@ func candOnlySameVersionEligible() []Candidate {
 // under decisionTestPolicy's 168h release-age gate, but old enough to become
 // eligible the moment AllowYoung bypasses that gate.
 func candQuarantinedOnly() []Candidate {
-	young := decisionTestNow.Add(-1 * time.Hour)
+	young := fixedNow.Add(-1 * time.Hour)
 	return []Candidate{{Version: "2.1.230", PublishedAt: young, FirstSeenAt: young}}
 }
 
@@ -75,7 +73,7 @@ func candNone() []Candidate { return nil }
 // candYankedButOld: old enough to clear both age gates, but yanked —
 // AllowYoung bypasses age gates only, never a yanked exclusion (§9).
 func candYankedButOld() []Candidate {
-	old := decisionTestNow.Add(-300 * time.Hour)
+	old := fixedNow.Add(-300 * time.Hour)
 	return []Candidate{{Version: "2.1.230", PublishedAt: old, FirstSeenAt: old, Yanked: true}}
 }
 
@@ -90,7 +88,7 @@ func candYankedButOld() []Candidate {
 // fixture is what lets a table row prove that, as opposed to accidentally
 // reading 0s remaining from the age-zeroed selection policy.
 func candQuarantinedAndYanked() []Candidate {
-	young := decisionTestNow.Add(-1 * time.Hour)
+	young := fixedNow.Add(-1 * time.Hour)
 	return []Candidate{{Version: "2.1.230", PublishedAt: young, FirstSeenAt: young, Yanked: true}}
 }
 
@@ -105,8 +103,8 @@ func candQuarantinedAndYanked() []Candidate {
 func candQuarantinedByObservationOnly() []Candidate {
 	return []Candidate{{
 		Version:     "2.1.230",
-		PublishedAt: decisionTestNow.Add(-200 * time.Hour), // clears the 168h release-age gate
-		FirstSeenAt: decisionTestNow.Add(-1 * time.Hour),   // fails the 48h observation-age gate
+		PublishedAt: fixedNow.Add(-200 * time.Hour), // clears the 168h release-age gate
+		FirstSeenAt: fixedNow.Add(-1 * time.Hour),   // fails the 48h observation-age gate
 	}}
 }
 
@@ -115,7 +113,7 @@ func candQuarantinedByObservationOnly() []Candidate {
 // prerelease exclusion (§9). Age is irrelevant here (1h old, would also be
 // quarantined), but the point of this fixture is the prerelease flag.
 func candDisallowedPrereleaseYoung() []Candidate {
-	young := decisionTestNow.Add(-1 * time.Hour)
+	young := fixedNow.Add(-1 * time.Hour)
 	return []Candidate{{Version: "2.1.230-beta.1", PublishedAt: young, FirstSeenAt: young, Prerelease: true}}
 }
 
@@ -460,7 +458,7 @@ func TestDecide(t *testing.T) {
 				Candidates:         tt.candidates,
 				Policy:             policy,
 				AllowYoung:         tt.allowYoung,
-				Now:                decisionTestNow,
+				Now:                fixedNow,
 			}
 
 			got := Decide(in)
@@ -540,7 +538,7 @@ func TestDecideInstallShortCircuitIgnoresCandidatesAndAllowYoung(t *testing.T) {
 					Candidates:         candidates,
 					Policy:             decisionTestPolicy,
 					AllowYoung:         allowYoung,
-					Now:                decisionTestNow,
+					Now:                fixedNow,
 				})
 				if got.Kind != DecisionUpToDate {
 					t.Fatalf("candidates=%q allowYoung=%v: Kind = %v, want DecisionUpToDate (install must short-circuit before consulting either)", name, allowYoung, got.Kind)
