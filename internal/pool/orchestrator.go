@@ -25,14 +25,23 @@ import (
 const npmSourceName = "npm"
 
 // defaultNodeVersion is the pinned Node runtime every Phase-1 npm harness
-// resolves against, passed to Source.Resolve. §8.1 describes selecting this
-// from "the descriptor-declared runtime requirement (node major)"; Phase 1's
-// internal/harness.Descriptor carries no such field yet (this work package's
-// brief scopes Descriptor's only addition to PoolPackage), and every current
-// pool-lockable harness (claude, opencode, pi) is fine on one modern LTS, so
-// a single constant is the Phase-1 answer. A later phase that needs
-// per-harness runtime pinning promotes this to a descriptor or lock field.
-const defaultNodeVersion = "22"
+// resolves against, passed to Source.Resolve. It MUST be an exact, real,
+// published Node version — the npm Source interpolates it verbatim into
+// nodejs.org URLs (https://nodejs.org/dist/v<ver>/SHASUMS256.txt and
+// node-v<ver>-linux-*.tar.xz), and nodejs.org/dist has no directory for a
+// bare major like "v22/": every real resolve against a bare major 404s.
+// "22.11.0" is the first Node 22 LTS release (nodejs.org/dist/v22.11.0/
+// exists and is the LTS "Jod" baseline). §8.1 describes selecting the
+// runtime requirement "from the descriptor-declared runtime requirement
+// (node major)"; Phase 1's internal/harness.Descriptor carries no such
+// field yet (this work package's brief scopes Descriptor's only addition to
+// PoolPackage), and every current pool-lockable harness (claude, opencode,
+// pi) is fine on this one pinned LTS, so a single exact-version constant is
+// the Phase-1 answer. Two follow-ups, both Phase 2: sourcing the runtime
+// requirement per-descriptor instead of one pool-wide constant, and
+// resolving "latest patch on the v22.x line" instead of a hand-pinned exact
+// version.
+const defaultNodeVersion = "22.11.0"
 
 // recipeFormatVersion is bumped whenever this package's Phase-1 install
 // recipe (the legacy npm-install-pinned-to-an-exact-version path, driven
@@ -107,7 +116,18 @@ type PoolPaths struct {
 	Observations string
 	Audit        string
 	AdvisoryLock string
-	Cache        string
+	// Cache MUST be the flat, content-addressed cache root passed straight
+	// to Source.Fetch — pool.CacheSHA256Dir() (cache/sha256/<sha256hex>),
+	// never pool.CacheDir() (cache/, one level too shallow). Source.Fetch
+	// writes/looks up objects directly under this path by their sha256 hex
+	// name; passing CacheDir() by mistake does not error visibly — it
+	// silently makes every object permanently un-cached (each call re-hits
+	// the download path, or later looks up a cache location that's
+	// actually one directory off). There is deliberately no CacheDir field
+	// alongside this one: a caller with both would have to know which is
+	// "right" for Fetch, which is exactly the mistake this single,
+	// precisely-named field exists to prevent.
+	Cache string
 	// Staging roots scratch work directories UpdateHarness creates itself
 	// when a caller's UpdateOptions.WorkDir is empty (§5 layout:
 	// staging/txn-<id>/, never mounted into project containers).
