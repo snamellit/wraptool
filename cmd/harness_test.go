@@ -231,6 +231,34 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 	}
 }
 
+// TestHarnessArgHelpersRejectMultipleArgs pins the helpers' OWN >1-arg guard,
+// independent of cobra's MaximumNArgs(1) at the command layer: without it,
+// two args would fall through to the bare-command branch and silently widen
+// the target set to every manifest/lock-listed harness (MR !59 review,
+// notes 1905161/1905162).
+func TestHarnessArgHelpersRejectMultipleArgs(t *testing.T) {
+	t.Parallel()
+	paths := pool.PoolPaths{} // never touched: the guard fires before any filesystem access
+	for _, fn := range []struct {
+		name string
+		call func() ([]string, error)
+	}{
+		{"manifestLockableHarnessArgs", func() ([]string, error) {
+			return manifestLockableHarnessArgs(paths, []string{"claude", "opencode"})
+		}},
+		{"lockHarnessArgs", func() ([]string, error) {
+			return lockHarnessArgs(paths, []string{"claude", "opencode"})
+		}},
+	} {
+		names, err := fn.call()
+		if err == nil {
+			t.Errorf("%s: expected an error for two args, got names %v", fn.name, names)
+		} else if !strings.Contains(err.Error(), "at most one harness") {
+			t.Errorf("%s: error = %q, want it to name the at-most-one contract", fn.name, err)
+		}
+	}
+}
+
 // TestHarnessInstallRequiresExactlyOneArg and TestHarnessUpdateAcceptsAtMostOneArg
 // pin cobra's own arity enforcement (ExactArgs(1) for install,
 // MaximumNArgs(1) for the optional-harness commands) so a future edit can't

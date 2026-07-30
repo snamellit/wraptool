@@ -145,6 +145,14 @@ func manifestLockableHarnessArgs(paths pool.PoolPaths, args []string) ([]string,
 	// Pure argument validation first, no filesystem access: an unknown or
 	// non-lockable harness name must fail the same way regardless of
 	// whether the pool manifest is even readable.
+	//
+	// The callers' cobra commands declare MaximumNArgs(1), but this helper
+	// enforces its own contract too: without this guard, two args would fall
+	// through to the bare-command branch and operate on every manifest-listed
+	// harness — a typo'd space must never widen the target set.
+	if len(args) > 1 {
+		return nil, fmt.Errorf("expected at most one harness, got %d (%q)", len(args), args)
+	}
 	if len(args) == 1 {
 		name := args[0]
 		d, ok := harness.Registry[name]
@@ -190,7 +198,11 @@ func manifestLockableHarnessArgs(paths pool.PoolPaths, args []string) ([]string,
 // has nothing to sync.
 func lockHarnessArgs(paths pool.PoolPaths, args []string) ([]string, error) {
 	// Pure argument validation first, no filesystem access — see
-	// manifestLockableHarnessArgs' matching comment.
+	// manifestLockableHarnessArgs' matching comments, including the >1 guard:
+	// extra args must error, never silently widen to the whole lock.
+	if len(args) > 1 {
+		return nil, fmt.Errorf("expected at most one harness, got %d (%q)", len(args), args)
+	}
 	if len(args) == 1 {
 		name := args[0]
 		d, ok := harness.Registry[name]
