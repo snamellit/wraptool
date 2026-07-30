@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,29 @@ import (
 	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 )
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// everything written to it. Used for maybeInstallLocked's provenance-warning
+// message, a plain fmt.Printf with no io.Writer parameter to inject.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	fn()
+	os.Stdout = orig
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing pipe writer: %v", err)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading pipe: %v", err)
+	}
+	return string(data)
+}
 
 // fixedTestNow is this file's fixed clock, mirroring
 // internal/pool/orchestrator_test.go's fixedNow so ages/quarantine windows
@@ -119,6 +143,22 @@ func runHarnessCmd(t *testing.T, args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// TestHarnessPoolPathsCacheMatchesSourceFetchContract pins the real (not
+// swapped) harnessPoolPaths() wiring against Source.Fetch's documented
+// contract (internal/pool.PoolPaths.Cache's doc comment): Cache MUST be
+// pool.CacheSHA256Dir(), never pool.CacheDir() one level up. A regression
+// here produces no build or lint error and no runtime error either — every
+// fetched object just becomes a silent, permanent cache miss (harness-cli
+// review MAJOR-1). This is a pure path-string comparison; it touches no
+// files and needs no test seam.
+func TestHarnessPoolPathsCacheMatchesSourceFetchContract(t *testing.T) {
+	got := harnessPoolPaths().Cache
+	want := pool.CacheSHA256Dir()
+	if got != want {
+		t.Errorf("harnessPoolPaths().Cache = %q, want pool.CacheSHA256Dir() = %q", got, want)
+	}
+}
+
 // TestHarnessCommandArgValidation table-tests every subcommand's argument
 // validation. Every case here must fail before touching the filesystem (no
 // pool paths, no Source, no backend) — each one returns from its RunE before
@@ -187,7 +227,7 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 		Observations: filepath.Join(dir, "observations.json"),
 		Audit:        filepath.Join(dir, "audit.jsonl"),
 		AdvisoryLock: filepath.Join(dir, "lock"),
-		Cache:        filepath.Join(dir, "cache"),
+		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
 		Staging:      filepath.Join(dir, "staging"),
 	}
 }
@@ -571,6 +611,60 @@ func TestHarnessInstallIdempotentSkipsInstallWhenBinaryPresent(t *testing.T) {
 	}
 	if installCalls != 1 {
 		t.Errorf("installCalls after second (idempotent) install = %d, want still 1 (npm run must be skipped)", installCalls)
+	}
+}
+
+// TestMaybeInstallLockedWarnsOnlyWhenReplacingUnverifiedInstall covers the
+// §16 Phase 1 item 4 minor: maybeInstallLocked prints the
+// "provenance unverified" line only when it is about to overwrite an
+// ALREADY-PRESENT pool binary with a freshly resolved (result.Changed)
+// version — not on a fresh install with no prior binary, and not on the
+// idempotent (!result.Changed) path, which skips the install entirely.
+func TestMaybeInstallLockedWarnsOnlyWhenReplacingUnverifiedInstall(t *testing.T) {
+	d := harness.Registry["claude"]
+
+	cases := []struct {
+		name        string
+		changed     bool
+		binPresent  bool
+		wantWarning bool
+	}{
+		{"changed + binary already present: warns", true, true, true},
+		{"changed + no prior binary: no warning", true, false, false},
+		{"idempotent + binary already present: no warning (install skipped)", false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			swapPoolBinDir(t, binDir)
+			swapHasGuix(t, true)
+			swapRunInstallArgv(t, func([]string) error { return nil })
+
+			if tc.binPresent {
+				if err := os.MkdirAll(filepath.Join(binDir, "bin"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(binDir, "bin", d.Bin), []byte("#!/bin/sh\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			result := &pool.UpdateResult{
+				Harness: &pool.LockHarness{Version: "2.1.220"},
+				Changed: tc.changed,
+			}
+
+			out := captureStdout(t, func() {
+				if err := maybeInstallLocked("claude", d, result); err != nil {
+					t.Fatalf("maybeInstallLocked: %v", err)
+				}
+			})
+
+			gotWarning := strings.Contains(out, "provenance unverified")
+			if gotWarning != tc.wantWarning {
+				t.Errorf("warning present = %v, want %v; output:\n%s", gotWarning, tc.wantWarning, out)
+			}
+		})
 	}
 }
 

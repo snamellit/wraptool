@@ -90,7 +90,7 @@ func testPaths(t *testing.T) PoolPaths {
 		Observations: filepath.Join(dir, "observations.json"),
 		Audit:        filepath.Join(dir, "audit.jsonl"),
 		AdvisoryLock: filepath.Join(dir, "lock"),
-		Cache:        filepath.Join(dir, "cache"),
+		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
 		Staging:      filepath.Join(dir, "staging"),
 	}
 }

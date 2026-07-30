@@ -57,8 +57,12 @@ var harnessPoolPaths = func() pool.PoolPaths {
 		Observations: pool.ObservationsFile(),
 		Audit:        pool.AuditFile(),
 		AdvisoryLock: pool.AdvisoryLockFile(),
-		Cache:        pool.CacheDir(),
-		Staging:      pool.StagingDir(),
+		// pool.PoolPaths.Cache must be the flat, content-addressed cache
+		// root (cache/sha256) — see its doc comment. pool.CacheDir() is the
+		// cache/ parent, one level too shallow; Source.Fetch would silently
+		// treat every object as a permanent cache miss.
+		Cache:   pool.CacheSHA256Dir(),
+		Staging: pool.StagingDir(),
 	}
 }
 
@@ -463,16 +467,29 @@ func printUpdateResult(name string, result *pool.UpdateResult) {
 // missing (e.g. a fresh workstation with a pre-existing lock), it still
 // installs — "up to date" must not be a lie. Must be called with the pool
 // lock already held (§6.5 MAJOR 3) — see legacyInstallVersionLocked.
+//
+// §16 Phase 1 item 4 ("import existing installations") ships here as an
+// implicit reinstall, not a real import: this package never inspects an
+// existing binary's provenance (it could be a prior unpinned/legacy
+// install, or a hand-placed one — nothing proves it matches any lock).
+// result.Changed with the binary already present means it's about to be
+// silently overwritten by the freshly locked version, so that case gets one
+// explicit line rather than passing in complete silence.
 func maybeInstallLocked(name string, d harness.Descriptor, result *pool.UpdateResult) error {
+	_, poolBin, err := poolBinDir()
+	if err != nil {
+		return err
+	}
+	binExists := fileExists(filepath.Join(poolBin, d.Bin))
+
 	if !result.Changed {
-		_, poolBin, err := poolBinDir()
-		if err != nil {
-			return err
-		}
-		if fileExists(filepath.Join(poolBin, d.Bin)) {
+		if binExists {
 			return nil
 		}
+	} else if binExists {
+		fmt.Printf("%s: replacing existing pool install with locked %s (prior install's provenance unverified)\n", name, result.Harness.Version)
 	}
+
 	return legacyInstallVersionLocked(name, d, result.Harness.Version)
 }
 
