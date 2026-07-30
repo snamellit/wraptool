@@ -95,32 +95,39 @@ func (l *Lock) Marshal() ([]byte, error) {
 	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// UnmarshalLock parses lock JSON produced by Marshal and validates it: every
-// platform key (in Generations and runtime Artifacts) must be one of the
-// closed PlatformKey values, and every timestamp must be a UTC RFC3339
-// string (§6.6). A lock that fails either check is rejected outright rather
-// than silently accepted with a value that later code would mishandle.
+// UnmarshalLock parses lock JSON produced by Marshal and validates it via
+// Validate: every platform key (in Generations and runtime Artifacts) must
+// be one of the closed PlatformKey values, and every timestamp must be a
+// non-zero UTC RFC3339 string (§6.6). A lock that fails either check is
+// rejected outright rather than silently accepted with a value that later
+// code would mishandle.
 func UnmarshalLock(data []byte) (*Lock, error) {
 	var l Lock
 	if err := json.Unmarshal(data, &l); err != nil {
 		return nil, fmt.Errorf("parsing lock: %w", err)
 	}
-	if err := l.validate(); err != nil {
+	if err := l.Validate(); err != nil {
 		return nil, err
 	}
 	return &l, nil
 }
 
-func (l *Lock) validate() error {
-	if _, err := ParseTimestamp(l.GeneratedAt); err != nil {
-		return fmt.Errorf("generated_at: %w", err)
+// Validate checks generated_at, every harness's published_at/first_seen_at,
+// and every platform key referenced in Generations/runtime Artifacts.
+// Exported so a caller assembling a Lock in memory (Wave 2's resolve/writer,
+// which produces a Lock without ever round-tripping it through JSON) can
+// validate it before persisting, not only after reading it back via
+// UnmarshalLock (which also calls Validate).
+func (l *Lock) Validate() error {
+	if err := validateLockTimestamp("generated_at", l.GeneratedAt); err != nil {
+		return err
 	}
 	for name, h := range l.Harnesses {
-		if _, err := ParseTimestamp(h.PublishedAt); err != nil {
-			return fmt.Errorf("harness %q: published_at: %w", name, err)
+		if err := validateLockTimestamp(fmt.Sprintf("harness %q: published_at", name), h.PublishedAt); err != nil {
+			return err
 		}
-		if _, err := ParseTimestamp(h.FirstSeenAt); err != nil {
-			return fmt.Errorf("harness %q: first_seen_at: %w", name, err)
+		if err := validateLockTimestamp(fmt.Sprintf("harness %q: first_seen_at", name), h.FirstSeenAt); err != nil {
+			return err
 		}
 		for key := range h.Generations {
 			if _, err := ParsePlatformKey(string(key)); err != nil {
@@ -134,6 +141,22 @@ func (l *Lock) validate() error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// validateLockTimestamp parses s as a UTC RFC3339 timestamp and additionally
+// rejects the zero time (year 1) — FormatTimestamp(time.Time{}) produces the
+// syntactically valid string "0001-01-01T00:00:00Z", which ParseTimestamp
+// alone would accept, but an unset time must never survive into a persisted
+// lock (N5).
+func validateLockTimestamp(label, s string) error {
+	t, err := ParseTimestamp(s)
+	if err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	if t.IsZero() {
+		return fmt.Errorf("%s: timestamp is unset (zero value)", label)
 	}
 	return nil
 }

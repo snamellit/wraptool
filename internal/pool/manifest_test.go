@@ -305,3 +305,28 @@ func TestEffectivePolicyPerHarnessOverridesOmittedGlobal(t *testing.T) {
 		t.Errorf("opencode MinimumReleaseAge = %v, want the 168h default (no override, omitted global)", got)
 	}
 }
+
+// TestDefaultPolicyReturnsFreshValueEachCall covers N3: DefaultPolicy is a
+// function, not a shared mutable var, so mutating one caller's returned
+// EffectivePolicy can never leak into another caller's defaults.
+func TestDefaultPolicyReturnsFreshValueEachCall(t *testing.T) {
+	want := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0, AllowPrereleases: false}
+	if got := DefaultPolicy(); got != want {
+		t.Errorf("DefaultPolicy() = %+v, want %+v", got, want)
+	}
+
+	// Mutate the value returned by one call...
+	mutated := DefaultPolicy()
+	mutated.MinimumReleaseAge = 0
+	mutated.AllowPrereleases = true
+
+	// ...and confirm a fresh call, and EffectivePolicy resolution built on
+	// top of it, are both unaffected.
+	if got := DefaultPolicy(); got != want {
+		t.Errorf("DefaultPolicy() after mutating a previous return = %+v, want unchanged %+v", got, want)
+	}
+	m := &Manifest{}
+	if got := m.EffectivePolicy("claude"); got != want {
+		t.Errorf("EffectivePolicy() after mutating a previous DefaultPolicy() return = %+v, want unchanged %+v", got, want)
+	}
+}
