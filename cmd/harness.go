@@ -16,6 +16,7 @@ import (
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/pool"
 	"github.com/pti/wraptool/internal/pool/backend"
+	"github.com/pti/wraptool/internal/pool/source"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -75,15 +76,10 @@ var poolBinDir = func() (poolDir, poolBin string, err error) {
 
 // newHarnessSource constructs the harness pool's npm artifact-acquisition
 // Source (design/unified-harness-pool.md §11.3, pool.Source). The concrete
-// npm Source (internal/pool/source) is a sibling work package built in
-// parallel with this one — Go's structural typing binds it to pool.Source
-// with no change needed here once it lands. Until that integration wiring
-// happens, this seam errors clearly instead of silently no-op'ing; `list`
-// and `policy set` need no Source and work today regardless.
+// npm Source lives in internal/pool/source; Go's structural typing binds it
+// to pool.Source. A var so tests can substitute a fake without network.
 var newHarnessSource = func() (pool.Source, error) {
-	return nil, fmt.Errorf("the harness pool's npm source is not wired yet " +
-		"(internal/pool/source integration is pending); `wraptool harness list` and " +
-		"`policy set` work today, `refresh`/`update`/`install`/`sync` do not yet")
+	return source.NewNPM(""), nil // "" = the default npm registry
 }
 
 // resolveBackend picks the Linux-container backend the npm resolve phase
@@ -424,6 +420,11 @@ func runHarnessInstall(ctx context.Context, name string, d harness.Descriptor, c
 		return fmt.Errorf("locking %s: %w", name, err)
 	}
 	printUpdateResult(name, result)
+	if allowYoung && !result.AllowYoungApplied && !result.Changed {
+		// install's no-advance short-circuit fires before the bypass is
+		// consulted, so the flag can no-op invisibly on an existing lock.
+		fmt.Printf("%s: --allow-young had no effect (already locked); use `wraptool harness update %s --allow-young` to advance\n", name, name)
+	}
 
 	return maybeInstallLocked(name, d, result)
 }
