@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/pti/wraptool/internal/yamledit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -55,7 +56,7 @@ func UpdateRule(path, toolName, kind string, index int, expect, subcommand, flag
 		if err != nil {
 			return err
 		}
-		mapSet(rule, "subcommand", stringSeq(subcommand))
+		yamledit.MapSet(rule, "subcommand", stringSeq(subcommand))
 		if kind == KindAllow {
 			setOrDeleteSeq(rule, "flags", flags)
 			setOrDeleteSeq(rule, "deny_flags", denyFlags)
@@ -71,7 +72,7 @@ func UpdateRule(path, toolName, kind string, index int, expect, subcommand, flag
 // the key when values is empty — the pattern both flags and deny_flags follow.
 func setOrDeleteSeq(rule *yaml.Node, key string, values []string) {
 	if len(values) > 0 {
-		mapSet(rule, key, stringSeq(values))
+		yamledit.MapSet(rule, key, stringSeq(values))
 	} else {
 		mapDelete(rule, key)
 	}
@@ -103,13 +104,13 @@ func DeleteRule(path, toolName, kind string, index int, expect []string) error {
 // rulesSeq returns the allow/deny sequence node for a tool, creating an empty
 // one when create is true and it is absent.
 func rulesSeq(toolNode *yaml.Node, toolName, kind string, create bool) (*yaml.Node, error) {
-	seq := mapGet(toolNode, kind)
+	seq := yamledit.MapGet(toolNode, kind)
 	if seq == nil {
 		if !create {
 			return nil, fmt.Errorf("tool %q has no %s rules", toolName, kind)
 		}
 		seq = &yaml.Node{Kind: yaml.SequenceNode}
-		mapSet(toolNode, kind, seq)
+		yamledit.MapSet(toolNode, kind, seq)
 		return seq, nil
 	}
 	if seq.Kind != yaml.SequenceNode {
@@ -141,7 +142,7 @@ func checkRuleAt(seq *yaml.Node, toolName, kind string, index int, expect []stri
 		return nil, fmt.Errorf("tool %q %s rule %d is not a mapping", toolName, kind, index)
 	}
 	if expect != nil {
-		sub := mapGet(rule, "subcommand")
+		sub := yamledit.MapGet(rule, "subcommand")
 		if sub == nil || !stringSeqEqual(sub, expect) {
 			return nil, fmt.Errorf("tool %q %s rule %d changed since it was loaded; reload and retry", toolName, kind, index)
 		}
@@ -154,7 +155,7 @@ func newRule(kind string, subcommand, flags []string) *yaml.Node {
 		return newAllowRule(subcommand, flags, nil)
 	}
 	rule := &yaml.Node{Kind: yaml.MappingNode}
-	mapSet(rule, "subcommand", stringSeq(subcommand))
+	yamledit.MapSet(rule, "subcommand", stringSeq(subcommand))
 	return rule
 }
 
@@ -172,7 +173,7 @@ func SetArgConstraints(path, toolName string, index int, expect []string, positi
 		if err != nil {
 			return err
 		}
-		ac := mapGet(rule, "arg_constraints")
+		ac := yamledit.MapGet(rule, "arg_constraints")
 		if ac != nil && ac.Kind != yaml.MappingNode {
 			return fmt.Errorf("tool %q allow rule %d `arg_constraints` is not a mapping", toolName, index)
 		}
@@ -189,9 +190,9 @@ func SetArgConstraints(path, toolName string, index int, expect []string, positi
 		}
 		if ac == nil {
 			ac = &yaml.Node{Kind: yaml.MappingNode}
-			mapSet(rule, "arg_constraints", ac)
+			yamledit.MapSet(rule, "arg_constraints", ac)
 		}
-		mapSet(ac, "positional_max", intNode(*positionalMax))
+		yamledit.MapSet(ac, "positional_max", intNode(*positionalMax))
 		return nil
 	})
 }
@@ -211,14 +212,14 @@ func SetFlagConstraint(path, toolName string, index int, expect []string, flag s
 		if err != nil {
 			return err
 		}
-		fcNode := mapGet(rule, "flag_constraints")
+		fcNode := yamledit.MapGet(rule, "flag_constraints")
 		if fcNode == nil {
 			fcNode = &yaml.Node{Kind: yaml.MappingNode}
-			mapSet(rule, "flag_constraints", fcNode)
+			yamledit.MapSet(rule, "flag_constraints", fcNode)
 		} else if fcNode.Kind != yaml.MappingNode {
 			return fmt.Errorf("tool %q allow rule %d `flag_constraints` is not a mapping", toolName, index)
 		}
-		mapSet(fcNode, flag, flagConstraintNode(fc))
+		yamledit.MapSet(fcNode, flag, flagConstraintNode(fc))
 		return nil
 	})
 }
@@ -233,7 +234,7 @@ func DeleteFlagConstraint(path, toolName string, index int, expect []string, fla
 		if err != nil {
 			return err
 		}
-		fcNode := mapGet(rule, "flag_constraints")
+		fcNode := yamledit.MapGet(rule, "flag_constraints")
 		if fcNode == nil || fcNode.Kind != yaml.MappingNode {
 			return nil
 		}
@@ -252,22 +253,22 @@ func DeleteFlagConstraint(path, toolName string, index int, expect []string, fla
 func flagConstraintNode(fc FlagConstraint) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.MappingNode}
 	if fc.Type != "" {
-		mapSet(n, "type", scalarNode(string(fc.Type)))
+		yamledit.MapSet(n, "type", yamledit.ScalarNode(string(fc.Type)))
 	}
 	if fc.Min != nil {
-		mapSet(n, "min", intNode(*fc.Min))
+		yamledit.MapSet(n, "min", intNode(*fc.Min))
 	}
 	if fc.Max != nil {
-		mapSet(n, "max", intNode(*fc.Max))
+		yamledit.MapSet(n, "max", intNode(*fc.Max))
 	}
 	if fc.Pattern != "" {
-		mapSet(n, "pattern", strNode(fc.Pattern))
+		yamledit.MapSet(n, "pattern", yamledit.StrNode(fc.Pattern))
 	}
 	if fc.Required {
-		mapSet(n, "required", boolNode(true))
+		yamledit.MapSet(n, "required", boolNode(true))
 	}
 	if fc.Deny {
-		mapSet(n, "deny", boolNode(true))
+		yamledit.MapSet(n, "deny", boolNode(true))
 	}
 	return n
 }
@@ -275,7 +276,7 @@ func flagConstraintNode(fc FlagConstraint) *yaml.Node {
 // pruneFlagConstraints removes flag_constraints entries whose flag is not in
 // keepFlags, and drops the flag_constraints key entirely when it empties.
 func pruneFlagConstraints(rule *yaml.Node, keepFlags []string) {
-	fc := mapGet(rule, "flag_constraints")
+	fc := yamledit.MapGet(rule, "flag_constraints")
 	if fc == nil || fc.Kind != yaml.MappingNode {
 		return
 	}

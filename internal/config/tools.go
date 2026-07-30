@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/pti/wraptool/internal/yamledit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -23,19 +24,19 @@ func AddTool(path, name, binary string) error {
 		return fmt.Errorf("binary path is required")
 	}
 	return editConfig(path, func(doc *yaml.Node) error {
-		toolsNode := mapGet(doc, "tools")
+		toolsNode := yamledit.MapGet(doc, "tools")
 		if toolsNode == nil {
 			toolsNode = &yaml.Node{Kind: yaml.MappingNode}
-			mapSet(doc, "tools", toolsNode)
+			yamledit.MapSet(doc, "tools", toolsNode)
 		} else if toolsNode.Kind != yaml.MappingNode {
 			return fmt.Errorf("`tools` is not a mapping")
 		}
-		if mapGet(toolsNode, name) != nil {
+		if yamledit.MapGet(toolsNode, name) != nil {
 			return fmt.Errorf("tool %q already exists", name)
 		}
 		tool := &yaml.Node{Kind: yaml.MappingNode}
-		mapSet(tool, "binary", scalarNode(binary))
-		mapSet(toolsNode, name, tool)
+		yamledit.MapSet(tool, "binary", yamledit.ScalarNode(binary))
+		yamledit.MapSet(toolsNode, name, tool)
 		return nil
 	})
 }
@@ -60,21 +61,21 @@ func SetToolMetadata(path, name, workingDir, timeout string, envFiles []string) 
 		// working_dir and env-file paths may contain characters (spaces, etc.)
 		// that need quoting, so they are string-tagged; timeout is a bare token.
 		if workingDir != "" {
-			mapSet(toolNode, "working_dir", strNode(workingDir))
+			yamledit.MapSet(toolNode, "working_dir", yamledit.StrNode(workingDir))
 		} else {
 			mapDelete(toolNode, "working_dir")
 		}
 		if timeout != "" {
-			mapSet(toolNode, "timeout", scalarNode(timeout))
+			yamledit.MapSet(toolNode, "timeout", yamledit.ScalarNode(timeout))
 		} else {
 			mapDelete(toolNode, "timeout")
 		}
 		if len(envFiles) > 0 {
 			seq := &yaml.Node{Kind: yaml.SequenceNode}
 			for _, f := range envFiles {
-				seq.Content = append(seq.Content, strNode(f))
+				seq.Content = append(seq.Content, yamledit.StrNode(f))
 			}
-			mapSet(toolNode, "env_files", seq)
+			yamledit.MapSet(toolNode, "env_files", seq)
 		} else {
 			mapDelete(toolNode, "env_files")
 		}
@@ -87,11 +88,11 @@ func SetToolMetadata(path, name, workingDir, timeout string, envFiles []string) 
 // refused — the config would expose nothing to wrap.
 func DeleteTool(path, name string) error {
 	return editConfig(path, func(doc *yaml.Node) error {
-		toolsNode := mapGet(doc, "tools")
+		toolsNode := yamledit.MapGet(doc, "tools")
 		if toolsNode == nil || toolsNode.Kind != yaml.MappingNode {
 			return fmt.Errorf("no `tools` mapping in config")
 		}
-		if mapGet(toolsNode, name) == nil {
+		if yamledit.MapGet(toolsNode, name) == nil {
 			return fmt.Errorf("tool %q is not configured", name)
 		}
 		mapDelete(toolsNode, name)

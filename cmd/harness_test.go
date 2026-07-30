@@ -14,6 +14,7 @@ import (
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/pool"
 	"github.com/pti/wraptool/internal/pool/backend"
+	"github.com/pti/wraptool/internal/yamledit"
 
 	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
@@ -426,8 +427,8 @@ func TestHarnessPolicySetRoundTripsCommentedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := editManifest(paths.Manifest, func(doc *yaml.Node) error {
-		target := ensureMapChild(doc, "policy")
-		mapSetNode(target, "minimum_observation_age", scalarNode((24 * time.Hour).String()))
+		target := yamledit.EnsureMapChild(doc, "policy")
+		yamledit.MapSet(target, "minimum_observation_age", yamledit.ScalarNode((24 * time.Hour).String()))
 		return nil
 	})
 	lock.Release()
@@ -938,7 +939,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 	}
 }
 
-// --- MINOR: mapSetNode preserves an edited scalar's inline comment ---
+// --- MINOR: yamledit.MapSet preserves an edited scalar's inline comment ---
 
 func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {
 	t.Parallel()
@@ -955,8 +956,8 @@ func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {
 	}
 
 	err := editManifest(path, func(doc *yaml.Node) error {
-		target := ensureMapChild(doc, "policy")
-		mapSetNode(target, "minimum_release_age", scalarNode((72 * time.Hour).String()))
+		target := yamledit.EnsureMapChild(doc, "policy")
+		yamledit.MapSet(target, "minimum_release_age", yamledit.ScalarNode((72 * time.Hour).String()))
 		return nil
 	})
 	if err != nil {

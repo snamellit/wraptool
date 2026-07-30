@@ -3,10 +3,9 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strconv"
 
+	"github.com/pti/wraptool/internal/yamledit"
 	"gopkg.in/yaml.v3"
 )
 
@@ -42,22 +41,22 @@ func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes m
 			return err
 		}
 
-		if denyNode := mapGet(toolNode, "deny"); denyNode != nil && denyNode.Kind == yaml.SequenceNode {
+		if denyNode := yamledit.MapGet(toolNode, "deny"); denyNode != nil && denyNode.Kind == yaml.SequenceNode {
 			for _, rule := range denyNode.Content {
 				if rule.Kind != yaml.MappingNode {
 					continue
 				}
-				sub := mapGet(rule, "subcommand")
+				sub := yamledit.MapGet(rule, "subcommand")
 				if sub != nil && stringSeqEqual(sub, subcommand) {
 					return fmt.Errorf("subcommand %v is denied for tool %q; remove the deny rule first", subcommand, toolName)
 				}
 			}
 		}
 
-		allowNode := mapGet(toolNode, "allow")
+		allowNode := yamledit.MapGet(toolNode, "allow")
 		if allowNode == nil {
 			allowNode = &yaml.Node{Kind: yaml.SequenceNode}
-			mapSet(toolNode, "allow", allowNode)
+			yamledit.MapSet(toolNode, "allow", allowNode)
 		} else if allowNode.Kind != yaml.SequenceNode {
 			return fmt.Errorf("tool %q `allow` is not a sequence", toolName)
 		}
@@ -66,7 +65,7 @@ func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes m
 			if rule.Kind != yaml.MappingNode {
 				continue
 			}
-			sub := mapGet(rule, "subcommand")
+			sub := yamledit.MapGet(rule, "subcommand")
 			if sub != nil && stringSeqEqual(sub, subcommand) {
 				ruleNode = rule
 				break
@@ -81,10 +80,10 @@ func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes m
 			return nil
 		}
 
-		flagsNode := mapGet(ruleNode, "flags")
+		flagsNode := yamledit.MapGet(ruleNode, "flags")
 		if flagsNode == nil {
 			flagsNode = &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
-			mapSet(ruleNode, "flags", flagsNode)
+			yamledit.MapSet(ruleNode, "flags", flagsNode)
 		} else if flagsNode.Kind != yaml.SequenceNode {
 			return fmt.Errorf("tool %q allow rule `flags` is not a sequence", toolName)
 		}
@@ -96,7 +95,7 @@ func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes m
 			if existing[f] {
 				continue
 			}
-			flagsNode.Content = append(flagsNode.Content, scalarNode(f))
+			flagsNode.Content = append(flagsNode.Content, yamledit.ScalarNode(f))
 			existing[f] = true
 			result.AddedFlags = append(result.AddedFlags, f)
 		}
@@ -117,61 +116,34 @@ func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes m
 // (preserving comments and ordering), hands the document's root mapping node
 // to mutate, then re-encodes, round-trip validates through the typed loader,
 // and writes the result atomically. The file is left untouched if mutate or
-// validation returns an error.
+// validation returns an error. This is a thin wrapper over yamledit.Edit,
+// which also drives cmd/harness.go's manifest.yaml editor — config supplies
+// its own Validate (round-trip through the typed Config loader) and keeps
+// the file's original 0600 permissions; the load/decode/mutate/encode/
+// atomic-write shape itself lives in yamledit.
 func editConfig(path string, mutate func(doc *yaml.Node) error) error {
 	path = expandPath(path)
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-
-	var root yaml.Node
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return fmt.Errorf("config is not a YAML document")
-	}
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		return fmt.Errorf("config root is not a mapping")
-	}
-
-	if err := mutate(doc); err != nil {
-		return err
-	}
-
-	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return fmt.Errorf("re-encoding config: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("re-encoding config: %w", err)
-	}
-
-	// Validate by round-tripping through the typed loader.
-	var newCfg Config
-	if err := yaml.Unmarshal(out.Bytes(), &newCfg); err != nil {
-		return fmt.Errorf("validating edited config: %w", err)
-	}
-	newCfg.applyDefaults()
-	if err := newCfg.Validate(); err != nil {
-		return fmt.Errorf("edited config failed validation: %w", err)
-	}
-
-	return writeAtomic(path, out.Bytes())
+	return yamledit.Edit(path, yamledit.Options{
+		Kind:     "config",
+		FileMode: 0600,
+		Validate: func(data []byte) error {
+			var newCfg Config
+			if err := yaml.Unmarshal(data, &newCfg); err != nil {
+				return err
+			}
+			newCfg.applyDefaults()
+			return newCfg.Validate()
+		},
+	}, mutate)
 }
 
 // docToolNode returns the mapping node for the named tool under `tools`.
 func docToolNode(doc *yaml.Node, toolName string) (*yaml.Node, error) {
-	toolsNode := mapGet(doc, "tools")
+	toolsNode := yamledit.MapGet(doc, "tools")
 	if toolsNode == nil || toolsNode.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("no `tools` mapping in config")
 	}
-	toolNode := mapGet(toolsNode, toolName)
+	toolNode := yamledit.MapGet(toolsNode, toolName)
 	if toolNode == nil {
 		return nil, fmt.Errorf("tool %q is not configured; add it to the config first (binary path is required)", toolName)
 	}
@@ -179,28 +151,6 @@ func docToolNode(doc *yaml.Node, toolName string) (*yaml.Node, error) {
 		return nil, fmt.Errorf("tool %q entry is not a mapping", toolName)
 	}
 	return toolNode, nil
-}
-
-func mapGet(m *yaml.Node, key string) *yaml.Node {
-	if m == nil || m.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			return m.Content[i+1]
-		}
-	}
-	return nil
-}
-
-func mapSet(m *yaml.Node, key string, value *yaml.Node) {
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			m.Content[i+1] = value
-			return
-		}
-	}
-	m.Content = append(m.Content, scalarNode(key), value)
 }
 
 func stringSeqEqual(seq *yaml.Node, want []string) bool {
@@ -217,9 +167,9 @@ func stringSeqEqual(seq *yaml.Node, want []string) bool {
 
 func newAllowRule(subcommand, flags []string, flagTypes map[string]string) *yaml.Node {
 	rule := &yaml.Node{Kind: yaml.MappingNode}
-	mapSet(rule, "subcommand", stringSeq(subcommand))
+	yamledit.MapSet(rule, "subcommand", stringSeq(subcommand))
 	if len(flags) > 0 {
-		mapSet(rule, "flags", stringSeq(flags))
+		yamledit.MapSet(rule, "flags", stringSeq(flags))
 	}
 	applyFlagTypes(rule, flags, flagTypes)
 	return rule
@@ -235,7 +185,7 @@ func applyFlagTypes(rule *yaml.Node, flags []string, flagTypes map[string]string
 	if len(flagTypes) == 0 {
 		return
 	}
-	fcNode := mapGet(rule, "flag_constraints")
+	fcNode := yamledit.MapGet(rule, "flag_constraints")
 	for _, f := range flags {
 		t, ok := flagTypes[f]
 		if !ok || t == "" {
@@ -243,35 +193,23 @@ func applyFlagTypes(rule *yaml.Node, flags []string, flagTypes map[string]string
 		}
 		if fcNode == nil {
 			fcNode = &yaml.Node{Kind: yaml.MappingNode}
-			mapSet(rule, "flag_constraints", fcNode)
+			yamledit.MapSet(rule, "flag_constraints", fcNode)
 		}
-		if mapGet(fcNode, f) != nil {
+		if yamledit.MapGet(fcNode, f) != nil {
 			continue // don't clobber an existing constraint
 		}
 		// flagConstraintNode is the single builder for a constraint entry; here
 		// only the type is known (a request supplies just the value type).
-		mapSet(fcNode, f, flagConstraintNode(FlagConstraint{Type: ConstraintType(t)}))
+		yamledit.MapSet(fcNode, f, flagConstraintNode(FlagConstraint{Type: ConstraintType(t)}))
 	}
 }
 
 func stringSeq(values []string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.SequenceNode, Style: yaml.FlowStyle}
 	for _, v := range values {
-		n.Content = append(n.Content, scalarNode(v))
+		n.Content = append(n.Content, yamledit.ScalarNode(v))
 	}
 	return n
-}
-
-func scalarNode(value string) *yaml.Node {
-	return &yaml.Node{Kind: yaml.ScalarNode, Value: value}
-}
-
-// strNode is a scalar explicitly tagged as a string, so the encoder quotes
-// values that would otherwise misparse as YAML (a pattern starting with `*`,
-// containing `:`, etc.). Use it for free-form text; scalarNode's untagged form
-// is right for barewords, ints, and bools that should resolve to their type.
-func strNode(value string) *yaml.Node {
-	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
 }
 
 func intNode(i int) *yaml.Node {
@@ -291,37 +229,4 @@ func marshalNode(n *yaml.Node) (string, error) {
 	}
 	enc.Close()
 	return buf.String(), nil
-}
-
-// writeAtomic writes data to a temp file in the same directory and renames
-// it over the target path. Using the same directory guarantees rename(2)
-// is atomic and stays on the same filesystem.
-func writeAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".wraptool-config-*.yaml.tmp")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmpPath)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		cleanup()
-		return fmt.Errorf("setting permissions on temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("renaming temp file over %s: %w", path, err)
-	}
-	return nil
 }
