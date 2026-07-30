@@ -61,6 +61,17 @@ const (
 	// runtime tarball). These can be tens of megabytes, so the budget is far
 	// larger than metadataTimeout, but still finite: an artifact download
 	// must not be allowed to hang forever either.
+	//
+	// Both timeouts exist as stall-bounds against the §6.5 pool-lock wedge
+	// risk, not as bandwidth guarantees. http.Client's Timeout is a
+	// wall-clock cap on the whole request (connect through reading the full
+	// response body), so it also caps a slow-but-otherwise-healthy transfer,
+	// not only a truly stalled one — this package accepts that trade-off
+	// rather than promising any particular throughput. If downloadTimeout
+	// ever proves too tight for a legitimately slow-but-progressing
+	// download in practice, the right fix is a real stall detector (abort
+	// only when no bytes arrive for N seconds) rather than raising this
+	// fixed budget further.
 	downloadTimeout = 10 * time.Minute
 )
 
@@ -357,6 +368,19 @@ var nodeGlibcPlatforms = map[pool.PlatformKey]string{
 // does not clean up scratchDir (a subdirectory of workDir) when it returns;
 // workDir is a staging transaction directory the caller owns and disposes
 // of.
+//
+// version must be the exact registry version key — a pool.Candidate.Version
+// as Refresh returns it — never "v"-prefixed. Unlike nodeVersion below,
+// Resolve does not normalize version: npm package versions are bare semver
+// (registry packument keys, package.json "dependencies" values, and
+// package-lock.json "packages"[...]."version" are all written without a "v"),
+// so there is no ambiguous convention here to accommodate, only a caller
+// mistake to surface plainly. Passing a "v"-prefixed version would make npm
+// resolve a different (likely nonexistent) version than the one the caller
+// meant, so the resulting mismatch between the requested version and the
+// lockfile's actual top-level entry version surfaces as this method's own
+// version-mismatch error rather than as a confusing failure that looks like
+// a lockfile problem.
 //
 // nodeVersion is the exact Node runtime version the harness descriptor
 // requires (a leading "v", if present, is stripped before use — nodejs.org

@@ -408,6 +408,47 @@ func TestResolve_RejectsGitDependency(t *testing.T) {
 	if !strings.Contains(err.Error(), "node_modules/git-dep") {
 		t.Errorf("error = %q, want it to name node_modules/git-dep", err.Error())
 	}
+	// Pinning the exact message (not just the entry name) is what makes this
+	// test fail if the "missing resolved or integrity" branch is weakened
+	// back to an "and" — a resolved-only entry like this one would then only
+	// be caught, incidentally, by validateLockableIntegrity("") rejecting an
+	// empty Integrity string with an unrelated "malformed integrity" message.
+	if !strings.Contains(err.Error(), "is missing resolved or integrity") {
+		t.Errorf("error = %q, want it to contain \"is missing resolved or integrity\"", err.Error())
+	}
+}
+
+// TestResolve_RejectsIntegrityWithoutResolved covers the other half of the
+// missing-resolved-or-integrity check: an entry that has Integrity but no
+// Resolved. This shape doesn't occur naturally in a real package-lock.json
+// (no known npm dependency kind produces it), but a mutation that narrowed
+// the check from "Resolved == "" || Integrity == """ back to "&&" would pass
+// every other test in this file while silently accepting an entry like this
+// one — so it is exercised directly, on the belt-and-suspenders principle,
+// rather than left to only ever be caught in production.
+func TestResolve_RejectsIntegrityWithoutResolved(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/no-resolved": {"version": "1.0.0", "integrity": "sha512-AAAA=="}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want one naming the entry missing resolved")
+	}
+	if !strings.Contains(err.Error(), "node_modules/no-resolved") {
+		t.Errorf("error = %q, want it to name node_modules/no-resolved", err.Error())
+	}
+	if !strings.Contains(err.Error(), "is missing resolved or integrity") {
+		t.Errorf("error = %q, want it to contain \"is missing resolved or integrity\"", err.Error())
+	}
 }
 
 func TestResolve_RejectsWorkspaceLink(t *testing.T) {
@@ -432,6 +473,14 @@ func TestResolve_RejectsWorkspaceLink(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "node_modules/workspace-pkg") {
 		t.Errorf("error = %q, want it to name node_modules/workspace-pkg", err.Error())
+	}
+	// Pinning the exact message is what makes this test fail if the
+	// dedicated Link check were deleted — this fixture's entry has a
+	// non-empty Resolved and an empty Integrity, so without the Link check
+	// it would still be caught by the resolved-or-integrity check, just with
+	// a different, misleading message.
+	if !strings.Contains(err.Error(), "is a workspace link") {
+		t.Errorf("error = %q, want it to contain \"is a workspace link\"", err.Error())
 	}
 }
 
@@ -726,7 +775,7 @@ func TestFetch_SHA256VerifyAndMismatch(t *testing.T) {
 		lh := &pool.LockHarness{
 			Runtime: &pool.LockRuntime{
 				Artifacts: map[pool.PlatformKey]pool.LockRuntimeArtifact{
-					pool.PlatformLinuxAMD64Glibc: {URL: srv.URL + "/node.tar.xz", SHA256: "0000000000000000000000000000000000000000000000000000000000000000"[:64]},
+					pool.PlatformLinuxAMD64Glibc: {URL: srv.URL + "/node.tar.xz", SHA256: "0000000000000000000000000000000000000000000000000000000000000000"},
 				},
 			},
 		}
