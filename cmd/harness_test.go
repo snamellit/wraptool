@@ -3,8 +3,8 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,31 +16,9 @@ import (
 	"github.com/pti/wraptool/internal/pool/backend"
 
 	"github.com/gofrs/flock"
+	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
-
-// captureStdout redirects os.Stdout for the duration of fn and returns
-// everything written to it. Used for maybeInstallLocked's provenance-warning
-// message, a plain fmt.Printf with no io.Writer parameter to inject.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-	orig := os.Stdout
-	os.Stdout = w
-	fn()
-	os.Stdout = orig
-	if err := w.Close(); err != nil {
-		t.Fatalf("closing pipe writer: %v", err)
-	}
-	data, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatalf("reading pipe: %v", err)
-	}
-	return string(data)
-}
 
 // fixedTestNow is this file's fixed clock, mirroring
 // internal/pool/orchestrator_test.go's fixedNow so ages/quarantine windows
@@ -92,13 +70,53 @@ func (f *fakeHarnessSource) Fetch(_ context.Context, h *pool.LockHarness, _ stri
 	return nil
 }
 
-// --- test seams ---
+// fakeHarnessBackend is a no-op backend.Backend: cmd-level tests never
+// actually run a container (fakeHarnessSource.Resolve ignores its backend
+// argument entirely), they only need a value satisfying the interface to
+// hand to deps.resolveBackend.
+type fakeHarnessBackend struct{}
 
-func swapHarnessPoolPaths(t *testing.T, paths pool.PoolPaths) {
+func (fakeHarnessBackend) Name() string                               { return "fake" }
+func (fakeHarnessBackend) Available() bool                            { return true }
+func (fakeHarnessBackend) Run(context.Context, backend.RunSpec) error { return nil }
+
+// --- test helpers ---
+
+// testHarnessPaths builds a pool.PoolPaths rooted at a fresh t.TempDir(),
+// with Cache already shaped like pool.CacheSHA256Dir() (cache/sha256, not
+// cache/ — see harnessDeps' poolPaths doc comment).
+func testHarnessPaths(t *testing.T) pool.PoolPaths {
 	t.Helper()
-	orig := harnessPoolPaths
-	harnessPoolPaths = func() pool.PoolPaths { return paths }
-	t.Cleanup(func() { harnessPoolPaths = orig })
+	dir := t.TempDir()
+	return pool.PoolPaths{
+		Manifest:     filepath.Join(dir, "manifest.yaml"),
+		Lock:         filepath.Join(dir, "harness-lock.json"),
+		Observations: filepath.Join(dir, "observations.json"),
+		Audit:        filepath.Join(dir, "audit.jsonl"),
+		AdvisoryLock: filepath.Join(dir, "lock"),
+		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
+		Staging:      filepath.Join(dir, "staging"),
+	}
+}
+
+// testHarnessDeps builds a harnessDeps for tests: poolPaths returns paths,
+// poolBinDir points at a fresh subdirectory of binDir, newSource returns
+// src, and resolveBackend always succeeds with a no-op fake backend. This
+// is constructor injection, not global mutation — a test builds its own
+// harnessDeps value and passes it directly to newHarnessCmdWithDeps or a
+// helper function, so concurrent tests (t.Parallel()) using their own
+// testHarnessDeps never contend with each other. It does NOT cover hasGuix
+// or runInstallArgv, which stay package vars (out of the MR59 review's
+// scope — see runInstallArgv's doc comment) — a test that reaches the
+// legacy npm-install recipe still needs swapHasGuix/swapRunInstallArgv
+// alongside this.
+func testHarnessDeps(paths pool.PoolPaths, binDir string, src pool.Source) harnessDeps {
+	return harnessDeps{
+		poolPaths:      func() pool.PoolPaths { return paths },
+		poolBinDir:     func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:      func() (pool.Source, error) { return src, nil },
+		resolveBackend: func() (backend.Backend, error) { return fakeHarnessBackend{}, nil },
+	}
 }
 
 func swapHasGuix(t *testing.T, v bool) {
@@ -108,13 +126,6 @@ func swapHasGuix(t *testing.T, v bool) {
 	t.Cleanup(func() { hasGuix = orig })
 }
 
-func swapHarnessSource(t *testing.T, src pool.Source) {
-	t.Helper()
-	orig := newHarnessSource
-	newHarnessSource = func() (pool.Source, error) { return src, nil }
-	t.Cleanup(func() { newHarnessSource = orig })
-}
-
 func swapRunInstallArgv(t *testing.T, fn func([]string) error) {
 	t.Helper()
 	orig := runInstallArgv
@@ -122,16 +133,11 @@ func swapRunInstallArgv(t *testing.T, fn func([]string) error) {
 	t.Cleanup(func() { runInstallArgv = orig })
 }
 
-func swapPoolBinDir(t *testing.T, dir string) {
-	t.Helper()
-	orig := poolBinDir
-	poolBinDir = func() (string, string, error) { return dir, filepath.Join(dir, "bin"), nil }
-	t.Cleanup(func() { poolBinDir = orig })
-}
-
-// runHarnessCmd executes `harness <args...>` through the root command,
-// returning combined output and the command error. Mirrors runValidate's
-// pattern in cmd/validate_test.go.
+// runHarnessCmd executes `harness <args...>` through the FULL root command
+// (production harnessDeps, via root.go -> newHarnessCmd -> defaultHarnessDeps).
+// Only for tests that must fail on argument validation alone, before ever
+// touching a dependency — mirrors runValidate's pattern in
+// cmd/validate_test.go.
 func runHarnessCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	root := NewRootCmd()
@@ -143,27 +149,53 @@ func runHarnessCmd(t *testing.T, args ...string) (string, error) {
 	return buf.String(), err
 }
 
-// TestHarnessPoolPathsCacheMatchesSourceFetchContract pins the real (not
-// swapped) harnessPoolPaths() wiring against Source.Fetch's documented
-// contract (internal/pool.PoolPaths.Cache's doc comment): Cache MUST be
-// pool.CacheSHA256Dir(), never pool.CacheDir() one level up. A regression
-// here produces no build or lint error and no runtime error either — every
-// fetched object just becomes a silent, permanent cache miss (harness-cli
-// review MAJOR-1). This is a pure path-string comparison; it touches no
-// files and needs no test seam.
-func TestHarnessPoolPathsCacheMatchesSourceFetchContract(t *testing.T) {
-	got := harnessPoolPaths().Cache
+// runHarnessCmdWithDeps executes the harness command tree built with deps
+// directly (bypassing root.go, which always uses defaultHarnessDeps()),
+// returning combined stdout+stderr and the command error. This is how tests
+// exercise fake dependencies: constructor injection, not global var
+// mutation.
+func runHarnessCmdWithDeps(t *testing.T, deps harnessDeps, args ...string) (string, error) {
+	t.Helper()
+	cmd := newHarnessCmdWithDeps(deps)
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return buf.String(), err
+}
+
+// bareHarnessCmd is a minimal *cobra.Command for tests that call a helper
+// function (runHarnessInstall, maybeInstallLocked, ...) directly rather than
+// through cobra's own arg parsing — OutOrStdout()/ErrOrStderr() fall back to
+// os.Stdout/os.Stderr when no writer has been set.
+func bareHarnessCmd() *cobra.Command { return &cobra.Command{} }
+
+// --- MAJOR: harnessDeps is production-correct ---
+
+// TestDefaultHarnessDepsPoolPathsCacheMatchesSourceFetchContract pins
+// defaultHarnessDeps()'s real (production) poolPaths wiring against
+// Source.Fetch's documented contract (internal/pool.PoolPaths.Cache's doc
+// comment): Cache MUST be pool.CacheSHA256Dir(), never pool.CacheDir() one
+// level up. A regression here produces no build or lint error and no
+// runtime error either — every fetched object just becomes a silent,
+// permanent cache miss (harness-cli review MAJOR-1). Pure path-string
+// comparison; touches no files.
+func TestDefaultHarnessDepsPoolPathsCacheMatchesSourceFetchContract(t *testing.T) {
+	t.Parallel()
+	got := defaultHarnessDeps().poolPaths().Cache
 	want := pool.CacheSHA256Dir()
 	if got != want {
-		t.Errorf("harnessPoolPaths().Cache = %q, want pool.CacheSHA256Dir() = %q", got, want)
+		t.Errorf("defaultHarnessDeps().poolPaths().Cache = %q, want pool.CacheSHA256Dir() = %q", got, want)
 	}
 }
 
 // TestHarnessCommandArgValidation table-tests every subcommand's argument
-// validation. Every case here must fail before touching the filesystem (no
+// validation. Every case here must fail before touching any dependency (no
 // pool paths, no Source, no backend) — each one returns from its RunE before
-// reaching newHarnessSource()/resolveBackend()/setHarnessConstraint, so none
-// of them can write into the real developer pool ($XDG_DATA_HOME).
+// reaching deps.newSource()/deps.resolveBackend()/setHarnessConstraint, so
+// none of them can write into the real developer pool ($XDG_DATA_HOME); safe
+// to run against the production root command, and safe to parallelize.
 func TestHarnessCommandArgValidation(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -187,6 +219,7 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			out, err := runHarnessCmd(t, tc.args...)
 			if err == nil {
 				t.Fatalf("expected an error, got none; output:\n%s", out)
@@ -198,10 +231,13 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 	}
 }
 
-// TestHarnessInstallTooManyArgs and TestHarnessUpdateTooManyArgs pin cobra's
-// own arity enforcement (ExactArgs(1) for install, MaximumNArgs(1) for the
-// optional-harness commands) so a future edit can't accidentally loosen it.
+// TestHarnessInstallRequiresExactlyOneArg and TestHarnessUpdateAcceptsAtMostOneArg
+// pin cobra's own arity enforcement (ExactArgs(1) for install,
+// MaximumNArgs(1) for the optional-harness commands) so a future edit can't
+// accidentally loosen it. Cobra rejects the arg count before RunE runs, so
+// these never touch a dependency either.
 func TestHarnessInstallRequiresExactlyOneArg(t *testing.T) {
+	t.Parallel()
 	if _, err := runHarnessCmd(t, "install"); err == nil {
 		t.Error("expected an error for `install` with no harness name")
 	}
@@ -211,6 +247,7 @@ func TestHarnessInstallRequiresExactlyOneArg(t *testing.T) {
 }
 
 func TestHarnessUpdateAcceptsAtMostOneArg(t *testing.T) {
+	t.Parallel()
 	if _, err := runHarnessCmd(t, "update", "claude", "extra"); err == nil {
 		t.Error("expected an error for `update` with more than one argument")
 	}
@@ -218,21 +255,8 @@ func TestHarnessUpdateAcceptsAtMostOneArg(t *testing.T) {
 
 // --- list rendering (§10 column shapes) ---
 
-func testHarnessPaths(t *testing.T) pool.PoolPaths {
-	t.Helper()
-	dir := t.TempDir()
-	return pool.PoolPaths{
-		Manifest:     filepath.Join(dir, "manifest.yaml"),
-		Lock:         filepath.Join(dir, "harness-lock.json"),
-		Observations: filepath.Join(dir, "observations.json"),
-		Audit:        filepath.Join(dir, "audit.jsonl"),
-		AdvisoryLock: filepath.Join(dir, "lock"),
-		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
-		Staging:      filepath.Join(dir, "staging"),
-	}
-}
-
 func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
+	t.Parallel()
 	paths := testHarnessPaths(t)
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	pkg := "@anthropic-ai/claude-code"
@@ -299,6 +323,7 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 // --- editManifest / setHarnessConstraint ---
 
 func TestEditManifestPreservesComments(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.yaml")
 	original := "# developer intent — do not remove this comment\n" +
@@ -330,6 +355,7 @@ func TestEditManifestPreservesComments(t *testing.T) {
 }
 
 func TestSetHarnessConstraintCreatesAndUpdates(t *testing.T) {
+	t.Parallel()
 	paths := testHarnessPaths(t)
 
 	if err := setHarnessConstraint(paths, "claude", ">=2 <3"); err != nil {
@@ -359,6 +385,7 @@ func TestSetHarnessConstraintCreatesAndUpdates(t *testing.T) {
 // --- policy set round-trip ---
 
 func TestHarnessPolicySetRoundTripsCommentedManifest(t *testing.T) {
+	t.Parallel()
 	paths := testHarnessPaths(t)
 	original := "# do not remove\nschema_version: 1\npolicy:\n  minimum_release_age: 168h\n"
 	if err := os.WriteFile(paths.Manifest, []byte(original), 0o600); err != nil {
@@ -402,6 +429,7 @@ func TestHarnessPolicySetRoundTripsCommentedManifest(t *testing.T) {
 // --- pinInstallVersion ---
 
 func TestPinInstallVersion(t *testing.T) {
+	t.Parallel()
 	argv := []string{"guix", "shell", "--container", "--network", "--emulate-fhs",
 		"--share={prefix}={prefix}", "node", "--", "npm", "install", "-g", "@anthropic-ai/claude-code", "--prefix", "{prefix}"}
 	pinned, err := pinInstallVersion(argv, "@anthropic-ai/claude-code", "2.1.220")
@@ -433,6 +461,7 @@ func TestPinInstallVersion(t *testing.T) {
 }
 
 func TestPinInstallVersionErrorsWhenPackageNotFound(t *testing.T) {
+	t.Parallel()
 	argv := []string{"guix", "shell", "node", "--", "npm", "install", "-g", "some-other-pkg"}
 	if _, err := pinInstallVersion(argv, "@anthropic-ai/claude-code", "2.1.220"); err == nil {
 		t.Fatal("expected an error when the package is not present in argv")
@@ -442,13 +471,15 @@ func TestPinInstallVersionErrorsWhenPackageNotFound(t *testing.T) {
 // --- MAJOR 2: bare refresh/update/sync iterate manifest/lock-listed
 // harnesses only, and per-harness failures are collected, not fatal ---
 
+// TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses and its sibling
+// below still use swapHasGuix/swapRunInstallArgv (both package vars, out of
+// the harnessDeps constructor-injection scope — see runInstallArgv's doc
+// comment), so they are NOT marked t.Parallel().
 func TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses(t *testing.T) {
-	paths := testHarnessPaths(t)
-	swapHarnessPoolPaths(t, paths)
 	swapHasGuix(t, true)
-	swapPoolBinDir(t, t.TempDir())
 	swapRunInstallArgv(t, func([]string) error { return nil })
 
+	paths := testHarnessPaths(t)
 	// Only claude has recorded pool intent (as if `install claude` ran);
 	// opencode and pi are also pool-lockable but were never installed.
 	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
@@ -465,9 +496,9 @@ func TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses(t *testing.T) {
 	}
 
 	src := &fakeHarnessSource{}
-	swapHarnessSource(t, src)
+	deps := testHarnessDeps(paths, t.TempDir(), src)
 
-	out, err := runHarnessCmd(t, "update")
+	out, err := runHarnessCmdWithDeps(t, deps, "update")
 	if err != nil {
 		t.Fatalf("bare update: %v\noutput:\n%s", err, out)
 	}
@@ -477,12 +508,10 @@ func TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses(t *testing.T) {
 }
 
 func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
-	paths := testHarnessPaths(t)
-	swapHarnessPoolPaths(t, paths)
 	swapHasGuix(t, true)
-	swapPoolBinDir(t, t.TempDir())
 	swapRunInstallArgv(t, func([]string) error { return nil })
 
+	paths := testHarnessPaths(t)
 	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n  opencode: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -500,9 +529,9 @@ func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
 	}
 
 	src := &fakeHarnessSource{failPkgs: map[string]bool{claudePkg: true}}
-	swapHarnessSource(t, src)
+	deps := testHarnessDeps(paths, t.TempDir(), src)
 
-	out, err := runHarnessCmd(t, "update")
+	out, err := runHarnessCmdWithDeps(t, deps, "update")
 	if err == nil {
 		t.Fatal("expected a non-nil error since claude's update failed")
 	}
@@ -520,6 +549,142 @@ func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
 	}
 }
 
+// --- MINOR 1 / MINOR 2: runPerHarness stderr routing and errors.Join ---
+
+// TestRunPerHarnessJoinsErrorsAndWritesFailedLinesToStderr covers both
+// runPerHarness minors directly, without going through a full harness
+// command: FAILED lines land on cmd.ErrOrStderr(), a fn's own success line
+// (simulating what refresh/update/sync's fn closures print) lands on
+// cmd.OutOrStdout() and stays there, and the returned error is an
+// errors.Join that errors.Is can still see through to the original
+// sentinel cause — not a stringified summary that loses the chain. This
+// test has no global state at all, so it's parallel-safe.
+func TestRunPerHarnessJoinsErrorsAndWritesFailedLinesToStderr(t *testing.T) {
+	t.Parallel()
+	sentinel := errors.New("boom")
+	cmd := &cobra.Command{}
+	var outBuf, errBuf bytes.Buffer
+	cmd.SetOut(&outBuf)
+	cmd.SetErr(&errBuf)
+
+	err := runPerHarness(cmd, []string{"a", "b"}, func(name string) error {
+		if name == "a" {
+			return fmt.Errorf("wrapping: %w", sentinel)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: ok\n", name)
+		return nil
+	})
+
+	if err == nil {
+		t.Fatal("expected a non-nil error since harness 'a' failed")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("errors.Is did not find the sentinel through the join: %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "a: FAILED:") {
+		t.Errorf("expected a FAILED line on stderr, got stderr=%q", errBuf.String())
+	}
+	if strings.Contains(outBuf.String(), "FAILED") {
+		t.Errorf("FAILED line leaked onto stdout: %q", outBuf.String())
+	}
+	if !strings.Contains(outBuf.String(), "b: ok") {
+		t.Errorf("expected harness b's success line on stdout, got stdout=%q", outBuf.String())
+	}
+}
+
+// TestRunPerHarnessAllSucceedReturnsNilNotEmptyJoin: errors.Join of zero
+// errors must still be a plain nil error (not a non-nil error wrapping
+// nothing), so a fully successful run reports success normally.
+func TestRunPerHarnessAllSucceedReturnsNilNotEmptyJoin(t *testing.T) {
+	t.Parallel()
+	cmd := &cobra.Command{}
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	err := runPerHarness(cmd, []string{"a", "b"}, func(string) error { return nil })
+	if err != nil {
+		t.Errorf("runPerHarness with no failures = %v, want nil", err)
+	}
+}
+
+// TestRunHarnessInstallProbesBeforeAnyManifestMutation pins the ordering
+// documented on runHarnessInstall ("Source/backend availability is probed
+// BEFORE the lock is taken ... so an off-guix host or an unwired Source
+// fails with zero side effects"): a failing deps.newSource or
+// deps.resolveBackend must error out before setHarnessConstraintLocked ever
+// touches manifest.yaml, and before anything creates observations.json.
+// poolBinDir asserts it is never even called, since both probes happen
+// before maybeInstallLocked's poolBinDir lookup too. Global-state-free
+// (harnessDeps only, no package-var swaps), so parallel-safe.
+func TestRunHarnessInstallProbesBeforeAnyManifestMutation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("newSource fails, manifest already exists", func(t *testing.T) {
+		t.Parallel()
+		paths := testHarnessPaths(t)
+		original := "schema_version: 1\nharnesses:\n  claude:\n    constraint: \">=1 <2\"\n"
+		if err := os.WriteFile(paths.Manifest, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deps := harnessDeps{
+			poolPaths: func() pool.PoolPaths { return paths },
+			poolBinDir: func() (string, string, error) {
+				t.Fatal("poolBinDir must not be called before the newSource/resolveBackend probe")
+				return "", "", nil
+			},
+			newSource: func() (pool.Source, error) { return nil, errors.New("source unavailable") },
+			resolveBackend: func() (backend.Backend, error) {
+				t.Fatal("resolveBackend must not be called once newSource fails")
+				return nil, nil
+			},
+		}
+
+		// A non-empty, DIFFERENT constraint than what's already on disk: if
+		// setHarnessConstraintLocked ran despite the probe failing, the
+		// constraint field would visibly change from ">=1 <2" to ">=2 <3",
+		// so the byte-comparison below is a reliable detector rather than
+		// one that could pass by coincidence on a no-op rewrite.
+		if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], ">=2 <3", false, ""); err == nil {
+			t.Fatal("expected an error from a failing newSource probe")
+		}
+
+		got, err := os.ReadFile(paths.Manifest)
+		if err != nil {
+			t.Fatalf("manifest should still exist unmodified: %v", err)
+		}
+		if string(got) != original {
+			t.Errorf("manifest.yaml was mutated despite the newSource probe failing;\nwant:\n%s\ngot:\n%s", original, got)
+		}
+		if _, err := os.Stat(paths.Observations); !os.IsNotExist(err) {
+			t.Errorf("observations.json should not exist after a probe failure, stat err = %v", err)
+		}
+	})
+
+	t.Run("resolveBackend fails, no manifest yet", func(t *testing.T) {
+		t.Parallel()
+		paths := testHarnessPaths(t)
+		deps := harnessDeps{
+			poolPaths: func() pool.PoolPaths { return paths },
+			poolBinDir: func() (string, string, error) {
+				t.Fatal("poolBinDir must not be called before the newSource/resolveBackend probe")
+				return "", "", nil
+			},
+			newSource:      func() (pool.Source, error) { return &fakeHarnessSource{}, nil },
+			resolveBackend: func() (backend.Backend, error) { return nil, errors.New("guix not on PATH") },
+		}
+
+		if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], "", false, ""); err == nil {
+			t.Fatal("expected an error from a failing resolveBackend probe")
+		}
+
+		if _, err := os.Stat(paths.Manifest); !os.IsNotExist(err) {
+			t.Errorf("manifest.yaml should not have been created after a probe failure, stat err = %v", err)
+		}
+		if _, err := os.Stat(paths.Observations); !os.IsNotExist(err) {
+			t.Errorf("observations.json should not exist after a probe failure, stat err = %v", err)
+		}
+	})
+}
+
 // --- MAJOR 3: one pool-lock acquisition for the whole `install` span ---
 
 // TestHarnessInstallHoldsPoolLockForWholeSpan proves the pool lock is held
@@ -529,10 +694,9 @@ func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
 // could, the command-level lock must have been released and re-acquired
 // somewhere in between, which is exactly the bug MAJOR 3 fixes.
 func TestHarnessInstallHoldsPoolLockForWholeSpan(t *testing.T) {
-	paths := testHarnessPaths(t)
-	swapHarnessPoolPaths(t, paths)
 	swapHasGuix(t, true)
-	swapPoolBinDir(t, t.TempDir())
+
+	paths := testHarnessPaths(t)
 
 	probeHeld := func(step string) {
 		fl := flock.New(paths.AdvisoryLock)
@@ -553,7 +717,7 @@ func TestHarnessInstallHoldsPoolLockForWholeSpan(t *testing.T) {
 			"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
 		},
 	}
-	swapHarnessSource(t, src)
+	deps := testHarnessDeps(paths, t.TempDir(), src)
 
 	installCalls := 0
 	swapRunInstallArgv(t, func([]string) error {
@@ -562,7 +726,7 @@ func TestHarnessInstallHoldsPoolLockForWholeSpan(t *testing.T) {
 		return nil
 	})
 
-	if err := runHarnessInstall(context.Background(), "claude", harness.Registry["claude"], "", false, ""); err != nil {
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], "", false, ""); err != nil {
 		t.Fatalf("runHarnessInstall: %v", err)
 	}
 	if installCalls != 1 {
@@ -573,23 +737,21 @@ func TestHarnessInstallHoldsPoolLockForWholeSpan(t *testing.T) {
 // --- MINOR: install's idempotent path skips the npm run ---
 
 func TestHarnessInstallIdempotentSkipsInstallWhenBinaryPresent(t *testing.T) {
-	paths := testHarnessPaths(t)
-	swapHarnessPoolPaths(t, paths)
 	swapHasGuix(t, true)
-	binDir := t.TempDir()
-	swapPoolBinDir(t, binDir)
 
+	paths := testHarnessPaths(t)
+	binDir := t.TempDir()
 	src := &fakeHarnessSource{
 		candidates: map[string][]pool.Candidate{
 			"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
 		},
 	}
-	swapHarnessSource(t, src)
+	deps := testHarnessDeps(paths, binDir, src)
 	installCalls := 0
 	swapRunInstallArgv(t, func([]string) error { installCalls++; return nil })
 
 	d := harness.Registry["claude"]
-	if err := runHarnessInstall(context.Background(), "claude", d, "", false, ""); err != nil {
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, "", false, ""); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	if installCalls != 1 {
@@ -606,7 +768,7 @@ func TestHarnessInstallIdempotentSkipsInstallWhenBinaryPresent(t *testing.T) {
 
 	// Second install call: manifest/lock/recipe all agree (idempotent), and
 	// the binary is present — must skip the npm run entirely.
-	if err := runHarnessInstall(context.Background(), "claude", d, "", false, ""); err != nil {
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, "", false, ""); err != nil {
 		t.Fatalf("second (idempotent) install: %v", err)
 	}
 	if installCalls != 1 {
@@ -635,10 +797,11 @@ func TestMaybeInstallLockedWarnsOnlyWhenReplacingUnverifiedInstall(t *testing.T)
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			binDir := t.TempDir()
-			swapPoolBinDir(t, binDir)
 			swapHasGuix(t, true)
 			swapRunInstallArgv(t, func([]string) error { return nil })
+
+			binDir := t.TempDir()
+			deps := testHarnessDeps(pool.PoolPaths{}, binDir, &fakeHarnessSource{})
 
 			if tc.binPresent {
 				if err := os.MkdirAll(filepath.Join(binDir, "bin"), 0o755); err != nil {
@@ -654,15 +817,16 @@ func TestMaybeInstallLockedWarnsOnlyWhenReplacingUnverifiedInstall(t *testing.T)
 				Changed: tc.changed,
 			}
 
-			out := captureStdout(t, func() {
-				if err := maybeInstallLocked("claude", d, result); err != nil {
-					t.Fatalf("maybeInstallLocked: %v", err)
-				}
-			})
+			cmd := &cobra.Command{}
+			var buf bytes.Buffer
+			cmd.SetOut(&buf)
+			if err := maybeInstallLocked(cmd, deps, "claude", d, result); err != nil {
+				t.Fatalf("maybeInstallLocked: %v", err)
+			}
 
-			gotWarning := strings.Contains(out, "provenance unverified")
+			gotWarning := strings.Contains(buf.String(), "provenance unverified")
 			if gotWarning != tc.wantWarning {
-				t.Errorf("warning present = %v, want %v; output:\n%s", gotWarning, tc.wantWarning, out)
+				t.Errorf("warning present = %v, want %v; output:\n%s", gotWarning, tc.wantWarning, buf.String())
 			}
 		})
 	}
@@ -674,22 +838,20 @@ func TestMaybeInstallLockedWarnsOnlyWhenReplacingUnverifiedInstall(t *testing.T)
 // floating constraint"): once a newer, also-eligible candidate is observed,
 // re-running `install` must not move the lock, but `update` must.
 func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
-	paths := testHarnessPaths(t)
-	swapHarnessPoolPaths(t, paths)
 	swapHasGuix(t, true)
-	swapPoolBinDir(t, t.TempDir())
 	swapRunInstallArgv(t, func([]string) error { return nil })
 
+	paths := testHarnessPaths(t)
 	claudePkg := harness.Registry["claude"].PoolPackage
 	src := &fakeHarnessSource{
 		candidates: map[string][]pool.Candidate{
 			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
 		},
 	}
-	swapHarnessSource(t, src)
+	deps := testHarnessDeps(paths, t.TempDir(), src)
 
 	d := harness.Registry["claude"]
-	if err := runHarnessInstall(context.Background(), "claude", d, ">=2 <3", false, ""); err != nil {
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
 		t.Fatalf("initial install: %v", err)
 	}
 
@@ -707,7 +869,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 	}
 
 	// A plain `install` re-run must NOT advance to 2.1.224.
-	if err := runHarnessInstall(context.Background(), "claude", d, "", false, ""); err != nil {
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, "", false, ""); err != nil {
 		t.Fatalf("re-install: %v", err)
 	}
 	status, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
@@ -719,7 +881,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 	}
 
 	// `update` MUST advance to 2.1.224.
-	if _, err := runHarnessCmd(t, "update", "claude"); err != nil {
+	if _, err := runHarnessCmdWithDeps(t, deps, "update", "claude"); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	status2, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
@@ -734,6 +896,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 // --- MINOR: mapSetNode preserves an edited scalar's inline comment ---
 
 func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.yaml")
 	// A single space before the comment, matching yaml.v3's own canonical
@@ -773,10 +936,13 @@ func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {
 
 // TestHarnessPolicySetLeavesUntouchedFieldByteIdentical: editing one policy
 // field via the real `policy set` command must not disturb an unrelated
-// field's line, comment included, byte-for-byte.
+// field's line, comment included, byte-for-byte. policy set never reaches
+// poolBinDir/newSource/resolveBackend/hasGuix/runInstallArgv, so this test
+// needs only a poolPaths fake and is safe to parallelize.
 func TestHarnessPolicySetLeavesUntouchedFieldByteIdentical(t *testing.T) {
+	t.Parallel()
 	paths := testHarnessPaths(t)
-	swapHarnessPoolPaths(t, paths)
+	deps := harnessDeps{poolPaths: func() pool.PoolPaths { return paths }}
 
 	untouchedLine := "  minimum_release_age: 168h # seven days"
 	original := "schema_version: 1\npolicy:\n" + untouchedLine + "\n"
@@ -784,7 +950,7 @@ func TestHarnessPolicySetLeavesUntouchedFieldByteIdentical(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := runHarnessCmd(t, "policy", "set", "--minimum-observation-age", "24h"); err != nil {
+	if _, err := runHarnessCmdWithDeps(t, deps, "policy", "set", "--minimum-observation-age", "24h"); err != nil {
 		t.Fatalf("policy set: %v", err)
 	}
 
