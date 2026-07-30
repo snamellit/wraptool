@@ -249,10 +249,14 @@ func lockHarnessArgs(paths pool.PoolPaths, args []string) ([]string, error) {
 // progress/success line to cmd.OutOrStdout(); runPerHarness itself prints
 // only the FAILED line, to cmd.ErrOrStderr() (not stdout), so a caller
 // capturing stdout doesn't see error noise mixed in and tests can assert on
-// each stream independently. The returned error is errors.Join of every
-// per-harness failure, each wrapped with its harness name — so errors.Is/As
-// still finds an underlying sentinel error through the join — rather than a
-// stringified summary that loses the original error chain.
+// each stream independently.
+//
+// The returned error is a perHarnessFailure: its Error() is a one-line
+// summary (the detailed messages were already streamed to stderr above, and
+// cobra prints the returned error once more — repeating every joined message
+// there would report each failure twice), while Unwrap exposes the full
+// errors.Join so errors.Is/As still finds any underlying sentinel through
+// the aggregate.
 func runPerHarness(cmd *cobra.Command, names []string, fn func(name string) error) error {
 	var errs []error
 	for _, name := range names {
@@ -261,8 +265,24 @@ func runPerHarness(cmd *cobra.Command, names []string, fn func(name string) erro
 			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 		}
 	}
-	return errors.Join(errs...)
+	if len(errs) == 0 {
+		return nil
+	}
+	return &perHarnessFailure{failed: len(errs), total: len(names), joined: errors.Join(errs...)}
 }
+
+// perHarnessFailure aggregates per-harness errors whose details were already
+// printed as they occurred (see runPerHarness).
+type perHarnessFailure struct {
+	failed, total int
+	joined        error
+}
+
+func (e *perHarnessFailure) Error() string {
+	return fmt.Sprintf("%d of %d harnesses failed (details above)", e.failed, e.total)
+}
+
+func (e *perHarnessFailure) Unwrap() error { return e.joined }
 
 // --- list ---
 

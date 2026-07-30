@@ -563,8 +563,19 @@ func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a non-nil error since claude's update failed")
 	}
-	if !strings.Contains(err.Error(), "claude") {
-		t.Errorf("error should name the failed harness claude, got: %v", err)
+	// The failed harness's name is deliberately NOT in Error() (that's the
+	// one-line summary cobra prints; the detail already went to stderr —
+	// MR !59 note 1905174). It must still be reachable through the wrapped
+	// join for programmatic callers.
+	var agg *perHarnessFailure
+	if !errors.As(err, &agg) {
+		t.Fatalf("expected a *perHarnessFailure aggregate, got %T: %v", err, err)
+	}
+	if !strings.Contains(agg.joined.Error(), "claude") {
+		t.Errorf("joined chain should name the failed harness claude, got: %v", agg.joined)
+	}
+	if !strings.Contains(err.Error(), "1 of 2 harnesses failed") {
+		t.Errorf("summary should count failures, got: %v", err)
 	}
 	found := false
 	for _, p := range src.resolvedPkgs {
@@ -608,6 +619,12 @@ func TestRunPerHarnessJoinsErrorsAndWritesFailedLinesToStderr(t *testing.T) {
 	}
 	if !errors.Is(err, sentinel) {
 		t.Errorf("errors.Is did not find the sentinel through the join: %v", err)
+	}
+	// The detail was already streamed to stderr; the returned error is the
+	// one cobra prints, so it must be the one-line summary, not a repeat of
+	// every joined message (MR !59 note 1905174: no double error reporting).
+	if got := err.Error(); strings.Contains(got, "boom") || !strings.Contains(got, "1 of 2 harnesses failed") {
+		t.Errorf("returned error should be the short summary, got %q", got)
 	}
 	if !strings.Contains(errBuf.String(), "a: FAILED:") {
 		t.Errorf("expected a FAILED line on stderr, got stderr=%q", errBuf.String())
