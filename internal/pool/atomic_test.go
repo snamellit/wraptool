@@ -77,34 +77,46 @@ func TestWriteFileAtomicDirsAreTraversable(t *testing.T) {
 	}
 }
 
-// TestWritePointerTempFilePattern covers NIT 10: the pointer temp file must
-// be named "<pointer-basename>.tmp-<random>" — the literal §5.2 shape — not
-// WriteFileAtomic's generic ".wraptool-pool-*.tmp" pattern, so an orphaned
-// temp file left under active/ after a crash is recognizable as pool cleanup
-// work. os.CreateTemp resolves "*" against a fixed clock-derived counter
-// (not crypto-random), so a temp file created with the same pattern
-// immediately before WritePointer runs deterministically predicts the name
-// WritePointer's own temp file would have taken, letting this test assert
-// the pattern without racing WritePointer's internal cleanup.
-func TestWritePointerTempFilePattern(t *testing.T) {
+// TestWritePointerUsesPointerShapedTempPattern covers N4/NIT 10: the pointer
+// temp file must be named "<pointer-basename>.tmp-<random>" — the literal
+// §5.2 shape — not WriteFileAtomic's generic ".wraptool-pool-*.tmp" pattern,
+// so an orphaned temp file left under active/ after a crash is recognizable
+// as pool cleanup work.
+//
+// This intercepts the createTemp test seam (atomic.go) rather than racing a
+// directory listing against WritePointer's own cleanup: the write completes
+// far faster than any goroutine scheduling window could reliably observe,
+// so a race-based test would be flaky and, worse, could pass even if
+// WritePointer silently reverted to the generic pattern. Capturing the exact
+// (dir, pattern) createTemp was called with is deterministic and fails
+// immediately on such a revert.
+func TestWritePointerUsesPointerShapedTempPattern(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude.gen")
 
-	probe, err := os.CreateTemp(dir, "claude.gen.tmp-*")
-	if err != nil {
-		t.Fatal(err)
+	var capturedDir, capturedPattern string
+	orig := createTemp
+	createTemp = func(d, pattern string) (*os.File, error) {
+		capturedDir, capturedPattern = d, pattern
+		return orig(d, pattern)
 	}
-	probeName := filepath.Base(probe.Name())
-	probe.Close()
-	os.Remove(probe.Name())
-
-	if !strings.HasPrefix(probeName, "claude.gen.tmp-") {
-		t.Fatalf("test setup: probe name %q does not match the expected pattern", probeName)
-	}
+	t.Cleanup(func() { createTemp = orig })
 
 	if err := WritePointer(path, "gen-1"); err != nil {
 		t.Fatalf("WritePointer: %v", err)
 	}
+
+	if capturedDir != dir {
+		t.Errorf("createTemp dir = %q, want %q", capturedDir, dir)
+	}
+	wantPattern := "claude.gen.tmp-*"
+	if capturedPattern != wantPattern {
+		t.Errorf("createTemp pattern = %q, want %q (the §5.2 <name>.gen.tmp-<txn> shape)", capturedPattern, wantPattern)
+	}
+	if strings.Contains(capturedPattern, "wraptool-pool") {
+		t.Errorf("createTemp pattern = %q, matches WriteFileAtomic's generic pattern instead of the pointer-shaped one", capturedPattern)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)

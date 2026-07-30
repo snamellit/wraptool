@@ -155,6 +155,69 @@ func TestUnmarshalLockRejectsBadTimestamps(t *testing.T) {
 	})
 }
 
+// TestLockValidateIsExportedAndUsableBeforePersisting covers N5: a caller
+// that assembled a Lock in memory (never round-tripped through JSON) must be
+// able to validate it directly via Lock.Validate, without going through
+// Marshal/UnmarshalLock.
+func TestLockValidateIsExportedAndUsableBeforePersisting(t *testing.T) {
+	l := sampleLock()
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() on a well-formed in-memory lock: %v", err)
+	}
+}
+
+// TestLockValidateRejectsZeroTimestamp covers N5: FormatTimestamp(time.Time{})
+// yields the syntactically valid RFC3339 string "0001-01-01T00:00:00Z",
+// which ParseTimestamp alone accepts — Validate must additionally reject it,
+// since an unset time must never survive into a persisted lock.
+func TestLockValidateRejectsZeroTimestamp(t *testing.T) {
+	zero := FormatTimestamp(time.Time{})
+	if zero != "0001-01-01T00:00:00Z" {
+		t.Fatalf("test assumption broken: FormatTimestamp(time.Time{}) = %q", zero)
+	}
+
+	t.Run("generated_at", func(t *testing.T) {
+		l := sampleLock()
+		l.GeneratedAt = zero
+		if err := l.Validate(); err == nil {
+			t.Fatal("expected an error for a zero generated_at, got nil")
+		}
+	})
+	t.Run("harness published_at", func(t *testing.T) {
+		l := sampleLock()
+		h := l.Harnesses["claude"]
+		h.PublishedAt = zero
+		l.Harnesses["claude"] = h
+		if err := l.Validate(); err == nil {
+			t.Fatal("expected an error for a zero published_at, got nil")
+		}
+	})
+	t.Run("harness first_seen_at", func(t *testing.T) {
+		l := sampleLock()
+		h := l.Harnesses["claude"]
+		h.FirstSeenAt = zero
+		l.Harnesses["claude"] = h
+		if err := l.Validate(); err == nil {
+			t.Fatal("expected an error for a zero first_seen_at, got nil")
+		}
+	})
+}
+
+// TestUnmarshalLockRejectsZeroTimestamp confirms UnmarshalLock's call to
+// Validate catches the same zero-timestamp case on the read path, not only
+// via direct Lock.Validate calls.
+func TestUnmarshalLockRejectsZeroTimestamp(t *testing.T) {
+	l := sampleLock()
+	l.GeneratedAt = FormatTimestamp(time.Time{})
+	data, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := UnmarshalLock(data); err == nil {
+		t.Fatal("expected an error for a zero generated_at, got nil")
+	}
+}
+
 func TestPolicyHashStableAndDistinguishing(t *testing.T) {
 	p1 := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0, AllowPrereleases: false}
 	p2 := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0, AllowPrereleases: false}

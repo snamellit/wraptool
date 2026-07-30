@@ -17,6 +17,15 @@ import (
 // project container's read access to it.
 const poolDirPerm = 0o755
 
+// createTemp is the temp-file constructor atomicWrite uses, wired to
+// os.CreateTemp in production. It exists as a package variable — not a
+// direct os.CreateTemp call — purely as a test seam: a test can substitute
+// it to observe the exact (dir, pattern) atomicWrite was called with,
+// without racing the write itself to catch a temp file mid-flight (see
+// atomic_test.go's TestWritePointerUsesPointerShapedTempPattern). Never
+// reassigned outside tests.
+var createTemp = os.CreateTemp
+
 // WriteFileAtomic writes data to path via the shared atomic-write pattern
 // (§6.4): a temp file created in the destination's own directory (so the
 // later rename stays on one volume), fsynced, then renamed over path. The
@@ -50,7 +59,7 @@ func atomicWrite(path, tmpPattern string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("creating directory %s: %w", dir, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, tmpPattern)
+	tmp, err := createTemp(dir, tmpPattern)
 	if err != nil {
 		return fmt.Errorf("creating temp file in %s: %w", dir, err)
 	}

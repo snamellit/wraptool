@@ -32,7 +32,19 @@ func ObservationKey(source, pkg, version string) string {
 // prerelease, and yanked are always overwritten with the latest values, so a
 // release that is later yanked or reclassified is reflected on the next
 // refresh.
-func (o Observations) Observe(key string, firstSeenAt, publishedAt string, prerelease, yanked bool) {
+//
+// firstSeenAt and publishedAt must both parse as UTC RFC3339 (§6.6); Observe
+// rejects a malformed value with an error and leaves o unchanged, rather than
+// storing it. This is write-path validation, mirroring LoadObservations'
+// read-path check, so this package can never itself produce an
+// observations.json that a later LoadObservations would reject.
+func (o Observations) Observe(key string, firstSeenAt, publishedAt string, prerelease, yanked bool) error {
+	if _, err := ParseTimestamp(firstSeenAt); err != nil {
+		return fmt.Errorf("observation %q: first_seen_at: %w", key, err)
+	}
+	if _, err := ParseTimestamp(publishedAt); err != nil {
+		return fmt.Errorf("observation %q: published_at: %w", key, err)
+	}
 	fsa := firstSeenAt
 	if existing, ok := o[key]; ok {
 		fsa = existing.FirstSeenAt
@@ -43,6 +55,24 @@ func (o Observations) Observe(key string, firstSeenAt, publishedAt string, prere
 		Prerelease:  prerelease,
 		Yanked:      yanked,
 	}
+	return nil
+}
+
+// validate checks that every entry's first_seen_at and published_at parse as
+// UTC RFC3339 (§6.6). Shared by LoadObservations (a file written by
+// something other than this package, or hand-edited) and Save (so a caller
+// that bypasses Observe by writing map entries directly still can't produce
+// a file LoadObservations would later reject).
+func (o Observations) validate() error {
+	for key, obs := range o {
+		if _, err := ParseTimestamp(obs.FirstSeenAt); err != nil {
+			return fmt.Errorf("observation %q: first_seen_at: %w", key, err)
+		}
+		if _, err := ParseTimestamp(obs.PublishedAt); err != nil {
+			return fmt.Errorf("observation %q: published_at: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // LoadObservations reads observations.json. A missing file is not an error —
@@ -65,13 +95,8 @@ func LoadObservations(path string) (Observations, error) {
 	if o == nil {
 		o = Observations{}
 	}
-	for key, obs := range o {
-		if _, err := ParseTimestamp(obs.FirstSeenAt); err != nil {
-			return nil, fmt.Errorf("observation %q: first_seen_at: %w", key, err)
-		}
-		if _, err := ParseTimestamp(obs.PublishedAt); err != nil {
-			return nil, fmt.Errorf("observation %q: published_at: %w", key, err)
-		}
+	if err := o.validate(); err != nil {
+		return nil, err
 	}
 	return o, nil
 }
@@ -84,7 +109,15 @@ func LoadObservations(path string) (Observations, error) {
 // update; Save is for a caller that already holds, and intends to persist
 // unchanged, the complete map (this file's own tests, or a caller that just
 // loaded the full set, mutated it in place, and writes it back).
+//
+// Save re-validates every entry's timestamps before writing (the same check
+// LoadObservations applies), so a map assembled by direct map writes rather
+// than Observe can't reach disk in a state a later LoadObservations would
+// reject.
 func (o Observations) Save(path string) error {
+	if err := o.validate(); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(o, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling observations: %w", err)
@@ -99,13 +132,24 @@ func (o Observations) Save(path string) error {
 // Observe (preserving first_seen_at per §6.6), and atomically saves the
 // result. Unlike calling Save directly with a partial map, no existing key or
 // its first_seen_at is ever lost.
+//
+// MergeObservations is a load-modify-save read-modify-write cycle, not an
+// atomic transaction by itself: a caller must hold PoolLock for the duration
+// (§6.5), or two concurrent merges can race and one's update can be lost.
+//
+// If any entry in obs fails validation (a malformed first_seen_at or
+// published_at), MergeObservations returns an error before calling Save, so
+// the file on disk is left exactly as it was — a bad merge can never brick
+// observations.json for every subsequent LoadObservations caller.
 func MergeObservations(path string, obs Observations) error {
 	existing, err := LoadObservations(path)
 	if err != nil {
 		return err
 	}
 	for key, incoming := range obs {
-		existing.Observe(key, incoming.FirstSeenAt, incoming.PublishedAt, incoming.Prerelease, incoming.Yanked)
+		if err := existing.Observe(key, incoming.FirstSeenAt, incoming.PublishedAt, incoming.Prerelease, incoming.Yanked); err != nil {
+			return err
+		}
 	}
 	return existing.Save(path)
 }

@@ -31,20 +31,20 @@ type Manifest struct {
 // fields are pointers, like HarnessManifest's per-harness overrides, so an
 // omitted key (no `policy:` block at all, a comment-only manifest, or the
 // key simply absent) is distinguishable from an explicit `0h`: omission
-// falls back to DefaultPolicy, while an explicit 0h is a real, disabling
+// falls back to DefaultPolicy(), while an explicit 0h is a real, disabling
 // value that must survive resolution unchanged (§9).
 type Policy struct {
 	// MinimumReleaseAge is how long a release must have been published
-	// before it becomes eligible. Omitted -> DefaultPolicy.MinimumReleaseAge
+	// before it becomes eligible. Omitted -> DefaultPolicy().MinimumReleaseAge
 	// (168h, §9). An explicit 0h disables the check.
 	MinimumReleaseAge *time.Duration `yaml:"minimum_release_age"`
 	// MinimumObservationAge is how long a release must have been locally
 	// observed (via `refresh`) before it becomes eligible. Omitted ->
-	// DefaultPolicy.MinimumObservationAge (0h, i.e. already disabled, §9).
+	// DefaultPolicy().MinimumObservationAge (0h, i.e. already disabled, §9).
 	MinimumObservationAge *time.Duration `yaml:"minimum_observation_age"`
 	// AllowPrereleases has no disabled/enabled ambiguity at its zero value
 	// (false is both "omitted" and "explicitly disabled"), so it stays a
-	// plain bool; DefaultPolicy.AllowPrereleases is false regardless.
+	// plain bool; DefaultPolicy().AllowPrereleases is false regardless.
 	AllowPrereleases bool `yaml:"allow_prereleases"`
 }
 
@@ -72,21 +72,27 @@ type EffectivePolicy struct {
 	AllowPrereleases      bool
 }
 
-// DefaultPolicy is applied wherever the manifest's policy is silent: no
-// `policy:` block, an empty/comment-only manifest, or just one field of the
-// block omitted (§9). minimum_release_age defaults to seven days — the
-// concrete number this package must not silently drop to zero just because a
-// developer wrote a manifest without a policy section.
+// DefaultPolicy returns the policy applied wherever the manifest's policy is
+// silent: no `policy:` block, an empty/comment-only manifest, or just one
+// field of the block omitted (§9). minimum_release_age defaults to seven
+// days — the concrete number this package must not silently drop to zero
+// just because a developer wrote a manifest without a policy section.
 // minimum_observation_age defaults to 0h (§9: requiring every developer to
 // wait through a local observation window by default creates severe
 // first-install friction). allow_prereleases defaults to false.
 //
 // An explicit value in the manifest — including an explicit `0h` — always
 // overrides this default; DefaultPolicy only fills what is truly absent.
-var DefaultPolicy = EffectivePolicy{
-	MinimumReleaseAge:     168 * time.Hour,
-	MinimumObservationAge: 0,
-	AllowPrereleases:      false,
+//
+// It returns a fresh value rather than exposing a shared mutable var, so no
+// caller can reach in and reinstate the fail-open zero default (the exact
+// shape of MAJOR 2) for every subsequent EffectivePolicy resolution.
+func DefaultPolicy() EffectivePolicy {
+	return EffectivePolicy{
+		MinimumReleaseAge:     168 * time.Hour,
+		MinimumObservationAge: 0,
+		AllowPrereleases:      false,
+	}
 }
 
 // LoadManifest strict-decodes manifest.yaml (yaml.v3 KnownFields, mirroring
@@ -169,13 +175,13 @@ func validatePolicyDurations(releaseAge, observationAge *time.Duration) error {
 	return nil
 }
 
-// EffectivePolicy resolves the effective policy for harness: DefaultPolicy
+// EffectivePolicy resolves the effective policy for harness: DefaultPolicy()
 // fills any field the global policy omits, then any field the harness
 // overrides (including an explicit 0h) wins over that result (§7, §9). A
 // harness with no manifest entry gets the (defaulted) pool-wide policy
 // unchanged.
 func (m *Manifest) EffectivePolicy(harness string) EffectivePolicy {
-	eff := DefaultPolicy
+	eff := DefaultPolicy()
 	if m.Policy.MinimumReleaseAge != nil {
 		eff.MinimumReleaseAge = *m.Policy.MinimumReleaseAge
 	}
