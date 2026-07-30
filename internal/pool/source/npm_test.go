@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -41,6 +42,17 @@ func newPackumentServer(t *testing.T, timeMap map[string]string, versions []stri
 	if err != nil {
 		t.Fatalf("marshaling fixture packument: %v", err)
 	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+	}))
+}
+
+// newRawPackumentServer serves body verbatim, for fixtures that need a
+// "time" map with non-string values (npm's "unpublished" key) that
+// newPackumentServer's map[string]string signature cannot express.
+func newRawPackumentServer(t *testing.T, body []byte) *httptest.Server {
+	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(body)
@@ -130,6 +142,42 @@ func TestRefresh(t *testing.T) {
 	})
 }
 
+// TestRefresh_SkipsNonStringTimeEntries locks in that a packument whose
+// "time" map contains npm's nested "unpublished" object (not a string) does
+// not fail the whole Refresh — only that one non-version key is skipped.
+func TestRefresh_SkipsNonStringTimeEntries(t *testing.T) {
+	body := []byte(`{
+		"time": {
+			"created": "2019-01-01T00:00:00.000Z",
+			"modified": "2024-01-01T00:00:00.000Z",
+			"unpublished": {
+				"maintainers": [],
+				"name": "example-pkg",
+				"time": "2024-01-01T00:00:00.000Z",
+				"versions": ["9.9.9"]
+			},
+			"1.0.0": "2020-01-01T00:00:00.000Z"
+		},
+		"versions": {
+			"1.0.0": {}
+		}
+	}`)
+	srv := newRawPackumentServer(t, body)
+	defer srv.Close()
+
+	n := NewNPM(srv.URL)
+	candidates, err := n.Refresh(context.Background(), "example-pkg")
+	if err != nil {
+		t.Fatalf("Refresh: %v (a nested non-string time entry must not fail the whole packument decode)", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf(`got %d candidates, want 1 ("unpublished" is not a version): %+v`, len(candidates), candidates)
+	}
+	if candidates[0].Version != "1.0.0" {
+		t.Errorf("Version = %q, want 1.0.0", candidates[0].Version)
+	}
+}
+
 // --- Resolve -------------------------------------------------------------
 
 // fakeBackend is a backend.Backend test double: it records every RunSpec it
@@ -189,7 +237,7 @@ const canonicalPackageLock = `{
   }
 }`
 
-const shasums = "abc111  node-v24.18.1-linux-x64.tar.xz\ndef222  node-v24.18.1-linux-arm64.tar.xz\n"
+const shasums = "abc1111111111111111111111111111111111111111111111111111111111111  node-v24.18.1-linux-x64.tar.xz\ndef2222222222222222222222222222222222222222222222222222222222222  node-v24.18.1-linux-arm64.tar.xz\n"
 
 func TestResolve(t *testing.T) {
 	registrySrv := newPackumentServer(t, map[string]string{
@@ -275,8 +323,8 @@ func TestResolve(t *testing.T) {
 		if !ok {
 			t.Fatal("missing linux-amd64-glibc artifact")
 		}
-		if amd64.SHA256 != "abc111" {
-			t.Errorf("amd64 sha256 = %q, want abc111", amd64.SHA256)
+		if !strings.HasPrefix(amd64.SHA256, "abc1111") {
+			t.Errorf("amd64 sha256 = %q, want it to start with abc1111", amd64.SHA256)
 		}
 		if !strings.Contains(amd64.URL, "node-v24.18.1-linux-x64.tar.xz") {
 			t.Errorf("amd64 URL = %q", amd64.URL)
@@ -285,8 +333,8 @@ func TestResolve(t *testing.T) {
 		if !ok {
 			t.Fatal("missing linux-arm64-glibc artifact")
 		}
-		if arm64.SHA256 != "def222" {
-			t.Errorf("arm64 sha256 = %q, want def222", arm64.SHA256)
+		if !strings.HasPrefix(arm64.SHA256, "def2222") {
+			t.Errorf("arm64 sha256 = %q, want it to start with def2222", arm64.SHA256)
 		}
 		if _, ok := lh.Runtime.Artifacts[pool.PlatformLinuxAMD64Musl]; ok {
 			t.Error("linux-amd64-musl artifact present, want absent (musl deferred, §5.1)")
@@ -322,19 +370,33 @@ func TestResolve(t *testing.T) {
 	})
 }
 
-func TestResolve_RejectsUnlockableDependency(t *testing.T) {
+// resolveFixture builds a minimal lockJSON with one top-level entry matching
+// pkg/version (so the top-level cross-check passes) plus whatever extra
+// packages entries the caller supplies as raw JSON snippets.
+func resolveFixture(pkg, version string, extraPackagesJSON string) string {
+	topKey := "node_modules/" + pkg
+	return fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "resolve-scratch"},
+    %q: {"version": %q, "resolved": "https://registry.npmjs.org/%s/-/%s-%s.tgz", "integrity": "sha512-AAAA=="}
+    %s
+  }
+}`, topKey, version, pkg, pkg, version, extraPackagesJSON)
+}
+
+func TestResolve_RejectsGitDependency(t *testing.T) {
 	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
 	defer registrySrv.Close()
 	nodeSrv := newNodeDistServer(t, shasums)
 	defer nodeSrv.Close()
 
-	lockJSON := `{
-  "lockfileVersion": 3,
-  "packages": {
-    "": {"name": "resolve-scratch"},
-    "node_modules/git-dep": {"version": "1.0.0"}
-  }
-}`
+	// A git dependency's package-lock.json entry carries "resolved" (a
+	// git+https URL) but no "integrity" — the resolved-only shape that a
+	// bare "both fields empty" check would miss.
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/git-dep": {"version": "1.0.0", "resolved": "git+https://github.com/foo/bar.git#abcdef0"}`)
+
 	n := NewNPM(registrySrv.URL)
 	n.nodeDistBaseURL = nodeSrv.URL
 	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
@@ -345,6 +407,75 @@ func TestResolve_RejectsUnlockableDependency(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "node_modules/git-dep") {
 		t.Errorf("error = %q, want it to name node_modules/git-dep", err.Error())
+	}
+}
+
+func TestResolve_RejectsWorkspaceLink(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	// A workspace link entry carries "resolved" (a relative workspace path)
+	// and "link": true, and no "integrity" — reject it explicitly on the
+	// link marker, not just on missing integrity.
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/workspace-pkg": {"resolved": "../workspace-pkg", "link": true}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want one naming the workspace link entry")
+	}
+	if !strings.Contains(err.Error(), "node_modules/workspace-pkg") {
+		t.Errorf("error = %q, want it to name node_modules/workspace-pkg", err.Error())
+	}
+}
+
+func TestResolve_RejectsSHA1Integrity(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/old-pkg": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/old-pkg/-/old-pkg-1.0.0.tgz", "integrity": "sha1-AAAAAAAAAAAAAAAAAAAAAAAAAAA="}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want rejection of sha1 integrity")
+	}
+	if !strings.Contains(err.Error(), "node_modules/old-pkg") || !strings.Contains(err.Error(), "sha1") {
+		t.Errorf("error = %q, want it to name node_modules/old-pkg and mention sha1", err.Error())
+	}
+}
+
+func TestResolve_RejectsMultiHashIntegrity(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/multi-hash": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/multi-hash/-/multi-hash-1.0.0.tgz", "integrity": "sha512-AAAA== sha256-BBBB=="}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want rejection of multi-hash SRI")
+	}
+	if !strings.Contains(err.Error(), "multi-hash") {
+		t.Errorf("error = %q, want it to mention multi-hash", err.Error())
 	}
 }
 
@@ -365,6 +496,104 @@ func TestResolve_RejectsWrongLockfileVersion(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "lockfileVersion") {
 		t.Errorf("error = %q, want it to mention lockfileVersion", err.Error())
+	}
+}
+
+func TestResolve_RequiresTopLevelEntryMatchingRequestedVersion(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	// No "node_modules/example" entry at all.
+	lockJSON := `{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "resolve-scratch"},
+    "node_modules/other": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/other/-/other-1.0.0.tgz", "integrity": "sha512-AAAA=="}
+  }
+}`
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want rejection when the top-level package is missing from the lockfile")
+	}
+	if !strings.Contains(err.Error(), "node_modules/example") {
+		t.Errorf("error = %q, want it to name node_modules/example", err.Error())
+	}
+}
+
+func TestResolve_RequiresPublishedAt(t *testing.T) {
+	// The registry reports 1.0.0 in "versions" but has no "time" entry for
+	// it at all.
+	registrySrv := newPackumentServer(t, map[string]string{}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", "")
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want rejection when the registry has no time entry for the resolved version")
+	}
+	if !strings.Contains(err.Error(), "no time entry") {
+		t.Errorf("error = %q, want it to mention the missing time entry", err.Error())
+	}
+}
+
+func TestResolve_RejectsMalformedNodeDigest(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	badShasums := "../../etc/passwd  node-v24.18.1-linux-x64.tar.xz\n" +
+		"def2222222222222222222222222222222222222222222222222222222222222  node-v24.18.1-linux-arm64.tar.xz\n"
+	nodeSrv := newNodeDistServer(t, badShasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", "")
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want rejection of a malformed SHASUMS256.txt digest")
+	}
+	if !strings.Contains(err.Error(), "malformed digest") {
+		t.Errorf("error = %q, want it to mention a malformed digest", err.Error())
+	}
+}
+
+func TestResolve_StripsLeadingVFromNodeVersion(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", "")
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	lh, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "v24.18.1", "sha256:rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if lh.Runtime.Version != "24.18.1" {
+		t.Errorf("Runtime.Version = %q, want 24.18.1 (leading v stripped)", lh.Runtime.Version)
+	}
+	amd64 := lh.Runtime.Artifacts[pool.PlatformLinuxAMD64Glibc]
+	if strings.Contains(amd64.URL, "vv24.18.1") {
+		t.Errorf("URL = %q contains a doubled v prefix", amd64.URL)
+	}
+	if !strings.Contains(amd64.URL, "v24.18.1") {
+		t.Errorf("URL = %q, want it to contain v24.18.1", amd64.URL)
 	}
 }
 
@@ -497,7 +726,7 @@ func TestFetch_SHA256VerifyAndMismatch(t *testing.T) {
 		lh := &pool.LockHarness{
 			Runtime: &pool.LockRuntime{
 				Artifacts: map[pool.PlatformKey]pool.LockRuntimeArtifact{
-					pool.PlatformLinuxAMD64Glibc: {URL: srv.URL + "/node.tar.xz", SHA256: "0000000000000000000000000000000000000000000000000000000000000000"},
+					pool.PlatformLinuxAMD64Glibc: {URL: srv.URL + "/node.tar.xz", SHA256: "0000000000000000000000000000000000000000000000000000000000000000"[:64]},
 				},
 			},
 		}
@@ -510,6 +739,88 @@ func TestFetch_SHA256VerifyAndMismatch(t *testing.T) {
 			t.Errorf("error = %q, want it to name the platform key", err.Error())
 		}
 	})
+}
+
+func TestFetch_RejectsMalformedSHA256(t *testing.T) {
+	lh := &pool.LockHarness{
+		NPMLock: &pool.NPMLock{
+			Packages: map[string]pool.NPMLockPackage{
+				"node_modules/pkg": {
+					Resolved:  "http://example.invalid/pkg.tgz",
+					Integrity: "sha512-AAAA==",
+					SHA256:    "../../etc/passwd",
+				},
+			},
+		},
+	}
+
+	n := NewNPM("")
+	err := n.Fetch(context.Background(), lh, t.TempDir())
+	if err == nil {
+		t.Fatal("Fetch: got nil error, want rejection of a malformed sha256 before any request")
+	}
+	if !strings.Contains(err.Error(), "malformed sha256") {
+		t.Errorf("error = %q, want it to mention a malformed sha256", err.Error())
+	}
+}
+
+func TestFetch_RejectsUnverifiableNPMEntry(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Write([]byte("should never be fetched"))
+	}))
+	defer srv.Close()
+
+	lh := &pool.LockHarness{
+		NPMLock: &pool.NPMLock{
+			Packages: map[string]pool.NPMLockPackage{
+				// Neither Integrity nor SHA256 set: there is nothing to
+				// verify the download against, so Fetch must refuse before
+				// making any request — independent of whatever Resolve's
+				// own validation already guarantees (defence in depth).
+				"node_modules/unverifiable": {Resolved: srv.URL + "/pkg.tgz"},
+			},
+		},
+	}
+
+	n := NewNPM("")
+	err := n.Fetch(context.Background(), lh, t.TempDir())
+	if err == nil {
+		t.Fatal("Fetch: got nil error, want rejection of an entry with neither integrity nor sha256")
+	}
+	if !strings.Contains(err.Error(), "node_modules/unverifiable") {
+		t.Errorf("error = %q, want it to name node_modules/unverifiable", err.Error())
+	}
+	if requests != 0 {
+		t.Errorf("requests = %d, want 0 (must reject before any download)", requests)
+	}
+}
+
+func TestFetch_RejectsRuntimeArtifactWithoutSHA256(t *testing.T) {
+	var requests int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Write([]byte("should never be fetched"))
+	}))
+	defer srv.Close()
+
+	lh := &pool.LockHarness{
+		Runtime: &pool.LockRuntime{
+			Artifacts: map[pool.PlatformKey]pool.LockRuntimeArtifact{
+				pool.PlatformLinuxAMD64Glibc: {URL: srv.URL + "/node.tar.xz"},
+			},
+		},
+	}
+
+	n := NewNPM("")
+	err := n.Fetch(context.Background(), lh, t.TempDir())
+	if err == nil {
+		t.Fatal("Fetch: got nil error, want rejection of a runtime artifact with no recorded sha256")
+	}
+	if requests != 0 {
+		t.Errorf("requests = %d, want 0 (must reject before any download)", requests)
+	}
 }
 
 func TestFetch_CacheHitSkipsDownload(t *testing.T) {
@@ -550,22 +861,33 @@ func TestFetch_CacheHitSkipsDownload(t *testing.T) {
 
 // TestFetch_OnlyRequestsListedURLs asserts Fetch never issues a request for
 // anything beyond the URLs already recorded on the LockHarness (§6.2: "A
-// fetch of an unlisted URL is a bug, not a fallback").
+// fetch of an unlisted URL is a bug, not a fallback"). Every request that
+// reaches the server — including one for a path neither handler
+// registers — is recorded by a catch-all wrapper *before* dispatch, so an
+// unlisted request would show up in the recorded set even though the
+// underlying mux would 404 it (a plain mux-registered-paths-only recorder
+// would never see that request at all).
 func TestFetch_OnlyRequestsListedURLs(t *testing.T) {
 	pkgContent := []byte("pkg tarball")
 	runtimeContent := []byte("node runtime tarball")
 
+	var mu sync.Mutex
 	var requested []string
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/pkg.tgz", func(w http.ResponseWriter, r *http.Request) {
-		requested = append(requested, r.URL.Path)
 		w.Write(pkgContent)
 	})
 	mux.HandleFunc("/node.tar.xz", func(w http.ResponseWriter, r *http.Request) {
-		requested = append(requested, r.URL.Path)
 		w.Write(runtimeContent)
 	})
-	srv := httptest.NewServer(mux)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requested = append(requested, r.URL.Path)
+		mu.Unlock()
+		mux.ServeHTTP(w, r)
+	}))
 	defer srv.Close()
 
 	lh := &pool.LockHarness{
@@ -586,14 +908,18 @@ func TestFetch_OnlyRequestsListedURLs(t *testing.T) {
 		t.Fatalf("Fetch: %v", err)
 	}
 
-	sort.Strings(requested)
+	mu.Lock()
+	got := append([]string(nil), requested...)
+	mu.Unlock()
+
+	sort.Strings(got)
 	want := []string{"/node.tar.xz", "/pkg.tgz"}
-	if len(requested) != len(want) {
-		t.Fatalf("requested paths = %v, want %v", requested, want)
+	if len(got) != len(want) {
+		t.Fatalf("requested paths = %v, want exactly %v", got, want)
 	}
 	for i := range want {
-		if requested[i] != want[i] {
-			t.Fatalf("requested paths = %v, want %v", requested, want)
+		if got[i] != want[i] {
+			t.Fatalf("requested paths = %v, want exactly %v", got, want)
 		}
 	}
 }

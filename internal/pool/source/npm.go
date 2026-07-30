@@ -21,10 +21,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -48,19 +50,51 @@ const (
 	// 1-2). It is a fixed path inside the resolve container only — never a
 	// host path, never exposed to a project container.
 	npmResolveContainerDir = "/wraptool-npm-resolve"
+
+	// metadataTimeout bounds one registry/SHASUMS256.txt request. These are
+	// tiny JSON/text documents; a client-level timeout (rather than relying
+	// solely on the caller's context) keeps a stalled metadata connection
+	// from wedging whatever holds the pool's advisory lock (§6.5) around a
+	// Refresh or Resolve call indefinitely.
+	metadataTimeout = 30 * time.Second
+	// downloadTimeout bounds one artifact download (npm tarball or Node
+	// runtime tarball). These can be tens of megabytes, so the budget is far
+	// larger than metadataTimeout, but still finite: an artifact download
+	// must not be allowed to hang forever either.
+	downloadTimeout = 10 * time.Minute
 )
+
+// sha256HexPattern is the only shape this package accepts for a sha256
+// digest used as a cache filename: exactly 64 lowercase hex characters. Any
+// sha256 value that reaches a filepath.Join as a path component — whether it
+// came from a LockHarness (round-tripped through JSON, so untrusted) or was
+// parsed out of nodejs.org's SHASUMS256.txt (a tampered or malformed line
+// could otherwise smuggle "../" segments) — is checked against this pattern
+// first. A value this package computed itself via hex.EncodeToString on a
+// sha256.Sum256 output always matches by construction and never needs the
+// check.
+var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func validSHA256Hex(s string) bool {
+	return sha256HexPattern.MatchString(s)
+}
 
 // NPM implements pool artifact acquisition for the "npm" source (§8.1). The
 // zero value is not usable; construct with NewNPM.
 type NPM struct {
 	registryBaseURL string
 	nodeDistBaseURL string
-	// httpClient is the injectable HTTP seam: production code never sets it
-	// directly (NewNPM defaults it to http.DefaultClient), but a same-package
-	// test can construct an NPM literal with a client pointed at an
-	// httptest.Server, or override nodeDistBaseURL, so no test ever talks to
-	// the real npm registry or nodejs.org.
-	httpClient *http.Client
+	// metadataClient and downloadClient are the injectable HTTP seams:
+	// production code never sets them directly (NewNPM defaults both to
+	// clients with the timeouts above), but a same-package test can
+	// construct an NPM literal with clients pointed at httptest.Servers, or
+	// override nodeDistBaseURL, so no test ever talks to the real npm
+	// registry or nodejs.org. They are separate fields (rather than one
+	// shared client) so the small, frequent metadata calls (packument,
+	// SHASUMS256.txt) and the large, occasional artifact downloads can carry
+	// different timeout budgets.
+	metadataClient *http.Client
+	downloadClient *http.Client
 }
 
 // NewNPM constructs an NPM source. An empty registryBaseURL defaults to the
@@ -74,18 +108,47 @@ func NewNPM(registryBaseURL string) *NPM {
 	return &NPM{
 		registryBaseURL: strings.TrimRight(registryBaseURL, "/"),
 		nodeDistBaseURL: defaultNodeDistBaseURL,
-		httpClient:      http.DefaultClient,
+		metadataClient:  &http.Client{Timeout: metadataTimeout},
+		downloadClient:  &http.Client{Timeout: downloadTimeout},
 	}
 }
 
 // npmPackument is the subset of an npm registry packument (the full
 // document, not the abbreviated/corgi format — that omits "time", which
-// Refresh needs) this package reads. Versions is decoded as raw messages:
-// this package only needs to know a version key exists, never its manifest
-// content.
+// Refresh needs) this package reads. Both maps are decoded as raw messages:
+// Versions because this package only needs to know a version key exists,
+// never its manifest content; Time because npm's "time" map is not
+// uniformly string-valued — an "unpublished" key can carry a nested object
+// describing an unpublish event rather than a version's own timestamp — and
+// decoding straight into map[string]string would fail the whole packument
+// over that one non-version key.
 type npmPackument struct {
-	Time     map[string]string          `json:"time"`
+	Time     map[string]json.RawMessage `json:"time"`
 	Versions map[string]json.RawMessage `json:"versions"`
+}
+
+// isNpmTimeVersionKey reports whether key (from a packument's "time" map)
+// names an actual version rather than one of npm's known non-version
+// bookend keys: "created"/"modified" bracket the map, and "unpublished"
+// (when present) carries unpublish-event metadata, not a version timestamp.
+func isNpmTimeVersionKey(key string) bool {
+	switch key {
+	case "created", "modified", "unpublished":
+		return false
+	default:
+		return true
+	}
+}
+
+// rawTimeString decodes raw as a JSON string, reporting false (not an error)
+// when it is any other JSON type — the caller treats that exactly like a
+// missing entry.
+func rawTimeString(raw json.RawMessage) (string, bool) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return "", false
+	}
+	return s, true
 }
 
 // registryURL builds the packument request URL for pkg. A scoped package
@@ -105,7 +168,7 @@ func (n *NPM) fetchPackument(ctx context.Context, pkg string) (*npmPackument, er
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := n.httpClient.Do(req)
+	resp, err := n.metadataClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching npm packument for %s: %w", pkg, err)
 	}
@@ -127,10 +190,12 @@ func (n *NPM) fetchPackument(ctx context.Context, pkg string) (*npmPackument, er
 // backend).
 //
 // PublishedAt comes from the packument's "time" map; a version missing from
-// "time" entirely, or carrying a value pool.ParseTimestamp cannot parse,
-// yields a zero PublishedAt rather than an invented one — pool.Eligible
-// already treats a zero PublishedAt as unconditionally ineligible, which is
-// the intended safety net (design/unified-harness-pool.md §9).
+// "time" entirely, or carrying a value that is not a JSON string or that
+// pool.ParseTimestamp cannot parse, yields a zero PublishedAt rather than an
+// invented one — pool.Eligible already treats a zero PublishedAt as
+// unconditionally ineligible, which is the intended safety net
+// (design/unified-harness-pool.md §9). This is Refresh's candidate-listing
+// path only; Resolve's success path is stricter (see versionPublishedAt).
 //
 // npm has no first-class "yank". A version present in "time" but absent from
 // the packument's "versions" map has been unpublished, and Refresh reports
@@ -147,16 +212,16 @@ func (n *NPM) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, error)
 	}
 
 	// The set of known versions is the union of "versions" (currently
-	// published) and "time" minus its two non-version keys (every version
-	// ever published, including unpublished ones) — a version can
-	// legitimately appear in only one of the two maps (§8.1 test fixtures:
-	// "a missing time entry" and "an unpublished version").
+	// published) and "time" minus its non-version keys (every version ever
+	// published, including unpublished ones) — a version can legitimately
+	// appear in only one of the two maps (§8.1 test fixtures: "a missing
+	// time entry" and "an unpublished version").
 	versions := make(map[string]struct{}, len(doc.Versions)+len(doc.Time))
 	for v := range doc.Versions {
 		versions[v] = struct{}{}
 	}
 	for v := range doc.Time {
-		if v == "created" || v == "modified" {
+		if !isNpmTimeVersionKey(v) {
 			continue
 		}
 		versions[v] = struct{}{}
@@ -165,15 +230,18 @@ func (n *NPM) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, error)
 	candidates := make([]pool.Candidate, 0, len(versions))
 	for v := range versions {
 		_, inVersions := doc.Versions[v]
-		timeStr, inTime := doc.Time[v]
+		raw, inTime := doc.Time[v]
 
 		var publishedAt time.Time
 		if inTime {
-			if t, err := pool.ParseTimestamp(timeStr); err == nil {
-				publishedAt = t
+			if s, ok := rawTimeString(raw); ok {
+				if t, err := pool.ParseTimestamp(s); err == nil {
+					publishedAt = t
+				}
 			}
-			// An unparsable value falls through with publishedAt left zero
-			// rather than failing the whole Refresh over one bad entry.
+			// A non-string or unparsable value falls through with
+			// publishedAt left zero rather than failing the whole Refresh
+			// over one bad entry.
 		}
 
 		prerelease := false
@@ -197,21 +265,29 @@ func (n *NPM) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, error)
 
 // versionPublishedAt looks up version's publish time with a fresh registry
 // request (Resolve does not trust a caller-supplied Candidate, which may be
-// stale by the time Resolve runs). It returns the zero time, not an error,
-// when the registry has no time entry for version or the entry cannot be
-// parsed — the same "missing/unparsable date yields zero" rule Refresh uses.
+// stale by the time Resolve runs). Unlike Refresh's candidate listing —
+// where a missing/unparsable time deliberately yields a zero,
+// ineligible-by-construction PublishedAt (§9's safety net) — Resolve's
+// success path requires a real value: published_at is a required lock
+// property (§8), so a missing, non-string, or unparsable registry time for
+// the exact version being locked fails here, at the cause, rather than
+// surfacing later as an opaque (*pool.Lock).Validate rejection.
 func (n *NPM) versionPublishedAt(ctx context.Context, pkg, version string) (time.Time, error) {
 	doc, err := n.fetchPackument(ctx, pkg)
 	if err != nil {
 		return time.Time{}, err
 	}
-	timeStr, ok := doc.Time[version]
+	raw, ok := doc.Time[version]
 	if !ok {
-		return time.Time{}, nil
+		return time.Time{}, fmt.Errorf("npm registry has no time entry for %s@%s (required to lock published_at, §8)", pkg, version)
 	}
-	t, err := pool.ParseTimestamp(timeStr)
+	s, ok := rawTimeString(raw)
+	if !ok {
+		return time.Time{}, fmt.Errorf("npm registry time entry for %s@%s is not a string", pkg, version)
+	}
+	t, err := pool.ParseTimestamp(s)
 	if err != nil {
-		return time.Time{}, nil
+		return time.Time{}, fmt.Errorf("npm registry time entry for %s@%s: %w", pkg, version, err)
 	}
 	return t, nil
 }
@@ -223,11 +299,42 @@ type npmLockFile struct {
 	Packages        map[string]npmLockPackageEntry `json:"packages"`
 }
 
-// npmLockPackageEntry is one "packages" map entry.
+// npmLockPackageEntry is one "packages" map entry. Link marks an npm
+// workspace symlink entry, which — like a git dependency — has no
+// resolved/integrity pair and cannot be locked.
 type npmLockPackageEntry struct {
 	Version   string `json:"version"`
 	Resolved  string `json:"resolved"`
 	Integrity string `json:"integrity"`
+	Link      bool   `json:"link"`
+}
+
+// validateLockableIntegrity checks an npm_lock candidate's non-empty
+// Integrity string against the one SRI shape this package can act on: a
+// single "sha512-<base64>" hash. A pre-2017 "sha1-..." package is named
+// explicitly (sha1 predates npm's sha512 integrity requirement, so its
+// presence usually means an old, otherwise-unlockable dependency); a
+// whitespace-separated multi-hash SRI value (the W3C SRI spec allows
+// several algorithms per entry) is rejected outright rather than silently
+// picking one. Fetch's own parseIntegrity performs the same algorithm check
+// again as a backstop — this is the primary, entry-naming validation at
+// lock-production time.
+func validateLockableIntegrity(sri string) error {
+	if len(strings.Fields(sri)) > 1 {
+		return fmt.Errorf("multi-hash SRI not supported: %q", sri)
+	}
+	algo, _, ok := strings.Cut(sri, "-")
+	if !ok {
+		return fmt.Errorf("malformed integrity value %q", sri)
+	}
+	switch algo {
+	case "sha512":
+		return nil
+	case "sha1":
+		return fmt.Errorf("sha1 integrity %q is not supported (pre-2017 npm packages are not lockable)", sri)
+	default:
+		return fmt.Errorf("unsupported integrity algorithm %q (want sha512)", algo)
+	}
 }
 
 // nodeGlibcPlatforms maps the two glibc PlatformKeys this method realizes
@@ -246,19 +353,26 @@ var nodeGlibcPlatforms = map[pool.PlatformKey]string{
 // running `npm install --package-lock-only --ignore-scripts` inside b (a
 // Linux backend container with registry-only network, §6.2/§8.1) and
 // reading back the resulting package-lock.json. b is the caller's choice —
-// this method neither constructs a Backend nor selects guix/OCI.
+// this method neither constructs a Backend nor selects guix/OCI. Resolve
+// does not clean up scratchDir (a subdirectory of workDir) when it returns;
+// workDir is a staging transaction directory the caller owns and disposes
+// of.
 //
 // nodeVersion is the exact Node runtime version the harness descriptor
-// requires; the descriptor itself lives in internal/harness, which this
-// package does not import, so the caller resolves the descriptor's runtime
-// requirement to a concrete version and passes it through. recipeRevision is
-// the orchestrator-computed "sha256:<hex>" value (§8: recipe hashing is the
-// orchestrator's responsibility, not this Source's); Resolve stores it on
-// the returned LockHarness verbatim.
+// requires (a leading "v", if present, is stripped before use — nodejs.org
+// URLs and this method's own filenames add it back); the descriptor itself
+// lives in internal/harness, which this package does not import, so the
+// caller resolves the descriptor's runtime requirement to a concrete
+// version and passes it through. recipeRevision is the orchestrator-computed
+// "sha256:<hex>" value (§8: recipe hashing is the orchestrator's
+// responsibility, not this Source's); Resolve stores it on the returned
+// LockHarness verbatim.
 //
 // PublishedAt is populated from a fresh registry lookup (not a
-// caller-supplied Candidate, which may be stale) and is the zero-formatted
-// timestamp when the registry has no time entry for version.
+// caller-supplied Candidate, which may be stale); unlike Refresh, Resolve
+// fails outright when the registry has no time entry for version (see
+// versionPublishedAt) rather than returning a zero timestamp, since
+// published_at is a required lock property (§8).
 //
 // FirstSeenAt is always the zero-formatted timestamp on the returned value;
 // the orchestrator fills it in from Observations before persisting the lock.
@@ -266,6 +380,8 @@ var nodeGlibcPlatforms = map[pool.PlatformKey]string{
 // with a zero FirstSeenAt is expected and legitimate at this stage, and
 // Validate would reject it.
 func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (pool.LockHarness, error) {
+	nodeVersion = strings.TrimPrefix(nodeVersion, "v")
+
 	scratchDir := filepath.Join(workDir, "npm-resolve")
 	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
 		return pool.LockHarness{}, fmt.Errorf("creating npm resolve scratch dir: %w", err)
@@ -283,6 +399,15 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 		return pool.LockHarness{}, fmt.Errorf("writing synthesized package.json: %w", err)
 	}
 
+	// Clear any pre-existing package-lock.json (a stale file from a reused
+	// scratch dir, or one an earlier failed run left behind) so a backend
+	// that exits 0 without actually writing a fresh lockfile can never leave
+	// Resolve reading stale or foreign content.
+	lockPath := filepath.Join(scratchDir, "package-lock.json")
+	if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+		return pool.LockHarness{}, fmt.Errorf("clearing stale package-lock.json: %w", err)
+	}
+
 	// §8.1 step 2: resolve the lockfile inside the backend container.
 	spec := backend.RunSpec{
 		Argv:    []string{"npm", "install", "--package-lock-only", "--ignore-scripts"},
@@ -295,7 +420,7 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 	}
 
 	// §8.1 step 3: read back package-lock.json.
-	lockBytes, err := os.ReadFile(filepath.Join(scratchDir, "package-lock.json"))
+	lockBytes, err := os.ReadFile(lockPath)
 	if err != nil {
 		return pool.LockHarness{}, fmt.Errorf("reading package-lock.json: %w", err)
 	}
@@ -315,16 +440,36 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 			// is not part of the harness's dependency graph.
 			continue
 		}
-		if entry.Resolved == "" && entry.Integrity == "" {
+		if entry.Link {
 			return pool.LockHarness{}, fmt.Errorf(
-				"package-lock.json entry %q has neither resolved nor integrity (git dependency, workspace link, or file: dependency cannot be locked)",
+				"package-lock.json entry %q is a workspace link (cannot be locked)", name)
+		}
+		if entry.Resolved == "" || entry.Integrity == "" {
+			return pool.LockHarness{}, fmt.Errorf(
+				"package-lock.json entry %q is missing resolved or integrity (git dependency, workspace link, or file: dependency cannot be locked)",
 				name)
+		}
+		if err := validateLockableIntegrity(entry.Integrity); err != nil {
+			return pool.LockHarness{}, fmt.Errorf("package-lock.json entry %q: %w", name, err)
 		}
 		packages[name] = pool.NPMLockPackage{
 			Version:   entry.Version,
 			Resolved:  entry.Resolved,
 			Integrity: entry.Integrity,
 		}
+	}
+
+	// Cross-check that the exact package@version we asked npm to resolve
+	// actually appears as the top-level dependency in the returned graph —
+	// catches a backend/lockfile mismatch (wrong scratch dir, stale mount)
+	// rather than silently locking whatever happened to be there.
+	topLevelKey := "node_modules/" + pkg
+	topLevel, ok := packages[topLevelKey]
+	if !ok {
+		return pool.LockHarness{}, fmt.Errorf("package-lock.json has no top-level entry for %s (expected key %q)", pkg, topLevelKey)
+	}
+	if topLevel.Version != version {
+		return pool.LockHarness{}, fmt.Errorf("package-lock.json entry %q has version %q, want %q", topLevelKey, topLevel.Version, version)
 	}
 
 	// §8.1 step 4: pinned runtime requirement + per-platform artifacts.
@@ -358,6 +503,8 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 
 // nodeRuntimeArtifacts fetches nodeVersion's SHASUMS256.txt and returns the
 // glibc-platform artifact map (URL + sha256) described on nodeGlibcPlatforms.
+// nodeVersion must already have any leading "v" stripped (Resolve does this
+// once for its whole call).
 func (n *NPM) nodeRuntimeArtifacts(ctx context.Context, nodeVersion string) (map[pool.PlatformKey]pool.LockRuntimeArtifact, error) {
 	shasums, err := n.fetchNodeSHASUMS(ctx, nodeVersion)
 	if err != nil {
@@ -371,6 +518,9 @@ func (n *NPM) nodeRuntimeArtifacts(ctx context.Context, nodeVersion string) (map
 		if !ok {
 			return nil, fmt.Errorf("SHASUMS256.txt for node v%s has no entry for %s", nodeVersion, filename)
 		}
+		if !validSHA256Hex(sha256Hex) {
+			return nil, fmt.Errorf("SHASUMS256.txt for node v%s: malformed digest for %s", nodeVersion, filename)
+		}
 		artifacts[key] = pool.LockRuntimeArtifact{
 			URL:    fmt.Sprintf("%s/v%s/%s", n.nodeDistBaseURL, nodeVersion, filename),
 			SHA256: sha256Hex,
@@ -381,14 +531,17 @@ func (n *NPM) nodeRuntimeArtifacts(ctx context.Context, nodeVersion string) (map
 
 // fetchNodeSHASUMS downloads and parses nodejs.org's SHASUMS256.txt for
 // nodeVersion: lines of "<sha256>  <filename>" (a leading "*" on the
-// filename, used for binary-mode checksums, is stripped).
+// filename, used for binary-mode checksums, is stripped). Digest shape is
+// validated by the caller (nodeRuntimeArtifacts) at the point each specific
+// entry is used, not here — this method returns whatever the file contains,
+// including filenames this package never looks up.
 func (n *NPM) fetchNodeSHASUMS(ctx context.Context, nodeVersion string) (map[string]string, error) {
 	u := fmt.Sprintf("%s/v%s/SHASUMS256.txt", n.nodeDistBaseURL, nodeVersion)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request for %s: %w", u, err)
 	}
-	resp, err := n.httpClient.Do(req)
+	resp, err := n.metadataClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", u, err)
 	}
@@ -413,7 +566,9 @@ func (n *NPM) fetchNodeSHASUMS(ctx context.Context, nodeVersion string) (map[str
 }
 
 // parseIntegrity splits an npm SRI string ("sha512-<base64>") into its
-// algorithm and decoded digest.
+// algorithm and decoded digest. This is Fetch's own backstop check; the
+// primary, entry-naming validation happens in Resolve's conversion loop via
+// validateLockableIntegrity.
 func parseIntegrity(sri string) (algo string, digest []byte, err error) {
 	algo, encoded, ok := strings.Cut(sri, "-")
 	if !ok {
@@ -433,14 +588,24 @@ func parseIntegrity(sri string) (algo string, digest []byte, err error) {
 // never consults any URL that is not already present on h: an unlisted URL
 // is a bug by definition (§6.2), not a fallback case this method handles.
 //
+// cacheDir must be the flat, content-addressed cache root — pool
+// CacheSHA256Dir() (cache/sha256), not CacheDir() — since every object is
+// written directly under it by its sha256 hex name. Passing CacheDir()
+// instead does not error visibly; it silently makes every subsequent lookup
+// a permanent cache miss (nothing is ever found at the expected path),
+// so a caller must get this right.
+//
 // An npm package entry is verified against its upstream sha512 SRI
 // Integrity; its Sha256 field is filled in when empty, or checked for an
-// exact match when already set. A runtime artifact has no SRI and is
-// verified against its already-recorded Sha256 (populated by Resolve from
-// nodejs.org's SHASUMS256.txt). A cacheDir object already present at the
-// expected sha256-named path (size > 0) is trusted as-is and the download is
-// skipped entirely — content-addressed storage means a name match already is
-// a content match (§6.4).
+// exact match when already set. An entry with neither Integrity nor Sha256
+// set is rejected before any request is made — Resolve should never produce
+// one (its conversion loop already requires both fields), but Fetch does not
+// trust that invariant blindly and re-checks it as an independent guard. A
+// runtime artifact has no SRI and is verified against its already-recorded
+// Sha256 (populated by Resolve from nodejs.org's SHASUMS256.txt). A cacheDir
+// object already present at the expected sha256-named path (size > 0) is
+// trusted as-is and the download is skipped entirely — content-addressed
+// storage means a name match already is a content match (§6.4).
 func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) error {
 	if h == nil {
 		return fmt.Errorf("fetch: nil LockHarness")
@@ -450,6 +615,9 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 		for name, pkg := range h.NPMLock.Packages {
 			if pkg.Resolved == "" {
 				return fmt.Errorf("npm package %q: no resolved URL recorded in lock", name)
+			}
+			if pkg.Integrity == "" && pkg.SHA256 == "" {
+				return fmt.Errorf("npm package %q: neither integrity nor sha256 recorded in lock — nothing to verify against", name)
 			}
 			sha256Hex, err := n.downloadVerify(ctx, pkg.Resolved, pkg.Integrity, pkg.SHA256, cacheDir)
 			if err != nil {
@@ -467,6 +635,9 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 			if artifact.URL == "" {
 				return fmt.Errorf("runtime artifact %s: no URL recorded in lock", key)
 			}
+			if artifact.SHA256 == "" {
+				return fmt.Errorf("runtime artifact %s: no sha256 recorded in lock — nothing to verify against", key)
+			}
 			if _, err := n.downloadVerify(ctx, artifact.URL, "", artifact.SHA256, cacheDir); err != nil {
 				return fmt.Errorf("runtime artifact %s: %w", key, err)
 			}
@@ -478,8 +649,13 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 
 // downloadVerify downloads url, streaming it simultaneously into a temp file
 // under cacheDir and a sha256 hash (always) plus a sha512 hash (only when
-// sri is non-empty). It returns the downloaded object's hex sha256 digest.
+// sri is non-empty, allocated only in that case). It returns the downloaded
+// object's hex sha256 digest.
 //
+//   - If knownSHA256 is non-empty, it must already match sha256HexPattern —
+//     it is about to be used as a cache filename, and this is the only line
+//     of defense against a malformed digest (e.g. one containing "../")
+//     reaching the filesystem as a path component.
 //   - If knownSHA256 is non-empty and cacheDir already holds an object at
 //     that name with size > 0, the object is trusted and no request is made.
 //   - If sri is non-empty, the streamed sha512 must match its decoded digest
@@ -487,12 +663,15 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 //     admitted to cacheDir on a mismatch.
 //   - If knownSHA256 is non-empty, the streamed sha256 must equal it or the
 //     temp file is discarded and an error is returned.
-//   - On success the temp file is fsynced and renamed to cacheDir/<sha256hex>
-//     (same directory, so the rename stays on one volume — the same
-//     discipline as pool.WriteFileAtomic, but streaming rather than
-//     whole-buffer since artifacts can be large).
+//   - On success the temp file's permissions are set to 0644, it is fsynced,
+//     and renamed to cacheDir/<sha256hex> (same directory, so the rename
+//     stays on one volume — the same discipline as pool.WriteFileAtomic, but
+//     streaming rather than whole-buffer since artifacts can be large).
 func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDir string) (string, error) {
 	if knownSHA256 != "" {
+		if !validSHA256Hex(knownSHA256) {
+			return "", fmt.Errorf("malformed sha256 %q recorded in lock", knownSHA256)
+		}
 		if fi, err := os.Stat(filepath.Join(cacheDir, knownSHA256)); err == nil && fi.Size() > 0 {
 			return knownSHA256, nil
 		}
@@ -514,7 +693,7 @@ func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDi
 	if err != nil {
 		return "", fmt.Errorf("building request for %s: %w", url, err)
 	}
-	resp, err := n.httpClient.Do(req)
+	resp, err := n.downloadClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching %s: %w", url, err)
 	}
@@ -538,8 +717,9 @@ func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDi
 
 	sha256h := sha256.New()
 	writers := []io.Writer{tmp, sha256h}
-	var sha512h = sha512.New()
+	var sha512h hash.Hash
 	if sri != "" {
+		sha512h = sha512.New()
 		writers = append(writers, sha512h)
 	}
 	if _, err := io.Copy(io.MultiWriter(writers...), resp.Body); err != nil {
@@ -560,6 +740,10 @@ func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDi
 		return "", fmt.Errorf("sha256 mismatch downloading %s: want %s, got %s", url, knownSHA256, sha256Hex)
 	}
 
+	if err := tmp.Chmod(0o644); err != nil {
+		cleanup()
+		return "", fmt.Errorf("setting permissions on temp file: %w", err)
+	}
 	if err := tmp.Sync(); err != nil {
 		cleanup()
 		return "", fmt.Errorf("fsyncing temp file: %w", err)
