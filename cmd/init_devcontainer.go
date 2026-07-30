@@ -227,9 +227,7 @@ func renderDevcontainer(name, image string, langs []string, harnessName string, 
 
 	b.WriteString("\n  // WRAPTOOL_CWD scopes host tools to this worktree. WRAPTOOL_TOKEN authenticates\n")
 	b.WriteString("  // to an auth-enabled server — kept out of the image via remoteEnv. Export it on the\n")
-	b.WriteString("  // host first: export WRAPTOOL_TOKEN=$(cat <wraptool config dir>/mcp-token)\n")
-	b.WriteString("  // (the config dir is platform-specific: ~/.config/wraptool on Linux,\n")
-	b.WriteString("  //  ~/Library/Application Support/wraptool on macOS; run `wraptool server status` for the path)\n")
+	fmt.Fprintf(&b, "  // host first: export WRAPTOOL_TOKEN=$(cat %s/mcp-token)\n", paths.ConfigDir())
 	b.WriteString("  \"containerEnv\": { \"WRAPTOOL_CWD\": \"${localWorkspaceFolder}\" },\n")
 	b.WriteString("  \"remoteEnv\": { \"WRAPTOOL_TOKEN\": \"${localEnv:WRAPTOOL_TOKEN}\" },\n")
 

@@ -101,6 +101,12 @@ func stopByPid(pid int) (bool, error) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	if processAlive(pid) {
+		// The process didn't exit within the grace period. Leave the pidfile
+		// and state in place so `server stop`/`status` still find it — removing
+		// them here would orphan a live server with no way to stop it later.
+		return false, fmt.Errorf("server (pid %d) did not exit within 2s after SIGTERM; stop it manually", pid)
+	}
 	_ = os.Remove(pidFilePath())
 	_ = os.Remove(serveStatePath())
 	return true, nil
