@@ -315,7 +315,16 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// expandPath expands a leading ~ to the user's home directory. Handles both
+// bare "~" and "~/...", matching cmd.expandTilde so a token file authored as
+// `~` resolves the same way at config load and at `up` runtime.
 func expandPath(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
 	if strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err == nil {

@@ -195,13 +195,20 @@ func runServe(configPath string, ov serveOverrides) error {
 		if err := writePidFile(); err != nil {
 			return err
 		}
-		defer removePidFile()
+		if err := writeServeState(serveState{Listen: cfg.MCP.Listen, Auth: cfg.MCP.AuthTokenFile != ""}); err != nil {
+			return err
+		}
+		defer func() {
+			removePidFile()
+			removeServeState()
+		}()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, terminationSignals()...)
 		go func() {
 			<-sigCh
 			reg.closeAll()
 			removePidFile()
+			removeServeState()
 			os.Exit(0)
 		}()
 	}
