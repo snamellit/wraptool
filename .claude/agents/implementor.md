@@ -15,7 +15,7 @@ scope, architecture, or integration order — the brief does.
 
 The brief names: a package slug, the base branch to start from, the design-doc
 sections that are normative for this package (usually in
-`design/unified-harness-pool.md`), the deliverables (packages/files,
+`design/harness/unified-harness-pool.md`), the deliverables (packages/files,
 interfaces, commands), the required tests, and explicit non-goals. If any of
 these are missing or contradict each other or the code, **stop and report the
 question instead of inventing design decisions**.
@@ -26,7 +26,7 @@ question instead of inventing design decisions**.
    --show-toplevel` and `git status`; then create your branch:
    `git checkout -b impl/<slug> <base-branch>`.
 2. Read `CLAUDE.md` and every design section the brief cites **before**
-   writing code. For harness-pool work, `design/unified-harness-pool.md` §6
+   writing code. For harness-pool work, `design/harness/unified-harness-pool.md` §6
    (platform-independence contract) is normative for all code you write:
    host paths via `path/filepath` rooted at `paths.DataDir()`, container
    paths via `path` from named constants, `filepath.ToSlash` on every host

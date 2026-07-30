@@ -106,7 +106,7 @@ type CapabilityRequest struct {
 	// an AI that read the tool's --help) types the flag far more accurately than
 	// the generic introspection parser can; on approval these become
 	// flag_constraints in the config, which override the introspected type. Only
-	// flags also present in Flags are applied. See design/flag-type-inference.md.
+	// flags also present in Flags are applied. See design/policy/flag-type-inference.md.
 	FlagTypes     map[string]string `json:"flag_types,omitempty"`
 	Rationale     string            `json:"rationale"`
 	Enables       string            `json:"enables,omitempty"`

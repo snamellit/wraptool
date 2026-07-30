@@ -1,5 +1,5 @@
 // Package backend implements the harness-pool provisioning seam
-// (design/unified-harness-pool.md §11.3): the only place that knows how to
+// (design/harness/unified-harness-pool.md §11.3): the only place that knows how to
 // invoke guix / docker / podman to run one Linux container step for the
 // resolve and realize phases (§6.2). It is deliberately self-contained — no
 // imports of sibling internal/pool packages — so it compiles and tests in
@@ -57,7 +57,7 @@ type RunSpec struct {
 	// the backend's default (the host architecture). Platform carries
 	// architecture ONLY — libc (e.g. glibc vs musl) is not expressed here;
 	// the caller encodes that choice through which provisioning image (oci)
-	// or package set (guix) it selects (design/unified-harness-pool.md
+	// or package set (guix) it selects (design/harness/unified-harness-pool.md
 	// §5.1/§6.1).
 	Platform string
 	// User is the in-container identity to run as, in the backend's own
@@ -72,7 +72,7 @@ type RunSpec struct {
 }
 
 // Backend runs one Linux container step. It is the ONLY place that knows how
-// to invoke guix / docker / podman (design/unified-harness-pool.md §11.3).
+// to invoke guix / docker / podman (design/harness/unified-harness-pool.md §11.3).
 type Backend interface {
 	// Name identifies the backend ("guix" or "oci").
 	Name() string

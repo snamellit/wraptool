@@ -13,7 +13,7 @@ import (
 // cacheValidity holds the current value of every input that determines a tool's
 // introspected schema. A cached schema is reused only when all of them still
 // match what produced it, so the cache self-invalidates on real drift instead of
-// only after a TTL. See design/introspection-cache-invalidation.md.
+// only after a TTL. See design/introspect/introspection-cache-invalidation.md.
 type cacheValidity struct {
 	ConfigHash  string        // hash of the introspection-relevant config
 	NewestInput time.Time     // latest mtime across the tool binary, the wraptool binary, and the overrides file

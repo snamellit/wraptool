@@ -240,7 +240,7 @@ are not mounted). git is available inside for local work
 (status/diff/commit/branch), but anything needing credentials (push, private
 fetch) goes through wraptool's policed MCP git tool on the host. The Guix runtime
 intentionally shares the harness pool and host network as described below. See
-[`design/guix-container-runtime.md`](https://forge.snamellit.com/pti/wraptool/src/branch/main/design/guix-container-runtime.md).
+[`design/harness/guix-container-runtime.md`](https://forge.snamellit.com/pti/wraptool/src/branch/main/design/harness/guix-container-runtime.md).
 
 ### Guix: convenience versus isolation
 

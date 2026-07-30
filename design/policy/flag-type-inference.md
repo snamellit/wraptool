@@ -1,7 +1,7 @@
 # Design: flag value types come from the capability author, not a regex
 
 Status: **implemented** (parser default + request-supplied types); Web UI type
-field is a follow-up — sequenced in `design/webui-management-completion.md`.
+field is a follow-up — sequenced in `design/webui/webui-management-completion.md`.
 Scope: fix how a wrapped CLI flag's value type (`string` / `integer` /
 `boolean`) is determined, so a value-taking flag is never silently rendered as
 an uncarriable boolean. Two changes: a safer introspection default, and a path
@@ -97,5 +97,5 @@ parser should be the cheap default; the curator supplies truth. Modelling the
 type as a **policy decision made at authoring time** (and gated by the existing
 request/approve machinery) keeps it accurate *and* accountable, and reuses
 `flag_constraints` — the single source of truth for flag types
-(`design/flag-constraint-type-single-source.md`) — rather than inventing a new
+(`design/policy/flag-constraint-type-single-source.md`) — rather than inventing a new
 channel.

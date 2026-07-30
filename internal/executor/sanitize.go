@@ -49,7 +49,7 @@ func SanitizePositionalArgs(args []string) error {
 // so a value beginning with '-' — e.g. a valueless flag handed
 // "--upload-pack=/tmp/x" — lands as its own option token and bypasses the flag
 // allowlist entirely. Mirrors the positional-arg guard above. See the F2 finding
-// in design/security-audit-policy-enforcement.md.
+// in design/policy/security-audit-policy-enforcement.md.
 func SanitizeFlagValues(flags map[string]string) error {
 	for flag, value := range flags {
 		if strings.HasPrefix(value, "-") {

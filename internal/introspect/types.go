@@ -9,7 +9,7 @@ type Schema struct {
 	// ConfigHash is a stable hash of the introspection-relevant config
 	// (binary + allowed subcommands + overrides file) that produced this schema.
 	// The cache is reused only when it still matches — so editing the config
-	// regenerates the schema. See design/introspection-cache-invalidation.md.
+	// regenerates the schema. See design/introspect/introspection-cache-invalidation.md.
 	ConfigHash     string                `json:"config_hash,omitempty"`
 	IntrospectedAt time.Time             `json:"introspected_at"`
 	Subcommands    map[string]Subcommand `json:"subcommands"`

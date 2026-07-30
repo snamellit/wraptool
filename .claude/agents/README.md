@@ -1,7 +1,7 @@
 # Agent-driven implementation workflow
 
 Two subagent definitions support design-doc-driven implementation (built for
-the `design/unified-harness-pool.md` migration, reusable for any spec):
+the `design/harness/unified-harness-pool.md` migration, reusable for any spec):
 
 - **implementor** — builds one scoped work package on an `impl/<slug>` branch
   in an isolated worktree.
