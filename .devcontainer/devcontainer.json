@@ -3,19 +3,21 @@
 
     // A Go-capable client box for coding on wraptool from inside a container.
     // NOTE: this repo's own build env is Guix (.envrc → `use guix`); this dev
-    // container is a client dogfood of the wraptool-connect feature + `wraptool
+    // container is a client dogfood of the merged wraptool feature + `wraptool
     // up`, not a replacement for the Guix flow. Credentials stay on the host and
     // are reached through the wrapped MCP tools.
     "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
 
     "features": {
-	// Published feature from Forgejo's OCI registry. Wires the MCP client to the
-	// host wraptool; writes .mcp.json at postCreate. `:0` tracks the 0.x line.
-	"forge.snamellit.com/pti/wraptool/wraptool-connect:0": {},
+        // npm harnesses need Node at feature-install and runtime.
+        "ghcr.io/devcontainers/features/node:1": {},
 
-	// add Claude Code
-        "ghcr.io/anthropics/devcontainer-features/claude-code:1": {},
-        "ghcr.io/stu-bell/devcontainer-features/open-code:0.1.0": {}
+        // Provision a pinned Claude Code and wire it to host wraptool. `:0`
+        // tracks compatible feature updates; `version` pins harness software.
+        "forge.snamellit.com/pti/wraptool/wraptool:0": {
+            "harness": "claude",
+            "version": "2.1.220"
+        }
     },
 
     // WRAPTOOL_CWD (non-secret host workspace path) is fine baked into the image.
@@ -26,6 +28,17 @@
     // lifecycle hooks (postCreate) rather than baked into an image layer.
     // Inherited from the host env — `wraptool up` sets it, or export it manually.
     "remoteEnv": {
-	"WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
-    }
+        "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
+    },
+
+    // Shared developer toolbox state: harness auth, skills, and config survive
+    // container rebuilds and are reused across projects. Binary stays pinned in
+    // the image so this writable cross-project mount cannot poison executables.
+    "mounts": [
+        {
+            "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home",
+            "target": "/home/wraptool-harness",
+            "type": "bind"
+        }
+    ]
 }
