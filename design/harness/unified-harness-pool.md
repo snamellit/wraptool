@@ -165,7 +165,7 @@ garbage collection.
 Dev Containers are Linux even when Docker runs on macOS or Windows. Native
 artifacts therefore target the **container** platform, never the host OS.
 `PlatformKey` is a typed string constant set in Go (exhaustive-lint enforced,
-per `design/flag-constraint-type-single-source.md` convention):
+per `design/policy/flag-constraint-type-single-source.md` convention):
 
 ```text
 linux-amd64-glibc
@@ -481,6 +481,15 @@ Required properties:
   provisioning-image digest (§11.2) + a recipe-format version constant bumped
   when realization logic changes;
 - generation receipt digest for each realized platform.
+
+> **Known shape tension (Phase 1 implementation note).** `policy_hash` is a
+> document-level field, but effective policy is resolved **per harness**
+> (§7's per-harness overrides), so a multi-harness `update` persists
+> whichever harness's hash was computed last. Phase 2 moves `policy_hash`
+> into each harness entry (the hash of *that* harness's effective policy);
+> the document-level field then either holds the global-policy hash or is
+> dropped. Until then the field is advisory only — nothing may make
+> decisions from it.
 
 A simple `package@version` is insufficient. npm can resolve changed transitive
 dependencies, and lifecycle scripts can fetch additional mutable content. npm

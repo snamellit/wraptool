@@ -15,7 +15,7 @@ Docker/Podman flows in [`docs/isolated-environments.md`](../../docs/isolated-env
 > so the harness gets the same toolchain you do. This whole devcontainer
 > template is only needed off Guix (Arch, macOS, …) or with
 > `--runtime=devcontainer`. See
-> [`design/guix-container-runtime.md`](../../design/guix-container-runtime.md).
+> [`design/harness/guix-container-runtime.md`](../../design/harness/guix-container-runtime.md).
 
 ## Files
 
@@ -105,7 +105,7 @@ on **Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home`.
 `wraptool init devcontainer` and `wraptool up` emit/mount the correct path for
 your platform automatically; only a hand-written mount needs this adjustment. Only `home/` (state) is shared — the binary lives
 in the image, isolated per project. This mirrors the Guix runtime's split; see
-[`design/harness-descriptor.md`](../../design/harness-descriptor.md) §7 for the
+[`design/harness/harness-descriptor.md`](../../design/harness/harness-descriptor.md) §7 for the
 trust model (shared writable `home/` is an accepted residual-risk channel; never
 mount host `$HOME` or credentials).
 

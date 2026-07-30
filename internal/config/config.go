@@ -112,7 +112,7 @@ type FlagConstraint struct {
 // ConstraintType is the value-typing of a flag constraint. It is a closed enum:
 // UnmarshalYAML rejects any value outside this set at decode time, so an illegal
 // type cannot exist in a loaded config — the single source of truth for the
-// legal set lives here (design/flag-constraint-type-single-source.md).
+// legal set lives here (design/policy/flag-constraint-type-single-source.md).
 type ConstraintType string
 
 const (
@@ -315,7 +315,16 @@ func (c *Config) applyDefaults() {
 	}
 }
 
+// expandPath expands a leading ~ to the user's home directory. Handles both
+// bare "~" and "~/...", matching cmd.expandTilde so a token file authored as
+// `~` resolves the same way at config load and at `up` runtime.
 func expandPath(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+		return path
+	}
 	if strings.HasPrefix(path, "~/") {
 		home, err := os.UserHomeDir()
 		if err == nil {

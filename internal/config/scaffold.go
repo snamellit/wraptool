@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/pti/wraptool/internal/paths"
 )
 
 // defaultConfigTemplate is the commented starter config written by
@@ -19,11 +21,12 @@ import (
 //go:embed default_config.yaml
 var defaultConfigTemplate string
 
-// renderDefaultConfig fills in the starter tool's binary path. git is resolved
-// on PATH and made absolute (LookPath can return a PATH-relative path, which the
-// whitelist would reject); if git is absent we fall back to a conventional
-// location and let config validation surface the bad path rather than guessing
-// silently.
+// renderDefaultConfig fills in the starter tool's binary path and the
+// platform-appropriate config dir (so token-file examples in the comments are
+// correct on macOS/Windows, not just Linux). git is resolved on PATH and made
+// absolute (LookPath can return a PATH-relative path, which the whitelist
+// would reject); if git is absent we fall back to a conventional location and
+// let config validation surface the bad path rather than guessing silently.
 func renderDefaultConfig() []byte {
 	gitPath, err := exec.LookPath("git")
 	if err == nil {
@@ -33,7 +36,9 @@ func renderDefaultConfig() []byte {
 	} else {
 		gitPath = "/usr/bin/git"
 	}
-	return []byte(strings.ReplaceAll(defaultConfigTemplate, "__GIT_BINARY__", gitPath))
+	out := strings.ReplaceAll(defaultConfigTemplate, "__GIT_BINARY__", gitPath)
+	out = strings.ReplaceAll(out, "__CONFIG_DIR__", paths.ConfigDir())
+	return []byte(out)
 }
 
 // EnsureConfigFile writes the default config to path when no file exists there

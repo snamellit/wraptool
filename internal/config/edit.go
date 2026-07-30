@@ -230,7 +230,7 @@ func newAllowRule(subcommand, flags []string, flagTypes map[string]string) *yaml
 // existing constraint entry — an operator-authored (or previously applied) type
 // wins over a fresh request. Called by ApplyRequest so an approved capability's
 // requester-supplied types become authoritative flag_constraints, overriding the
-// introspected type. See design/flag-type-inference.md.
+// introspected type. See design/policy/flag-type-inference.md.
 func applyFlagTypes(rule *yaml.Node, flags []string, flagTypes map[string]string) {
 	if len(flagTypes) == 0 {
 		return

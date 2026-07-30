@@ -11,7 +11,7 @@ linters:
     - errcheck
   enable:
     # Exhaustiveness for enum-like switches — the guarantee the FlagConstraint
-    # single-source-of-truth work (design/flag-constraint-type-single-source.md)
+    # single-source-of-truth work (design/policy/flag-constraint-type-single-source.md)
     # depends on: a switch over a typed-const enum must name every member.
     - exhaustive
   settings:
