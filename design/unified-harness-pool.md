@@ -482,6 +482,15 @@ Required properties:
   when realization logic changes;
 - generation receipt digest for each realized platform.
 
+> **Known shape tension (Phase 1 implementation note).** `policy_hash` is a
+> document-level field, but effective policy is resolved **per harness**
+> (§7's per-harness overrides), so a multi-harness `update` persists
+> whichever harness's hash was computed last. Phase 2 moves `policy_hash`
+> into each harness entry (the hash of *that* harness's effective policy);
+> the document-level field then either holds the global-policy hash or is
+> dropped. Until then the field is advisory only — nothing may make
+> decisions from it.
+
 A simple `package@version` is insufficient. npm can resolve changed transitive
 dependencies, and lifecycle scripts can fetch additional mutable content. npm
 sources therefore use a complete lockfile and integrity-check every tarball.
