@@ -941,7 +941,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 
 // --- MINOR: yamledit.MapSet preserves an edited scalar's inline comment ---
 
-func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {
+func TestMapSetPreservesInlineCommentOnEditedField(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "manifest.yaml")

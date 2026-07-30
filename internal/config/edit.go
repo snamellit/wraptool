@@ -127,7 +127,7 @@ func editConfig(path string, mutate func(doc *yaml.Node) error) error {
 	path = expandPath(path)
 	return yamledit.Edit(path, yamledit.Options{
 		Kind:     "config",
-		FileMode: 0600,
+		FileMode: 0o600,
 		Validate: func(data []byte) error {
 			// This closure — not yamledit.Edit, which wraps the error
 			// generically — knows which of the two validation stages
