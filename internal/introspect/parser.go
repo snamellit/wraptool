@@ -33,7 +33,7 @@ func AllParsers() []Parser {
 // still catches genuine switches by name. When the help DID use placeholders
 // (curl, git), the absence of one is a reliable "boolean", so those are left
 // untouched. Authoritative types still come from flag_constraints (see
-// design/flag-type-inference.md).
+// design/policy/flag-type-inference.md).
 //
 // Applied by BestParse to the WINNING result, not by the individual parsers —
 // which parser wins is data-dependent (GitParser also handles cobra-style help

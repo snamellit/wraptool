@@ -12,7 +12,7 @@ import (
 )
 
 // ociEngines is the detection order: docker preferred, podman fallback
-// (design/unified-harness-pool.md §11.2).
+// (design/harness/unified-harness-pool.md §11.2).
 var ociEngines = []string{"docker", "podman"}
 
 // toSlash converts a host path to the forward-slash form Docker Desktop
@@ -38,7 +38,7 @@ var dockerSecurityOptions = func(ctx context.Context) (string, error) {
 }
 
 // OCI is the Backend that runs provisioning steps in a pinned provisioning
-// OCI image through Docker or Podman (design/unified-harness-pool.md §11.2) —
+// OCI image through Docker or Podman (design/harness/unified-harness-pool.md §11.2) —
 // the non-Guix-host path (Arch, macOS, Windows). It never mounts a Docker
 // socket, host home, or project workspace; the caller controls all of that
 // through spec.Mounts.

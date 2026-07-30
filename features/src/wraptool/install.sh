@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build-time install for the wraptool feature. Two orthogonal jobs off one
-# harness choice, each independently toggled (see design/harness-descriptor.md):
+# harness choice, each independently toggled (see design/harness/harness-descriptor.md):
 #   provision (default true) — install the harness binary into THIS image
 #   connect   (default true) — stage the runtime wiring script (run at postCreate)
 #

@@ -152,7 +152,7 @@ func Write(name string, p Params) (string, error) {
 	if p.Token != "" && d.Auth == AuthUnverified {
 		return "", fmt.Errorf("harness %q cannot be used with a networked wraptool yet: "+
 			"its auth support is unverified. Use a localhost/stdio setup, or add its "+
-			"AuthMode (design/harness-descriptor.md phase 3)", name)
+			"AuthMode (design/harness/harness-descriptor.md phase 3)", name)
 	}
 	path, content, err := d.Render(p)
 	if err != nil {

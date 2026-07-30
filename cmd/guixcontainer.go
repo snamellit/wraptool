@@ -67,7 +67,7 @@ func fileExists(p string) bool {
 // and secrets are never shared), so privileged/remote git (push, private fetch)
 // still goes through wraptool's MCP git tool, which holds the host credentials.
 // --network (-N) gives outbound internet for dependency pulls, at the cost of
-// sharing the host network namespace. See design/guix-container-runtime.md.
+// sharing the host network namespace. See design/harness/guix-container-runtime.md.
 func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	manifest := filepath.Join(root, "manifest.scm")
 	if !fileExists(manifest) {
