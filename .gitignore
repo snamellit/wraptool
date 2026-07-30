@@ -3,7 +3,9 @@
 
 # Wraptool runtime data
 /requests.jsonl
-.claude
+# Personal Claude Code state stays local; shared agent definitions are tracked.
+.claude/*
+!.claude/agents/
 
 # Quarto build output
 /docs/_site/
