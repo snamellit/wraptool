@@ -606,6 +606,85 @@ func TestRunPerHarnessAllSucceedReturnsNilNotEmptyJoin(t *testing.T) {
 	}
 }
 
+// TestRunHarnessInstallProbesBeforeAnyManifestMutation pins the ordering
+// documented on runHarnessInstall ("Source/backend availability is probed
+// BEFORE the lock is taken ... so an off-guix host or an unwired Source
+// fails with zero side effects"): a failing deps.newSource or
+// deps.resolveBackend must error out before setHarnessConstraintLocked ever
+// touches manifest.yaml, and before anything creates observations.json.
+// poolBinDir asserts it is never even called, since both probes happen
+// before maybeInstallLocked's poolBinDir lookup too. Global-state-free
+// (harnessDeps only, no package-var swaps), so parallel-safe.
+func TestRunHarnessInstallProbesBeforeAnyManifestMutation(t *testing.T) {
+	t.Parallel()
+
+	t.Run("newSource fails, manifest already exists", func(t *testing.T) {
+		t.Parallel()
+		paths := testHarnessPaths(t)
+		original := "schema_version: 1\nharnesses:\n  claude:\n    constraint: \">=1 <2\"\n"
+		if err := os.WriteFile(paths.Manifest, []byte(original), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		deps := harnessDeps{
+			poolPaths: func() pool.PoolPaths { return paths },
+			poolBinDir: func() (string, string, error) {
+				t.Fatal("poolBinDir must not be called before the newSource/resolveBackend probe")
+				return "", "", nil
+			},
+			newSource: func() (pool.Source, error) { return nil, errors.New("source unavailable") },
+			resolveBackend: func() (backend.Backend, error) {
+				t.Fatal("resolveBackend must not be called once newSource fails")
+				return nil, nil
+			},
+		}
+
+		// A non-empty, DIFFERENT constraint than what's already on disk: if
+		// setHarnessConstraintLocked ran despite the probe failing, the
+		// constraint field would visibly change from ">=1 <2" to ">=2 <3",
+		// so the byte-comparison below is a reliable detector rather than
+		// one that could pass by coincidence on a no-op rewrite.
+		if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], ">=2 <3", false, ""); err == nil {
+			t.Fatal("expected an error from a failing newSource probe")
+		}
+
+		got, err := os.ReadFile(paths.Manifest)
+		if err != nil {
+			t.Fatalf("manifest should still exist unmodified: %v", err)
+		}
+		if string(got) != original {
+			t.Errorf("manifest.yaml was mutated despite the newSource probe failing;\nwant:\n%s\ngot:\n%s", original, got)
+		}
+		if _, err := os.Stat(paths.Observations); !os.IsNotExist(err) {
+			t.Errorf("observations.json should not exist after a probe failure, stat err = %v", err)
+		}
+	})
+
+	t.Run("resolveBackend fails, no manifest yet", func(t *testing.T) {
+		t.Parallel()
+		paths := testHarnessPaths(t)
+		deps := harnessDeps{
+			poolPaths: func() pool.PoolPaths { return paths },
+			poolBinDir: func() (string, string, error) {
+				t.Fatal("poolBinDir must not be called before the newSource/resolveBackend probe")
+				return "", "", nil
+			},
+			newSource:      func() (pool.Source, error) { return &fakeHarnessSource{}, nil },
+			resolveBackend: func() (backend.Backend, error) { return nil, errors.New("guix not on PATH") },
+		}
+
+		if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], "", false, ""); err == nil {
+			t.Fatal("expected an error from a failing resolveBackend probe")
+		}
+
+		if _, err := os.Stat(paths.Manifest); !os.IsNotExist(err) {
+			t.Errorf("manifest.yaml should not have been created after a probe failure, stat err = %v", err)
+		}
+		if _, err := os.Stat(paths.Observations); !os.IsNotExist(err) {
+			t.Errorf("observations.json should not exist after a probe failure, stat err = %v", err)
+		}
+	})
+}
+
 // --- MAJOR 3: one pool-lock acquisition for the whole `install` span ---
 
 // TestHarnessInstallHoldsPoolLockForWholeSpan proves the pool lock is held
