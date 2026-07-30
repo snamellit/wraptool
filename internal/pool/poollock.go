@@ -37,7 +37,7 @@ func NewPoolLock(path string) *PoolLock {
 // errors.Is(err, context.Canceled).
 func (l *PoolLock) Acquire(ctx context.Context) error {
 	dir := filepath.Dir(l.fl.Path())
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, poolDirPerm); err != nil {
 		return fmt.Errorf("creating pool lock directory %s: %w", dir, err)
 	}
 

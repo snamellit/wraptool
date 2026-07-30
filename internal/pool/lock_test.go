@@ -22,9 +22,9 @@ func sampleLock() *Lock {
 				Runtime: &LockRuntime{
 					Name:    "node",
 					Version: "24.18.1",
-					Artifacts: map[string]LockRuntimeArtifact{
-						"linux-amd64-glibc": {URL: "https://nodejs.org/dist/x", SHA256: "aaa"},
-						"linux-arm64-glibc": {URL: "https://nodejs.org/dist/y", SHA256: "bbb"},
+					Artifacts: map[PlatformKey]LockRuntimeArtifact{
+						PlatformLinuxAMD64Glibc: {URL: "https://nodejs.org/dist/x", SHA256: "aaa"},
+						PlatformLinuxARM64Glibc: {URL: "https://nodejs.org/dist/y", SHA256: "bbb"},
 					},
 				},
 				NPMLock: &NPMLock{
@@ -34,15 +34,17 @@ func sampleLock() *Lock {
 						"node_modules/bar": {Version: "2.0.0", Resolved: "https://registry.npmjs.org/bar.tgz", Integrity: "sha512-abc", SHA256: "ddd"},
 					},
 				},
-				Generations: map[string]string{
-					"linux-amd64-glibc": "sha256:gen1",
-					"linux-arm64-glibc": "sha256:gen2",
+				Generations: map[PlatformKey]string{
+					PlatformLinuxAMD64Glibc: "sha256:gen1",
+					PlatformLinuxARM64Glibc: "sha256:gen2",
 				},
 			},
 			"opencode": {
-				Source:  "npm",
-				Package: "opencode",
-				Version: "1.0.0",
+				Source:      "npm",
+				Package:     "opencode",
+				Version:     "1.0.0",
+				PublishedAt: "2026-06-01T00:00:00Z",
+				FirstSeenAt: "2026-06-01T00:10:00Z",
 			},
 		},
 	}
@@ -98,6 +100,59 @@ func TestUnmarshalLockRejectsGarbage(t *testing.T) {
 	if _, err := UnmarshalLock([]byte("not json")); err == nil {
 		t.Fatal("expected an error for invalid JSON, got nil")
 	}
+}
+
+// TestUnmarshalLockRejectsUnknownPlatformKey covers MINOR 5: a generations or
+// runtime-artifacts key that isn't one of the closed PlatformKey values must
+// be rejected, not silently accepted as an opaque string.
+func TestUnmarshalLockRejectsUnknownPlatformKey(t *testing.T) {
+	data := []byte(`{
+		"schema_version": 1,
+		"generated_at": "2026-07-30T09:00:00Z",
+		"policy_hash": "sha256:abc",
+		"harnesses": {
+			"claude": {
+				"source": "npm",
+				"package": "claude",
+				"version": "2.1.220",
+				"published_at": "2026-07-29T12:00:00Z",
+				"first_seen_at": "2026-07-29T12:10:00Z",
+				"generations": {"darwin-arm64": "sha256:gen1"}
+			}
+		}
+	}`)
+	if _, err := UnmarshalLock(data); err == nil {
+		t.Fatal("expected an error for an unrecognized platform key, got nil")
+	}
+}
+
+// TestUnmarshalLockRejectsBadTimestamps covers MINOR 5's timestamp
+// validation on the read path.
+func TestUnmarshalLockRejectsBadTimestamps(t *testing.T) {
+	t.Run("unparsable generated_at", func(t *testing.T) {
+		l := sampleLock()
+		l.GeneratedAt = "not-a-timestamp"
+		data, err := l.Marshal()
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if _, err := UnmarshalLock(data); err == nil {
+			t.Fatal("expected an error for an unparsable generated_at, got nil")
+		}
+	})
+	t.Run("non-UTC published_at", func(t *testing.T) {
+		l := sampleLock()
+		h := l.Harnesses["claude"]
+		h.PublishedAt = "2026-07-29T12:00:00+02:00"
+		l.Harnesses["claude"] = h
+		data, err := l.Marshal()
+		if err != nil {
+			t.Fatalf("Marshal: %v", err)
+		}
+		if _, err := UnmarshalLock(data); err == nil {
+			t.Fatal("expected an error for a non-UTC published_at, got nil")
+		}
+	})
 }
 
 func TestPolicyHashStableAndDistinguishing(t *testing.T) {

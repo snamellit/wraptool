@@ -19,11 +19,14 @@ type AuditEvent struct {
 
 // AppendAudit appends one event to the audit log at path: marshal, then a
 // single O_APPEND write of one JSON line, creating the file and its parent
-// directory on first use. Timestamp is stamped as UTC RFC3339 at call time.
+// directory on first use. Timestamp is stamped as UTC RFC3339Nano at call
+// time — finer than the plain-RFC3339 granularity used elsewhere in this
+// package, matching internal/requestlog's event-log precision, so two events
+// appended within the same second stay orderable by timestamp alone.
 func AppendAudit(path, eventType string, fields map[string]any) error {
 	evt := AuditEvent{
 		Type:      eventType,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
 		Fields:    fields,
 	}
 	line, err := json.Marshal(evt)
@@ -31,7 +34,7 @@ func AppendAudit(path, eventType string, fields map[string]any) error {
 		return fmt.Errorf("marshaling audit event: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), poolDirPerm); err != nil {
 		return fmt.Errorf("creating audit log directory: %w", err)
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

@@ -69,3 +69,33 @@ func TestAppendAuditCreatesParentDir(t *testing.T) {
 		t.Fatalf("expected audit file to exist: %v", err)
 	}
 }
+
+// TestAppendAuditTimestampHasSubsecondPrecision covers NIT 11: audit
+// timestamps use RFC3339Nano (matching internal/requestlog's granularity),
+// not the coarser plain-RFC3339 second precision used elsewhere in this
+// package, so two events appended in quick succession stay orderable by
+// timestamp string alone.
+func TestAppendAuditTimestampHasSubsecondPrecision(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit.jsonl")
+
+	if err := AppendAudit(path, "activate", nil); err != nil {
+		t.Fatalf("AppendAudit: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evt AuditEvent
+	if err := json.Unmarshal(data[:len(data)-1], &evt); err != nil { // strip trailing "\n"
+		t.Fatalf("unmarshaling event: %v", err)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, evt.Timestamp)
+	if err != nil {
+		t.Fatalf("Timestamp = %q is not RFC3339Nano: %v", evt.Timestamp, err)
+	}
+	if parsed.Location() != time.UTC {
+		t.Errorf("Timestamp = %q, want a UTC (Z-suffixed) timestamp", evt.Timestamp)
+	}
+}

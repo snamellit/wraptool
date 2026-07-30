@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -37,16 +38,19 @@ type LockHarness struct {
 	Runtime        *LockRuntime `json:"runtime,omitempty"`
 	NPMLock        *NPMLock     `json:"npm_lock,omitempty"`
 	// Generations maps a platform key to its receipt digest ("sha256:<hex>"),
-	// present once that platform has been realized (§11.5).
-	Generations map[string]string `json:"generations,omitempty"`
+	// present once that platform has been realized (§11.5). Keyed by the
+	// closed PlatformKey enum (not a bare string) so a lock read back from
+	// disk cannot silently carry an unrecognized platform; encoding/json
+	// still sorts these by their string form, so Marshal stays deterministic.
+	Generations map[PlatformKey]string `json:"generations,omitempty"`
 }
 
 // LockRuntime pins the bundled language runtime (e.g. Node) a harness needs,
 // per platform.
 type LockRuntime struct {
-	Name      string                         `json:"name"`
-	Version   string                         `json:"version"`
-	Artifacts map[string]LockRuntimeArtifact `json:"artifacts"` // platform key -> artifact
+	Name      string                              `json:"name"`
+	Version   string                              `json:"version"`
+	Artifacts map[PlatformKey]LockRuntimeArtifact `json:"artifacts"` // platform key -> artifact
 }
 
 // LockRuntimeArtifact is one platform's downloadable runtime artifact.
@@ -72,24 +76,66 @@ type NPMLockPackage struct {
 }
 
 // Marshal serializes the lock deterministically. encoding/json already sorts
-// map[string]... keys and struct field order is fixed by the type
-// definition, so repeated calls on an equal value produce byte-identical
-// output (§17 "deterministic lock serialization").
+// map keys (string-kind, which includes PlatformKey) and struct field order
+// is fixed by the type definition, so repeated calls on an equal value
+// produce byte-identical output (§17 "deterministic lock serialization").
+// SetEscapeHTML(false) avoids the encoder silently rewriting characters like
+// "<" (present in semver constraints and npm scoped package names) into
+// <, which would otherwise make the lock harder to read and diff.
 func (l *Lock) Marshal() ([]byte, error) {
-	data, err := json.MarshalIndent(l, "", "  ")
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(l); err != nil {
 		return nil, fmt.Errorf("marshaling lock: %w", err)
 	}
-	return data, nil
+	// json.Encoder.Encode appends a trailing newline; strip it so Marshal's
+	// output shape matches a plain json.MarshalIndent caller would expect.
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
-// UnmarshalLock parses lock JSON produced by Marshal.
+// UnmarshalLock parses lock JSON produced by Marshal and validates it: every
+// platform key (in Generations and runtime Artifacts) must be one of the
+// closed PlatformKey values, and every timestamp must be a UTC RFC3339
+// string (§6.6). A lock that fails either check is rejected outright rather
+// than silently accepted with a value that later code would mishandle.
 func UnmarshalLock(data []byte) (*Lock, error) {
 	var l Lock
 	if err := json.Unmarshal(data, &l); err != nil {
 		return nil, fmt.Errorf("parsing lock: %w", err)
 	}
+	if err := l.validate(); err != nil {
+		return nil, err
+	}
 	return &l, nil
+}
+
+func (l *Lock) validate() error {
+	if _, err := ParseTimestamp(l.GeneratedAt); err != nil {
+		return fmt.Errorf("generated_at: %w", err)
+	}
+	for name, h := range l.Harnesses {
+		if _, err := ParseTimestamp(h.PublishedAt); err != nil {
+			return fmt.Errorf("harness %q: published_at: %w", name, err)
+		}
+		if _, err := ParseTimestamp(h.FirstSeenAt); err != nil {
+			return fmt.Errorf("harness %q: first_seen_at: %w", name, err)
+		}
+		for key := range h.Generations {
+			if _, err := ParsePlatformKey(string(key)); err != nil {
+				return fmt.Errorf("harness %q: generations: %w", name, err)
+			}
+		}
+		if h.Runtime != nil {
+			for key := range h.Runtime.Artifacts {
+				if _, err := ParsePlatformKey(string(key)); err != nil {
+					return fmt.Errorf("harness %q: runtime artifacts: %w", name, err)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // policyHashPayload is the canonical, minimal representation of an

@@ -8,20 +8,49 @@ import (
 	"strings"
 )
 
+// poolDirPerm is used for every pool directory this package creates. 0o755,
+// not 0o700: the files this package writes carry no secrets — harness
+// auth/config/skills live only under home/, which this package never creates
+// or writes — and runtime/ specifically must be traversable by the container
+// UID that execs the dispatcher and generation binaries at container run
+// time (§5, §12). A tighter mode on runtime/ would silently break every
+// project container's read access to it.
+const poolDirPerm = 0o755
+
 // WriteFileAtomic writes data to path via the shared atomic-write pattern
 // (§6.4): a temp file created in the destination's own directory (so the
 // later rename stays on one volume), fsynced, then renamed over path. The
 // parent directory is fsynced too, but only on POSIX — Windows has no
 // directory-fsync equivalent and NTFS rename is durable without it. Every
 // pool mutation (manifest, lock, observations, pointer files) goes through
-// this one helper, mirroring internal/config's writeAtomic.
+// this one helper (or WritePointer, which shares its rename discipline),
+// mirroring internal/config's writeAtomic.
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return atomicWrite(path, ".wraptool-pool-*.tmp", data, perm)
+}
+
+// WritePointer atomically activates generationID for one platform/harness
+// pair by writing it to the pointer file at path (§5.2): a single line, the
+// generation id, LF-terminated, UTF-8, no other content. The temp file is
+// named "<pointer-basename>.tmp-<random>" — the literal
+// "<harness>.gen.tmp-<txn>" shape from §5.2 — rather than
+// WriteFileAtomic's generic temp name, so an orphaned temp file surviving a
+// crash under active/ is recognizable as pool cleanup work for a future `gc`
+// (not implemented in this package) instead of an anonymous stray.
+func WritePointer(path, generationID string) error {
+	return atomicWrite(path, filepath.Base(path)+".tmp-*", []byte(generationID+"\n"), 0o644)
+}
+
+// atomicWrite is the shared fsync+rename implementation behind
+// WriteFileAtomic and WritePointer; tmpPattern is an os.CreateTemp pattern
+// controlling only the temp file's name.
+func atomicWrite(path, tmpPattern string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, poolDirPerm); err != nil {
 		return fmt.Errorf("creating directory %s: %w", dir, err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".wraptool-pool-*.tmp")
+	tmp, err := os.CreateTemp(dir, tmpPattern)
 	if err != nil {
 		return fmt.Errorf("creating temp file in %s: %w", dir, err)
 	}
@@ -63,14 +92,6 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	}
 
 	return nil
-}
-
-// WritePointer atomically activates generationID for one platform/harness
-// pair by writing it to the pointer file at path (§5.2): a single line, the
-// generation id, LF-terminated, UTF-8, no other content. Uses
-// WriteFileAtomic, so a reader never observes a partially written pointer.
-func WritePointer(path, generationID string) error {
-	return WriteFileAtomic(path, []byte(generationID+"\n"), 0o644)
 }
 
 // ReadPointer reads a pointer file and returns the active generation id,

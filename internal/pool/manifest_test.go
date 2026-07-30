@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// durPtr is a small test helper so literal *time.Duration fields (Policy's
+// global overrides and HarnessManifest's per-harness overrides) can be
+// constructed inline.
+func durPtr(d time.Duration) *time.Duration { return &d }
+
 func TestParseManifestStrictRejectsUnknownKeys(t *testing.T) {
 	data := []byte(`
 schema_version: 1
@@ -77,12 +82,42 @@ harnesses:
 	if m.SchemaVersion != 1 {
 		t.Errorf("SchemaVersion = %d, want 1", m.SchemaVersion)
 	}
-	if m.Policy.MinimumReleaseAge != 168*time.Hour {
+	if m.Policy.MinimumReleaseAge == nil || *m.Policy.MinimumReleaseAge != 168*time.Hour {
 		t.Errorf("Policy.MinimumReleaseAge = %v, want 168h", m.Policy.MinimumReleaseAge)
 	}
 	if m.Harnesses["opencode"].MinimumReleaseAge == nil || *m.Harnesses["opencode"].MinimumReleaseAge != 72*time.Hour {
 		t.Errorf("opencode.MinimumReleaseAge = %v, want 72h", m.Harnesses["opencode"].MinimumReleaseAge)
 	}
+}
+
+func TestParseManifestRejectsMultipleDocuments(t *testing.T) {
+	data := []byte(`
+schema_version: 1
+policy:
+  minimum_release_age: 168h
+---
+schema_version: 1
+policy:
+  minimum_release_age: 0h
+`)
+	if _, err := ParseManifest(data); err == nil {
+		t.Fatal("expected an error for a multi-document manifest, got nil")
+	}
+}
+
+func TestParseManifestRejectsNegativeDuration(t *testing.T) {
+	t.Run("global", func(t *testing.T) {
+		data := []byte("schema_version: 1\npolicy:\n  minimum_release_age: -1h\n")
+		if _, err := ParseManifest(data); err == nil {
+			t.Fatal("expected an error for a negative global minimum_release_age, got nil")
+		}
+	})
+	t.Run("per-harness", func(t *testing.T) {
+		data := []byte("schema_version: 1\nharnesses:\n  claude:\n    minimum_observation_age: -24h\n")
+		if _, err := ParseManifest(data); err == nil {
+			t.Fatal("expected an error for a negative per-harness minimum_observation_age, got nil")
+		}
+	})
 }
 
 func TestLoadManifestMissingFile(t *testing.T) {
@@ -102,7 +137,7 @@ func TestLoadManifestFromDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if m.Policy.MinimumReleaseAge != 24*time.Hour {
+	if m.Policy.MinimumReleaseAge == nil || *m.Policy.MinimumReleaseAge != 24*time.Hour {
 		t.Errorf("MinimumReleaseAge = %v, want 24h", m.Policy.MinimumReleaseAge)
 	}
 }
@@ -110,8 +145,8 @@ func TestLoadManifestFromDisk(t *testing.T) {
 func TestEffectivePolicyInheritsGlobal(t *testing.T) {
 	m := &Manifest{
 		Policy: Policy{
-			MinimumReleaseAge:     168 * time.Hour,
-			MinimumObservationAge: time.Hour,
+			MinimumReleaseAge:     durPtr(168 * time.Hour),
+			MinimumObservationAge: durPtr(time.Hour),
 			AllowPrereleases:      false,
 		},
 		Harnesses: map[string]HarnessManifest{
@@ -131,18 +166,17 @@ func TestEffectivePolicyInheritsGlobal(t *testing.T) {
 }
 
 func TestEffectivePolicyPerHarnessOverride(t *testing.T) {
-	override := 24 * time.Hour
 	allowPre := true
 	m := &Manifest{
 		Policy: Policy{
-			MinimumReleaseAge:     168 * time.Hour,
-			MinimumObservationAge: time.Hour,
+			MinimumReleaseAge:     durPtr(168 * time.Hour),
+			MinimumObservationAge: durPtr(time.Hour),
 			AllowPrereleases:      false,
 		},
 		Harnesses: map[string]HarnessManifest{
 			"claude": {
 				Constraint:        ">=2 <3",
-				MinimumReleaseAge: &override,
+				MinimumReleaseAge: durPtr(24 * time.Hour),
 				AllowPrereleases:  &allowPre,
 				// MinimumObservationAge omitted -> inherits.
 			},
@@ -161,11 +195,10 @@ func TestEffectivePolicyPerHarnessOverride(t *testing.T) {
 }
 
 func TestEffectivePolicyZeroDisables(t *testing.T) {
-	zero := time.Duration(0)
 	m := &Manifest{
-		Policy: Policy{MinimumReleaseAge: 168 * time.Hour},
+		Policy: Policy{MinimumReleaseAge: durPtr(168 * time.Hour)},
 		Harnesses: map[string]HarnessManifest{
-			"claude": {MinimumReleaseAge: &zero},
+			"claude": {MinimumReleaseAge: durPtr(0)},
 		},
 	}
 	eff := m.EffectivePolicy("claude")
@@ -173,16 +206,16 @@ func TestEffectivePolicyZeroDisables(t *testing.T) {
 		t.Errorf("MinimumReleaseAge = %v, want 0 (disabled)", eff.MinimumReleaseAge)
 	}
 
-	// Global 0h disables for a harness with no override too.
-	m2 := &Manifest{Policy: Policy{MinimumReleaseAge: 0}}
+	// An explicit global 0h disables for a harness with no override too.
+	m2 := &Manifest{Policy: Policy{MinimumReleaseAge: durPtr(0)}}
 	eff2 := m2.EffectivePolicy("unlisted")
 	if eff2.MinimumReleaseAge != 0 {
-		t.Errorf("global 0h: MinimumReleaseAge = %v, want 0", eff2.MinimumReleaseAge)
+		t.Errorf("global explicit 0h: MinimumReleaseAge = %v, want 0", eff2.MinimumReleaseAge)
 	}
 }
 
 func TestEffectivePolicyUnknownHarnessGetsGlobal(t *testing.T) {
-	m := &Manifest{Policy: Policy{MinimumReleaseAge: 168 * time.Hour, AllowPrereleases: true}}
+	m := &Manifest{Policy: Policy{MinimumReleaseAge: durPtr(168 * time.Hour), AllowPrereleases: true}}
 	eff := m.EffectivePolicy("does-not-exist")
 	if eff.MinimumReleaseAge != 168*time.Hour || eff.AllowPrereleases != true {
 		t.Errorf("unlisted harness should get the global policy unchanged, got %+v", eff)
@@ -196,10 +229,79 @@ func TestEffectivePolicyUnknownHarnessGetsGlobal(t *testing.T) {
 func TestEffectivePolicyIgnoresEnvironment(t *testing.T) {
 	t.Setenv("WRAPTOOL_HARNESS_MINIMUM_RELEASE_AGE", "0h")
 	m := &Manifest{
-		Policy: Policy{MinimumReleaseAge: 168 * time.Hour},
+		Policy: Policy{MinimumReleaseAge: durPtr(168 * time.Hour)},
 	}
 	eff := m.EffectivePolicy("claude")
 	if eff.MinimumReleaseAge != 168*time.Hour {
 		t.Errorf("environment variable influenced policy: MinimumReleaseAge = %v, want 168h", eff.MinimumReleaseAge)
+	}
+}
+
+// --- MAJOR 2: the default effective release-age quarantine is seven days,
+// not zero, whenever the manifest is silent about it. ---
+
+func TestEffectivePolicyDefaultsToSevenDaysOnEmptyManifest(t *testing.T) {
+	m := &Manifest{} // zero-value: no policy block, no harnesses
+	eff := m.EffectivePolicy("claude")
+	if eff.MinimumReleaseAge != 168*time.Hour {
+		t.Errorf("MinimumReleaseAge = %v, want default 168h", eff.MinimumReleaseAge)
+	}
+	if eff.MinimumObservationAge != 0 {
+		t.Errorf("MinimumObservationAge = %v, want default 0h", eff.MinimumObservationAge)
+	}
+	if eff.AllowPrereleases {
+		t.Error("AllowPrereleases = true, want default false")
+	}
+}
+
+func TestEffectivePolicyDefaultsToSevenDaysOnMissingPolicyBlock(t *testing.T) {
+	data := []byte("schema_version: 1\nharnesses:\n  claude:\n    constraint: \">=2 <3\"\n")
+	m, err := ParseManifest(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	eff := m.EffectivePolicy("claude")
+	if eff.MinimumReleaseAge != 168*time.Hour {
+		t.Errorf("MinimumReleaseAge = %v, want default 168h", eff.MinimumReleaseAge)
+	}
+}
+
+func TestEffectivePolicyDefaultsToSevenDaysOnCommentOnlyFile(t *testing.T) {
+	data := []byte("# just a comment, no document content\n")
+	m, err := ParseManifest(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	eff := m.EffectivePolicy("claude")
+	if eff.MinimumReleaseAge != 168*time.Hour {
+		t.Errorf("MinimumReleaseAge = %v, want default 168h", eff.MinimumReleaseAge)
+	}
+}
+
+func TestEffectivePolicyExplicitZeroOverridesDefault(t *testing.T) {
+	data := []byte("schema_version: 1\npolicy:\n  minimum_release_age: 0h\n")
+	m, err := ParseManifest(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	eff := m.EffectivePolicy("claude")
+	if eff.MinimumReleaseAge != 0 {
+		t.Errorf("MinimumReleaseAge = %v, want explicit 0h (disabled), not the 168h default", eff.MinimumReleaseAge)
+	}
+}
+
+func TestEffectivePolicyPerHarnessOverridesOmittedGlobal(t *testing.T) {
+	// Global policy is entirely omitted (defaults apply); one harness pins a
+	// fast-track override on top of that default.
+	data := []byte("schema_version: 1\nharnesses:\n  claude:\n    minimum_release_age: 24h\n  opencode: {}\n")
+	m, err := ParseManifest(data)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := m.EffectivePolicy("claude").MinimumReleaseAge; got != 24*time.Hour {
+		t.Errorf("claude MinimumReleaseAge = %v, want overridden 24h", got)
+	}
+	if got := m.EffectivePolicy("opencode").MinimumReleaseAge; got != 168*time.Hour {
+		t.Errorf("opencode MinimumReleaseAge = %v, want the 168h default (no override, omitted global)", got)
 	}
 }

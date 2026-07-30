@@ -60,6 +60,27 @@ func TestEligibleZeroDurationAlwaysSatisfied(t *testing.T) {
 	}
 }
 
+// TestEligibleZeroDurationSatisfiedForFutureDatedPublish covers MINOR 3: a
+// registry clock slightly ahead of the pool host must not defeat a 0h
+// (disabled) release-age policy just because now.Sub(publishedAt) is
+// negative.
+func TestEligibleZeroDurationSatisfiedForFutureDatedPublish(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(5 * time.Second)
+	policy := EffectivePolicy{MinimumReleaseAge: 0, MinimumObservationAge: 0}
+	c := Candidate{PublishedAt: future, FirstSeenAt: future}
+	if !Eligible(c, policy, now) {
+		t.Error("a 0h release-age policy should be satisfied even for a future-dated published_at")
+	}
+	remaining, ok := QuarantineRemaining(c, policy, now)
+	if !ok {
+		t.Fatal("QuarantineRemaining: ok = false, want true (candidate is eligible)")
+	}
+	if remaining != 0 {
+		t.Errorf("QuarantineRemaining() = %v, want 0", remaining)
+	}
+}
+
 func TestEligibleYankedAlwaysExcluded(t *testing.T) {
 	now := time.Now().UTC()
 	policy := EffectivePolicy{} // no age requirements, prereleases irrelevant
@@ -87,6 +108,55 @@ func TestEligiblePrereleaseFiltering(t *testing.T) {
 	}
 }
 
+// TestEligibleZeroPublishedAtUnconditionallyIneligible covers MAJOR 1: a
+// zero-value PublishedAt (e.g. a Candidate assembled without setting it)
+// must never pass eligibility just because time.Time{}'s huge apparent age
+// happens to exceed any configured MinimumReleaseAge — including 0h, which
+// would otherwise short-circuit straight to "satisfied".
+func TestEligibleZeroPublishedAtUnconditionallyIneligible(t *testing.T) {
+	now := time.Now().UTC()
+	for _, policy := range []EffectivePolicy{
+		{}, // fully permissive otherwise
+		{MinimumReleaseAge: 0, MinimumObservationAge: 0}, // explicit 0h everywhere
+		{MinimumReleaseAge: 168 * time.Hour},
+	} {
+		c := Candidate{PublishedAt: time.Time{}, FirstSeenAt: now.Add(-365 * 24 * time.Hour)}
+		if Eligible(c, policy, now) {
+			t.Errorf("a zero PublishedAt must be unconditionally ineligible under policy %+v", policy)
+		}
+		if _, ok := QuarantineRemaining(c, policy, now); ok {
+			t.Errorf("QuarantineRemaining: ok = true for a zero PublishedAt under policy %+v, want false", policy)
+		}
+	}
+}
+
+// TestEligibleZeroFirstSeenAtIneligibleUnderObservationPolicy covers MAJOR 1:
+// a zero FirstSeenAt must not pass a non-zero MinimumObservationAge (huge
+// apparent age would otherwise trivially "satisfy" it), but with no
+// observation-age requirement configured a zero FirstSeenAt is not by itself
+// disqualifying.
+func TestEligibleZeroFirstSeenAtIneligibleUnderObservationPolicy(t *testing.T) {
+	now := time.Now().UTC()
+	published := now.Add(-365 * 24 * time.Hour)
+
+	withObservationPolicy := EffectivePolicy{MinimumObservationAge: 24 * time.Hour}
+	c := Candidate{PublishedAt: published, FirstSeenAt: time.Time{}}
+	if Eligible(c, withObservationPolicy, now) {
+		t.Error("a zero FirstSeenAt must be ineligible when MinimumObservationAge > 0")
+	}
+	if _, ok := QuarantineRemaining(c, withObservationPolicy, now); ok {
+		t.Error("QuarantineRemaining: ok = true for a zero FirstSeenAt under a non-zero observation policy, want false")
+	}
+
+	noObservationPolicy := EffectivePolicy{MinimumObservationAge: 0}
+	if !Eligible(c, noObservationPolicy, now) {
+		t.Error("a zero FirstSeenAt should not by itself block eligibility when MinimumObservationAge is 0")
+	}
+	if remaining, ok := QuarantineRemaining(c, noObservationPolicy, now); !ok || remaining != 0 {
+		t.Errorf("QuarantineRemaining() = (%v, %v), want (0, true) when observation age is disabled", remaining, ok)
+	}
+}
+
 func TestQuarantineRemaining(t *testing.T) {
 	now := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
 	policy := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 24 * time.Hour}
@@ -97,7 +167,10 @@ func TestQuarantineRemaining(t *testing.T) {
 		PublishedAt: now.Add(-72 * time.Hour),
 		FirstSeenAt: now.Add(-20 * time.Hour),
 	}
-	got := QuarantineRemaining(c, policy, now)
+	got, ok := QuarantineRemaining(c, policy, now)
+	if !ok {
+		t.Fatal("QuarantineRemaining: ok = false, want true")
+	}
 	want := 96 * time.Hour
 	if got != want {
 		t.Errorf("QuarantineRemaining() = %v, want %v", got, want)
@@ -108,7 +181,7 @@ func TestQuarantineRemaining(t *testing.T) {
 		PublishedAt: now.Add(-365 * 24 * time.Hour),
 		FirstSeenAt: now.Add(-365 * 24 * time.Hour),
 	}
-	if got := QuarantineRemaining(eligibleCandidate, policy, now); got != 0 {
-		t.Errorf("QuarantineRemaining() for an eligible candidate = %v, want 0", got)
+	if got, ok := QuarantineRemaining(eligibleCandidate, policy, now); !ok || got != 0 {
+		t.Errorf("QuarantineRemaining() for an eligible candidate = (%v, %v), want (0, true)", got, ok)
 	}
 }
