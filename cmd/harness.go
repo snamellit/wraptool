@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,75 +23,71 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func newHarnessCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "harness",
-		Short: "Manage the developer harness pool (binaries shared into every project container)",
-		Long: `The harness pool is a developer-scoped directory of AI-harness binaries and
-version-lock state shared into every guix/devcontainer container, so a
-harness is installed once across all projects (not per session). It lives at
-$XDG_DATA_HOME/wraptool/harness-pool (manifest.yaml records developer intent
-and update policy, harness-lock.json the exact resolved version, home/ the
-shared harness HOME). This is the developer's toolbox — not the project
-(manifest.scm) and not host credentials. See design/unified-harness-pool.md.`,
+// harnessDeps bundles the harness commands' host-environment dependencies:
+// pool paths, the legacy pool bin/ directory, the artifact-acquisition
+// Source, and the resolve-phase container backend. Passed by constructor
+// injection — newHarnessCmd threads one harnessDeps to every subcommand
+// constructor, and each subcommand's RunE closure captures it — rather than
+// package-level vars tests mutate globally. This makes the cmd tests safe
+// to run with t.Parallel(): two tests building independent commands with
+// independent fake deps never contend on shared state.
+type harnessDeps struct {
+	poolPaths      func() pool.PoolPaths
+	poolBinDir     func() (poolDir, poolBin string, err error)
+	newSource      func() (pool.Source, error)
+	resolveBackend func() (backend.Backend, error)
+}
+
+// defaultHarnessDeps returns the real, production harnessDeps: the
+// developer's actual pool (rooted at pool.Root()), the legacy pool bin/
+// directory (ensureHarnessPool, cmd/guixcontainer.go), the real npm
+// artifact-acquisition Source (internal/pool/source), and the guix
+// resolve-phase backend.
+func defaultHarnessDeps() harnessDeps {
+	return harnessDeps{
+		// poolPaths builds the pool.PoolPaths for the developer's real pool
+		// (rooted at pool.Root()), mirroring internal/pool/layout.go's
+		// accessors. Orchestrator functions themselves never call
+		// pool.Root(); only this cmd wiring does.
+		poolPaths: func() pool.PoolPaths {
+			return pool.PoolPaths{
+				Manifest:     pool.ManifestFile(),
+				Lock:         pool.LockFile(),
+				Observations: pool.ObservationsFile(),
+				Audit:        pool.AuditFile(),
+				AdvisoryLock: pool.AdvisoryLockFile(),
+				// pool.PoolPaths.Cache must be the flat, content-addressed
+				// cache root (cache/sha256) — see its doc comment.
+				// pool.CacheDir() is the cache/ parent, one level too
+				// shallow; Source.Fetch would silently treat every object
+				// as a permanent cache miss.
+				Cache:   pool.CacheSHA256Dir(),
+				Staging: pool.StagingDir(),
+			}
+		},
+		// poolBinDir returns the legacy pool root and bin/ directory (where
+		// a harness's own installer drops its binary, and where the
+		// {prefix} template in a Descriptor.Install recipe expands to).
+		poolBinDir: func() (string, string, error) {
+			poolDir, poolBin, _, _, err := ensureHarnessPool()
+			return poolDir, poolBin, err
+		},
+		// newSource constructs the harness pool's npm artifact-acquisition
+		// Source (design/unified-harness-pool.md §11.3, pool.Source). The
+		// concrete npm Source lives in internal/pool/source; Go's
+		// structural typing binds it to pool.Source.
+		newSource: func() (pool.Source, error) {
+			return source.NewNPM(""), nil // "" = the default npm registry
+		},
+		resolveBackend: defaultResolveBackend,
 	}
-	cmd.AddCommand(
-		newHarnessListCmd(),
-		newHarnessInstallCmd(),
-		newHarnessRefreshCmd(),
-		newHarnessUpdateCmd(),
-		newHarnessSyncCmd(),
-		newHarnessPolicyCmd(),
-	)
-	return cmd
 }
 
-// harnessPoolPaths builds the pool.PoolPaths for the developer's real pool
-// (rooted at pool.Root()), mirroring internal/pool/layout.go's accessors. A
-// package var (not a plain func) so tests can point commands at a temp pool
-// instead of the developer's real $XDG_DATA_HOME. Orchestrator functions
-// themselves never call pool.Root(); only this cmd wiring does.
-var harnessPoolPaths = func() pool.PoolPaths {
-	return pool.PoolPaths{
-		Manifest:     pool.ManifestFile(),
-		Lock:         pool.LockFile(),
-		Observations: pool.ObservationsFile(),
-		Audit:        pool.AuditFile(),
-		AdvisoryLock: pool.AdvisoryLockFile(),
-		// pool.PoolPaths.Cache must be the flat, content-addressed cache
-		// root (cache/sha256) — see its doc comment. pool.CacheDir() is the
-		// cache/ parent, one level too shallow; Source.Fetch would silently
-		// treat every object as a permanent cache miss.
-		Cache:   pool.CacheSHA256Dir(),
-		Staging: pool.StagingDir(),
-	}
-}
-
-// poolBinDir returns the legacy pool root and bin/ directory (where a
-// harness's own installer drops its binary, and where the {prefix} template
-// in a Descriptor.Install recipe expands to) via ensureHarnessPool. A
-// package var, like harnessPoolPaths, so tests can point install/list at a
-// temp directory instead of the developer's real $XDG_DATA_HOME pool —
-// ensureHarnessPool itself (cmd/guixcontainer.go) has no such seam, since it
-// is shared with `wraptool up`'s container bring-up, outside this file.
-var poolBinDir = func() (poolDir, poolBin string, err error) {
-	poolDir, poolBin, _, _, err = ensureHarnessPool()
-	return poolDir, poolBin, err
-}
-
-// newHarnessSource constructs the harness pool's npm artifact-acquisition
-// Source (design/unified-harness-pool.md §11.3, pool.Source). The concrete
-// npm Source lives in internal/pool/source; Go's structural typing binds it
-// to pool.Source. A var so tests can substitute a fake without network.
-var newHarnessSource = func() (pool.Source, error) {
-	return source.NewNPM(""), nil // "" = the default npm registry
-}
-
-// resolveBackend picks the Linux-container backend the npm resolve phase
-// (§6.2/§8.1) runs in. Phase 1 wires guix only — the same off-guix pointer
-// error `install` has always printed — OCI/--backend selection is Phase 3+
-// (design/unified-harness-pool.md §16).
-func resolveBackend() (backend.Backend, error) {
+// defaultResolveBackend picks the Linux-container backend the npm resolve
+// phase (§6.2/§8.1) runs in. Phase 1 wires guix only — the same off-guix
+// pointer error `install` has always printed — OCI/--backend selection is
+// Phase 3+ (design/unified-harness-pool.md §16).
+func defaultResolveBackend() (backend.Backend, error) {
 	if !hasGuix() {
 		return nil, fmt.Errorf("`wraptool harness update`/`install` resolves the exact npm version " +
 			"inside a guix container, but `guix` is not on PATH.\nOn a devcontainer host, provision " +
@@ -104,6 +101,36 @@ func resolveBackend() (backend.Backend, error) {
 		return nil, err
 	}
 	return b, nil
+}
+
+// newHarnessCmd builds the `harness` command tree with the real, production
+// dependencies. root.go calls this with no arguments; newHarnessCmdWithDeps
+// is the constructor-injection seam tests use to supply fakes.
+func newHarnessCmd() *cobra.Command {
+	return newHarnessCmdWithDeps(defaultHarnessDeps())
+}
+
+func newHarnessCmdWithDeps(deps harnessDeps) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "harness",
+		Short: "Manage the developer harness pool (binaries shared into every project container)",
+		Long: `The harness pool is a developer-scoped directory of AI-harness binaries and
+version-lock state shared into every guix/devcontainer container, so a
+harness is installed once across all projects (not per session). It lives at
+$XDG_DATA_HOME/wraptool/harness-pool (manifest.yaml records developer intent
+and update policy, harness-lock.json the exact resolved version, home/ the
+shared harness HOME). This is the developer's toolbox — not the project
+(manifest.scm) and not host credentials. See design/unified-harness-pool.md.`,
+	}
+	cmd.AddCommand(
+		newHarnessListCmd(deps),
+		newHarnessInstallCmd(deps),
+		newHarnessRefreshCmd(deps),
+		newHarnessUpdateCmd(deps),
+		newHarnessSyncCmd(deps),
+		newHarnessPolicyCmd(deps),
+	)
+	return cmd
 }
 
 // manifestLockableHarnessArgs resolves a `[harness]` optional-positional-arg
@@ -207,34 +234,37 @@ func lockHarnessArgs(paths pool.PoolPaths, args []string) ([]string, error) {
 // aborting at the first one: every harness gets a chance to run (a broken
 // claude refresh must not block opencode's), and the command still exits
 // non-zero if anything failed. fn is expected to print its own per-harness
-// progress/success line; runPerHarness prints only the FAILED line.
-func runPerHarness(names []string, verb string, fn func(name string) error) error {
-	var failed []string
+// progress/success line to cmd.OutOrStdout(); runPerHarness itself prints
+// only the FAILED line, to cmd.ErrOrStderr() (not stdout), so a caller
+// capturing stdout doesn't see error noise mixed in and tests can assert on
+// each stream independently. The returned error is errors.Join of every
+// per-harness failure, each wrapped with its harness name — so errors.Is/As
+// still finds an underlying sentinel error through the join — rather than a
+// stringified summary that loses the original error chain.
+func runPerHarness(cmd *cobra.Command, names []string, fn func(name string) error) error {
+	var errs []error
 	for _, name := range names {
 		if err := fn(name); err != nil {
-			fmt.Printf("%s: FAILED: %v\n", name, err)
-			failed = append(failed, name)
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s: FAILED: %v\n", name, err)
+			errs = append(errs, fmt.Errorf("%s: %w", name, err))
 		}
 	}
-	if len(failed) > 0 {
-		return fmt.Errorf("%s failed for: %s", verb, strings.Join(failed, ", "))
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // --- list ---
 
-func newHarnessListCmd() *cobra.Command {
+func newHarnessListCmd(deps harnessDeps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List known harnesses and their pool lock/install status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, poolBin, err := poolBinDir()
+			_, poolBin, err := deps.poolBinDir()
 			if err != nil {
 				return err
 			}
-			return runHarnessList(harnessPoolPaths(), poolBin, time.Now().UTC(), os.Stdout)
+			return runHarnessList(deps.poolPaths(), poolBin, time.Now().UTC(), cmd.OutOrStdout())
 		},
 	}
 }
@@ -244,8 +274,8 @@ func newHarnessListCmd() *cobra.Command {
 // bin/ install state (Phase 2's real activation-pointer state isn't wired
 // yet). It reads the pool's manifest/lock/observations directly — no pool
 // lock (list never mutates, §6.5) and no Source (pool.StatusHarness works
-// from files already on disk). Factored out from the cobra RunE so it can be
-// tested against a temp pool.
+// from files already on disk). Factored out from the cobra RunE, taking its
+// inputs as plain parameters, so it can be tested against a temp pool.
 func runHarnessList(paths pool.PoolPaths, poolBin string, now time.Time, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "HARNESS\tCONSTRAINT\tLOCKED\tACTIVE\tLATEST\tELIGIBLE\tQUARANTINED")
@@ -334,7 +364,7 @@ func formatRemaining(d time.Duration) string {
 
 // --- install ---
 
-func newHarnessInstallCmd() *cobra.Command {
+func newHarnessInstallCmd(deps harnessDeps) *cobra.Command {
 	var constraint string
 	var allowYoung bool
 	var reason string
@@ -357,16 +387,16 @@ func newHarnessInstallCmd() *cobra.Command {
 			}
 
 			if d.PoolPackage == "" {
-				fmt.Printf("warning: %q has no locked-pool adapter yet; installing unpinned (legacy path, §8)\n", name)
-				paths := harnessPoolPaths()
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %q has no locked-pool adapter yet; installing unpinned (legacy path, §8)\n", name)
+				paths := deps.poolPaths()
 				release, err := pool.LockPool(context.Background(), paths)
 				if err != nil {
 					return err
 				}
 				defer release()
-				return legacyInstall(name, d)
+				return legacyInstall(cmd, deps, name, d)
 			}
-			return runHarnessInstall(context.Background(), name, d, constraint, allowYoung, reason)
+			return runHarnessInstall(context.Background(), cmd, deps, name, d, constraint, allowYoung, reason)
 		},
 	}
 	cmd.Flags().StringVar(&constraint, "constraint", "", "version constraint to record in the pool manifest "+
@@ -385,14 +415,14 @@ func newHarnessInstallCmd() *cobra.Command {
 // Source/backend availability is probed BEFORE the lock is taken (and before
 // any manifest mutation), so an off-guix host or an unwired Source fails
 // with zero side effects.
-func runHarnessInstall(ctx context.Context, name string, d harness.Descriptor, constraint string, allowYoung bool, reason string) error {
-	paths := harnessPoolPaths()
+func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, constraint string, allowYoung bool, reason string) error {
+	paths := deps.poolPaths()
 
-	src, err := newHarnessSource()
+	src, err := deps.newSource()
 	if err != nil {
 		return err
 	}
-	b, err := resolveBackend()
+	b, err := deps.resolveBackend()
 	if err != nil {
 		return err
 	}
@@ -423,23 +453,24 @@ func runHarnessInstall(ctx context.Context, name string, d harness.Descriptor, c
 	if err != nil {
 		return fmt.Errorf("locking %s: %w", name, err)
 	}
-	printUpdateResult(name, result)
+	printUpdateResult(cmd, name, result)
 	if allowYoung && !result.AllowYoungApplied && !result.Changed {
 		// install's no-advance short-circuit fires before the bypass is
 		// consulted, so the flag can no-op invisibly on an existing lock.
-		fmt.Printf("%s: --allow-young had no effect (already locked); use `wraptool harness update %s --allow-young` to advance\n", name, name)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: --allow-young had no effect (already locked); use `wraptool harness update %s --allow-young` to advance\n", name, name)
 	}
 
-	return maybeInstallLocked(name, d, result)
+	return maybeInstallLocked(cmd, deps, name, d, result)
 }
 
-// printUpdateResult reports one harness's pool.UpdateResult to the
-// terminal: an effective --allow-young bypass prints the candidate's
-// version, age, and integrity (§9 minor: "prints candidate age and
-// integrity" — not just the audit record); otherwise it reports whether a
-// new version was locked, an informative kept-version note (MAJOR 1's
+// printUpdateResult reports one harness's pool.UpdateResult to
+// cmd.OutOrStdout(): an effective --allow-young bypass prints the
+// candidate's version, age, and integrity (§9 minor: "prints candidate age
+// and integrity" — not just the audit record); otherwise it reports whether
+// a new version was locked, an informative kept-version note (MAJOR 1's
 // "nothing eligible, kept the existing lock" case), or plain up-to-date.
-func printUpdateResult(name string, result *pool.UpdateResult) {
+func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResult) {
+	out := cmd.OutOrStdout()
 	switch {
 	case result.AllowYoungApplied:
 		msg := fmt.Sprintf("%s: --allow-young bypassed quarantine for %s (published %s ago)",
@@ -447,13 +478,13 @@ func printUpdateResult(name string, result *pool.UpdateResult) {
 		if result.CandidateIntegrity != "" {
 			msg += fmt.Sprintf("; integrity %s", result.CandidateIntegrity)
 		}
-		fmt.Println(msg)
+		fmt.Fprintln(out, msg)
 	case result.Changed:
-		fmt.Printf("%s: locked %s\n", name, result.Harness.Version)
+		fmt.Fprintf(out, "%s: locked %s\n", name, result.Harness.Version)
 	case result.Note != "":
-		fmt.Printf("%s: %s\n", name, result.Note)
+		fmt.Fprintf(out, "%s: %s\n", name, result.Note)
 	default:
-		fmt.Printf("%s: already locked at %s (up to date)\n", name, result.Harness.Version)
+		fmt.Fprintf(out, "%s: already locked at %s (up to date)\n", name, result.Harness.Version)
 	}
 }
 
@@ -475,8 +506,8 @@ func printUpdateResult(name string, result *pool.UpdateResult) {
 // result.Changed with the binary already present means it's about to be
 // silently overwritten by the freshly locked version, so that case gets one
 // explicit line rather than passing in complete silence.
-func maybeInstallLocked(name string, d harness.Descriptor, result *pool.UpdateResult) error {
-	_, poolBin, err := poolBinDir()
+func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult) error {
+	_, poolBin, err := deps.poolBinDir()
 	if err != nil {
 		return err
 	}
@@ -487,10 +518,10 @@ func maybeInstallLocked(name string, d harness.Descriptor, result *pool.UpdateRe
 			return nil
 		}
 	} else if binExists {
-		fmt.Printf("%s: replacing existing pool install with locked %s (prior install's provenance unverified)\n", name, result.Harness.Version)
+		fmt.Fprintf(cmd.OutOrStdout(), "%s: replacing existing pool install with locked %s (prior install's provenance unverified)\n", name, result.Harness.Version)
 	}
 
-	return legacyInstallVersionLocked(name, d, result.Harness.Version)
+	return legacyInstallVersionLocked(cmd, deps, name, d, result.Harness.Version)
 }
 
 // runInstallArgv executes one harness install recipe's argv (guix npm
@@ -498,7 +529,10 @@ func maybeInstallLocked(name string, d harness.Descriptor, result *pool.UpdateRe
 // package var so tests can substitute a fake instead of actually invoking
 // guix/npm/curl — e.g. to prove the pool lock is held for the whole
 // constraint-write→refresh→update→install span (MAJOR 3) without running a
-// real installer.
+// real installer. Out of scope for the harnessDeps constructor-injection
+// refactor (MR59 review): it gates on invoking an external process, not on
+// per-command state, the same reasoning that keeps hasGuix and
+// internal/pool/backend's host-probing vars as package vars too.
 var runInstallArgv = func(argv []string) error {
 	c := exec.Command(argv[0], argv[1:]...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
@@ -512,8 +546,8 @@ var runInstallArgv = func(argv []string) error {
 // Must be called with the pool lock already held (§6.5 MAJOR 3): it mutates
 // the pool's bin/+lib/ directories, the same mutable pool state every other
 // mutating command protects.
-func legacyInstall(name string, d harness.Descriptor) error {
-	poolDir, poolBin, err := poolBinDir()
+func legacyInstall(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor) error {
+	poolDir, poolBin, err := deps.poolBinDir()
 	if err != nil {
 		return err
 	}
@@ -529,15 +563,15 @@ func legacyInstall(name string, d harness.Descriptor) error {
 	if argv[0] == "guix" && !hasGuix() {
 		return offGuixInstallError(name)
 	}
-	fmt.Printf("installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
+	fmt.Fprintf(cmd.OutOrStdout(), "installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
 	if err := runInstallArgv(argv); err != nil {
 		return fmt.Errorf("installing %s: %w", name, err)
 	}
 
 	if bin := filepath.Join(poolBin, d.Bin); fileExists(bin) {
-		fmt.Printf("installed %s -> %s\n", name, bin)
+		fmt.Fprintf(cmd.OutOrStdout(), "installed %s -> %s\n", name, bin)
 	} else {
-		fmt.Printf("warning: %q not found after install (expected %s)\n", d.Bin, bin)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %q not found after install (expected %s)\n", d.Bin, bin)
 	}
 	return nil
 }
@@ -548,8 +582,8 @@ func legacyInstall(name string, d harness.Descriptor) error {
 // install still shells out to npm, now pinned instead of floating "latest".
 // Must be called with the pool lock already held (§6.5 MAJOR 3): the npm run
 // mutates the pool's bin/+lib/ directories.
-func legacyInstallVersionLocked(name string, d harness.Descriptor, version string) error {
-	poolDir, poolBin, err := poolBinDir()
+func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, version string) error {
+	poolDir, poolBin, err := deps.poolBinDir()
 	if err != nil {
 		return err
 	}
@@ -568,15 +602,15 @@ func legacyInstallVersionLocked(name string, d harness.Descriptor, version strin
 	if argv[0] == "guix" && !hasGuix() {
 		return offGuixInstallError(name)
 	}
-	fmt.Printf("installing %s@%s into %s ...\n  %s\n", name, version, poolBin, strings.Join(argv, " "))
+	fmt.Fprintf(cmd.OutOrStdout(), "installing %s@%s into %s ...\n  %s\n", name, version, poolBin, strings.Join(argv, " "))
 	if err := runInstallArgv(argv); err != nil {
 		return fmt.Errorf("installing %s@%s: %w", name, version, err)
 	}
 
 	if bin := filepath.Join(poolBin, d.Bin); fileExists(bin) {
-		fmt.Printf("installed %s -> %s\n", name, bin)
+		fmt.Fprintf(cmd.OutOrStdout(), "installed %s -> %s\n", name, bin)
 	} else {
-		fmt.Printf("warning: %q not found after install (expected %s)\n", d.Bin, bin)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: %q not found after install (expected %s)\n", d.Bin, bin)
 	}
 	return nil
 }
@@ -613,7 +647,7 @@ func offGuixInstallError(name string) error {
 
 // --- refresh ---
 
-func newHarnessRefreshCmd() *cobra.Command {
+func newHarnessRefreshCmd(deps harnessDeps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh [harness]",
 		Short: "Fetch candidate version metadata for one or every manifest-listed harness (metadata only, no download)",
@@ -627,12 +661,12 @@ separate "refresh" first — this command is for keeping already-installed
 harnesses' candidate data current between installs (e.g. before "update").`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths := harnessPoolPaths()
+			paths := deps.poolPaths()
 			names, err := manifestLockableHarnessArgs(paths, args)
 			if err != nil {
 				return err
 			}
-			src, err := newHarnessSource()
+			src, err := deps.newSource()
 			if err != nil {
 				return err
 			}
@@ -644,13 +678,13 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 			defer release()
 
 			now := time.Now().UTC()
-			return runPerHarness(names, "refresh", func(name string) error {
+			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
 				candidates, err := pool.RefreshHarnessLocked(context.Background(), src, paths, d.PoolPackage, now)
 				if err != nil {
 					return err
 				}
-				fmt.Printf("%s: observed %d candidate version(s)\n", name, len(candidates))
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: observed %d candidate version(s)\n", name, len(candidates))
 				return nil
 			})
 		},
@@ -659,7 +693,7 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 
 // --- update ---
 
-func newHarnessUpdateCmd() *cobra.Command {
+func newHarnessUpdateCmd(deps harnessDeps) *cobra.Command {
 	var allowYoung bool
 	var reason string
 	cmd := &cobra.Command{
@@ -676,16 +710,16 @@ listed in the pool manifest.`,
 			if allowYoung && reason == "" {
 				return fmt.Errorf("--allow-young requires --reason")
 			}
-			paths := harnessPoolPaths()
+			paths := deps.poolPaths()
 			names, err := manifestLockableHarnessArgs(paths, args)
 			if err != nil {
 				return err
 			}
-			src, err := newHarnessSource()
+			src, err := deps.newSource()
 			if err != nil {
 				return err
 			}
-			b, err := resolveBackend()
+			b, err := deps.resolveBackend()
 			if err != nil {
 				return err
 			}
@@ -697,7 +731,7 @@ listed in the pool manifest.`,
 			defer release()
 
 			now := time.Now().UTC()
-			return runPerHarness(names, "update", func(name string) error {
+			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
 				result, err := pool.UpdateHarnessLocked(context.Background(), src, b, paths, pool.UpdateOptions{
 					Harness: name, Package: d.PoolPackage, Now: now,
@@ -711,8 +745,8 @@ listed in the pool manifest.`,
 				if err != nil {
 					return err
 				}
-				printUpdateResult(name, result)
-				return maybeInstallLocked(name, d, result)
+				printUpdateResult(cmd, name, result)
+				return maybeInstallLocked(cmd, deps, name, d, result)
 			})
 		},
 	}
@@ -723,7 +757,7 @@ listed in the pool manifest.`,
 
 // --- sync ---
 
-func newHarnessSyncCmd() *cobra.Command {
+func newHarnessSyncCmd(deps harnessDeps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "sync [harness]",
 		Short: "Realize the exact existing lock without resolving a new version",
@@ -734,12 +768,12 @@ knows about but this pool hasn't realized yet. With no harness argument,
 syncs every harness currently present in the lock.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths := harnessPoolPaths()
+			paths := deps.poolPaths()
 			names, err := lockHarnessArgs(paths, args)
 			if err != nil {
 				return err
 			}
-			src, err := newHarnessSource()
+			src, err := deps.newSource()
 			if err != nil {
 				return err
 			}
@@ -750,14 +784,14 @@ syncs every harness currently present in the lock.`,
 			}
 			defer release()
 
-			return runPerHarness(names, "sync", func(name string) error {
+			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
 				lh, err := pool.SyncHarnessLocked(context.Background(), src, paths, name)
 				if err != nil {
 					return err
 				}
-				fmt.Printf("%s: fetched cache objects for locked %s; installing ...\n", name, lh.Version)
-				return legacyInstallVersionLocked(name, d, lh.Version)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; installing ...\n", name, lh.Version)
+				return legacyInstallVersionLocked(cmd, deps, name, d, lh.Version)
 			})
 		},
 	}
@@ -765,16 +799,16 @@ syncs every harness currently present in the lock.`,
 
 // --- policy set ---
 
-func newHarnessPolicyCmd() *cobra.Command {
+func newHarnessPolicyCmd(deps harnessDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "policy",
 		Short: "Configure pool-wide or per-harness update policy (release-age quarantine, prereleases)",
 	}
-	cmd.AddCommand(newHarnessPolicySetCmd())
+	cmd.AddCommand(newHarnessPolicySetCmd(deps))
 	return cmd
 }
 
-func newHarnessPolicySetCmd() *cobra.Command {
+func newHarnessPolicySetCmd(deps harnessDeps) *cobra.Command {
 	var harnessName string
 	var minReleaseAge, minObservationAge time.Duration
 	var allowPrereleases bool
@@ -809,7 +843,7 @@ the original formatting.`,
 				return fmt.Errorf("--minimum-observation-age must not be negative, got %s", minObservationAge)
 			}
 
-			paths := harnessPoolPaths()
+			paths := deps.poolPaths()
 			release, err := pool.LockPool(context.Background(), paths)
 			if err != nil {
 				return err
@@ -840,9 +874,9 @@ the original formatting.`,
 			}
 
 			if harnessName != "" {
-				fmt.Printf("updated policy for %s in %s\n", harnessName, paths.Manifest)
+				fmt.Fprintf(cmd.OutOrStdout(), "updated policy for %s in %s\n", harnessName, paths.Manifest)
 			} else {
-				fmt.Printf("updated pool-wide policy in %s\n", paths.Manifest)
+				fmt.Fprintf(cmd.OutOrStdout(), "updated pool-wide policy in %s\n", paths.Manifest)
 			}
 			return nil
 		},
