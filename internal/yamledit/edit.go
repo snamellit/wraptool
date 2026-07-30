@@ -17,7 +17,10 @@ type Options struct {
 	Kind string
 
 	// FileMode is the permission bits applied to the written file (via the
-	// temp file, before the rename that replaces path).
+	// temp file, before the rename that replaces path). Required: the zero
+	// value would silently write a mode-0000 file, so Edit rejects it
+	// rather than guess a default for a path it doesn't own the policy
+	// for.
 	FileMode os.FileMode
 
 	// SeedIfMissing, when true, seeds Edit with an empty mapping document
@@ -31,7 +34,10 @@ type Options struct {
 	// they are written. A non-nil error aborts the edit, leaving the file
 	// on disk untouched. This is the caller's own semantic validation
 	// (e.g. round-tripping through config.Config or pool.ParseManifest) —
-	// yamledit never interprets the document itself.
+	// yamledit never interprets the document itself. Required: both real
+	// callers validate every edit, and this is a shared write path onto
+	// security-policy files, so Edit rejects a nil Validate rather than
+	// silently skip it.
 	Validate func([]byte) error
 
 	// Write performs the final atomic write; defaults to AtomicWrite (a
@@ -49,11 +55,26 @@ type Options struct {
 // node to mutate, re-encodes the result, runs opts.Validate over the
 // encoded bytes, and — only if that succeeds — writes the result back via
 // opts.Write (or AtomicWrite when unset). The file is left untouched if
-// mutate or Validate returns an error.
+// mutate or Validate returns an error. Edit itself fails immediately,
+// before touching path, when opts.FileMode or opts.Validate is the zero
+// value — see their doc comments.
 func Edit(path string, opts Options, mutate func(doc *yaml.Node) error) error {
 	kind := opts.Kind
 	if kind == "" {
 		kind = "document"
+	}
+
+	// A zero-value Options is a caller bug, not a case to guess a safe
+	// default for: this is a shared write path onto security-policy files
+	// (config.yaml, manifest.yaml), so a missing FileMode (which would
+	// write a mode-0000 file) or a missing Validate (which would write an
+	// edit with no semantic check at all) fails loud here rather than
+	// risking either silently in production.
+	if opts.FileMode == 0 {
+		return fmt.Errorf("yamledit: Options.FileMode is required (got 0)")
+	}
+	if opts.Validate == nil {
+		return fmt.Errorf("yamledit: Options.Validate is required (got nil)")
 	}
 
 	var root yaml.Node
@@ -91,10 +112,9 @@ func Edit(path string, opts Options, mutate func(doc *yaml.Node) error) error {
 		return fmt.Errorf("re-encoding %s: %w", kind, err)
 	}
 
-	if opts.Validate != nil {
-		if err := opts.Validate(out.Bytes()); err != nil {
-			return fmt.Errorf("edited %s failed validation: %w", kind, err)
-		}
+	// opts.Validate is guaranteed non-nil by the Options check above.
+	if err := opts.Validate(out.Bytes()); err != nil {
+		return fmt.Errorf("edited %s failed validation: %w", kind, err)
 	}
 
 	write := opts.Write

@@ -71,10 +71,10 @@ func TestSetToolMetadata_SetAndClear(t *testing.T) {
 }
 
 // TestSetToolMetadata_PreservesInlineCommentOnEditedScalar pins the
-// comment-preserving upgrade internal/config inherited from
-// internal/yamledit (design/yamledit-dedup): editing an existing scalar
-// field in place (here, `timeout`) must keep that line's inline comment,
-// not just "a comment somewhere in the file" — the same guarantee
+// comment-preserving upgrade internal/config inherited from sharing
+// internal/yamledit's editor with cmd/harness.go: editing an existing
+// scalar field in place (here, `timeout`) must keep that line's inline
+// comment, not just "a comment somewhere in the file" — the same guarantee
 // cmd/harness.go's `policy set` already had (MR !59) but ApplyRequest/the
 // webui rule CRUD did not, before both editors shared yamledit.MapSet.
 func TestSetToolMetadata_PreservesInlineCommentOnEditedScalar(t *testing.T) {

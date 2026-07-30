@@ -29,14 +29,20 @@ func MapGet(m *yaml.Node, key string) *yaml.Node {
 }
 
 // MapSet sets key's value on mapping node m. When key already exists AND
-// both the existing and incoming values are plain scalars, the existing
-// node's Tag/Style/Value are mutated IN PLACE rather than replacing the
-// node outright — this preserves any LineComment/HeadComment/FootComment
-// attached to that node (yaml.v3 hangs comments off the node, not the
-// mapping), so editing a field like `minimum_release_age: 168h # seven
-// days` keeps its comment. A structural swap (e.g. a scalar value replaced
-// by a mapping, or vice versa) still replaces the node wholesale — there is
-// no scalar comment to preserve in that case, and the node shapes are
+// both the existing and incoming values are plain scalars, only the
+// existing node's Tag/Style/Value fields are overwritten; every other field
+// on that node is left untouched — in particular its
+// LineComment/HeadComment/FootComment and its yaml Anchor (yaml.v3 hangs
+// both off the node, not the mapping), so editing a field like
+// `minimum_release_age: 168h # seven days` keeps its comment, and a field
+// like `value: &v 168h` keeps its anchor. One consequence of mutating in
+// place rather than replacing: because a yaml.v3 alias node holds a
+// pointer to the anchor's *yaml.Node rather than a copy of it, any alias
+// elsewhere in the document that points at this node resolves to the new
+// value too, once the document is next decoded — an alias updates with its
+// anchor. A structural swap (e.g. a scalar value replaced by a mapping, or
+// vice versa) still replaces the node wholesale — there is no scalar
+// comment or anchor to preserve in that case, and the node shapes are
 // incompatible.
 func MapSet(m *yaml.Node, key string, value *yaml.Node) {
 	for i := 0; i+1 < len(m.Content); i += 2 {

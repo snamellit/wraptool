@@ -118,21 +118,33 @@ func ApplyRequest(path, toolName string, subcommand, flags []string, flagTypes m
 // and writes the result atomically. The file is left untouched if mutate or
 // validation returns an error. This is a thin wrapper over yamledit.Edit,
 // which also drives cmd/harness.go's manifest.yaml editor — config supplies
-// its own Validate (round-trip through the typed Config loader) and keeps
-// the file's original 0600 permissions; the load/decode/mutate/encode/
-// atomic-write shape itself lives in yamledit.
+// its own Validate (round-trip through the typed Config loader) and forces
+// the written file to 0600 regardless of what mode it had before (config
+// may hold no secrets today, but nothing about it guarantees that stays
+// true); the load/decode/mutate/encode/atomic-write shape itself lives in
+// yamledit.
 func editConfig(path string, mutate func(doc *yaml.Node) error) error {
 	path = expandPath(path)
 	return yamledit.Edit(path, yamledit.Options{
 		Kind:     "config",
 		FileMode: 0600,
 		Validate: func(data []byte) error {
+			// This closure — not yamledit.Edit, which wraps the error
+			// generically — knows which of the two validation stages
+			// failed, so it restores the distinct prefixes the pre-yamledit
+			// editConfig used: a round-trip decode failure means the
+			// edited node tree no longer even parses as a Config (a bug in
+			// the edit itself), while a Validate() failure means it parses
+			// fine but violates a semantic rule (e.g. a missing binary).
 			var newCfg Config
 			if err := yaml.Unmarshal(data, &newCfg); err != nil {
-				return err
+				return fmt.Errorf("validating edited config: %w", err)
 			}
 			newCfg.applyDefaults()
-			return newCfg.Validate()
+			if err := newCfg.Validate(); err != nil {
+				return fmt.Errorf("edited config failed validation: %w", err)
+			}
+			return nil
 		},
 	}, mutate)
 }

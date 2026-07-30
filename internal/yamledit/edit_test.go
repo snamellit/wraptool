@@ -197,6 +197,63 @@ type rejectError struct{}
 
 func (*rejectError) Error() string { return "rejected" }
 
+// TestEdit_RejectsZeroFileMode: a zero-value FileMode would write a
+// mode-0000 file (unreadable, effectively bricking the config/manifest it
+// replaced), so Edit refuses it outright rather than silently writing an
+// unusable file. The check must run before touching path, so a caller's
+// mistake never even reads or overwrites anything.
+func TestEdit_RejectsZeroFileMode(t *testing.T) {
+	dir := t.TempDir()
+	original := "a: 1\n"
+	path := writeFile(t, dir, "doc.yaml", original)
+
+	err := Edit(path, Options{Kind: "document", Validate: noValidate}, func(doc *yaml.Node) error {
+		MapSet(doc, "a", ScalarNode("2"))
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected Edit to reject a zero FileMode")
+	}
+	if !strings.Contains(err.Error(), "FileMode") {
+		t.Errorf("error should name the missing field, got: %v", err)
+	}
+	got, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != original {
+		t.Errorf("file modified despite the FileMode rejection; got:\n%q\nwant:\n%q", got, original)
+	}
+}
+
+// TestEdit_RejectsNilValidate: a nil Validate would write an edit with no
+// semantic check at all onto a security-policy file (config.yaml,
+// manifest.yaml) — Edit refuses it outright, before touching path, rather
+// than silently skipping validation.
+func TestEdit_RejectsNilValidate(t *testing.T) {
+	dir := t.TempDir()
+	original := "a: 1\n"
+	path := writeFile(t, dir, "doc.yaml", original)
+
+	err := Edit(path, Options{Kind: "document", FileMode: 0o600}, func(doc *yaml.Node) error {
+		MapSet(doc, "a", ScalarNode("2"))
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected Edit to reject a nil Validate")
+	}
+	if !strings.Contains(err.Error(), "Validate") {
+		t.Errorf("error should name the missing field, got: %v", err)
+	}
+	got, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != original {
+		t.Errorf("file modified despite the Validate rejection; got:\n%q\nwant:\n%q", got, original)
+	}
+}
+
 // TestEdit_SeedIfMissing: a missing file with SeedIfMissing seeds an empty
 // mapping document instead of erroring, mirroring cmd/harness.go's
 // manifest.yaml bootstrap (`policy set`/`install` are the manifest's own

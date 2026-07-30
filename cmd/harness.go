@@ -965,7 +965,8 @@ func setHarnessConstraintLocked(paths pool.PoolPaths, name, constraint string) e
 //
 // manifest.yaml is user-owned, comment-friendly YAML (§7), just like
 // wraptool's own config.yaml — both editors share their node-tree
-// primitives and edit driver via internal/yamledit (design/yamledit-dedup);
+// primitives and edit driver via internal/yamledit, a single
+// comment-preserving editor instead of two independently drifting copies;
 // only the schema_version bootstrap and the pool.ParseManifest/
 // pool.WriteFileAtomic wiring below are manifest-specific.
 

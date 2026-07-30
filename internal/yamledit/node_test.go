@@ -1,6 +1,7 @@
 package yamledit
 
 import (
+	"bytes"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -74,6 +75,49 @@ func TestMapSet_PreservesInlineCommentOnScalarEdit(t *testing.T) {
 	}
 	if got.LineComment != "# seven days" {
 		t.Errorf("LineComment = %q, want preserved %q", got.LineComment, "# seven days")
+	}
+}
+
+// TestMapSet_AnchorSurvivesAndAliasTracksUpdate: an anchored scalar keeps
+// its anchor across an in-place MapSet edit (Anchor is one of the fields
+// MapSet never touches), and — because the mutated node is shared by
+// reference with any alias pointing at it, not copied — an alias elsewhere
+// in the document resolves to the new value once the document is
+// re-encoded and re-decoded. This is the one behavioral consequence of
+// MapSet's in-place mutation called out on its doc comment: an alias
+// updates with its anchor rather than staying pinned to the value it had
+// when the document was first parsed.
+func TestMapSet_AnchorSurvivesAndAliasTracksUpdate(t *testing.T) {
+	m := decodeMapping(t, "value: &v 168h\nalias: *v\n")
+
+	MapSet(m, "value", ScalarNode("72h"))
+
+	anchorNode := MapGet(m, "value")
+	if anchorNode.Anchor != "v" {
+		t.Fatalf("anchor lost by in-place MapSet; got Anchor=%q, want %q", anchorNode.Anchor, "v")
+	}
+
+	// Re-encode and re-decode — the same round-trip Edit performs — to
+	// observe the alias's resolved value rather than just its pointer.
+	root := &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{m}}
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(root); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("encode close: %v", err)
+	}
+
+	reDecoded := decodeMapping(t, out.String())
+	gotAnchor := MapGet(reDecoded, "value")
+	if gotAnchor == nil || gotAnchor.Value != "72h" {
+		t.Errorf("re-decoded anchor value = %v, want 72h", gotAnchor)
+	}
+	gotAlias := MapGet(reDecoded, "alias")
+	if gotAlias == nil || gotAlias.Kind != yaml.AliasNode || gotAlias.Alias == nil || gotAlias.Alias.Value != "72h" {
+		t.Errorf("alias did not track the anchor's update; got %#v", gotAlias)
 	}
 }
 
