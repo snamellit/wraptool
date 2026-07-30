@@ -83,6 +83,16 @@ func TestGuixRunArgv(t *testing.T) {
 			wantArgs: nil, // Run returns an error before calling the runner
 		},
 		{
+			name:     "mount host path containing ',' is rejected",
+			spec:     RunSpec{Argv: []string{"true"}, Mounts: []Mount{{Host: "/cache,evil", Container: "/cache"}}},
+			wantArgs: nil,
+		},
+		{
+			name:     "mount container path containing ',' is rejected",
+			spec:     RunSpec{Argv: []string{"true"}, Mounts: []Mount{{Host: "/cache", Container: "/cache,evil"}}},
+			wantArgs: nil,
+		},
+		{
 			name:     "workdir is realized via env --chdir, not the host cwd",
 			spec:     RunSpec{Argv: []string{"true"}, Workdir: "/stage/gen-1"},
 			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "coreutils", "--", "env", "--chdir=/stage/gen-1", "true"},
@@ -156,6 +166,18 @@ func TestGuixRunArgv(t *testing.T) {
 		runner := &fakeRunner{}
 		g := &Guix{runner: runner}
 		if err := g.Run(context.Background(), RunSpec{}); err == nil {
+			t.Fatal("Run: error = nil, want error")
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("got %d runner calls, want 0", len(runner.calls))
+		}
+	})
+
+	t.Run("non-empty User is rejected (guix always runs as the invoking uid)", func(t *testing.T) {
+		runner := &fakeRunner{}
+		g := &Guix{runner: runner}
+		spec := RunSpec{Argv: []string{"true"}, User: "1000:1000"}
+		if err := g.Run(context.Background(), spec); err == nil {
 			t.Fatal("Run: error = nil, want error")
 		}
 		if len(runner.calls) != 0 {

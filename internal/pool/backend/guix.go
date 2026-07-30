@@ -3,15 +3,9 @@ package backend
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"runtime"
+	"slices"
 )
-
-// envKeyPattern is the only shape of environment-variable name this backend
-// will turn into a --preserve pattern. An exotic key name is a caller bug we
-// want surfaced immediately, not silently smuggled through — deliberately no
-// regexp.QuoteMeta here; an invalid key is rejected, not escaped.
-var envKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // Guix is the Backend that runs provisioning steps in a native Guix
 // container (design/unified-harness-pool.md §11.1): `guix shell --container
@@ -28,9 +22,11 @@ type Guix struct {
 }
 
 // NewGuix returns a Guix backend that runs spec.Argv with pkgs available in
-// the container's profile.
+// the container's profile. pkgs is defensively copied: the caller's slice
+// must not become aliased state this package can mutate later (Run may
+// append "coreutils" to it — see below).
 func NewGuix(pkgs []string) *Guix {
-	return &Guix{pkgs: pkgs, runner: execRunner{}}
+	return &Guix{pkgs: append([]string(nil), pkgs...), runner: execRunner{}}
 }
 
 // Name implements Backend.
@@ -47,16 +43,6 @@ func (g *Guix) Available() bool {
 // strings on those architectures, so no further mapping is needed.
 func hostArch() string { return runtime.GOARCH }
 
-// containsString reports whether s is present in list.
-func containsString(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
-}
-
 // Run builds and executes a `guix shell --container --emulate-fhs --no-cwd`
 // argv per spec. Argument order: container/no-cwd/network flags, then
 // mounts, then --preserve patterns for spec.Env (sorted for a deterministic
@@ -67,6 +53,10 @@ func (g *Guix) Run(ctx context.Context, spec RunSpec) error {
 		return fmt.Errorf("guix backend: empty Argv (a bare `guix shell ... --` with nothing after it would drop into an interactive shell and hang)")
 	}
 
+	if err := validateEnvKeys(spec.Env); err != nil {
+		return fmt.Errorf("guix backend: %w", err)
+	}
+
 	// guix has no cross-arch execution mode at this layer (unlike the oci
 	// backend's --platform, which asks the engine to emulate): a host/target
 	// architecture mismatch is fatal instead of a silent no-op.
@@ -74,8 +64,16 @@ func (g *Guix) Run(ctx context.Context, spec RunSpec) error {
 		return fmt.Errorf("guix backend: requested platform %q does not match host architecture %q; guix shell has no cross-arch execution mode here (use the oci backend for cross-arch provisioning)", spec.Platform, hostArch())
 	}
 
+	// Same loud-error stance as Platform above: guix --container always runs
+	// as the invoking host uid (there is no --user-equivalent flag), so a
+	// request for a different in-container identity cannot be honored and
+	// must not be silently dropped.
+	if spec.User != "" {
+		return fmt.Errorf("guix backend: User %q requested, but guix --container always runs as the invoking host uid and has no way to run as a different one; leave User empty for this backend", spec.User)
+	}
+
 	pkgs := g.pkgs
-	if spec.Workdir != "" && !containsString(pkgs, "coreutils") {
+	if spec.Workdir != "" && !slices.Contains(pkgs, "coreutils") {
 		// Workdir is realized below via coreutils' `env --chdir=`; make sure
 		// coreutils is actually in the container's profile. Copy first: pkgs
 		// may be g.pkgs's own backing array, reused across Run calls with
@@ -97,6 +95,9 @@ func (g *Guix) Run(ctx context.Context, spec RunSpec) error {
 	}
 
 	for _, m := range spec.Mounts {
+		if err := validateMount(m); err != nil {
+			return fmt.Errorf("guix backend: %w", err)
+		}
 		// The guix backend is Linux-host-only (Available() requires the guix
 		// CLI on PATH, which only exists on Linux/Guix System hosts), so
 		// unlike the oci backend's mount serialization, no path-separator
@@ -114,11 +115,9 @@ func (g *Guix) Run(ctx context.Context, spec RunSpec) error {
 	// pattern. spec.Env is passed straight through to the runner below as the
 	// env delta (execRunner merges it onto the host's inherited environment),
 	// and mirrored here as one anchored --preserve pattern per key so guix
-	// actually carries each one into the container.
+	// actually carries each one into the container. Keys were already
+	// validated above.
 	for _, k := range sortedKeys(spec.Env) {
-		if !envKeyPattern.MatchString(k) {
-			return fmt.Errorf("guix backend: invalid env var name %q (want %s)", k, envKeyPattern.String())
-		}
 		args = append(args, "--preserve=^"+k+"$")
 	}
 

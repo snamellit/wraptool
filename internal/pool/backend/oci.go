@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"sync"
 )
 
 // ociEngines is the detection order: docker preferred, podman fallback
@@ -19,6 +22,21 @@ var ociEngines = []string{"docker", "podman"}
 // POSIX test host and prove the mount serializer actually calls it.
 var toSlash = filepath.ToSlash
 
+// hostGOOS is the host OS ociUser branches on. A package-level var — like
+// lookPath and toSlash — so tests can exercise the darwin/windows branches of
+// ociUser's engine matrix without needing to actually run on those hosts.
+var hostGOOS = runtime.GOOS
+
+// dockerSecurityOptions runs `docker info -f {{.SecurityOptions}}` to learn
+// whether the local docker daemon is rootless (its output contains
+// "name=rootless" when it is). A package-level var — like lookPath and
+// toSlash — so tests can stub the daemon's answer without a real docker
+// installation.
+var dockerSecurityOptions = func(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "docker", "info", "-f", "{{.SecurityOptions}}").Output()
+	return string(out), err
+}
+
 // OCI is the Backend that runs provisioning steps in a pinned provisioning
 // OCI image through Docker or Podman (design/unified-harness-pool.md §11.2) —
 // the non-Guix-host path (Arch, macOS, Windows). It never mounts a Docker
@@ -29,6 +47,12 @@ type OCI struct {
 	// is a lock input at a higher layer — this package just runs it).
 	image  string
 	runner commandRunner
+
+	// rootlessOnce/rootlessCached memoize the docker-rootless probe: the
+	// answer describes the daemon, not any particular Run, so it's queried
+	// at most once per OCI instance.
+	rootlessOnce   sync.Once
+	rootlessCached bool
 }
 
 // NewOCI returns an OCI backend that runs the given image reference. There is
@@ -69,24 +93,59 @@ func (o *OCI) Available() bool {
 	return err == nil
 }
 
+// isDockerRootless reports whether the local docker daemon is running
+// rootless, probing (and caching) at most once per OCI instance. On a probe
+// failure it reports false: the failure mode of guessing wrong is different
+// in each direction — treating a rootless daemon as rootful merely adds a
+// redundant --user flag docker will honor anyway (rootless docker still maps
+// that uid to itself), while treating a rootful daemon as rootless leaves
+// staging writable only by root. Probe failure is also rare (it means
+// `docker info` itself failed), so defaulting to the common, safer, rootful
+// case is the right trade-off.
+func (o *OCI) isDockerRootless(ctx context.Context) bool {
+	o.rootlessOnce.Do(func() {
+		out, err := dockerSecurityOptions(ctx)
+		if err != nil {
+			o.rootlessCached = false
+			return
+		}
+		o.rootlessCached = strings.Contains(out, "name=rootless")
+	})
+	return o.rootlessCached
+}
+
 // ociUser resolves the --user value for a run, or reports that none should
-// be passed. Rootful Docker on Linux runs containers as root by default, so
-// files it writes into the bind-mounted staging directory come out
-// root-owned — host-side Go (running as the developer) can then never rename
-// or clean them up, which is exactly the directory realize's atomic-rename
-// step depends on being able to touch. Pinning --user to the invoking
-// developer's uid:gid fixes that. Rootless podman's in-container root
-// already maps to the host user on bind mounts (that's the point of
-// rootless podman), so passing --user there would fight that mapping instead
-// of helping it — always pass nothing for podman. Docker Desktop
-// (darwin/windows) mediates file ownership inside its VM regardless, so
-// neither engine needs a --user override there. An explicit spec.User always
-// wins over all of the above and is passed through unchanged.
-func ociUser(spec RunSpec, engine string) (string, bool) {
+// be passed. The full matrix:
+//
+//   - spec.User set                    -> always passed through unchanged.
+//     This is the escape hatch: e.g. an explicit User:"0:0" runs as root
+//     in-container even against the rootful-docker default below, should a
+//     caller ever need that.
+//   - docker, linux, rootful daemon    -> --user <host uid>:<host gid>.
+//     Rootful Docker runs containers as root by default, so files it writes
+//     into the bind-mounted staging directory come out root-owned —
+//     host-side Go (running as the developer) can then never rename or
+//     clean them up. Pinning --user fixes that.
+//   - docker, linux, ROOTLESS daemon   -> no --user. Rootless docker's
+//     in-container root already maps to the host uid on bind mounts, the
+//     same as rootless podman below — passing --user would fight that
+//     mapping instead of helping it.
+//   - docker, linux, probe failed      -> --user <host uid>:<host gid>
+//     (see isDockerRootless: defaulting to the common rootful case is safer
+//     than silently guessing rootless).
+//   - docker, darwin/windows           -> no --user. Docker Desktop mediates
+//     file ownership inside its VM regardless of daemon mode.
+//   - podman (any host)                -> no --user. Rootless podman's
+//     in-container root already maps to the host user on bind mounts —
+//     that's the entire point of rootless podman; --user would break it.
+func (o *OCI) ociUser(ctx context.Context, spec RunSpec, engine string) (string, bool) {
 	if spec.User != "" {
 		return spec.User, true
 	}
-	if engine == "docker" && runtime.GOOS == "linux" {
+	if engine == "docker" && hostGOOS == "linux" {
+		if o.isDockerRootless(ctx) {
+			return "", false
+		}
 		return fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), true
 	}
 	return "", false
@@ -96,6 +155,10 @@ func ociUser(spec RunSpec, engine string) (string, bool) {
 func (o *OCI) Run(ctx context.Context, spec RunSpec) error {
 	if len(spec.Argv) == 0 {
 		return fmt.Errorf("oci backend: empty Argv (a container started with no command would hang)")
+	}
+
+	if err := validateEnvKeys(spec.Env); err != nil {
+		return fmt.Errorf("oci backend: %w", err)
 	}
 
 	engine, err := o.engine()
@@ -111,11 +174,14 @@ func (o *OCI) Run(ctx context.Context, spec RunSpec) error {
 		args = append(args, "--network=none")
 	}
 
-	if u, ok := ociUser(spec, engine); ok {
+	if u, ok := o.ociUser(ctx, spec, engine); ok {
 		args = append(args, "--user", u)
 	}
 
 	for _, m := range spec.Mounts {
+		if err := validateMount(m); err != nil {
+			return fmt.Errorf("oci backend: %w", err)
+		}
 		// `--mount type=bind,...` rather than `-v host:container[:ro]`:
 		// -v's colon-delimited syntax breaks on a (POSIX-legal) host or
 		// container path containing ':'; --mount's key=value form has no

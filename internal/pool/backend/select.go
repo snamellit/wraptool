@@ -40,7 +40,7 @@ func Select(preference string, opts Options) (Backend, error) {
 		if err := requireOCIImage(opts); err != nil {
 			return nil, err
 		}
-		return NewOCI(opts.OCIImage)
+		return newOCIBackend(opts.OCIImage)
 	case "", "auto":
 		guix := NewGuix(opts.GuixPackages)
 		if guix.Available() {
@@ -58,15 +58,29 @@ func Select(preference string, opts Options) (Backend, error) {
 		if err := requireOCIImage(opts); err != nil {
 			return nil, err
 		}
-		return NewOCI(opts.OCIImage)
+		return newOCIBackend(opts.OCIImage)
 	default:
 		return nil, fmt.Errorf("unknown backend %q (want auto, guix, or oci)", preference)
 	}
 }
 
+// newOCIBackend wraps NewOCI so a construction error never ships as a
+// non-nil Backend interface value wrapping a typed-nil *OCI (the classic
+// "interface holding a nil pointer is not a nil interface" pitfall — a bare
+// `return NewOCI(image)` here would pass that non-nil-but-broken Backend
+// straight to the caller alongside the error).
+func newOCIBackend(image string) (Backend, error) {
+	o, err := NewOCI(image)
+	if err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
 func requireGuixPackages(opts Options) error {
 	if len(opts.GuixPackages) == 0 {
-		return fmt.Errorf("guix backend selected but Options.GuixPackages is empty (guix has no default package set)")
+		return fmt.Errorf("guix backend selected but no package set was configured for the " +
+			"provisioning container — this is a wraptool bug; --backend=oci may work around it")
 	}
 	return nil
 }

@@ -2,19 +2,39 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
-	"runtime"
 	"strings"
 	"testing"
 )
+
+// stubHostGOOS installs a hostGOOS replacement for the duration of a test and
+// restores the original on cleanup — the same pattern as stubLookPath — so
+// ociUser's darwin/windows branches are testable without actually running on
+// those hosts.
+func stubHostGOOS(goos string) func() {
+	orig := hostGOOS
+	hostGOOS = goos
+	return func() { hostGOOS = orig }
+}
+
+// stubDockerSecurityOptions installs a dockerSecurityOptions replacement for
+// the duration of a test and restores the original on cleanup, so the
+// docker-rootless probe is testable without a real docker installation.
+func stubDockerSecurityOptions(out string, err error) func() {
+	orig := dockerSecurityOptions
+	dockerSecurityOptions = func(context.Context) (string, error) { return out, err }
+	return func() { dockerSecurityOptions = orig }
+}
 
 func TestOCIRunArgv(t *testing.T) {
 	cases := []struct {
 		name     string
 		spec     RunSpec
 		wantArgs []string
+		wantErr  bool
 	}{
 		{
 			name:     "zero value defaults to --network=none",
@@ -59,7 +79,11 @@ func TestOCIRunArgv(t *testing.T) {
 			},
 		},
 		{
-			name:     "mount host path containing ':' survives (the reason for --mount over -v)",
+			// This is the reason -v was replaced with --mount: -v's
+			// colon-delimited syntax breaks on a ':' in a path; --mount's
+			// key=value form doesn't. It says nothing about ',' — that's a
+			// separate rejection, covered by TestOCIMountWithCommaRejected.
+			name:     "a ':' in the host path survives because --mount isn't colon-delimited",
 			spec:     RunSpec{Argv: []string{"true"}, Mounts: []Mount{{Host: "/cache/weird:name", Container: "/cache"}}},
 			wantArgs: []string{"run", "--rm", "--network=none", "--mount", "type=bind,src=/cache/weird:name,dst=/cache", "prov:pinned", "true"},
 		},
@@ -91,6 +115,21 @@ func TestOCIRunArgv(t *testing.T) {
 				"prov:pinned", "true",
 			},
 		},
+		{
+			name:    "invalid env var name is rejected, not smuggled through",
+			spec:    RunSpec{Argv: []string{"true"}, Env: map[string]string{"BAD-KEY!": "x"}},
+			wantErr: true,
+		},
+		{
+			name:    "mount host path containing ',' is rejected",
+			spec:    RunSpec{Argv: []string{"true"}, Mounts: []Mount{{Host: "/cache,evil", Container: "/cache"}}},
+			wantErr: true,
+		},
+		{
+			name:    "mount container path containing ',' is rejected",
+			spec:    RunSpec{Argv: []string{"true"}, Mounts: []Mount{{Host: "/cache", Container: "/cache,evil"}}},
+			wantErr: true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -101,7 +140,17 @@ func TestOCIRunArgv(t *testing.T) {
 			runner := &fakeRunner{}
 			o := &OCI{image: "prov:pinned", runner: runner}
 
-			if err := o.Run(context.Background(), tc.spec); err != nil {
+			err := o.Run(context.Background(), tc.spec)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("Run: error = nil, want error")
+				}
+				if len(runner.calls) != 0 {
+					t.Fatalf("got %d runner calls, want 0", len(runner.calls))
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			if len(runner.calls) != 1 {
@@ -131,19 +180,81 @@ func TestOCIEmptyArgvRejected(t *testing.T) {
 	}
 }
 
+// TestOCIUser exercises ociUser's full engine matrix (see its doc comment in
+// oci.go): every branch is reachable by stubbing lookPath (engine),
+// hostGOOS, and dockerSecurityOptions (the rootless probe) rather than
+// depending on the actual host this test runs on.
 func TestOCIUser(t *testing.T) {
-	t.Run("docker on linux defaults to host uid:gid", func(t *testing.T) {
-		if runtime.GOOS != "linux" {
-			t.Skip("this backend's docker+linux default only applies on a linux host")
-		}
+	wantUID := func() string { return fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()) }
+
+	t.Run("docker, linux, rootful daemon: defaults to host uid:gid", func(t *testing.T) {
 		defer stubLookPath("docker")()
+		defer stubHostGOOS("linux")()
+		defer stubDockerSecurityOptions("[name=seccomp:unconfined name=cgroupns]", nil)()
 		runner := &fakeRunner{}
 		o := &OCI{image: "prov:pinned", runner: runner}
 		if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
 			t.Fatalf("Run: %v", err)
 		}
-		want := []string{"run", "--rm", "--network=none", "--user",
-			fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "prov:pinned", "true"}
+		want := []string{"run", "--rm", "--network=none", "--user", wantUID(), "prov:pinned", "true"}
+		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
+			t.Errorf("args = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("docker, linux, ROOTLESS daemon: no --user", func(t *testing.T) {
+		defer stubLookPath("docker")()
+		defer stubHostGOOS("linux")()
+		defer stubDockerSecurityOptions("[name=rootless]", nil)()
+		runner := &fakeRunner{}
+		o := &OCI{image: "prov:pinned", runner: runner}
+		if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		want := []string{"run", "--rm", "--network=none", "prov:pinned", "true"}
+		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
+			t.Errorf("args = %v, want %v (rootless docker's uid mapping must not be overridden)", got, want)
+		}
+	})
+
+	t.Run("docker, linux, probe failure: falls back to the rootful default", func(t *testing.T) {
+		defer stubLookPath("docker")()
+		defer stubHostGOOS("linux")()
+		defer stubDockerSecurityOptions("", errors.New("exec: \"docker\": executable file not found in $PATH"))()
+		runner := &fakeRunner{}
+		o := &OCI{image: "prov:pinned", runner: runner}
+		if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		want := []string{"run", "--rm", "--network=none", "--user", wantUID(), "prov:pinned", "true"}
+		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
+			t.Errorf("args = %v, want %v (a failed probe must default to the safer rootful case)", got, want)
+		}
+	})
+
+	t.Run("docker, darwin: no --user (Docker Desktop mediates ownership)", func(t *testing.T) {
+		defer stubLookPath("docker")()
+		defer stubHostGOOS("darwin")()
+		runner := &fakeRunner{}
+		o := &OCI{image: "prov:pinned", runner: runner}
+		if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		want := []string{"run", "--rm", "--network=none", "prov:pinned", "true"}
+		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
+			t.Errorf("args = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("docker, windows: no --user (Docker Desktop mediates ownership)", func(t *testing.T) {
+		defer stubLookPath("docker")()
+		defer stubHostGOOS("windows")()
+		runner := &fakeRunner{}
+		o := &OCI{image: "prov:pinned", runner: runner}
+		if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		want := []string{"run", "--rm", "--network=none", "prov:pinned", "true"}
 		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
 			t.Errorf("args = %v, want %v", got, want)
 		}
@@ -151,6 +262,7 @@ func TestOCIUser(t *testing.T) {
 
 	t.Run("podman never gets a --user flag", func(t *testing.T) {
 		defer stubLookPath("podman")()
+		defer stubHostGOOS("linux")()
 		runner := &fakeRunner{}
 		o := &OCI{image: "prov:pinned", runner: runner}
 		if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
@@ -164,6 +276,7 @@ func TestOCIUser(t *testing.T) {
 
 	t.Run("explicit User always passes through", func(t *testing.T) {
 		defer stubLookPath("podman")()
+		defer stubHostGOOS("linux")()
 		runner := &fakeRunner{}
 		o := &OCI{image: "prov:pinned", runner: runner}
 		spec := RunSpec{Argv: []string{"true"}, User: "1000:1000"}
@@ -173,6 +286,45 @@ func TestOCIUser(t *testing.T) {
 		want := []string{"run", "--rm", "--network=none", "--user", "1000:1000", "prov:pinned", "true"}
 		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
 			t.Errorf("args = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("explicit User (the escape hatch) wins even over a rootless-detected docker daemon", func(t *testing.T) {
+		defer stubLookPath("docker")()
+		defer stubHostGOOS("linux")()
+		defer stubDockerSecurityOptions("[name=rootless]", nil)()
+		runner := &fakeRunner{}
+		o := &OCI{image: "prov:pinned", runner: runner}
+		spec := RunSpec{Argv: []string{"true"}, User: "0:0"}
+		if err := o.Run(context.Background(), spec); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		want := []string{"run", "--rm", "--network=none", "--user", "0:0", "prov:pinned", "true"}
+		if got := runner.calls[0].args; !reflect.DeepEqual(got, want) {
+			t.Errorf("args = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("the rootless probe is cached: only queried once per OCI instance", func(t *testing.T) {
+		defer stubLookPath("docker")()
+		defer stubHostGOOS("linux")()
+		calls := 0
+		orig := dockerSecurityOptions
+		dockerSecurityOptions = func(context.Context) (string, error) {
+			calls++
+			return "[name=rootless]", nil
+		}
+		defer func() { dockerSecurityOptions = orig }()
+
+		runner := &fakeRunner{}
+		o := &OCI{image: "prov:pinned", runner: runner}
+		for range 3 {
+			if err := o.Run(context.Background(), RunSpec{Argv: []string{"true"}}); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+		}
+		if calls != 1 {
+			t.Errorf("dockerSecurityOptions called %d times, want 1 (cached per instance)", calls)
 		}
 	})
 }

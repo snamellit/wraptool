@@ -1,6 +1,9 @@
 package backend
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSelect(t *testing.T) {
 	cases := []struct {
@@ -83,5 +86,24 @@ func TestSelect(t *testing.T) {
 				t.Errorf("Name() = %q, want %q", got, tc.wantName)
 			}
 		})
+	}
+}
+
+// TestSelectGuixMissingPackagesMessage locks in the operator-actionable
+// wording of the missing-GuixPackages error: no Go field names (an operator
+// reading this didn't write the Go that called Select), and a concrete
+// workaround.
+func TestSelectGuixMissingPackagesMessage(t *testing.T) {
+	defer stubLookPath()()
+	_, err := Select("guix", Options{})
+	if err == nil {
+		t.Fatal("Select: error = nil, want error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "GuixPackages") || strings.Contains(msg, "Options.") {
+		t.Errorf("error message leaks a Go field name: %v", err)
+	}
+	if !strings.Contains(msg, "--backend=oci") {
+		t.Errorf("error message should suggest a workaround: %v", err)
 	}
 }
