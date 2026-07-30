@@ -398,6 +398,15 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 
+	// Decide validates hm.Constraint itself (it has to — the table test
+	// exercises that failure directly), which is a deliberate, accepted
+	// ordering change from the pre-decision-core code: an invalid manifest
+	// constraint used to be checked before the lock/observations reads
+	// above, so it won out over a corrupt lock or observations.json; now a
+	// corrupt file read above wins instead, since it happens first. In
+	// practice this is unreachable — LoadManifest already validates every
+	// constraint (manifest.go's Validate) before UpdateHarnessLocked ever
+	// runs — so no real caller can observe the precedence flip.
 	decision := Decide(DecisionInput{
 		Harness:            opts.Harness,
 		Package:            opts.Package,
@@ -425,6 +434,15 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, decision.Err
 	case DecisionResolveVersion:
 		// Fall through to the resolve+fetch+persist effects below.
+	default:
+		// Fail closed: golangci-lint's exhaustive linter (default-signifies-
+		// exhaustive: false, .golangci.yml) still requires every DecisionKind
+		// to be named above, so this default is unreachable for any Decide
+		// result today. It exists so a future DecisionKind added without an
+		// explicit case here fails loudly at runtime instead of silently
+		// falling through to the resolve+fetch+persist effects meant only
+		// for DecisionResolveVersion.
+		return nil, fmt.Errorf("internal error: unhandled decision kind %q", decision.Kind)
 	}
 
 	selected := decision.Selected

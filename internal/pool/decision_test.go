@@ -30,6 +30,17 @@ var decisionTestPolicy = EffectivePolicy{
 	AllowPrereleases:      false,
 }
 
+// decisionTestPolicyWithObservationGate additionally requires 48h of local
+// observation, used by the handful of rows that isolate AllowYoung's
+// observation-age bypass from its release-age bypass — decisionTestPolicy's
+// MinimumObservationAge is 0 (already disabled), so under it alone deleting
+// `selectPolicy.MinimumObservationAge = 0` inside Decide would go unnoticed.
+var decisionTestPolicyWithObservationGate = EffectivePolicy{
+	MinimumReleaseAge:     168 * time.Hour,
+	MinimumObservationAge: 48 * time.Hour,
+	AllowPrereleases:      false,
+}
+
 // --- candidate shapes (the "candidates" dimension) ---
 
 // candNewerEligible: two candidates, both eligible under decisionTestPolicy
@@ -66,6 +77,37 @@ func candNone() []Candidate { return nil }
 func candYankedButOld() []Candidate {
 	old := decisionTestNow.Add(-300 * time.Hour)
 	return []Candidate{{Version: "2.1.230", PublishedAt: old, FirstSeenAt: old, Yanked: true}}
+}
+
+// candQuarantinedAndYanked: published only 1h ago (quarantined by age) AND
+// yanked. Unlike candYankedButOld (which is already old enough that its
+// quarantine note would show "0s remaining" either way), this candidate is
+// genuinely young: AllowYoung zeroes the age gates for selection, but the
+// candidate is still unselectable because it's yanked, so Decide falls back
+// to the SAME "nothing eligible, keep existing" path as when AllowYoung is
+// off. That fallback's note names the quarantined candidate's remaining
+// time computed from the real, un-bypassed policy (in.Policy) — this
+// fixture is what lets a table row prove that, as opposed to accidentally
+// reading 0s remaining from the age-zeroed selection policy.
+func candQuarantinedAndYanked() []Candidate {
+	young := decisionTestNow.Add(-1 * time.Hour)
+	return []Candidate{{Version: "2.1.230", PublishedAt: young, FirstSeenAt: young, Yanked: true}}
+}
+
+// candQuarantinedByObservationOnly: published long enough ago to clear a
+// 168h release-age gate on its own, but first-seen too recently to clear a
+// separate, nonzero observation-age gate. decisionTestPolicy's own
+// MinimumObservationAge is 0 (already disabled), so this fixture only means
+// something paired with decisionTestPolicyWithObservationGate — it isolates
+// AllowYoung's observation-age bypass from its release-age bypass, which
+// candQuarantinedOnly alone can't distinguish (that fixture is young on
+// BOTH clocks at once).
+func candQuarantinedByObservationOnly() []Candidate {
+	return []Candidate{{
+		Version:     "2.1.230",
+		PublishedAt: decisionTestNow.Add(-200 * time.Hour), // clears the 168h release-age gate
+		FirstSeenAt: decisionTestNow.Add(-1 * time.Hour),   // fails the 48h observation-age gate
+	}}
 }
 
 // candDisallowedPrereleaseYoung: a prerelease candidate under a policy that
@@ -112,6 +154,7 @@ var (
 type decisionWant struct {
 	kind              DecisionKind
 	noteContains      []string // DecisionKeepExisting only
+	noteNotContains   []string // DecisionKeepExisting only
 	selectedVersion   string   // DecisionResolveVersion only
 	allowYoungApplied bool     // DecisionResolveVersion only
 	errContains       []string // DecisionFail only
@@ -125,6 +168,7 @@ func TestDecide(t *testing.T) {
 		lock       lockState
 		candidates []Candidate
 		allowYoung bool
+		policy     EffectivePolicy // zero value means decisionTestPolicy (see the loop below)
 		want       decisionWant
 	}{
 		// --- install (Advance=false) + a fully agreeing lock: the strict
@@ -174,6 +218,59 @@ func TestDecide(t *testing.T) {
 		// candNone + allowYoung collapses with the row above: AllowYoung
 		// bypasses age gates, it cannot conjure a candidate that was never
 		// observed at all.
+		{
+			// The sole candidate is both young (quarantined) and yanked:
+			// AllowYoung zeroes the age gates for selection, but Eligible
+			// still excludes it for being yanked, so selection fails exactly
+			// as it would with AllowYoung off, and Decide falls into the
+			// SAME "keep existing" path — DecisionKeepExisting, not
+			// DecisionResolveVersion. The remaining-quarantine text in the
+			// Note must come from the real, un-bypassed policy (168h - 1h =
+			// 167h), not the age-zeroed selection policy (which would read
+			// "0s remaining") — this is the row that kills a mutant
+			// replacing in.Policy with selectPolicy in Decide's
+			// quarantinedCandidate call.
+			name:    "update + lock agrees + nothing eligible (quarantined AND yanked) + allow-young: yanked defeats the bypass, keeps existing with the UN-bypassed remaining time",
+			advance: true, lock: lockAgrees, candidates: candQuarantinedAndYanked(), allowYoung: true,
+			want: decisionWant{
+				kind:            DecisionKeepExisting,
+				noteContains:    []string{"2.1.220", "2.1.230", "quarantined", "167h0m0s", "remaining"},
+				noteNotContains: []string{"quarantined, 0s remaining"},
+			},
+		},
+		{
+			// decisionTestPolicyWithObservationGate's 48h observation-age
+			// gate is the only thing holding this candidate back (it
+			// already clears the 168h release-age gate on its own) — proves
+			// the observation-age half of the bypass independently of the
+			// release-age half, which candQuarantinedOnly can't isolate.
+			name:    "update + lock agrees + nothing eligible (observation-age quarantined only): keeps existing with a note",
+			advance: true, lock: lockAgrees, candidates: candQuarantinedByObservationOnly(), policy: decisionTestPolicyWithObservationGate,
+			want: decisionWant{kind: DecisionKeepExisting, noteContains: []string{"2.1.220", "2.1.230", "quarantined", "remaining"}},
+		},
+		{
+			// Same candidate and policy as the row above, but with
+			// AllowYoung on: this is the row that kills a mutant deleting
+			// `selectPolicy.MinimumObservationAge = 0` inside Decide — with
+			// only the release-age gate bypassed, this candidate would stay
+			// ineligible (its FirstSeenAt is still only 1h old against a
+			// 48h gate) and Decide would wrongly keep the existing lock
+			// instead of advancing.
+			name:    "update + lock agrees + nothing eligible (observation-age quarantined only) + allow-young: bypasses the observation gate and advances",
+			advance: true, lock: lockAgrees, candidates: candQuarantinedByObservationOnly(), policy: decisionTestPolicyWithObservationGate, allowYoung: true,
+			want: decisionWant{kind: DecisionResolveVersion, selectedVersion: "2.1.230", allowYoungApplied: true},
+		},
+		{
+			// AllowYoung requested but not needed: the candidate is already
+			// eligible under the real policy, so the bypass has nothing to
+			// do. Kills a mutant simplifying
+			// `in.AllowYoung && !Eligible(selected, in.Policy, in.Now)` down
+			// to just `in.AllowYoung` — that mutant would read
+			// AllowYoungApplied=true here instead of false.
+			name:    "update + lock agrees + newer eligible candidate + allow-young: advances, but the bypass was NOT needed (AllowYoungApplied stays false)",
+			advance: true, lock: lockAgrees, candidates: candNewerEligible(), allowYoung: true,
+			want: decisionWant{kind: DecisionResolveVersion, selectedVersion: "2.1.224", allowYoungApplied: false},
+		},
 
 		// --- a stale recipe defeats the short-circuit in BOTH modes, since
 		// lockMatchesRecipe is false regardless of Advance — install and
@@ -345,6 +442,11 @@ func TestDecide(t *testing.T) {
 				constraint = "not-a-valid-constraint"
 			}
 
+			policy := tt.policy
+			if policy == (EffectivePolicy{}) {
+				policy = decisionTestPolicy
+			}
+
 			in := DecisionInput{
 				Harness:            decisionTestHarness,
 				Package:            decisionTestPkg,
@@ -356,7 +458,7 @@ func TestDecide(t *testing.T) {
 				Constraint:         constraint,
 				RecipeRevision:     decisionTestCurrent,
 				Candidates:         tt.candidates,
-				Policy:             decisionTestPolicy,
+				Policy:             policy,
 				AllowYoung:         tt.allowYoung,
 				Now:                decisionTestNow,
 			}
@@ -374,6 +476,11 @@ func TestDecide(t *testing.T) {
 				for _, s := range tt.want.noteContains {
 					if !strings.Contains(got.Note, s) {
 						t.Errorf("Note = %q, want it to contain %q", got.Note, s)
+					}
+				}
+				for _, s := range tt.want.noteNotContains {
+					if strings.Contains(got.Note, s) {
+						t.Errorf("Note = %q, want it to NOT contain %q", got.Note, s)
 					}
 				}
 			case DecisionResolveVersion:
