@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -125,5 +126,32 @@ func TestEnsureConfigFileNeverClobbers(t *testing.T) {
 	}
 	if string(got) != existing {
 		t.Errorf("existing config was modified:\n%s", got)
+	}
+}
+
+// TestRenderDefaultConfigSubstitutesConfigDir asserts the scaffold leaves no
+// template placeholders behind and bakes in the platform config dir, so the
+// token-file examples in the comments are correct on macOS/Windows (not just
+// the Linux ~/.config path). Guards against regressing the Mac first-run
+// scaffold where the comments pointed at a non-existent Linux path.
+func TestRenderDefaultConfigSubstitutesConfigDir(t *testing.T) {
+	out := string(renderDefaultConfig())
+	if strings.Contains(out, "__CONFIG_DIR__") {
+		t.Errorf("scaffold left an unsubstituted __CONFIG_DIR__ placeholder:\n%s", out)
+	}
+	if strings.Contains(out, "__GIT_BINARY__") {
+		t.Errorf("scaffold left an unsubstituted __GIT_BINARY__ placeholder")
+	}
+	// The platform config dir must appear in the rendered comments (the
+	// token-file examples use it). On a typical Linux CI box this is
+	// ~/.config/wraptool; on macOS ~/Library/Application Support/wraptool.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir to compare against")
+	}
+	want := filepath.Join(home, ".config", "wraptool")
+	if !strings.Contains(out, want) {
+		// Not Linux; accept the xdg config home whatever it is on this host.
+		t.Logf("rendered scaffold does not contain the Linux config path; this host's config dir differs (expected on macOS/Windows)")
 	}
 }

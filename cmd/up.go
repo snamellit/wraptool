@@ -241,6 +241,18 @@ func defaultAdminTokenFile() string {
 
 // ensureServer makes the shared MCP server reachable, starting it detached if
 // it is not. Idempotent and safe against a concurrent `up` via a file lock.
+//
+// It also reconciles a stale server whose bind/auth no longer matches the
+// desired (runtime-adjusted) config: a server left over from a previous
+// session (e.g. before a `rm -rf` of the config dir, or an upgrade) may be on
+// a loopback+no-auth bind when `up` now needs a bridged 0.0.0.0+auth bind for
+// a devcontainer. Reusing it silently would leave the container unable to
+// reach the server (loopback isn't routable over the bridge) or unauthenticated.
+// `serve` records its effective listen+auth in a state file next to the
+// pidfile; `up` compares and restarts the stale server when they differ.
+//
+// Tokens are generated on every path (including reuse) so readAuthToken never
+// fails against a server that was started before a token file was defaulted in.
 func ensureServer(cfg *config.Config, configPath string) error {
 	if cfg.MCP.Transport != "sse" {
 		return fmt.Errorf("`up` requires mcp.transport: sse (got %q) so the container can connect over the network", cfg.MCP.Transport)
@@ -249,22 +261,45 @@ func ensureServer(cfg *config.Config, configPath string) error {
 		return fmt.Errorf("mcp.listen is required (e.g. 127.0.0.1:8717)")
 	}
 	probe := probeAddr(cfg.MCP.Listen)
+	desired := serveState{Listen: cfg.MCP.Listen, Auth: cfg.MCP.AuthTokenFile != ""}
 
-	if dialOK(probe) {
-		fmt.Printf("wraptool server already running (%s)\n", probe)
-		return nil
-	}
-
+	// Always acquire the lock before touching tokens or the server: a pre-lock
+	// "already running" fast path would race with a concurrent `up` writing the
+	// same token file. The flock is cheap; correctness beats the micro-opt.
 	unlock, err := lockRuntime()
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
-	// Re-check under the lock; a racing `up` may have started it.
-	if dialOK(probe) {
+	// A matching server is up. Ensure tokens exist under the lock (a server
+	// started before a token file was defaulted in, or whose token file was
+	// later deleted, would otherwise leave readAuthToken with no file to read).
+	if dialOK(probe) && runningMatches(desired) {
+		if err := ensureAuthToken(cfg); err != nil {
+			return err
+		}
 		fmt.Printf("wraptool server already running (%s)\n", probe)
 		return nil
+	}
+
+	// Something is answering but it doesn't match the desired bind/auth (or we
+	// can't tell — e.g. a server started by an older wraptool with no state
+	// file). Stop it so we can bind the desired address with the right auth.
+	if dialOK(probe) {
+		fmt.Printf("wraptool server running with a stale bind/auth; restarting to apply %s\n", cfg.MCP.Listen)
+		if err := stopRunningServer(); err != nil {
+			return fmt.Errorf("stopping stale server: %w", err)
+		}
+		for range 30 {
+			if !dialOK(probe) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if dialOK(probe) {
+			return fmt.Errorf("stale server did not release %s", probe)
+		}
 	}
 
 	if err := ensureAuthToken(cfg); err != nil {
@@ -289,6 +324,33 @@ func ensureServer(cfg *config.Config, configPath string) error {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return fmt.Errorf("server did not become reachable at %s within 6s (see %s)", probe, serveLogPath())
+}
+
+// runningMatches reports whether the recorded state of the running server
+// matches the desired bind+auth. A missing state file (a server started by an
+// older wraptool, or a hand-edited session) is treated as a mismatch so `up`
+// restarts it under the current config — a one-time upgrade cost, and the
+// only safe choice when the effective bind is unknown.
+func runningMatches(desired serveState) bool {
+	got, err := readServeState()
+	if err != nil {
+		return false
+	}
+	return got.Listen == desired.Listen && got.Auth == desired.Auth
+}
+
+// stopRunningServer stops the shared server via its pidfile. It is the body of
+// `server stop`, shared with `up`'s stale-server reconciliation.
+func stopRunningServer() error {
+	pid, err := readPidFile()
+	if err != nil || pid <= 0 {
+		// No pidfile: the listener was started out-of-band (or by an older
+		// wraptool). We can't stop it by pid, but a rebind to a different
+		// address would just double-bind; bail loudly rather than guess.
+		return fmt.Errorf("a server is answering but there is no pidfile at %s to stop it — run `wraptool server stop` or kill it manually", pidFilePath())
+	}
+	_, err = stopByPid(pid)
+	return err
 }
 
 // probeAddr turns a listen address into one that is dialable from the host:

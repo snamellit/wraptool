@@ -441,3 +441,25 @@ func TestValidate_MCPServersOnly(t *testing.T) {
 		t.Fatalf("Validate() error: %v", err)
 	}
 }
+
+// TestExpandPathTilde asserts expandPath resolves a bare "~" and "~/rel" to the
+// home dir, matching cmd.expandTilde so a token file authored as `~` resolves
+// the same way at config load and at `up` runtime.
+func TestExpandPathTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home dir")
+	}
+	cases := map[string]string{
+		"~":            home,
+		"~/x/y":        filepath.Join(home, "x", "y"),
+		"/abs/path":    "/abs/path",
+		"":             "",
+		"rel/~notilde": "rel/~notilde",
+	}
+	for in, want := range cases {
+		if got := expandPath(in); got != want {
+			t.Errorf("expandPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

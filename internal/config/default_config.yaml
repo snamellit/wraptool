@@ -15,17 +15,20 @@ mcp:
   listen: 127.0.0.1:8717
   # Log verbosity: debug | info | warn | error.
   log_level: info
-  # Recommended beyond a loopback bind — an unauthenticated non-loopback listener
-  # is open to the network. `wraptool up` generates this token file for you; for
-  # a direct `wraptool serve`, create it first (it must exist at config load):
-  #   auth_token_file: ~/.config/wraptool/mcp-token
+  # Auth token for a non-loopback bind (an unauthenticated non-loopback listener
+  # is open to the network). `wraptool up` generates this token file for you;
+  # for a direct `wraptool serve`, create it first (it must exist at config load):
+  #   auth_token_file: __CONFIG_DIR__/mcp-token
 
 # Operator review UI. NOT AI-facing — bind localhost only. `wraptool up` enables
-# this automatically at 127.0.0.1:8718 with a generated token; uncomment to
-# configure it explicitly, or run `wraptool up --no-admin` to disable it.
+# this automatically at 127.0.0.1:8718 with a generated token, so you do not
+# need to set anything here for the standard `up` workflow. Uncomment to pick a
+# different port or token file, or run `wraptool up --no-admin` to disable it.
+# A direct `wraptool serve` (no `up`) does NOT auto-enable the UI — uncomment to
+# turn it on, and create the token file first:
 # admin:
 #   listen: 127.0.0.1:8718
-#   auth_token_file: ~/.config/wraptool/admin-token
+#   auth_token_file: __CONFIG_DIR__/admin-token
 
 # Tools exposed to the AI. Every subcommand/flag not listed here is denied.
 tools:
