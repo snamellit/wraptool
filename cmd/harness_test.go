@@ -2,16 +2,108 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/pool"
+	"github.com/pti/wraptool/internal/pool/backend"
 
+	"github.com/gofrs/flock"
 	"gopkg.in/yaml.v3"
 )
+
+// fixedTestNow is this file's fixed clock, mirroring
+// internal/pool/orchestrator_test.go's fixedNow so ages/quarantine windows
+// are reproducible across test runs.
+var fixedTestNow = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+// fakeHarnessSource is a pool.Source test double for cmd-level tests — the
+// cmd-package analogue of internal/pool/orchestrator_test.go's fakeSource,
+// duplicated here (rather than exported from internal/pool) because a
+// production Source implementation should never be reachable from cmd.
+type fakeHarnessSource struct {
+	onCall       func(step string)
+	candidates   map[string][]pool.Candidate
+	failPkgs     map[string]bool
+	resolvedPkgs []string
+}
+
+func (f *fakeHarnessSource) Refresh(_ context.Context, pkg string) ([]pool.Candidate, error) {
+	if f.onCall != nil {
+		f.onCall("refresh:" + pkg)
+	}
+	if f.failPkgs[pkg] {
+		return nil, fmt.Errorf("fake refresh failure for %s", pkg)
+	}
+	return f.candidates[pkg], nil
+}
+
+func (f *fakeHarnessSource) Resolve(_ context.Context, _ backend.Backend, pkg, version, _, _, recipeRevision string) (pool.LockHarness, error) {
+	f.resolvedPkgs = append(f.resolvedPkgs, pkg)
+	if f.onCall != nil {
+		f.onCall("resolve:" + pkg)
+	}
+	if f.failPkgs[pkg] {
+		return pool.LockHarness{}, fmt.Errorf("fake resolve failure for %s", pkg)
+	}
+	return pool.LockHarness{
+		Source: "npm", Package: pkg, Version: version,
+		PublishedAt: pool.FormatTimestamp(fixedTestNow), RecipeRevision: recipeRevision,
+	}, nil
+}
+
+func (f *fakeHarnessSource) Fetch(_ context.Context, h *pool.LockHarness, _ string) error {
+	if f.onCall != nil {
+		f.onCall("fetch:" + h.Package)
+	}
+	h.NPMLock = &pool.NPMLock{LockfileVersion: 3, Packages: map[string]pool.NPMLockPackage{
+		h.Package: {Version: h.Version, Resolved: "https://registry.npmjs.org/x.tgz", Integrity: "sha512-fake", SHA256: "deadbeef"},
+	}}
+	return nil
+}
+
+// --- test seams ---
+
+func swapHarnessPoolPaths(t *testing.T, paths pool.PoolPaths) {
+	t.Helper()
+	orig := harnessPoolPaths
+	harnessPoolPaths = func() pool.PoolPaths { return paths }
+	t.Cleanup(func() { harnessPoolPaths = orig })
+}
+
+func swapHasGuix(t *testing.T, v bool) {
+	t.Helper()
+	orig := hasGuix
+	hasGuix = func() bool { return v }
+	t.Cleanup(func() { hasGuix = orig })
+}
+
+func swapHarnessSource(t *testing.T, src pool.Source) {
+	t.Helper()
+	orig := newHarnessSource
+	newHarnessSource = func() (pool.Source, error) { return src, nil }
+	t.Cleanup(func() { newHarnessSource = orig })
+}
+
+func swapRunInstallArgv(t *testing.T, fn func([]string) error) {
+	t.Helper()
+	orig := runInstallArgv
+	runInstallArgv = fn
+	t.Cleanup(func() { runInstallArgv = orig })
+}
+
+func swapPoolBinDir(t *testing.T, dir string) {
+	t.Helper()
+	orig := poolBinDir
+	poolBinDir = func() (string, string, error) { return dir, filepath.Join(dir, "bin"), nil }
+	t.Cleanup(func() { poolBinDir = orig })
+}
 
 // runHarnessCmd executes `harness <args...>` through the root command,
 // returning combined output and the command error. Mirrors runValidate's
@@ -96,6 +188,7 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 		Audit:        filepath.Join(dir, "audit.jsonl"),
 		AdvisoryLock: filepath.Join(dir, "lock"),
 		Cache:        filepath.Join(dir, "cache"),
+		Staging:      filepath.Join(dir, "staging"),
 	}
 }
 
@@ -303,5 +396,252 @@ func TestPinInstallVersionErrorsWhenPackageNotFound(t *testing.T) {
 	argv := []string{"guix", "shell", "node", "--", "npm", "install", "-g", "some-other-pkg"}
 	if _, err := pinInstallVersion(argv, "@anthropic-ai/claude-code", "2.1.220"); err == nil {
 		t.Fatal("expected an error when the package is not present in argv")
+	}
+}
+
+// --- MAJOR 2: bare refresh/update/sync iterate manifest/lock-listed
+// harnesses only, and per-harness failures are collected, not fatal ---
+
+func TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses(t *testing.T) {
+	paths := testHarnessPaths(t)
+	swapHarnessPoolPaths(t, paths)
+	swapHasGuix(t, true)
+	swapPoolBinDir(t, t.TempDir())
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	// Only claude has recorded pool intent (as if `install claude` ran);
+	// opencode and pi are also pool-lockable but were never installed.
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudePkg := harness.Registry["claude"].PoolPackage
+	obs := pool.Observations{}
+	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.220"),
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := obs.Save(paths.Observations); err != nil {
+		t.Fatal(err)
+	}
+
+	src := &fakeHarnessSource{}
+	swapHarnessSource(t, src)
+
+	out, err := runHarnessCmd(t, "update")
+	if err != nil {
+		t.Fatalf("bare update: %v\noutput:\n%s", err, out)
+	}
+	if len(src.resolvedPkgs) != 1 || src.resolvedPkgs[0] != claudePkg {
+		t.Errorf("resolvedPkgs = %v, want exactly [%s] — bare update must touch only manifest-listed harnesses", src.resolvedPkgs, claudePkg)
+	}
+}
+
+func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
+	paths := testHarnessPaths(t)
+	swapHarnessPoolPaths(t, paths)
+	swapHasGuix(t, true)
+	swapPoolBinDir(t, t.TempDir())
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n  opencode: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudePkg := harness.Registry["claude"].PoolPackage
+	opencodePkg := harness.Registry["opencode"].PoolPackage
+	obs := pool.Observations{}
+	for _, pkg := range []string{claudePkg, opencodePkg} {
+		if err := obs.Observe(pool.ObservationKey("npm", pkg, "1.0.0"),
+			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := obs.Save(paths.Observations); err != nil {
+		t.Fatal(err)
+	}
+
+	src := &fakeHarnessSource{failPkgs: map[string]bool{claudePkg: true}}
+	swapHarnessSource(t, src)
+
+	out, err := runHarnessCmd(t, "update")
+	if err == nil {
+		t.Fatal("expected a non-nil error since claude's update failed")
+	}
+	if !strings.Contains(err.Error(), "claude") {
+		t.Errorf("error should name the failed harness claude, got: %v", err)
+	}
+	found := false
+	for _, p := range src.resolvedPkgs {
+		if p == opencodePkg {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("opencode was never resolved — a failing claude must not block the rest; output:\n%s", out)
+	}
+}
+
+// --- MAJOR 3: one pool-lock acquisition for the whole `install` span ---
+
+// TestHarnessInstallHoldsPoolLockForWholeSpan proves the pool lock is held
+// continuously across constraint-write→refresh→update→install: the fake
+// Source and the fake installer each probe (via a second, independent
+// flock.Flock on the same lock file) that they can NOT acquire it — if they
+// could, the command-level lock must have been released and re-acquired
+// somewhere in between, which is exactly the bug MAJOR 3 fixes.
+func TestHarnessInstallHoldsPoolLockForWholeSpan(t *testing.T) {
+	paths := testHarnessPaths(t)
+	swapHarnessPoolPaths(t, paths)
+	swapHasGuix(t, true)
+	swapPoolBinDir(t, t.TempDir())
+
+	probeHeld := func(step string) {
+		fl := flock.New(paths.AdvisoryLock)
+		locked, err := fl.TryLock()
+		if err != nil {
+			t.Errorf("probing pool lock during %s: %v", step, err)
+			return
+		}
+		if locked {
+			t.Errorf("pool lock was NOT held during %s — the command-level lock must span the whole install", step)
+			_ = fl.Unlock()
+		}
+	}
+
+	src := &fakeHarnessSource{
+		onCall: probeHeld,
+		candidates: map[string][]pool.Candidate{
+			"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	swapHarnessSource(t, src)
+
+	installCalls := 0
+	swapRunInstallArgv(t, func([]string) error {
+		installCalls++
+		probeHeld("install")
+		return nil
+	})
+
+	if err := runHarnessInstall(context.Background(), "claude", harness.Registry["claude"], "", false, ""); err != nil {
+		t.Fatalf("runHarnessInstall: %v", err)
+	}
+	if installCalls != 1 {
+		t.Errorf("installCalls = %d, want 1", installCalls)
+	}
+}
+
+// --- MINOR: install's idempotent path skips the npm run ---
+
+func TestHarnessInstallIdempotentSkipsInstallWhenBinaryPresent(t *testing.T) {
+	paths := testHarnessPaths(t)
+	swapHarnessPoolPaths(t, paths)
+	swapHasGuix(t, true)
+	binDir := t.TempDir()
+	swapPoolBinDir(t, binDir)
+
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	swapHarnessSource(t, src)
+	installCalls := 0
+	swapRunInstallArgv(t, func([]string) error { installCalls++; return nil })
+
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), "claude", d, "", false, ""); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	if installCalls != 1 {
+		t.Fatalf("installCalls after first install = %d, want 1", installCalls)
+	}
+
+	// Simulate the (faked) installer having actually dropped a binary.
+	if err := os.MkdirAll(filepath.Join(binDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "bin", d.Bin), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second install call: manifest/lock/recipe all agree (idempotent), and
+	// the binary is present — must skip the npm run entirely.
+	if err := runHarnessInstall(context.Background(), "claude", d, "", false, ""); err != nil {
+		t.Fatalf("second (idempotent) install: %v", err)
+	}
+	if installCalls != 1 {
+		t.Errorf("installCalls after second (idempotent) install = %d, want still 1 (npm run must be skipped)", installCalls)
+	}
+}
+
+// --- MINOR: mapSetNode preserves an edited scalar's inline comment ---
+
+func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "manifest.yaml")
+	// A single space before the comment, matching yaml.v3's own canonical
+	// re-encoding — the achievable "byte-level" guarantee is that editing
+	// one field doesn't disturb another node's already-canonical line, not
+	// that arbitrary hand-formatted spacing survives the encoder (yaml.v3
+	// re-renders LineComment spacing on every Encode call regardless).
+	original := "schema_version: 1\npolicy:\n  minimum_release_age: 168h # seven days\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := editManifest(path, func(doc *yaml.Node) error {
+		target := ensureMapChild(doc, "policy")
+		mapSetNode(target, "minimum_release_age", scalarNode((72 * time.Hour).String()))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("editManifest: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLine := "  minimum_release_age: " + (72 * time.Hour).String() + " # seven days"
+	found := false
+	for _, line := range strings.Split(string(got), "\n") {
+		if line == wantLine {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the edited line to keep its inline comment exactly as %q, got:\n%s", wantLine, got)
+	}
+}
+
+// TestHarnessPolicySetLeavesUntouchedFieldByteIdentical: editing one policy
+// field via the real `policy set` command must not disturb an unrelated
+// field's line, comment included, byte-for-byte.
+func TestHarnessPolicySetLeavesUntouchedFieldByteIdentical(t *testing.T) {
+	paths := testHarnessPaths(t)
+	swapHarnessPoolPaths(t, paths)
+
+	untouchedLine := "  minimum_release_age: 168h # seven days"
+	original := "schema_version: 1\npolicy:\n" + untouchedLine + "\n"
+	if err := os.WriteFile(paths.Manifest, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := runHarnessCmd(t, "policy", "set", "--minimum-observation-age", "24h"); err != nil {
+		t.Fatalf("policy set: %v", err)
+	}
+
+	got, err := os.ReadFile(paths.Manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, line := range strings.Split(string(got), "\n") {
+		if line == untouchedLine {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("untouched line %q did not survive byte-identical, got:\n%s", untouchedLine, got)
 	}
 }
