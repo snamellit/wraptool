@@ -90,7 +90,12 @@ func LoadObservations(path string) (Observations, error) {
 	}
 	var o Observations
 	if err := json.Unmarshal(data, &o); err != nil {
-		return nil, fmt.Errorf("parsing observations: %w", err)
+		// Name the file and give a concrete remedy: unlike harness-lock.json
+		// or manifest.yaml, observations.json is disposable pool-local cache
+		// state (§9), so "delete it" is always a safe, actionable recovery —
+		// the cost is only that first_seen_at quarantine timestamps restart
+		// on the next refresh, not data loss.
+		return nil, fmt.Errorf("%s is corrupt and could not be parsed as observations.json (%w) — delete it to reset observation quarantine (first-seen timestamps will restart)", path, err)
 	}
 	if o == nil {
 		o = Observations{}

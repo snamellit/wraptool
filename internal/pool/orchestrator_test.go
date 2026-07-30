@@ -306,6 +306,62 @@ func TestUpdateHarnessIdempotentWhenLockAlreadyAgrees(t *testing.T) {
 	}
 }
 
+// TestUpdateHarnessInstallErrorsOnCorruptObservationsEvenWithAnAgreeingLock
+// pins a deliberate, accepted deviation from the pre-decision-core code: the
+// decision core's DecisionInput always carries a fully-loaded candidate list
+// (decision.go's doc comment / Decide's contract), so the shell now loads
+// observations.json unconditionally before calling Decide — including on
+// install's strict short-circuit path, which used to skip that read
+// entirely when the lock already agreed. A corrupt observations.json next to
+// an otherwise fully-agreeing lock therefore now surfaces LoadObservations'
+// parse error instead of install silently short-circuiting to success. This
+// is intentional (see UpdateHarnessLocked's DecisionInput-assembly comment)
+// and this test exists so a future change can't silently re-introduce the
+// old skip-on-agreement behavior without a reviewer noticing the diff here.
+func TestUpdateHarnessInstallErrorsOnCorruptObservationsEvenWithAnAgreeingLock(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	recipeRevision, err := npmRecipeRevision(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLock(t, paths, &Lock{
+		SchemaVersion: LockSchemaVersion,
+		GeneratedAt:   FormatTimestamp(fixedNow.Add(-time.Hour)),
+		PolicyHash:    "sha256:whatever",
+		Harnesses: map[string]LockHarness{
+			"claude": {Source: npmSourceName, Package: pkg, Version: "2.1.220",
+				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+				RecipeRevision: recipeRevision},
+		},
+	})
+
+	// A lock that, on its own, satisfies install's strict short-circuit
+	// (§10) — except observations.json next to it is corrupt.
+	if err := os.MkdirAll(filepath.Dir(paths.Observations), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Observations, []byte(`{not valid json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	src := &fakeSource{}
+	_, err = UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", Package: pkg, Now: fixedNow, // Advance: false (install)
+	})
+	if err == nil {
+		t.Fatal("expected an error from corrupt observations.json, even though the lock alone would satisfy install's short-circuit")
+	}
+	if !strings.Contains(err.Error(), paths.Observations) {
+		t.Errorf("error = %q, want it to name the corrupt file %q", err.Error(), paths.Observations)
+	}
+	if src.resolveCalls != 0 || src.fetchCalls != 0 {
+		t.Errorf("resolveCalls=%d fetchCalls=%d, want none — the failure happens before any Source call", src.resolveCalls, src.fetchCalls)
+	}
+}
+
 // TestUpdateHarnessKeepsExistingLockWhenNothingEligible covers MAJOR 1's
 // second idempotence step: the existing lock's recipe is stale (so strict
 // step-1 idempotence does NOT short-circuit), but the only newly observed

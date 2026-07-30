@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pti/wraptool/internal/yamledit"
+	"gopkg.in/yaml.v3"
 )
 
 // writeTestConfig writes a YAML config that references a fake binary
@@ -351,4 +354,89 @@ tools:
 func mustBinPath(t *testing.T, cfgPath string) string {
 	t.Helper()
 	return filepath.Join(filepath.Dir(cfgPath), "git")
+}
+
+// TestEditConfig_ErrorPrefixesDistinguishDecodeFromValidate pins the two
+// distinct error prefixes editConfig's Validate closure restores over
+// yamledit.Edit's generic wrapping: a round-trip decode failure (the edited
+// node tree no longer parses as a Config at all — a bug in the edit itself)
+// reads "validating edited config: ...", while a semantic Validate()
+// failure (parses fine, violates a rule) reads "edited config failed
+// validation: ...". Both get an outer, generic "edited config failed
+// validation: " wrap from yamledit.Edit itself, so the decode-failure case
+// is checked by its inner, distinguishing prefix specifically.
+func TestEditConfig_ErrorPrefixesDistinguishDecodeFromValidate(t *testing.T) {
+	t.Run("decode failure", func(t *testing.T) {
+		cfgPath, _ := writeTestConfig(t, `mcp:
+  transport: stdio
+tools:
+  git:
+    binary: {{BIN}}
+    allow:
+      - subcommand: [status]
+`)
+		err := editConfig(cfgPath, func(doc *yaml.Node) error {
+			mcpNode := yamledit.MapGet(doc, "mcp")
+			// `transport` is a string field; a mapping value fails to
+			// decode into Config at all, before newCfg.Validate() ever
+			// runs.
+			yamledit.MapSet(mcpNode, "transport", &yaml.Node{Kind: yaml.MappingNode})
+			return nil
+		})
+		if err == nil {
+			t.Fatal("expected a decode error")
+		}
+		if !strings.Contains(err.Error(), "validating edited config:") {
+			t.Errorf("expected the decode-stage prefix \"validating edited config:\", got: %v", err)
+		}
+	})
+
+	t.Run("semantic validation failure", func(t *testing.T) {
+		cfgPath, binPath := writeTestConfig(t, `mcp:
+  transport: stdio
+tools:
+  git:
+    binary: {{BIN}}
+    allow:
+      - subcommand: [status]
+`)
+		if err := os.Remove(binPath); err != nil {
+			t.Fatal(err)
+		}
+		err := editConfig(cfgPath, func(doc *yaml.Node) error { return nil })
+		if err == nil {
+			t.Fatal("expected a semantic validation error")
+		}
+		if !strings.Contains(err.Error(), "edited config failed validation:") {
+			t.Errorf("expected the validate-stage prefix \"edited config failed validation:\", got: %v", err)
+		}
+		if strings.Contains(err.Error(), "validating edited config:") {
+			t.Errorf("semantic validation failure should not carry the decode-stage prefix, got: %v", err)
+		}
+	})
+}
+
+// TestEditConfig_MissingFileErrorsWithoutSeeding pins that editConfig never
+// sets yamledit.Options.SeedIfMissing — only cmd/harness.go's manifest
+// editor does, because manifest.yaml bootstraps itself on first use while
+// config.yaml is always scaffolded ahead of time (config.EnsureConfigFile).
+// If editConfig started seeding, the no-op mutate below would build an
+// empty document that fails *validation* (no tools configured) instead of
+// failing to *read* — so asserting the "reading config" prefix specifically
+// (not just "an error") is what makes this mutation-proof against that
+// regression, on top of the direct file-not-created check.
+func TestEditConfig_MissingFileErrorsWithoutSeeding(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "does-not-exist.yaml")
+
+	err := editConfig(cfgPath, func(doc *yaml.Node) error { return nil })
+	if err == nil {
+		t.Fatal("expected an error for a missing config file")
+	}
+	if !strings.Contains(err.Error(), "reading config") {
+		t.Errorf("expected a \"reading config\" error (no seeding), got: %v", err)
+	}
+	if _, statErr := os.Stat(cfgPath); statErr == nil {
+		t.Error("editConfig must not create the file for a missing config path")
+	}
 }

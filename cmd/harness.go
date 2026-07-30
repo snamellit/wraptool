@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -18,6 +17,7 @@ import (
 	"github.com/pti/wraptool/internal/pool"
 	"github.com/pti/wraptool/internal/pool/backend"
 	"github.com/pti/wraptool/internal/pool/source"
+	"github.com/pti/wraptool/internal/yamledit"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -885,19 +885,19 @@ the original formatting.`,
 			err = editManifest(paths.Manifest, func(doc *yaml.Node) error {
 				var target *yaml.Node
 				if harnessName != "" {
-					harnessesNode := ensureMapChild(doc, "harnesses")
-					target = ensureMapChild(harnessesNode, harnessName)
+					harnessesNode := yamledit.EnsureMapChild(doc, "harnesses")
+					target = yamledit.EnsureMapChild(harnessesNode, harnessName)
 				} else {
-					target = ensureMapChild(doc, "policy")
+					target = yamledit.EnsureMapChild(doc, "policy")
 				}
 				if releaseSet {
-					mapSetNode(target, "minimum_release_age", scalarNode(minReleaseAge.String()))
+					yamledit.MapSet(target, "minimum_release_age", yamledit.ScalarNode(minReleaseAge.String()))
 				}
 				if observationSet {
-					mapSetNode(target, "minimum_observation_age", scalarNode(minObservationAge.String()))
+					yamledit.MapSet(target, "minimum_observation_age", yamledit.ScalarNode(minObservationAge.String()))
 				}
 				if prereleaseSet {
-					mapSetNode(target, "allow_prereleases", scalarNode(boolString(allowPrereleases)))
+					yamledit.MapSet(target, "allow_prereleases", yamledit.ScalarNode(boolString(allowPrereleases)))
 				}
 				return nil
 			})
@@ -952,10 +952,10 @@ func setHarnessConstraint(paths pool.PoolPaths, name, constraint string) error {
 // widen back to "any version").
 func setHarnessConstraintLocked(paths pool.PoolPaths, name, constraint string) error {
 	return editManifest(paths.Manifest, func(doc *yaml.Node) error {
-		harnessesNode := ensureMapChild(doc, "harnesses")
-		entry := ensureMapChild(harnessesNode, name)
+		harnessesNode := yamledit.EnsureMapChild(doc, "harnesses")
+		entry := yamledit.EnsureMapChild(harnessesNode, name)
 		if constraint != "" {
-			mapSetNode(entry, "constraint", strNode(constraint))
+			yamledit.MapSet(entry, "constraint", yamledit.StrNode(constraint))
 		}
 		return nil
 	})
@@ -964,137 +964,34 @@ func setHarnessConstraintLocked(paths pool.PoolPaths, name, constraint string) e
 // --- manifest.yaml node-tree editor ---
 //
 // manifest.yaml is user-owned, comment-friendly YAML (§7), just like
-// wraptool's own config.yaml. This mirrors internal/config/edit.go's
-// editConfig/mapGet/mapSet pattern (read before writing this) rather than
-// importing it: internal/config's helpers are unexported and its editConfig
-// validates through config.Config, not pool.Manifest, so reuse would need an
-// internal/config export this work package's brief scopes out.
+// wraptool's own config.yaml — both editors share their node-tree
+// primitives and edit driver via internal/yamledit, a single
+// comment-preserving editor instead of two independently drifting copies;
+// only the schema_version bootstrap and the pool.ParseManifest/
+// pool.WriteFileAtomic wiring below are manifest-specific.
 
 // editManifest reads manifest.yaml (seeding an empty document if it doesn't
 // exist yet — `policy set`/`install` are the manifest's own bootstrap, no
 // separate init step), parses it into a YAML node tree (preserving comments
-// and ordering), hands the document's root mapping node to mutate, ensures
-// schema_version is set, then re-encodes, round-trip validates through
+// and ordering), ensures schema_version is set, hands the document's root
+// mapping node to mutate, then re-encodes, round-trip validates through
 // pool.ParseManifest's strict decoder, and writes the result atomically
 // under the pool lock discipline (§6.4/§6.5, via pool.WriteFileAtomic). The
 // file is left untouched if mutate or validation fails.
 func editManifest(path string, mutate func(doc *yaml.Node) error) error {
-	var root yaml.Node
-	data, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if uerr := yaml.Unmarshal(data, &root); uerr != nil {
-			return fmt.Errorf("parsing manifest: %w", uerr)
+	return yamledit.Edit(path, yamledit.Options{
+		Kind:          "manifest",
+		FileMode:      0o644,
+		SeedIfMissing: true,
+		Validate: func(data []byte) error {
+			_, err := pool.ParseManifest(data)
+			return err
+		},
+		Write: pool.WriteFileAtomic,
+	}, func(doc *yaml.Node) error {
+		if yamledit.MapGet(doc, "schema_version") == nil {
+			yamledit.MapSet(doc, "schema_version", yamledit.ScalarNode("1"))
 		}
-	case os.IsNotExist(err):
-		root = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
-	default:
-		return fmt.Errorf("reading manifest: %w", err)
-	}
-
-	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
-		return fmt.Errorf("manifest is not a YAML document")
-	}
-	doc := root.Content[0]
-	if doc.Kind != yaml.MappingNode {
-		return fmt.Errorf("manifest root is not a mapping")
-	}
-
-	if mapGetNode(doc, "schema_version") == nil {
-		mapSetNode(doc, "schema_version", scalarNode("1"))
-	}
-
-	if err := mutate(doc); err != nil {
-		return err
-	}
-
-	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(&root); err != nil {
-		return fmt.Errorf("re-encoding manifest: %w", err)
-	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("re-encoding manifest: %w", err)
-	}
-
-	if _, err := pool.ParseManifest(out.Bytes()); err != nil {
-		return fmt.Errorf("edited manifest failed validation: %w", err)
-	}
-
-	return pool.WriteFileAtomic(path, out.Bytes(), 0o644)
-}
-
-// ensureMapChild returns the mapping node at key under parent, creating (and
-// appending) an empty one if absent, and coercing an existing non-mapping
-// value (e.g. a stray `harnesses: null`) into an empty mapping rather than
-// erroring — the caller is always about to add fields under it. Coercion
-// mutates the existing node in place, so any comment attached to it survives.
-func ensureMapChild(parent *yaml.Node, key string) *yaml.Node {
-	if child := mapGetNode(parent, key); child != nil {
-		if child.Kind != yaml.MappingNode {
-			child.Kind = yaml.MappingNode
-			child.Tag = "!!map"
-			child.Value = ""
-			child.Content = nil
-		}
-		return child
-	}
-	child := &yaml.Node{Kind: yaml.MappingNode}
-	mapSetNode(parent, key, child)
-	return child
-}
-
-func mapGetNode(m *yaml.Node, key string) *yaml.Node {
-	if m == nil || m.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			return m.Content[i+1]
-		}
-	}
-	return nil
-}
-
-// mapSetNode sets key's value on mapping node m. When key already exists
-// AND both the existing and incoming values are plain scalars, the existing
-// node's Tag/Style/Value are mutated IN PLACE rather than replacing the
-// node outright — this preserves any LineComment/HeadComment/FootComment
-// attached to that node (yaml.v3 hangs comments off the node, not the
-// mapping), so manifest.yaml's own documented example,
-// `minimum_release_age: 168h  # seven days`, keeps its comment through
-// `policy set` editing that same field. A structural swap (e.g. a scalar
-// value replaced by a mapping, or vice versa) still replaces the node
-// wholesale — there is no scalar comment to preserve in that case, and the
-// node shapes are incompatible.
-func mapSetNode(m *yaml.Node, key string, value *yaml.Node) {
-	for i := 0; i+1 < len(m.Content); i += 2 {
-		if m.Content[i].Value == key {
-			existing := m.Content[i+1]
-			if existing.Kind == yaml.ScalarNode && value.Kind == yaml.ScalarNode {
-				existing.Tag = value.Tag
-				existing.Style = value.Style
-				existing.Value = value.Value
-				return
-			}
-			m.Content[i+1] = value
-			return
-		}
-	}
-	m.Content = append(m.Content, scalarNode(key), value)
-}
-
-// scalarNode is an untagged plain scalar: the encoder resolves it to its
-// natural YAML type (bool, duration-parseable string, etc.).
-func scalarNode(value string) *yaml.Node {
-	return &yaml.Node{Kind: yaml.ScalarNode, Value: value}
-}
-
-// strNode is a scalar explicitly tagged as a string, so the encoder quotes
-// values that would otherwise misparse as YAML (a version constraint like
-// ">=2 <3" starts with a folded-block-scalar indicator character) —
-// mirroring internal/config/edit.go's strNode.
-func strNode(value string) *yaml.Node {
-	return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+		return mutate(doc)
+	})
 }
