@@ -3,12 +3,19 @@ package backend
 import (
 	"context"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
 func TestGuixRunArgv(t *testing.T) {
+	otherArch := "arm64"
+	if runtime.GOARCH == "arm64" {
+		otherArch = "amd64"
+	}
+
 	cases := []struct {
 		name     string
+		pkgs     []string
 		spec     RunSpec
 		wantArgs []string
 		wantDir  string
@@ -17,12 +24,12 @@ func TestGuixRunArgv(t *testing.T) {
 		{
 			name:     "zero value is no-network, no mounts, no env, no workdir",
 			spec:     RunSpec{Argv: []string{"true"}},
-			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--", "true"},
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "--", "true"},
 		},
 		{
 			name:     "network on adds --network",
 			spec:     RunSpec{Argv: []string{"npm", "ci"}, Network: true},
-			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--network", "--", "npm", "ci"},
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "--network", "--", "npm", "ci"},
 		},
 		{
 			name: "read-only mount maps to --expose",
@@ -30,7 +37,7 @@ func TestGuixRunArgv(t *testing.T) {
 				Argv:   []string{"true"},
 				Mounts: []Mount{{Host: "/pool/bin", Container: "/pool/bin", ReadOnly: true}},
 			},
-			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--expose=/pool/bin=/pool/bin", "--", "true"},
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "--expose=/pool/bin=/pool/bin", "--", "true"},
 		},
 		{
 			name: "writable mount maps to --share",
@@ -38,7 +45,7 @@ func TestGuixRunArgv(t *testing.T) {
 				Argv:   []string{"true"},
 				Mounts: []Mount{{Host: "/pool/home", Container: "/pool/home", ReadOnly: false}},
 			},
-			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--share=/pool/home=/pool/home", "--", "true"},
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "--share=/pool/home=/pool/home", "--", "true"},
 		},
 		{
 			name: "multiple mounts preserve given order and mix ro/rw",
@@ -50,7 +57,7 @@ func TestGuixRunArgv(t *testing.T) {
 				},
 			},
 			wantArgs: []string{
-				"shell", "--container", "--emulate-fhs",
+				"shell", "--container", "--emulate-fhs", "--no-cwd",
 				"--expose=/pool/bin=/pool/bin",
 				"--share=/stage=/stage",
 				"--", "true",
@@ -60,35 +67,57 @@ func TestGuixRunArgv(t *testing.T) {
 			name: "env produces one anchored --preserve per key, sorted",
 			spec: RunSpec{
 				Argv: []string{"true"},
-				Env:  map[string]string{"WRAPTOOL_TOKEN": "abc", "HOME": "/pool/home"},
+				Env:  map[string]string{"WRAPTOOL_TOKEN": "abc", "npm_config_cache": "/cache"},
 			},
 			wantArgs: []string{
-				"shell", "--container", "--emulate-fhs",
-				"--preserve=^HOME$",
+				"shell", "--container", "--emulate-fhs", "--no-cwd",
 				"--preserve=^WRAPTOOL_TOKEN$",
+				"--preserve=^npm_config_cache$",
 				"--", "true",
 			},
-			wantEnv: map[string]string{"WRAPTOOL_TOKEN": "abc", "HOME": "/pool/home"},
+			wantEnv: map[string]string{"WRAPTOOL_TOKEN": "abc", "npm_config_cache": "/cache"},
 		},
 		{
-			name:     "workdir is passed through as the host process directory",
+			name:     "invalid env var name is rejected, not smuggled through",
+			spec:     RunSpec{Argv: []string{"true"}, Env: map[string]string{"BAD-KEY!": "x"}},
+			wantArgs: nil, // Run returns an error before calling the runner
+		},
+		{
+			name:     "workdir is realized via env --chdir, not the host cwd",
 			spec:     RunSpec{Argv: []string{"true"}, Workdir: "/stage/gen-1"},
-			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--", "true"},
-			wantDir:  "/stage/gen-1",
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "coreutils", "--", "env", "--chdir=/stage/gen-1", "true"},
+			wantDir:  "",
 		},
 		{
-			name:     "platform is not guix's concern and produces no flag",
-			spec:     RunSpec{Argv: []string{"true"}, Platform: "arm64"},
-			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--", "true"},
+			name:     "workdir does not duplicate an already-listed coreutils",
+			pkgs:     []string{"coreutils", "node"},
+			spec:     RunSpec{Argv: []string{"true"}, Workdir: "/stage/gen-1"},
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "coreutils", "node", "--", "env", "--chdir=/stage/gen-1", "true"},
+			wantDir:  "",
+		},
+		{
+			name:     "platform matching the host architecture is accepted",
+			spec:     RunSpec{Argv: []string{"true"}, Platform: hostArch()},
+			wantArgs: []string{"shell", "--container", "--emulate-fhs", "--no-cwd", "--", "true"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			runner := &fakeRunner{}
-			g := &Guix{runner: runner}
+			g := &Guix{pkgs: tc.pkgs, runner: runner}
 
-			if err := g.Run(context.Background(), tc.spec); err != nil {
+			err := g.Run(context.Background(), tc.spec)
+			if tc.wantArgs == nil {
+				if err == nil {
+					t.Fatal("Run: error = nil, want error")
+				}
+				if len(runner.calls) != 0 {
+					t.Fatalf("got %d runner calls, want 0", len(runner.calls))
+				}
+				return
+			}
+			if err != nil {
 				t.Fatalf("Run: %v", err)
 			}
 			if len(runner.calls) != 1 {
@@ -110,6 +139,29 @@ func TestGuixRunArgv(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("platform mismatching the host architecture errors", func(t *testing.T) {
+		runner := &fakeRunner{}
+		g := &Guix{runner: runner}
+		err := g.Run(context.Background(), RunSpec{Argv: []string{"true"}, Platform: otherArch})
+		if err == nil {
+			t.Fatal("Run: error = nil, want error")
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("got %d runner calls, want 0", len(runner.calls))
+		}
+	})
+
+	t.Run("empty Argv is rejected", func(t *testing.T) {
+		runner := &fakeRunner{}
+		g := &Guix{runner: runner}
+		if err := g.Run(context.Background(), RunSpec{}); err == nil {
+			t.Fatal("Run: error = nil, want error")
+		}
+		if len(runner.calls) != 0 {
+			t.Fatalf("got %d runner calls, want 0", len(runner.calls))
+		}
+	})
 }
 
 func TestGuixName(t *testing.T) {

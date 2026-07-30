@@ -7,7 +7,10 @@
 package backend
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sort"
@@ -16,7 +19,7 @@ import (
 // Mount is one bind mount into the container: a host path exposed at a
 // container path, optionally read-only. Both fields are plain strings; the
 // backend that serializes a Mount into a CLI argument is responsible for any
-// host-OS path-syntax conversion (see oci.go's filepath.ToSlash use, §6.3).
+// host-OS path-syntax conversion (see oci.go's toSlash use, §6.3).
 type Mount struct {
 	Host      string
 	Container string
@@ -25,24 +28,41 @@ type Mount struct {
 
 // RunSpec describes one container invocation. The zero value is the most
 // restrictive posture: no network, no mounts, no env, backend-default
-// platform and workdir.
+// platform, user, and workdir.
 type RunSpec struct {
-	// Argv is the command to execute inside the container.
+	// Argv is the command to execute inside the container. Empty is
+	// rejected by both backends: a bare `guix shell ... --` (or a container
+	// started with no command) would drop into an interactive shell and
+	// hang rather than fail fast.
 	Argv []string
 	// Mounts are the bind mounts to expose inside the container.
 	Mounts []Mount
 	// Network enables outbound network access. False (the zero value) means
 	// an isolated container in both backends.
 	Network bool
-	// Workdir is the container-side working directory. Empty means the
-	// backend's own default.
+	// Workdir is the CONTAINER-side working directory the command starts
+	// in. Empty means the backend's own default. This is always a container
+	// path, never a host path, and must never be assigned to a host
+	// exec.Cmd's working directory — see guix.go's `env --chdir=`
+	// realization and oci.go's native -w flag, neither of which touches the
+	// host process's own cwd.
 	Workdir string
 	// Env is the set of environment variables the child process (and, for
 	// guix, the container it launches) should see.
 	Env map[string]string
 	// Platform is the container architecture ("amd64"/"arm64"). Empty means
-	// the backend's default (the host architecture).
+	// the backend's default (the host architecture). Platform carries
+	// architecture ONLY — libc (e.g. glibc vs musl) is not expressed here;
+	// the caller encodes that choice through which provisioning image (oci)
+	// or package set (guix) it selects (design/unified-harness-pool.md
+	// §5.1/§6.1).
 	Platform string
+	// User is the in-container identity to run as, in the backend's own
+	// syntax (oci: "uid:gid"). Empty means the backend's default — see
+	// oci.go's ociUser for the per-engine default logic. guix's --container
+	// always runs as its own synthetic single user regardless of this
+	// field, so User is a no-op for the guix backend.
+	User string
 }
 
 // Backend runs one Linux container step. It is the ONLY place that knows how
@@ -70,6 +90,25 @@ type commandRunner interface {
 	Run(ctx context.Context, name string, args []string, env map[string]string, dir string) error
 }
 
+// maxStderrTail bounds how much stderr execRunner retains for a failed
+// command's error message, so a runaway provisioning script's output can't
+// balloon memory while still leaving enough context to diagnose a failure.
+const maxStderrTail = 4096
+
+// tailBuffer is an io.Writer that retains only the most recently written
+// maxStderrTail bytes.
+type tailBuffer struct {
+	buf bytes.Buffer
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf.Write(p)
+	if excess := t.buf.Len() - maxStderrTail; excess > 0 {
+		t.buf.Next(excess)
+	}
+	return len(p), nil
+}
+
 // execRunner is the production commandRunner: exec.CommandContext with an
 // explicit argv array, never a shell (no `sh -c` string interpolation —
 // CLAUDE.md: no shell execution in product code).
@@ -85,8 +124,23 @@ func (execRunner) Run(ctx context.Context, name string, args []string, env map[s
 		cmd.Env = merged
 	}
 	cmd.Dir = dir
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+	// Provisioning containers run third-party npm lifecycle scripts, so
+	// stdin is never wired to the host tty: a writable tty fd inside such a
+	// container is a TIOCSTI-class escape surface, and resolve/realize are
+	// non-interactive by design (§6.2) — there is nothing for them to read
+	// from stdin anyway.
+	cmd.Stdin = nil
+	cmd.Stdout = os.Stdout
+	var tail tailBuffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &tail)
+
+	if err := cmd.Run(); err != nil {
+		if captured := tail.buf.String(); captured != "" {
+			return fmt.Errorf("%s: %w\n--- stderr tail ---\n%s", name, err, captured)
+		}
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	return nil
 }
 
 // lookPath resolves an executable on PATH. A package-level var so tests can
