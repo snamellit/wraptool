@@ -70,6 +70,39 @@ func TestSetToolMetadata_SetAndClear(t *testing.T) {
 	}
 }
 
+// TestSetToolMetadata_PreservesInlineCommentOnEditedScalar pins the
+// comment-preserving upgrade internal/config inherited from sharing
+// internal/yamledit's editor with cmd/harness.go: editing an existing
+// scalar field in place (here, `timeout`) must keep that line's inline
+// comment, not just "a comment somewhere in the file" — the same guarantee
+// cmd/harness.go's `policy set` already had (MR !59) but ApplyRequest/the
+// webui rule CRUD did not, before both editors shared yamledit.MapSet.
+func TestSetToolMetadata_PreservesInlineCommentOnEditedScalar(t *testing.T) {
+	cfgPath, _ := writeTestConfig(t, `mcp:
+  transport: stdio
+tools:
+  git:
+    binary: {{BIN}}
+    timeout: 30s # keep this note
+    allow:
+      - subcommand: [status]
+`)
+	if err := SetToolMetadata(cfgPath, "git", "", "45s", nil); err != nil {
+		t.Fatalf("SetToolMetadata: %v", err)
+	}
+	got := readFile(t, cfgPath)
+	wantLine := "    timeout: 45s # keep this note"
+	found := false
+	for _, line := range strings.Split(got, "\n") {
+		if line == wantLine {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the edited timeout line to keep its inline comment exactly as %q, got:\n%s", wantLine, got)
+	}
+}
+
 func TestSetToolMetadata_BadTimeoutRejected(t *testing.T) {
 	cfgPath, _ := writeTestConfig(t, rulesBaseConfig)
 	// A non-duration timeout fails the round-trip validation.

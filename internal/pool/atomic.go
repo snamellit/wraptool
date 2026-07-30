@@ -32,8 +32,11 @@ var createTemp = os.CreateTemp
 // parent directory is fsynced too, but only on POSIX — Windows has no
 // directory-fsync equivalent and NTFS rename is durable without it. Every
 // pool mutation (manifest, lock, observations, pointer files) goes through
-// this one helper (or WritePointer, which shares its rename discipline),
-// mirroring internal/config's writeAtomic.
+// this one helper (or WritePointer, which shares its rename discipline).
+// cmd/harness.go's manifest.yaml editor injects this as its
+// yamledit.Options.Write, so a manifest edit gets this stricter
+// fsync/mkdir discipline instead of yamledit.AtomicWrite's plainer default
+// (the sibling temp+rename helper internal/config's editConfig uses as-is).
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	return atomicWrite(path, ".wraptool-pool-*.tmp", data, perm)
 }
