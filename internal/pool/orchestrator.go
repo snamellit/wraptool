@@ -159,6 +159,25 @@ type UpdateOptions struct {
 	// security updates"). Requires a non-empty Reason.
 	AllowYoung bool
 	Reason     string
+	// Advance selects between install's and update's differing idempotence
+	// semantics (§10: "update is the only normal command that advances a
+	// floating constraint"). install passes false, update passes true.
+	//
+	//   - false (install): if the existing lock already matches
+	//     opts.Package and the freshly computed recipe_revision, AND its
+	//     version satisfies the manifest constraint, that is treated as
+	//     fully realized intent — a pure no-op with NO candidate scan at
+	//     all, even when a newer eligible version exists. Install's job is
+	//     to realize existing intent, not to advance it.
+	//   - true (update): always scans candidates first, regardless of
+	//     whether the existing lock already matches. If the scan selects a
+	//     version different from what's locked, that is an advance
+	//     (resolve+fetch+lock). If it selects the SAME version as already
+	//     locked (with matching package+recipe), that's a no-op for a
+	//     different reason: nothing better to advance to. If nothing is
+	//     eligible, the existing rules apply (keep an existing
+	//     constraint-satisfying lock with a Note, or error if none exists).
+	Advance bool
 }
 
 // UpdateResult is UpdateHarness's outcome.
@@ -268,23 +287,31 @@ func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths Poo
 // UpdateHarnessLocked is UpdateHarness's body, assuming the caller already
 // holds the pool lock (via LockPool) — it never acquires one itself.
 //
-// Idempotence is checked BEFORE any eligibility scan, in two steps:
+// opts.Advance selects between install's and update's differing idempotence
+// semantics (§10: "update is the only normal command that advances a
+// floating constraint" — see UpdateOptions.Advance's doc comment):
 //
-//  1. If the pool's existing lock entry for opts.Harness already matches
-//     opts.Package and the freshly computed recipe_revision, AND its version
-//     still satisfies the manifest's constraint, this is a pure no-op:
-//     changed=false, no candidates are even loaded. This is the §10
-//     "install is idempotent when manifest, lock, and recipe agree" case —
-//     it does not care whether that version would still be Eligible today.
-//  2. Otherwise (a genuinely different resolve is needed — e.g. the recipe
-//     changed, or there is no lock yet) candidates are scanned for the
-//     newest one that is both eligible under policy and satisfies the
-//     constraint. If none is eligible right now, but a lock already exists
-//     for this package whose version still satisfies the constraint,
-//     UpdateHarnessLocked keeps it rather than erroring: changed=false, with
-//     an informative Note naming the newest quarantined candidate and its
-//     remaining wait (§9). A hard error is returned only when there is no
-//     usable existing lock AND nothing is eligible.
+//  1. install (Advance=false): if the pool's existing lock entry for
+//     opts.Harness already matches opts.Package and the freshly computed
+//     recipe_revision, AND its version still satisfies the manifest's
+//     constraint, this is a pure no-op: changed=false, no candidates are
+//     even scanned. This is §10's "install is idempotent when manifest,
+//     lock, and recipe agree" — it does not care whether a NEWER version
+//     would also be eligible; install realizes existing intent, it does not
+//     go looking for something better.
+//  2. update (Advance=true) ALWAYS scans first, so it notices a newer
+//     eligible candidate or a widened constraint that now admits one. If the
+//     scan selects a version different from what's locked (or the recipe
+//     changed even at the same version), that's an advance: resolve, fetch,
+//     write a new lock entry. If the scan selects the SAME version already
+//     locked (package+recipe also unchanged), that's a no-op for a
+//     different reason — changed=false, no Note (nothing to advance to).
+//  3. In BOTH modes, when the scan finds nothing eligible: a lock that
+//     already exists for this package and still satisfies the constraint is
+//     kept rather than erroring (changed=false, with an informative Note
+//     naming the newest quarantined candidate and its remaining wait, §9).
+//     A hard error is returned only when there is no usable existing lock
+//     AND nothing is eligible.
 //
 // When a fresh resolve does happen: it stamps FirstSeenAt (pool-local,
 // unknown to Source) onto the resolved LockHarness, then calls Source.Fetch
@@ -352,8 +379,12 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		}
 	}
 
-	// Step 1: strict idempotence, no eligibility scan at all.
-	if hasLock && existing.Package == opts.Package && existing.RecipeRevision == recipeRevision && lockSatisfiesConstraint {
+	lockMatchesRecipe := hasLock && existing.Package == opts.Package && existing.RecipeRevision == recipeRevision
+
+	// install's strict short-circuit (Advance=false only): skip scanning
+	// entirely when intent is already fully realized, even if a newer
+	// eligible candidate exists — install does not advance (§10).
+	if !opts.Advance && lockMatchesRecipe && lockSatisfiesConstraint {
 		out := existing
 		return &UpdateResult{Harness: &out, Changed: false}, nil
 	}
@@ -374,12 +405,12 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	}
 	selected, selErr := selectNewestEligible(candidates, hm.Constraint, selectPolicy, opts.Now)
 	if selErr != nil {
-		// Step 2: nothing eligible right now (even with a bypass applied).
-		// Keep the existing lock instead of erroring, as long as it's for
-		// the same package and its version still satisfies the constraint —
-		// a recipe mismatch doesn't matter here, since nothing new is being
-		// resolved. Hard-error only when there is no usable lock to fall
-		// back to.
+		// Nothing eligible right now (even with a bypass applied), in EITHER
+		// mode. Keep the existing lock instead of erroring, as long as it's
+		// for the same package and its version still satisfies the
+		// constraint — a recipe mismatch doesn't matter here, since nothing
+		// new is being resolved. Hard-error only when there is no usable
+		// lock to fall back to.
 		if hasLock && existing.Package == opts.Package && lockSatisfiesConstraint {
 			note := fmt.Sprintf("keeping %s", existing.Version)
 			if ver, remaining, ok := quarantinedCandidate(candidates, hm.Constraint, policy, opts.Now); ver != "" {
@@ -388,11 +419,26 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 				} else {
 					note += fmt.Sprintf("; %s not eligible", ver)
 				}
+			} else {
+				note += "; no eligible candidate"
 			}
 			out := existing
 			return &UpdateResult{Harness: &out, Changed: false, Note: note}, nil
 		}
 		return nil, fmt.Errorf("harness %q: %w", opts.Harness, selErr)
+	}
+
+	// The scan succeeded. If it selected exactly what's already locked
+	// (package+recipe unchanged too), this is a no-op for update — nothing
+	// better to advance to — with no Note (unlike the scan-failure case
+	// above, this isn't "held back", it's already current). For install,
+	// reaching this point at all means the Advance=false short-circuit above
+	// didn't fire, which only happens when something didn't already match
+	// (no lock, package/recipe mismatch, or an unsatisfied constraint) — so
+	// this branch mostly matters for update, but applies uniformly.
+	if lockMatchesRecipe && existing.Version == selected.Version {
+		out := existing
+		return &UpdateResult{Harness: &out, Changed: false}, nil
 	}
 
 	// An "effective" bypass: opts.AllowYoung was set AND it's the reason

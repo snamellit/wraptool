@@ -574,6 +574,69 @@ func TestHarnessInstallIdempotentSkipsInstallWhenBinaryPresent(t *testing.T) {
 	}
 }
 
+// TestHarnessInstallVsUpdateAdvanceWiring is the cmd-level end-to-end check
+// that `install` passes UpdateOptions.Advance=false and `update` passes
+// Advance=true (§10: "update is the only normal command that advances a
+// floating constraint"): once a newer, also-eligible candidate is observed,
+// re-running `install` must not move the lock, but `update` must.
+func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
+	paths := testHarnessPaths(t)
+	swapHarnessPoolPaths(t, paths)
+	swapHasGuix(t, true)
+	swapPoolBinDir(t, t.TempDir())
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	swapHarnessSource(t, src)
+
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+
+	// A later refresh discovers a newer, also-eligible candidate.
+	obs, err := pool.LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.224"),
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := obs.Save(paths.Observations); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plain `install` re-run must NOT advance to 2.1.224.
+	if err := runHarnessInstall(context.Background(), "claude", d, "", false, ""); err != nil {
+		t.Fatalf("re-install: %v", err)
+	}
+	status, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Locked != "2.1.220" {
+		t.Errorf("Locked after re-install = %q, want unchanged 2.1.220 (install must not advance)", status.Locked)
+	}
+
+	// `update` MUST advance to 2.1.224.
+	if _, err := runHarnessCmd(t, "update", "claude"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	status2, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status2.Locked != "2.1.224" {
+		t.Errorf("Locked after update = %q, want advanced to 2.1.224", status2.Locked)
+	}
+}
+
 // --- MINOR: mapSetNode preserves an edited scalar's inline comment ---
 
 func TestMapSetNodePreservesInlineCommentOnEditedField(t *testing.T) {

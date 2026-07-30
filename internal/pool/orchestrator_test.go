@@ -353,38 +353,186 @@ func TestUpdateHarnessKeepsExistingLockWhenNothingEligible(t *testing.T) {
 // TestUpdateHarnessRecipeRevisionMismatchForcesReResolve: even at the SAME
 // version, a stale recipe_revision must force a fresh resolve — recipe
 // changes cannot be silently reused (§8).
+// TestUpdateHarnessRecipeRevisionMismatchForcesReResolve: even at the SAME
+// version, a stale recipe_revision must force a fresh resolve — in BOTH
+// install (Advance=false) and update (Advance=true) modes.
 func TestUpdateHarnessRecipeRevisionMismatchForcesReResolve(t *testing.T) {
-	paths := testPaths(t)
-	writeManifest(t, paths, claudeManifest)
-	pkg := "@anthropic-ai/claude-code"
-	seedObservations(t, paths, pkg, []Candidate{
-		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
-	})
-	writeLock(t, paths, &Lock{
-		SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
-		Harnesses: map[string]LockHarness{
-			"claude": {Source: npmSourceName, Package: pkg, Version: "2.1.220",
-				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
-				RecipeRevision: "sha256:stale"},
-		},
+	for _, advance := range []bool{false, true} {
+		mode := "install"
+		if advance {
+			mode = "update"
+		}
+		t.Run(mode, func(t *testing.T) {
+			paths := testPaths(t)
+			writeManifest(t, paths, claudeManifest)
+			pkg := "@anthropic-ai/claude-code"
+			seedObservations(t, paths, pkg, []Candidate{
+				{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+			})
+			writeLock(t, paths, &Lock{
+				SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+				Harnesses: map[string]LockHarness{
+					"claude": {Source: npmSourceName, Package: pkg, Version: "2.1.220",
+						PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+						RecipeRevision: "sha256:stale"},
+				},
+			})
+
+			src := &fakeSource{}
+			res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+				Harness: "claude", Package: pkg, Now: fixedNow, Advance: advance,
+			})
+			if err != nil {
+				t.Fatalf("UpdateHarness: %v", err)
+			}
+			if !res.Changed {
+				t.Error("expected changed=true: a recipe_revision mismatch must force a re-resolve even at the same version")
+			}
+			if res.Harness.Version != "2.1.220" {
+				t.Errorf("Version = %q, want still 2.1.220 (same version, refreshed recipe)", res.Harness.Version)
+			}
+			if src.resolveCalls != 1 || src.fetchCalls != 1 {
+				t.Errorf("resolveCalls=%d fetchCalls=%d, want exactly one of each", src.resolveCalls, src.fetchCalls)
+			}
+		})
+	}
+}
+
+// TestUpdateVsInstallAdvanceSemantics is the reviewer-named untested
+// quadrant: with a valid, fully-agreeing lock AND a newer eligible
+// candidate available, update (Advance=true) must advance to it while
+// install (Advance=false) must no-op — §10's "update is the only normal
+// command that advances a floating constraint".
+func TestUpdateVsInstallAdvanceSemantics(t *testing.T) {
+	setup := func(t *testing.T) (PoolPaths, string) {
+		paths := testPaths(t)
+		writeManifest(t, paths, claudeManifest) // constraint ">=2 <3"
+		pkg := "@anthropic-ai/claude-code"
+		seedObservations(t, paths, pkg, []Candidate{
+			{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+			{Version: "2.1.224", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)}, // also eligible, newer
+		})
+		recipeRevision, err := npmRecipeRevision(pkg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeLock(t, paths, &Lock{
+			SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+			Harnesses: map[string]LockHarness{
+				"claude": {Source: npmSourceName, Package: pkg, Version: "2.1.220",
+					PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+					RecipeRevision: recipeRevision},
+			},
+		})
+		return paths, pkg
+	}
+
+	t.Run("install does not advance to the newer eligible candidate", func(t *testing.T) {
+		paths, pkg := setup(t)
+		src := &fakeSource{}
+		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+			Harness: "claude", Package: pkg, Now: fixedNow, Advance: false,
+		})
+		if err != nil {
+			t.Fatalf("install (Advance=false): %v", err)
+		}
+		if res.Changed {
+			t.Error("expected changed=false: install must not advance past an already-agreeing lock")
+		}
+		if res.Harness.Version != "2.1.220" {
+			t.Errorf("Version = %q, want unchanged 2.1.220", res.Harness.Version)
+		}
+		if src.resolveCalls != 0 || src.fetchCalls != 0 {
+			t.Errorf("resolveCalls=%d fetchCalls=%d, want none — install must not even scan", src.resolveCalls, src.fetchCalls)
+		}
 	})
 
-	src := &fakeSource{}
-	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+	t.Run("update advances to the newer eligible candidate", func(t *testing.T) {
+		paths, pkg := setup(t)
+		src := &fakeSource{}
+		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+			Harness: "claude", Package: pkg, Now: fixedNow, Advance: true,
+		})
+		if err != nil {
+			t.Fatalf("update (Advance=true): %v", err)
+		}
+		if !res.Changed {
+			t.Error("expected changed=true: update must advance to the newer eligible candidate")
+		}
+		if res.Harness.Version != "2.1.224" {
+			t.Errorf("Version = %q, want advanced to 2.1.224", res.Harness.Version)
+		}
+		if src.resolveCalls != 1 || src.fetchCalls != 1 {
+			t.Errorf("resolveCalls=%d fetchCalls=%d, want exactly one of each", src.resolveCalls, src.fetchCalls)
+		}
 	})
-	if err != nil {
-		t.Fatalf("UpdateHarness: %v", err)
+}
+
+// TestUpdateVsInstallAfterConstraintWidened is the reviewer's second named
+// scenario: widening the manifest constraint to admit a new major, with that
+// major eligible, must let update advance to it while install keeps the
+// still-constraint-satisfying locked version.
+func TestUpdateVsInstallAfterConstraintWidened(t *testing.T) {
+	setup := func(t *testing.T) (PoolPaths, string) {
+		paths := testPaths(t)
+		// Constraint widened to admit 3.x too.
+		writeManifest(t, paths, "schema_version: 1\npolicy:\n  minimum_release_age: 168h\nharnesses:\n  claude:\n    constraint: \">=2 <4\"\n")
+		pkg := "@anthropic-ai/claude-code"
+		seedObservations(t, paths, pkg, []Candidate{
+			{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+			{Version: "3.0.0", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)}, // eligible under the widened constraint
+		})
+		recipeRevision, err := npmRecipeRevision(pkg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeLock(t, paths, &Lock{
+			SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+			Harnesses: map[string]LockHarness{
+				"claude": {Source: npmSourceName, Package: pkg, Version: "2.1.220",
+					PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+					RecipeRevision: recipeRevision},
+			},
+		})
+		return paths, pkg
 	}
-	if !res.Changed {
-		t.Error("expected changed=true: a recipe_revision mismatch must force a re-resolve even at the same version")
-	}
-	if res.Harness.Version != "2.1.220" {
-		t.Errorf("Version = %q, want still 2.1.220 (same version, refreshed recipe)", res.Harness.Version)
-	}
-	if src.resolveCalls != 1 || src.fetchCalls != 1 {
-		t.Errorf("resolveCalls=%d fetchCalls=%d, want exactly one of each", src.resolveCalls, src.fetchCalls)
-	}
+
+	t.Run("install keeps the still-satisfying 2.1.220", func(t *testing.T) {
+		paths, pkg := setup(t)
+		src := &fakeSource{}
+		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+			Harness: "claude", Package: pkg, Now: fixedNow, Advance: false,
+		})
+		if err != nil {
+			t.Fatalf("install (Advance=false): %v", err)
+		}
+		if res.Changed {
+			t.Error("expected changed=false: install keeps 2.1.220 (it still satisfies the widened constraint)")
+		}
+		if res.Harness.Version != "2.1.220" {
+			t.Errorf("Version = %q, want unchanged 2.1.220", res.Harness.Version)
+		}
+		if src.resolveCalls != 0 {
+			t.Errorf("resolveCalls = %d, want 0", src.resolveCalls)
+		}
+	})
+
+	t.Run("update advances to 3.0.0 under the widened constraint", func(t *testing.T) {
+		paths, pkg := setup(t)
+		src := &fakeSource{}
+		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+			Harness: "claude", Package: pkg, Now: fixedNow, Advance: true,
+		})
+		if err != nil {
+			t.Fatalf("update (Advance=true): %v", err)
+		}
+		if !res.Changed {
+			t.Error("expected changed=true: update must advance to 3.0.0 under the widened constraint")
+		}
+		if res.Harness.Version != "3.0.0" {
+			t.Errorf("Version = %q, want advanced to 3.0.0", res.Harness.Version)
+		}
+	})
 }
 
 // TestUpdateHarnessAfterAllowYoungPlainRerunIsIdempotent: once --allow-young

@@ -415,6 +415,10 @@ func runHarnessInstall(ctx context.Context, name string, d harness.Descriptor, c
 	result, err := pool.UpdateHarnessLocked(ctx, src, b, paths, pool.UpdateOptions{
 		Harness: name, Package: d.PoolPackage, Now: now,
 		AllowYoung: allowYoung, Reason: reason,
+		// install never advances a floating constraint (§10) — it's
+		// idempotent once manifest/lock/recipe agree, even if a newer
+		// eligible version exists.
+		Advance: false,
 	})
 	if err != nil {
 		return fmt.Errorf("locking %s: %w", name, err)
@@ -595,7 +599,15 @@ func newHarnessRefreshCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "refresh [harness]",
 		Short: "Fetch candidate version metadata for one or every manifest-listed harness (metadata only, no download)",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Fetches candidate version metadata from the registry and records it in
+observations.json — no download, no lock change. With no harness argument,
+refresh applies only to harnesses already listed in the pool manifest (i.e.
+harnesses "wraptool harness install" has recorded intent for); a harness
+that has never been installed has nothing to refresh. "install" runs its
+own refresh internally as its first step, so a fresh install never needs a
+separate "refresh" first — this command is for keeping already-installed
+harnesses' candidate data current between installs (e.g. before "update").`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			paths := harnessPoolPaths()
 			names, err := manifestLockableHarnessArgs(paths, args)
@@ -672,6 +684,11 @@ listed in the pool manifest.`,
 				result, err := pool.UpdateHarnessLocked(context.Background(), src, b, paths, pool.UpdateOptions{
 					Harness: name, Package: d.PoolPackage, Now: now,
 					AllowYoung: allowYoung, Reason: reason,
+					// update is the only normal command that advances a
+					// floating constraint (§10): always scan for a newer
+					// eligible candidate, even when the existing lock
+					// already agrees with manifest+recipe.
+					Advance: true,
 				})
 				if err != nil {
 					return err
@@ -746,7 +763,15 @@ func newHarnessPolicySetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set",
 		Short: "Set pool-wide (or, with --harness, per-harness) update policy",
-		Args:  cobra.NoArgs,
+		Long: `Edits manifest.yaml in place, preserving comments and key ordering. Any
+inline comment on a field this command changes survives (e.g.
+"minimum_release_age: 168h # seven days"), but its TEXT is not updated to
+match the new value — after "policy set --minimum-release-age 24h" that
+same line reads "minimum_release_age: 24h # seven days", now describing the
+old 168h. Edit the comment by hand if it needs to match. Comment spacing is
+also normalized to the YAML encoder's own single-space style regardless of
+the original formatting.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if harnessName != "" {
 				if _, ok := harness.Registry[harnessName]; !ok {
