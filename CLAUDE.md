@@ -83,4 +83,6 @@ file (create-exclusive).
 
 ## Dependencies
 
-Direct: mcp-go, cobra, yaml.v3, xdg, uuid. No dynamic language runtimes.
+Direct: mcp-go, cobra, yaml.v3, xdg, uuid, Masterminds/semver/v3 (harness
+pool version constraints, `internal/pool`), gofrs/flock (harness pool
+advisory lock, `internal/pool`). No dynamic language runtimes.
