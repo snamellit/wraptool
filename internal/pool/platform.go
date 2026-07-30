@@ -8,7 +8,7 @@ import (
 // PlatformKey identifies the target platform a harness generation is built
 // for. Generations always target a Linux container regardless of host OS
 // (§5.1, §6.1) — there are no darwin-* or windows-* keys. This is a closed,
-// exhaustive-lint-enforced enum (design/flag-constraint-type-single-source.md
+// exhaustive-lint-enforced enum (design/policy/flag-constraint-type-single-source.md
 // convention): a switch over PlatformKey must name every member.
 type PlatformKey string
 

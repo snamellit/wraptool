@@ -29,7 +29,7 @@ func WithPeerPID(ctx context.Context, pid int) context.Context {
 // WithAllowedCWDRoots stores the operator-configured allowlist of directory roots
 // that a client may request as a working directory. An empty/absent list disables
 // containment (warn-only default) — see F5 in
-// design/security-audit-policy-enforcement.md.
+// design/policy/security-audit-policy-enforcement.md.
 func WithAllowedCWDRoots(ctx context.Context, roots []string) context.Context {
 	return context.WithValue(ctx, allowedCWDRootsKey, roots)
 }

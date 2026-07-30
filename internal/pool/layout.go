@@ -1,6 +1,6 @@
 // Package pool implements the developer-scoped harness pool: layout, manifest
 // and lock types, atomic file/pointer writes, the advisory pool lock, release
-// eligibility, and audit logging. See design/unified-harness-pool.md.
+// eligibility, and audit logging. See design/harness/unified-harness-pool.md.
 //
 // This package owns pure path/type/policy logic only. It does not know how to
 // download, resolve, or realize a harness (internal/pool/source and

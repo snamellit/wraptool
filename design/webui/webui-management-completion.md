@@ -1,7 +1,7 @@
 # Design: complete the operator Web UI for flag typing and policy management
 
 Status: **planned**. Backend for request-supplied flag types is implemented
-(`design/flag-type-inference.md`); the Web UI does not yet surface, edit, or
+(`design/policy/flag-type-inference.md`); the Web UI does not yet surface, edit, or
 fully manage those types. This note sequences the remaining work as four
 independent, individually-shippable stages.
 

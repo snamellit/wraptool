@@ -19,7 +19,7 @@ You run in an isolated worktree. Check out the branch under review
 (`git checkout <branch>`) and diff it against the integration base:
 `git diff <base>...<branch>` plus `git log <base>..<branch>` for commit
 hygiene. Read the brief's cited design sections (usually in
-`design/unified-harness-pool.md`) and `CLAUDE.md` before judging anything.
+`design/harness/unified-harness-pool.md`) and `CLAUDE.md` before judging anything.
 
 ## Verify, don't trust
 
@@ -43,7 +43,7 @@ an apparent bug is actually handled elsewhere.
 
 1. **Spec conformance.** Walk the brief's normative design sections and check
    each requirement against the diff. For harness-pool work, §6 of
-   `design/unified-harness-pool.md` is a checklist: host vs container path
+   `design/harness/unified-harness-pool.md` is a checklist: host vs container path
    discipline (`filepath` vs `path`, `ToSlash` at serialization points), no
    symlinks/absolute paths/case-collisions in generation trees, atomic
    same-volume renames, portable locking, phase × capability placement

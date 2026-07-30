@@ -16,7 +16,7 @@ So a change to any real input kept serving a stale schema for up to a day:
   returns the whole schema), and an edited `overrides_file` was ignored.
 - **The wrapped tool** — upgrading `glab` didn't refresh its flags.
 - **wraptool's parser code** — the one that bit us: shipping the placeholder-aware
-  flag-type fix (`design/flag-type-inference.md`) did nothing, because the cached
+  flag-type fix (`design/policy/flag-type-inference.md`) did nothing, because the cached
   glab schema still typed `--reviewer` boolean. Cache invalidation, on brand.
 
 The workaround was `rm -rf ~/.cache/wraptool/introspection`. That shouldn't be a

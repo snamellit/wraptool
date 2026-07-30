@@ -8,7 +8,7 @@ import (
 )
 
 // Guix is the Backend that runs provisioning steps in a native Guix
-// container (design/unified-harness-pool.md §11.1): `guix shell --container
+// container (design/harness/unified-harness-pool.md §11.1): `guix shell --container
 // --emulate-fhs --no-cwd`, network only for resolve, no host $HOME/workspace/
 // pool `home/` in these containers — every mount is an explicit spec.Mounts
 // entry, never an implicit one (see the --no-cwd comment in Run). guix has no

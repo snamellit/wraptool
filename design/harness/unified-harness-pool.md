@@ -165,7 +165,7 @@ garbage collection.
 Dev Containers are Linux even when Docker runs on macOS or Windows. Native
 artifacts therefore target the **container** platform, never the host OS.
 `PlatformKey` is a typed string constant set in Go (exhaustive-lint enforced,
-per `design/flag-constraint-type-single-source.md` convention):
+per `design/policy/flag-constraint-type-single-source.md` convention):
 
 ```text
 linux-amd64-glibc
