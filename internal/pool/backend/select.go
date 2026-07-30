@@ -87,7 +87,8 @@ func requireGuixPackages(opts Options) error {
 
 func requireOCIImage(opts Options) error {
 	if opts.OCIImage == "" {
-		return fmt.Errorf("oci backend selected but Options.OCIImage is empty (no default provisioning image)")
+		return fmt.Errorf("oci backend selected but no provisioning image was configured — " +
+			"this is a wraptool bug; --backend=guix may work around it")
 	}
 	return nil
 }

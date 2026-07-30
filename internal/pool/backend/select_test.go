@@ -107,3 +107,20 @@ func TestSelectGuixMissingPackagesMessage(t *testing.T) {
 		t.Errorf("error message should suggest a workaround: %v", err)
 	}
 }
+
+// TestSelectOCIMissingImageMessage is requireOCIImage's counterpart to
+// TestSelectGuixMissingPackagesMessage: operator-actionable wording, no Go
+// field names, and a concrete workaround.
+func TestSelectOCIMissingImageMessage(t *testing.T) {
+	_, err := Select("oci", Options{})
+	if err == nil {
+		t.Fatal("Select: error = nil, want error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "OCIImage") || strings.Contains(msg, "Options.") {
+		t.Errorf("error message leaks a Go field name: %v", err)
+	}
+	if !strings.Contains(msg, "--backend=guix") {
+		t.Errorf("error message should suggest a workaround: %v", err)
+	}
+}
