@@ -65,7 +65,16 @@ type Descriptor struct {
 	// binary into the pool; the token "{prefix}" is replaced with the pool root.
 	// Nil means no automated installer (drop the binary in pool/bin by hand).
 	Install []string
-	Render  func(Params) (path string, content []byte, err error)
+	// PoolPackage is the npm package identity used by the version-locked
+	// harness pool (design/unified-harness-pool.md §7-§8) to refresh/resolve
+	// this harness, e.g. "@anthropic-ai/claude-code". Empty means the
+	// harness is not pool-lockable yet: `harness list` reports it as
+	// "legacy (not lockable)" and `install` falls back to today's unpinned
+	// behavior with a warning (§8: curl|bash recipes like agy's stay legacy
+	// until an artifact-specific adapter exists; host-side IDEs have no
+	// installable package at all).
+	PoolPackage string
+	Render      func(Params) (path string, content []byte, err error)
 }
 
 // IsCLI reports whether the harness runs as a binary inside the container pool
@@ -104,11 +113,12 @@ var Registry = map[string]Descriptor{
 			`curl -fsSL https://antigravity.google/cli/install.sh | bash && ` +
 				`install -Dm755 "$HOME/.local/bin/agy" "{prefix}/bin/agy"`}},
 	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
-		Install: npmInstall("@anthropic-ai/claude-code")},
+		Install: npmInstall("@anthropic-ai/claude-code"), PoolPackage: "@anthropic-ai/claude-code"},
 	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor}, // host IDE, not pool CLI
-	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode, Install: npmInstall("opencode-ai")},
+	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode, Install: npmInstall("opencode-ai"), PoolPackage: "opencode-ai"},
 	"gemini":   {Name: "gemini", Auth: AuthHeader, Bin: "gemini", Render: renderGemini},
-	"pi":       {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi, Install: npmInstall("@earendil-works/pi-coding-agent")},
+	"pi": {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi, Install: npmInstall("@earendil-works/pi-coding-agent"),
+		PoolPackage: "@earendil-works/pi-coding-agent"},
 	// roo accepts a headers object but a known bug drops the Authorization
 	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
 	// unverified — a token forces a loud failure rather than a silent 401.
@@ -142,7 +152,7 @@ func Write(name string, p Params) (string, error) {
 	if p.Token != "" && d.Auth == AuthUnverified {
 		return "", fmt.Errorf("harness %q cannot be used with a networked wraptool yet: "+
 			"its auth support is unverified. Use a localhost/stdio setup, or add its "+
-			"AuthMode (design/harness-descriptor.md phase 3)", name)
+			"AuthMode (design/harness/harness-descriptor.md phase 3)", name)
 	}
 	path, content, err := d.Render(p)
 	if err != nil {

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/pti/wraptool/internal/harness"
-	"github.com/pti/wraptool/internal/paths"
+	"github.com/pti/wraptool/internal/pool"
 )
 
 // containerRuntime selects which backend `wraptool up` uses to bring up the
@@ -67,7 +67,7 @@ func fileExists(p string) bool {
 // and secrets are never shared), so privileged/remote git (push, private fetch)
 // still goes through wraptool's MCP git tool, which holds the host credentials.
 // --network (-N) gives outbound internet for dependency pulls, at the cost of
-// sharing the host network namespace. See design/guix-container-runtime.md.
+// sharing the host network namespace. See design/harness/guix-container-runtime.md.
 func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	manifest := filepath.Join(root, "manifest.scm")
 	if !fileExists(manifest) {
@@ -168,13 +168,18 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 // A dedicated user-space home (under /home, not /opt) — /opt connotes a shared
 // *system* location, but this is the single harness user's HOME inside a
 // throwaway, single-user container. The actual per-developer isolation boundary
-// is the HOST source of the mount (paths.DataDir() = XDG data, one per account),
-// not this container-internal path.
+// is the HOST source of the mount (pool.Root()'s underlying paths.DataDir() =
+// XDG data, one per account), not this container-internal path.
 const devcontainerPoolHome = "/home/wraptool-harness"
 
-// harnessPoolDir is the developer-scoped pool of AI-harness binaries and their
-// state, shared into every container.
-func harnessPoolDir() string { return filepath.Join(paths.DataDir(), "harness-pool") }
+// harnessPoolDir is the developer-scoped pool of AI-harness binaries and
+// their state, shared into every container — the same root the
+// version-locked pool (internal/pool, cmd/harness.go) lives under; legacy
+// bin/+lib/ sit alongside manifest.yaml/harness-lock.json/runtime/ at that
+// one root (design/unified-harness-pool.md §16 migration). pool.Root() is
+// the single source of truth for this path; this function no longer
+// re-derives it.
+func harnessPoolDir() string { return pool.Root() }
 
 // ensureHarnessPool creates and returns the pool root plus its bin/ (PATH),
 // lib/ (node_modules), and home/ (harness HOME) subdirectories.

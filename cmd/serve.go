@@ -126,7 +126,7 @@ func runServe(configPath string, ov serveOverrides) error {
 	// Strict load: reject unknown/misspelled keys rather than silently ignoring
 	// them. A typo'd restrictive key (deny, deny_flags, flag_constraints) would
 	// otherwise be dropped and weaken the policy with no error — see the F1
-	// finding in design/security-audit-policy-enforcement.md.
+	// finding in design/policy/security-audit-policy-enforcement.md.
 	cfg, err := config.LoadStrict(configPath)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -196,12 +196,17 @@ func runServe(configPath string, ov serveOverrides) error {
 			return err
 		}
 		defer removePidFile()
+		if err := writeServeState(serveState{Listen: cfg.MCP.Listen, Auth: cfg.MCP.AuthTokenFile != ""}); err != nil {
+			return err
+		}
+		defer removeServeState()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, terminationSignals()...)
 		go func() {
 			<-sigCh
 			reg.closeAll()
 			removePidFile()
+			removeServeState()
 			os.Exit(0)
 		}()
 	}
@@ -247,7 +252,7 @@ func newSSEServer(s *server.MCPServer, allowedCWDRoots []string, extra ...server
 	if len(allowedCWDRoots) == 0 {
 		log.Printf("warning: mcp.allowed_cwd_roots is unset — a client-supplied cwd is not " +
 			"contained and may point at any host directory the server can access. See F5 in " +
-			"design/security-audit-policy-enforcement.md.")
+			"design/policy/security-audit-policy-enforcement.md.")
 	}
 	opts := []server.SSEOption{
 		server.WithSSEContextFunc(server.SSEContextFunc(cwdContextFunc(allowedCWDRoots))),
