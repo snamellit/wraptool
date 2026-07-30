@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
+	"github.com/google/uuid"
 
 	"github.com/pti/wraptool/internal/pool/backend"
 )
@@ -76,10 +78,12 @@ type Source interface {
 	// Resolve produces the complete lock entry for one exact (pkg, version),
 	// running inside b (registry-only network, §6.2/§8.1). workDir is a
 	// scratch directory the Source may use for the synthesized package.json
-	// / package-lock.json (§8.1 steps 1-3). nodeVersion and recipeRevision
-	// are supplied by this package, not discovered by Source: nodeVersion is
-	// the pinned Node runtime this harness resolves against (defaultNodeVersion,
-	// a Phase-1 constant — see its doc comment), and recipeRevision is this
+	// / package-lock.json (§8.1 steps 1-3) — always non-empty (UpdateHarness
+	// creates one under staging/ when the caller didn't supply one; the
+	// Source seam never sees ""). nodeVersion and recipeRevision are supplied
+	// by this package, not discovered by Source: nodeVersion is the pinned
+	// Node runtime this harness resolves against (defaultNodeVersion, a
+	// Phase-1 constant — see its doc comment), and recipeRevision is this
 	// package's own recipe hash (npmRecipeRevision, §8's recipe_revision).
 	Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (LockHarness, error)
 	// Fetch downloads every artifact h describes into cacheDir, verifying
@@ -104,6 +108,32 @@ type PoolPaths struct {
 	Audit        string
 	AdvisoryLock string
 	Cache        string
+	// Staging roots scratch work directories UpdateHarness creates itself
+	// when a caller's UpdateOptions.WorkDir is empty (§5 layout:
+	// staging/txn-<id>/, never mounted into project containers).
+	Staging string
+}
+
+// LockPool acquires the pool's single exclusive advisory lock (§6.5) for
+// paths and returns a release func the caller must defer-call exactly once
+// when done. It exists so a cmd-level command spanning several orchestrator
+// calls (e.g. `install`: write manifest intent, refresh, update, then run
+// the legacy installer) acquires the pool lock ONCE for its whole span,
+// rather than each call acquiring and releasing its own — critically,
+// because github.com/gofrs/flock is not reentrant in-process: a second
+// open-file-description flock on the same path from the same process blocks
+// on the first, already-held one, so nesting two of this package's
+// lock-acquiring calls deadlocks instead of composing. The exported
+// RefreshHarness/UpdateHarness/SyncHarness each still acquire their own lock
+// for a single, self-contained call; their *Locked siblings assume the
+// caller already holds one obtained via LockPool and must never acquire
+// another.
+func LockPool(ctx context.Context, paths PoolPaths) (release func(), err error) {
+	lock := NewPoolLock(paths.AdvisoryLock)
+	if err := lock.Acquire(ctx); err != nil {
+		return nil, err
+	}
+	return func() { _ = lock.Release() }, nil
 }
 
 // UpdateOptions configures one resolve+lock+fetch pass (§9 phases 2-3),
@@ -121,7 +151,9 @@ type UpdateOptions struct {
 	// calling time.Now() internally (§6.6, and this package's own test-
 	// clock-injection convention).
 	Now time.Time
-	// WorkDir is passed through to Source.Resolve unchanged (§8.1 scratch dir).
+	// WorkDir is passed through to Source.Resolve. Empty means
+	// UpdateHarness creates and owns a scratch directory itself, under
+	// paths.Staging, removed unconditionally when the call returns.
 	WorkDir string
 	// AllowYoung bypasses the release/observation age gates (§9 "Emergency
 	// security updates"). Requires a non-empty Reason.
@@ -129,22 +161,57 @@ type UpdateOptions struct {
 	Reason     string
 }
 
-// RefreshHarness runs the metadata-only refresh phase (§9 phase 1, §6.2): it
-// asks src for pkg's candidate versions, merges them into observations.json
+// UpdateResult is UpdateHarness's outcome.
+type UpdateResult struct {
+	// Harness is the harness's lock entry after the call — freshly resolved
+	// when Changed, otherwise whatever was already locked (kept as-is).
+	Harness *LockHarness
+	// Changed is true only when Source.Resolve/Fetch actually ran and a new
+	// lock entry was written.
+	Changed bool
+	// Note is a human-readable explanation for a changed=false result that
+	// isn't the plain "everything already agrees" case — specifically, a
+	// kept lock because no candidate is currently eligible (§9). Empty
+	// otherwise.
+	Note string
+	// AllowYoungApplied is true when opts.AllowYoung actually changed which
+	// candidate got selected — i.e. the selected candidate would not have
+	// been Eligible under the real, non-bypassed policy. Requesting
+	// --allow-young when it wasn't needed leaves this false: "only an
+	// effective bypass gets audited" (§9).
+	AllowYoungApplied bool
+	// CandidateAge and CandidateIntegrity are populated only alongside
+	// AllowYoungApplied — now minus the selected candidate's published_at,
+	// and the resolved package's upstream integrity value when known — for
+	// the caller to print per §9 ("prints candidate age and integrity").
+	CandidateAge       time.Duration
+	CandidateIntegrity string
+}
+
+// RefreshHarness runs the metadata-only refresh phase (§9 phase 1, §6.2)
+// under its own, self-contained pool lock acquisition. See RefreshHarnessLocked
+// for the behavior; this wrapper exists for a caller that isn't already
+// composing multiple orchestrator calls under one LockPool span.
+func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, pkg string, now time.Time) ([]Candidate, error) {
+	release, err := LockPool(ctx, paths)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return RefreshHarnessLocked(ctx, src, paths, pkg, now)
+}
+
+// RefreshHarnessLocked is RefreshHarness's body, assuming the caller already
+// holds the pool lock (via LockPool) — it never acquires one itself. It asks
+// src for pkg's candidate versions, merges them into observations.json
 // (first-seen stamped with now for keys observations.json has never seen
 // before — MergeObservations/Observe's write-once rule, §6.6 — so a second
 // refresh with a later now never moves an existing first_seen_at), and
 // returns the candidates annotated with the FirstSeenAt now on record (which,
 // for a version seen on a prior refresh, is that earlier timestamp, not
-// now). Refresh never touches the lock; it takes the pool lock for its own
-// full duration only (§6.5).
-func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, pkg string, now time.Time) ([]Candidate, error) {
-	lock := NewPoolLock(paths.AdvisoryLock)
-	if err := lock.Acquire(ctx); err != nil {
-		return nil, err
-	}
-	defer lock.Release()
-
+// now). Refresh never touches the lock, and never calls Source.Resolve or
+// Source.Fetch.
+func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, pkg string, now time.Time) ([]Candidate, error) {
 	candidates, err := src.Refresh(ctx, pkg)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing %s: %w", pkg, err)
@@ -185,70 +252,119 @@ func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, pkg string
 }
 
 // UpdateHarness runs the resolve+lock+fetch phases (§9 phases 2-3, §6.2) for
-// one harness: it loads the manifest strictly, resolves the effective policy,
-// filters this pool's observed candidates for opts.Package down to those
-// eligible under that policy (pool.Eligible) and matching the manifest's
-// version constraint (Masterminds/semver), and picks the newest of those.
+// one harness under its own, self-contained pool lock acquisition. See
+// UpdateHarnessLocked for the behavior; this wrapper exists for a caller
+// that isn't already composing multiple orchestrator calls under one
+// LockPool span.
+func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, opts UpdateOptions) (*UpdateResult, error) {
+	release, err := LockPool(ctx, paths)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return UpdateHarnessLocked(ctx, src, b, paths, opts)
+}
+
+// UpdateHarnessLocked is UpdateHarness's body, assuming the caller already
+// holds the pool lock (via LockPool) — it never acquires one itself.
 //
-// If the pool's existing lock already pins that exact (package, version) for
-// opts.Harness, UpdateHarness returns it unchanged and reports changed=false
-// without calling src.Resolve or src.Fetch — the §10 idempotence contract
-// ("install is idempotent when manifest, lock, ... agree. It no longer means
-// 'run npm latest again.'"), which applies equally whether the caller is
-// `install` (which writes manifest intent first, in cmd) or `update`.
+// Idempotence is checked BEFORE any eligibility scan, in two steps:
 //
-// Otherwise it resolves the candidate via src.Resolve, stamps FirstSeenAt
-// (pool-local, unknown to Source) onto the returned LockHarness, then fetches
-// via src.Fetch BEFORE writing the lock — deliberately not §9's textual
-// phase order. src.Fetch mutates its LockHarness argument in place, filling
-// (and verifying) each artifact's pool-local sha256 cache-address field as it
+//  1. If the pool's existing lock entry for opts.Harness already matches
+//     opts.Package and the freshly computed recipe_revision, AND its version
+//     still satisfies the manifest's constraint, this is a pure no-op:
+//     changed=false, no candidates are even loaded. This is the §10
+//     "install is idempotent when manifest, lock, and recipe agree" case —
+//     it does not care whether that version would still be Eligible today.
+//  2. Otherwise (a genuinely different resolve is needed — e.g. the recipe
+//     changed, or there is no lock yet) candidates are scanned for the
+//     newest one that is both eligible under policy and satisfies the
+//     constraint. If none is eligible right now, but a lock already exists
+//     for this package whose version still satisfies the constraint,
+//     UpdateHarnessLocked keeps it rather than erroring: changed=false, with
+//     an informative Note naming the newest quarantined candidate and its
+//     remaining wait (§9). A hard error is returned only when there is no
+//     usable existing lock AND nothing is eligible.
+//
+// When a fresh resolve does happen: it stamps FirstSeenAt (pool-local,
+// unknown to Source) onto the resolved LockHarness, then calls Source.Fetch
+// BEFORE writing the lock — deliberately not §9's textual phase order.
+// Source.Fetch mutates its LockHarness argument in place, filling (and
+// verifying) each artifact's pool-local sha256 cache-address field as it
 // admits objects to cache (§8's "the pool's own sha256"); a lock persisted
 // before Fetch runs would be missing those fields. Only once Fetch succeeds
-// does UpdateHarness stamp PolicyHash/GeneratedAt onto the Lock, validate,
-// and atomically write harness-lock.json — so a Fetch failure (including a
-// partial one) leaves the previous lock file completely untouched, never a
-// half-fetched resolution.
+// does UpdateHarnessLocked stamp PolicyHash/GeneratedAt onto the Lock,
+// validate, and atomically write harness-lock.json — so a Fetch failure
+// (including a partial one) leaves the previous lock file completely
+// untouched, never a half-fetched resolution.
 //
 // opts.AllowYoung bypasses the release/observation age gates for candidate
-// selection (§9's emergency bypass) and requires a non-empty opts.Reason; it
-// always appends an audit.jsonl event when used, independent of whether the
-// selected candidate actually needed the bypass. The whole call holds the
-// pool lock for its full duration (§6.5); it must never be called while
-// another PoolLock-holding call on the same pool is still in flight in the
-// same process (that nests two flocks on one path and deadlocks) — callers
-// composing refresh-then-update (e.g. `install`) call RefreshHarness and
-// UpdateHarness sequentially, never nested.
-func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, opts UpdateOptions) (harness *LockHarness, changed bool, err error) {
+// selection (§9's emergency bypass) and requires a non-empty opts.Reason.
+// Only an "effective" bypass — one that actually changed which candidate got
+// selected — is audited (appended to audit.jsonl, after the successful lock
+// write) or reported via UpdateResult.AllowYoungApplied; requesting
+// --allow-young when the normally-selected candidate was eligible anyway is
+// a no-op bypass and neither prints nor audits anything extra.
+//
+// opts.WorkDir, when empty, is filled with a fresh staging/txn-<id> scratch
+// directory that is always removed (success or failure) before returning —
+// Source.Resolve is never called with an empty workDir.
+func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, opts UpdateOptions) (*UpdateResult, error) {
 	if opts.AllowYoung && opts.Reason == "" {
-		return nil, false, fmt.Errorf("--allow-young requires a non-empty --reason")
+		return nil, fmt.Errorf("--allow-young requires a non-empty --reason")
 	}
-
-	lock := NewPoolLock(paths.AdvisoryLock)
-	if err := lock.Acquire(ctx); err != nil {
-		return nil, false, err
-	}
-	defer lock.Release()
 
 	m, err := LoadManifest(paths.Manifest)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, false, fmt.Errorf("no pool manifest yet; run `wraptool harness install %s` first", opts.Harness)
+			return nil, fmt.Errorf("no pool manifest yet; run `wraptool harness install %s` first", opts.Harness)
 		}
-		return nil, false, err
+		return nil, err
 	}
 	hm, ok := m.Harnesses[opts.Harness]
 	if !ok {
-		return nil, false, fmt.Errorf("harness %q has no manifest entry; run `wraptool harness install %s` first", opts.Harness, opts.Harness)
+		return nil, fmt.Errorf("harness %q has no manifest entry; run `wraptool harness install %s` first", opts.Harness, opts.Harness)
 	}
 	policy := m.EffectivePolicy(opts.Harness)
 
+	var constraintObj *semver.Constraints
+	if hm.Constraint != "" {
+		constraintObj, err = semver.NewConstraint(hm.Constraint)
+		if err != nil {
+			return nil, fmt.Errorf("harness %q: invalid constraint %q: %w", opts.Harness, hm.Constraint, err)
+		}
+	}
+
+	recipeRevision, err := npmRecipeRevision(opts.Package)
+	if err != nil {
+		return nil, err
+	}
+
+	lockDoc, err := loadLockOrEmpty(paths.Lock)
+	if err != nil {
+		return nil, err
+	}
+	existing, hasLock := lockDoc.Harnesses[opts.Harness]
+	lockSatisfiesConstraint := false
+	if hasLock {
+		if v, verr := semver.NewVersion(existing.Version); verr == nil {
+			lockSatisfiesConstraint = constraintObj == nil || constraintObj.Check(v)
+		}
+	}
+
+	// Step 1: strict idempotence, no eligibility scan at all.
+	if hasLock && existing.Package == opts.Package && existing.RecipeRevision == recipeRevision && lockSatisfiesConstraint {
+		out := existing
+		return &UpdateResult{Harness: &out, Changed: false}, nil
+	}
+
 	obs, err := LoadObservations(paths.Observations)
 	if err != nil {
-		return nil, false, fmt.Errorf("loading observations: %w", err)
+		return nil, fmt.Errorf("loading observations: %w", err)
 	}
 	candidates, err := candidatesForPackage(obs, opts.Package)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	selectPolicy := policy
@@ -256,49 +372,48 @@ func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths Poo
 		selectPolicy.MinimumReleaseAge = 0
 		selectPolicy.MinimumObservationAge = 0
 	}
-	selected, err := selectNewestEligible(candidates, hm.Constraint, selectPolicy, opts.Now)
-	if err != nil {
-		return nil, false, fmt.Errorf("harness %q: %w", opts.Harness, err)
-	}
-
-	if opts.AllowYoung {
-		remaining, _ := QuarantineRemaining(selected, policy, opts.Now)
-		if err := AppendAudit(paths.Audit, "allow_young", map[string]any{
-			"harness":              opts.Harness,
-			"package":              opts.Package,
-			"version":              selected.Version,
-			"reason":               opts.Reason,
-			"remaining_quarantine": remaining.String(),
-		}); err != nil {
-			return nil, false, fmt.Errorf("recording allow-young audit event: %w", err)
+	selected, selErr := selectNewestEligible(candidates, hm.Constraint, selectPolicy, opts.Now)
+	if selErr != nil {
+		// Step 2: nothing eligible right now (even with a bypass applied).
+		// Keep the existing lock instead of erroring, as long as it's for
+		// the same package and its version still satisfies the constraint —
+		// a recipe mismatch doesn't matter here, since nothing new is being
+		// resolved. Hard-error only when there is no usable lock to fall
+		// back to.
+		if hasLock && existing.Package == opts.Package && lockSatisfiesConstraint {
+			note := fmt.Sprintf("keeping %s", existing.Version)
+			if ver, remaining, ok := quarantinedCandidate(candidates, hm.Constraint, policy, opts.Now); ver != "" {
+				if ok {
+					note += fmt.Sprintf("; %s quarantined, %s remaining", ver, remaining)
+				} else {
+					note += fmt.Sprintf("; %s not eligible", ver)
+				}
+			}
+			out := existing
+			return &UpdateResult{Harness: &out, Changed: false, Note: note}, nil
 		}
+		return nil, fmt.Errorf("harness %q: %w", opts.Harness, selErr)
 	}
 
-	recipeRevision, err := npmRecipeRevision(opts.Package)
-	if err != nil {
-		return nil, false, err
+	// An "effective" bypass: opts.AllowYoung was set AND it's the reason
+	// `selected` was reachable at all (it would not be Eligible under the
+	// real, non-bypassed policy). Determined before Resolve/Fetch run, since
+	// it only depends on `selected` and `policy`.
+	allowYoungApplied := opts.AllowYoung && !Eligible(selected, policy, opts.Now)
+
+	workDir := opts.WorkDir
+	if workDir == "" {
+		dir, cleanup, err := newScratchDir(paths.Staging)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
+		workDir = dir
 	}
 
-	lockDoc, err := loadLockOrEmpty(paths.Lock)
+	resolved, err := src.Resolve(ctx, b, opts.Package, selected.Version, workDir, defaultNodeVersion, recipeRevision)
 	if err != nil {
-		return nil, false, err
-	}
-	// §10 idempotence: manifest (already reflected in `selected`), lock, and
-	// recipe must all agree — a recipe_revision mismatch (e.g. a wraptool
-	// upgrade changed recipeFormatVersion) must NOT be treated as
-	// already-satisfied, per §8's stated purpose for recipe_revision
-	// ("changed wraptool installer logic cannot silently reuse a generation
-	// built under different assumptions").
-	if existing, ok := lockDoc.Harnesses[opts.Harness]; ok &&
-		existing.Package == opts.Package && existing.Version == selected.Version &&
-		existing.RecipeRevision == recipeRevision {
-		out := existing
-		return &out, false, nil
-	}
-
-	resolved, err := src.Resolve(ctx, b, opts.Package, selected.Version, opts.WorkDir, defaultNodeVersion, recipeRevision)
-	if err != nil {
-		return nil, false, fmt.Errorf("resolving %s@%s: %w", opts.Package, selected.Version, err)
+		return nil, fmt.Errorf("resolving %s@%s: %w", opts.Package, selected.Version, err)
 	}
 	resolved.FirstSeenAt = FormatTimestamp(selected.FirstSeenAt)
 
@@ -311,12 +426,12 @@ func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths Poo
 	// been touched yet at this point, returning here does that for free —
 	// no half-fetched resolution is ever persisted.
 	if err := src.Fetch(ctx, &resolved, paths.Cache); err != nil {
-		return nil, false, fmt.Errorf("fetching %s@%s: %w", opts.Package, selected.Version, err)
+		return nil, fmt.Errorf("fetching %s@%s: %w", opts.Package, selected.Version, err)
 	}
 
 	policyHash, err := PolicyHash(policy)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	lockDoc.SchemaVersion = LockSchemaVersion
 	lockDoc.GeneratedAt = FormatTimestamp(opts.Now)
@@ -326,33 +441,82 @@ func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths Poo
 	}
 	lockDoc.Harnesses[opts.Harness] = resolved
 	if err := lockDoc.Validate(); err != nil {
-		return nil, false, fmt.Errorf("validating lock: %w", err)
+		return nil, fmt.Errorf("validating lock: %w", err)
 	}
 	data, err := lockDoc.Marshal()
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	if err := WriteFileAtomic(paths.Lock, data, 0o644); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	out := resolved
-	return &out, true, nil
+	result := &UpdateResult{Harness: &out, Changed: true}
+
+	// Only an effective bypass is audited — "only an effective bypass gets
+	// audited" (§9 minor) — and only after the lock write above succeeded.
+	if allowYoungApplied {
+		age := opts.Now.Sub(selected.PublishedAt)
+		integrity := ""
+		if resolved.NPMLock != nil {
+			if pkgEntry, ok := resolved.NPMLock.Packages[opts.Package]; ok {
+				integrity = pkgEntry.Integrity
+			}
+		}
+		if err := AppendAudit(paths.Audit, "allow_young", map[string]any{
+			"harness":   opts.Harness,
+			"package":   opts.Package,
+			"version":   selected.Version,
+			"reason":    opts.Reason,
+			"age":       age.String(),
+			"integrity": integrity,
+		}); err != nil {
+			return nil, fmt.Errorf("recording allow-young audit event: %w", err)
+		}
+		result.AllowYoungApplied = true
+		result.CandidateAge = age
+		result.CandidateIntegrity = integrity
+	}
+
+	return result, nil
 }
 
-// SyncHarness realizes the pool's exact existing lock entry for harnessName:
-// it never calls Source.Resolve (§9's Resolve phase is skipped entirely —
-// sync "resolves NOTHING"), only Source.Fetch, to backfill any cache objects
-// missing since the lock was written (new workstation, cache loss, §10). It
-// errors if no lock entry exists for harnessName; sync has nothing to
-// realize from in that case. Holds the pool lock for its full duration (§6.5).
+// newScratchDir creates a fresh staging/txn-<id> scratch directory (§5
+// layout) for Source.Resolve to use when UpdateOptions.WorkDir is empty. The
+// returned cleanup func removes it unconditionally; the caller MUST defer it
+// immediately so it runs on both the success and failure paths — a scratch
+// dir is disposable, never part of the pool's persistent state, and never
+// mounted into a project container.
+func newScratchDir(stagingRoot string) (dir string, cleanup func(), err error) {
+	dir = filepath.Join(stagingRoot, "txn-"+uuid.NewString())
+	if err := os.MkdirAll(dir, poolDirPerm); err != nil {
+		return "", nil, fmt.Errorf("creating scratch dir: %w", err)
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+// SyncHarness realizes the pool's exact existing lock entry for harnessName
+// under its own, self-contained pool lock acquisition. See SyncHarnessLocked
+// for the behavior; this wrapper exists for a caller that isn't already
+// composing multiple orchestrator calls under one LockPool span.
 func SyncHarness(ctx context.Context, src Source, paths PoolPaths, harnessName string) (*LockHarness, error) {
-	lock := NewPoolLock(paths.AdvisoryLock)
-	if err := lock.Acquire(ctx); err != nil {
+	release, err := LockPool(ctx, paths)
+	if err != nil {
 		return nil, err
 	}
-	defer lock.Release()
+	defer release()
+	return SyncHarnessLocked(ctx, src, paths, harnessName)
+}
 
+// SyncHarnessLocked is SyncHarness's body, assuming the caller already holds
+// the pool lock (via LockPool) — it never acquires one itself. It never
+// calls Source.Resolve (§9's Resolve phase is skipped entirely — sync
+// "resolves NOTHING"), only Source.Fetch, to backfill any cache objects
+// missing since the lock was written (new workstation, cache loss, §10). It
+// errors if no lock entry exists for harnessName; sync has nothing to
+// realize from in that case.
+func SyncHarnessLocked(ctx context.Context, src Source, paths PoolPaths, harnessName string) (*LockHarness, error) {
 	lockDoc, err := loadLockOrEmpty(paths.Lock)
 	if err != nil {
 		return nil, err
@@ -365,6 +529,42 @@ func SyncHarness(ctx context.Context, src Source, paths PoolPaths, harnessName s
 		return nil, fmt.Errorf("fetching %s: %w", harnessName, err)
 	}
 	return &lh, nil
+}
+
+// ManifestHarnessNames returns the harness names currently listed in the
+// pool manifest — i.e. those with recorded developer intent — in
+// unspecified order. A missing manifest returns an empty slice, not an
+// error (mirrors loadManifestOrEmpty's read-path semantics). Used by cmd's
+// bare `refresh`/`update` to iterate only harnesses someone actually asked
+// the pool to manage, rather than every registry-known lockable harness —
+// which would otherwise needlessly seed observations.json for packages
+// nobody has installed.
+func ManifestHarnessNames(path string) ([]string, error) {
+	m, err := loadManifestOrEmpty(path)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(m.Harnesses))
+	for name := range m.Harnesses {
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// LockHarnessNames returns the harness names currently present in
+// harness-lock.json, in unspecified order. A missing lock returns an empty
+// slice, not an error. Used by cmd's bare `sync` to iterate only harnesses
+// that actually have an existing lock entry to realize from.
+func LockHarnessNames(path string) ([]string, error) {
+	l, err := loadLockOrEmpty(path)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(l.Harnesses))
+	for name := range l.Harnesses {
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 // HarnessStatus is one harness's row of `wraptool harness list` (§10): the
@@ -473,7 +673,7 @@ func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (Har
 }
 
 // versionedCandidate pairs a Candidate with its parsed semver.Version so
-// StatusHarness's scan doesn't reparse Version on every comparison.
+// repeated scans don't reparse Version on every comparison.
 type versionedCandidate struct {
 	cand Candidate
 	ver  *semver.Version
@@ -482,8 +682,12 @@ type versionedCandidate struct {
 // candidatesForPackage extracts every observed candidate for pkg (source
 // "npm") out of the flat Observations map, parsing each "npm/<pkg>/<version>"
 // key back into a Candidate ready for Eligible/QuarantineRemaining. Matching
-// is a literal prefix check against "npm/<pkg>/", not a path split, so a
-// scoped npm package name (which itself contains "/") is handled correctly.
+// is a literal prefix check against "npm/<pkg>/" — the trailing slash is
+// load-bearing: without it, pkg "foo" would also match a stored key for an
+// unrelated package "foo-bar" ("npm/foo-bar/1.0.0" starts with "npm/foo" but
+// not "npm/foo/"). This is a literal string-prefix check, not a path split,
+// so a scoped npm package name (which itself contains "/") is handled
+// correctly too.
 func candidatesForPackage(obs Observations, pkg string) ([]Candidate, error) {
 	prefix := npmSourceName + "/" + pkg + "/"
 	var out []Candidate
@@ -511,25 +715,27 @@ func candidatesForPackage(obs Observations, pkg string) ([]Candidate, error) {
 	return out, nil
 }
 
-// selectNewestEligible picks the newest candidate that both satisfies
-// constraint (empty means "any version", per §7 "Empty constraint means the
-// descriptor's stable channel") and is Eligible under policy at now. When no
-// candidate qualifies, it returns an error naming the newest
-// constraint-satisfying candidate and, when that candidate's ineligibility is
-// purely a matter of waiting, how much longer via QuarantineRemaining (§9's
-// requirement that a failed update names the quarantined candidate and its
-// remaining time).
-func selectNewestEligible(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (Candidate, error) {
+// candidateScan is the result of scanning a candidate list against a version
+// constraint: the best ELIGIBLE candidate under policy (if any), and,
+// independently, the newest candidate satisfying the constraint regardless
+// of eligibility — used to report what's currently being held back by
+// quarantine.
+type candidateScan struct {
+	eligible *versionedCandidate
+	newest   *versionedCandidate
+}
+
+func scanCandidatesForConstraint(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (candidateScan, error) {
 	var constraintObj *semver.Constraints
 	if constraintStr != "" {
 		c, err := semver.NewConstraint(constraintStr)
 		if err != nil {
-			return Candidate{}, fmt.Errorf("invalid constraint %q: %w", constraintStr, err)
+			return candidateScan{}, fmt.Errorf("invalid constraint %q: %w", constraintStr, err)
 		}
 		constraintObj = c
 	}
 
-	var newest, bestEligible *versionedCandidate
+	var scan candidateScan
 	for i := range candidates {
 		cand := candidates[i]
 		v, err := semver.NewVersion(cand.Version)
@@ -539,36 +745,73 @@ func selectNewestEligible(candidates []Candidate, constraintStr string, policy E
 		if constraintObj != nil && !constraintObj.Check(v) {
 			continue
 		}
-		if newest == nil || v.GreaterThan(newest.ver) {
-			newest = &versionedCandidate{cand, v}
+		if scan.newest == nil || v.GreaterThan(scan.newest.ver) {
+			scan.newest = &versionedCandidate{cand, v}
 		}
-		if Eligible(cand, policy, now) && (bestEligible == nil || v.GreaterThan(bestEligible.ver)) {
-			bestEligible = &versionedCandidate{cand, v}
+		if Eligible(cand, policy, now) && (scan.eligible == nil || v.GreaterThan(scan.eligible.ver)) {
+			scan.eligible = &versionedCandidate{cand, v}
 		}
+	}
+	return scan, nil
+}
+
+// selectNewestEligible picks the newest candidate that both satisfies
+// constraint (empty means "any version", per §7 "Empty constraint means the
+// descriptor's stable channel") and is Eligible under policy at now. When no
+// candidate qualifies, it returns an error naming the newest
+// constraint-satisfying candidate and, when that candidate's ineligibility is
+// purely a matter of waiting, how much longer via QuarantineRemaining (§9's
+// requirement that a failed update names the quarantined candidate and its
+// remaining time).
+func selectNewestEligible(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (Candidate, error) {
+	scan, err := scanCandidatesForConstraint(candidates, constraintStr, policy, now)
+	if err != nil {
+		return Candidate{}, err
 	}
 
-	if bestEligible != nil {
-		return bestEligible.cand, nil
+	if scan.eligible != nil {
+		return scan.eligible.cand, nil
 	}
-	if newest == nil {
+	if scan.newest == nil {
 		if constraintStr == "" {
 			return Candidate{}, fmt.Errorf("no observed candidate; run `wraptool harness refresh` first")
 		}
 		return Candidate{}, fmt.Errorf("no observed candidate satisfies constraint %q; run `wraptool harness refresh` first", constraintStr)
 	}
-	if remaining, ok := QuarantineRemaining(newest.cand, policy, now); ok {
+	if remaining, ok := QuarantineRemaining(scan.newest.cand, policy, now); ok {
 		return Candidate{}, fmt.Errorf("no eligible candidate satisfies constraint %q: newest matching candidate %s is quarantined, %s remaining",
-			constraintStr, newest.cand.Version, remaining)
+			constraintStr, scan.newest.cand.Version, remaining)
 	}
 	return Candidate{}, fmt.Errorf("no eligible candidate satisfies constraint %q: newest matching candidate %s is not eligible (yanked, or a disallowed prerelease)",
-		constraintStr, newest.cand.Version)
+		constraintStr, scan.newest.cand.Version)
+}
+
+// quarantinedCandidate reports the newest candidate satisfying constraint
+// that is currently being held back from selection by policy. version==""
+// means there is nothing to report: either no observed candidate satisfies
+// constraint at all, or the newest one already IS the best eligible one
+// (nothing is being held back). A constraint parse failure is swallowed to
+// version=="" here — this helper only builds an informative message on an
+// already-successful no-op path, where an invalid constraint would already
+// have surfaced as a hard error earlier in the same call.
+func quarantinedCandidate(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (version string, remaining time.Duration, ok bool) {
+	scan, err := scanCandidatesForConstraint(candidates, constraintStr, policy, now)
+	if err != nil || scan.newest == nil {
+		return "", 0, false
+	}
+	if scan.eligible != nil && !scan.newest.ver.GreaterThan(scan.eligible.ver) {
+		return "", 0, false
+	}
+	remaining, ok = QuarantineRemaining(scan.newest.cand, policy, now)
+	return scan.newest.cand.Version, remaining, ok
 }
 
 // loadManifestOrEmpty loads the manifest, treating a missing file as an
 // empty one (no `install` has ever run) rather than an error — appropriate
-// for read paths (StatusHarness) that must work before any pool mutation.
-// Mutating paths that need a real, already-created manifest (UpdateHarness)
-// use LoadManifest directly and surface its error.
+// for read paths (StatusHarness, ManifestHarnessNames) that must work
+// before any pool mutation. Mutating paths that need a real, already-created
+// manifest (UpdateHarnessLocked) use LoadManifest directly and surface its
+// error.
 func loadManifestOrEmpty(path string) (*Manifest, error) {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
