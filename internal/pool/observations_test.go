@@ -3,6 +3,7 @@ package pool
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -143,6 +144,29 @@ func TestObservationsSaveIsAtomic(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Errorf("expected exactly the final file after Save, found %v", entries)
+	}
+}
+
+// TestLoadObservationsCorruptJSONNamesPathAndRemedy: a malformed
+// observations.json (not valid JSON at all, distinct from a validly-shaped
+// file with a bad timestamp) must name the file path and tell the caller how
+// to recover — deleting it is always safe since observations.json is
+// disposable pool-local cache state (§9), not the manifest or lock.
+func TestLoadObservationsCorruptJSONNamesPathAndRemedy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "observations.json")
+	if err := os.WriteFile(path, []byte(`{not valid json`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadObservations(path)
+	if err == nil {
+		t.Fatal("expected an error for corrupt JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error = %q, want it to name the file path %q", err.Error(), path)
+	}
+	if !strings.Contains(err.Error(), "delete it") {
+		t.Errorf("error = %q, want it to suggest deleting the file as the remedy", err.Error())
 	}
 }
 
