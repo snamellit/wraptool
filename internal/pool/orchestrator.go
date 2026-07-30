@@ -307,9 +307,13 @@ func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths Poo
 // UpdateHarnessLocked is UpdateHarness's body, assuming the caller already
 // holds the pool lock (via LockPool) — it never acquires one itself.
 //
-// opts.Advance selects between install's and update's differing idempotence
-// semantics (§10: "update is the only normal command that advances a
-// floating constraint" — see UpdateOptions.Advance's doc comment):
+// It is a thin imperative shell around decision.go's pure core: every
+// clock/lock-file read happens here to assemble one DecisionInput, Decide is
+// called exactly once, and the result determines which effects (if any) run
+// below. opts.Advance selects between install's and update's differing
+// idempotence semantics (§10: "update is the only normal command that
+// advances a floating constraint" — see UpdateOptions.Advance's doc comment
+// and Decide's doc comment for the full decision narrative):
 //
 //  1. install (Advance=false): if the pool's existing lock entry for
 //     opts.Harness already matches opts.Package and the freshly computed
@@ -374,14 +378,6 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	}
 	policy := m.EffectivePolicy(opts.Harness)
 
-	var constraintObj *semver.Constraints
-	if hm.Constraint != "" {
-		constraintObj, err = semver.NewConstraint(hm.Constraint)
-		if err != nil {
-			return nil, fmt.Errorf("harness %q: invalid constraint %q: %w", opts.Harness, hm.Constraint, err)
-		}
-	}
-
 	recipeRevision, err := npmRecipeRevision(opts.Package)
 	if err != nil {
 		return nil, err
@@ -392,22 +388,6 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 	existing, hasLock := lockDoc.Harnesses[opts.Harness]
-	lockSatisfiesConstraint := false
-	if hasLock {
-		if v, verr := semver.NewVersion(existing.Version); verr == nil {
-			lockSatisfiesConstraint = constraintObj == nil || constraintObj.Check(v)
-		}
-	}
-
-	lockMatchesRecipe := hasLock && existing.Package == opts.Package && existing.RecipeRevision == recipeRevision
-
-	// install's strict short-circuit (Advance=false only): skip scanning
-	// entirely when intent is already fully realized, even if a newer
-	// eligible candidate exists — install does not advance (§10).
-	if !opts.Advance && lockMatchesRecipe && lockSatisfiesConstraint {
-		out := existing
-		return &UpdateResult{Harness: &out, Changed: false}, nil
-	}
 
 	obs, err := LoadObservations(paths.Observations)
 	if err != nil {
@@ -418,54 +398,37 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 
-	selectPolicy := policy
-	if opts.AllowYoung {
-		selectPolicy.MinimumReleaseAge = 0
-		selectPolicy.MinimumObservationAge = 0
-	}
-	selected, selErr := selectNewestEligible(candidates, hm.Constraint, selectPolicy, opts.Now)
-	if selErr != nil {
-		// Nothing eligible right now (even with a bypass applied), in EITHER
-		// mode. Keep the existing lock instead of erroring, as long as it's
-		// for the same package and its version still satisfies the
-		// constraint — a recipe mismatch doesn't matter here, since nothing
-		// new is being resolved. Hard-error only when there is no usable
-		// lock to fall back to.
-		if hasLock && existing.Package == opts.Package && lockSatisfiesConstraint {
-			note := fmt.Sprintf("keeping %s", existing.Version)
-			if ver, remaining, ok := quarantinedCandidate(candidates, hm.Constraint, policy, opts.Now); ver != "" {
-				if ok {
-					note += fmt.Sprintf("; %s quarantined, %s remaining", ver, remaining)
-				} else {
-					note += fmt.Sprintf("; %s not eligible", ver)
-				}
-			} else {
-				note += "; no eligible candidate"
-			}
-			out := existing
-			return &UpdateResult{Harness: &out, Changed: false, Note: note}, nil
-		}
-		return nil, fmt.Errorf("harness %q: %w", opts.Harness, selErr)
-	}
+	decision := Decide(DecisionInput{
+		Harness:            opts.Harness,
+		Package:            opts.Package,
+		Advance:            opts.Advance,
+		HasLock:            hasLock,
+		LockPackage:        existing.Package,
+		LockVersion:        existing.Version,
+		LockRecipeRevision: existing.RecipeRevision,
+		Constraint:         hm.Constraint,
+		RecipeRevision:     recipeRevision,
+		Candidates:         candidates,
+		Policy:             policy,
+		AllowYoung:         opts.AllowYoung,
+		Now:                opts.Now,
+	})
 
-	// The scan succeeded. If it selected exactly what's already locked
-	// (package+recipe unchanged too), this is a no-op for update — nothing
-	// better to advance to — with no Note (unlike the scan-failure case
-	// above, this isn't "held back", it's already current). For install,
-	// reaching this point at all means the Advance=false short-circuit above
-	// didn't fire, which only happens when something didn't already match
-	// (no lock, package/recipe mismatch, or an unsatisfied constraint) — so
-	// this branch mostly matters for update, but applies uniformly.
-	if lockMatchesRecipe && existing.Version == selected.Version {
+	switch decision.Kind {
+	case DecisionUpToDate:
 		out := existing
 		return &UpdateResult{Harness: &out, Changed: false}, nil
+	case DecisionKeepExisting:
+		out := existing
+		return &UpdateResult{Harness: &out, Changed: false, Note: decision.Note}, nil
+	case DecisionFail:
+		return nil, decision.Err
+	case DecisionResolveVersion:
+		// Fall through to the resolve+fetch+persist effects below.
 	}
 
-	// An "effective" bypass: opts.AllowYoung was set AND it's the reason
-	// `selected` was reachable at all (it would not be Eligible under the
-	// real, non-bypassed policy). Determined before Resolve/Fetch run, since
-	// it only depends on `selected` and `policy`.
-	allowYoungApplied := opts.AllowYoung && !Eligible(selected, policy, opts.Now)
+	selected := decision.Selected
+	allowYoungApplied := decision.AllowYoungApplied
 
 	workDir := opts.WorkDir
 	if workDir == "" {
@@ -738,13 +701,6 @@ func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (Har
 	return status, nil
 }
 
-// versionedCandidate pairs a Candidate with its parsed semver.Version so
-// repeated scans don't reparse Version on every comparison.
-type versionedCandidate struct {
-	cand Candidate
-	ver  *semver.Version
-}
-
 // candidatesForPackage extracts every observed candidate for pkg (source
 // "npm") out of the flat Observations map, parsing each "npm/<pkg>/<version>"
 // key back into a Candidate ready for Eligible/QuarantineRemaining. Matching
@@ -779,97 +735,6 @@ func candidatesForPackage(obs Observations, pkg string) ([]Candidate, error) {
 		})
 	}
 	return out, nil
-}
-
-// candidateScan is the result of scanning a candidate list against a version
-// constraint: the best ELIGIBLE candidate under policy (if any), and,
-// independently, the newest candidate satisfying the constraint regardless
-// of eligibility — used to report what's currently being held back by
-// quarantine.
-type candidateScan struct {
-	eligible *versionedCandidate
-	newest   *versionedCandidate
-}
-
-func scanCandidatesForConstraint(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (candidateScan, error) {
-	var constraintObj *semver.Constraints
-	if constraintStr != "" {
-		c, err := semver.NewConstraint(constraintStr)
-		if err != nil {
-			return candidateScan{}, fmt.Errorf("invalid constraint %q: %w", constraintStr, err)
-		}
-		constraintObj = c
-	}
-
-	var scan candidateScan
-	for i := range candidates {
-		cand := candidates[i]
-		v, err := semver.NewVersion(cand.Version)
-		if err != nil {
-			continue // not a valid semver version; not selectable
-		}
-		if constraintObj != nil && !constraintObj.Check(v) {
-			continue
-		}
-		if scan.newest == nil || v.GreaterThan(scan.newest.ver) {
-			scan.newest = &versionedCandidate{cand, v}
-		}
-		if Eligible(cand, policy, now) && (scan.eligible == nil || v.GreaterThan(scan.eligible.ver)) {
-			scan.eligible = &versionedCandidate{cand, v}
-		}
-	}
-	return scan, nil
-}
-
-// selectNewestEligible picks the newest candidate that both satisfies
-// constraint (empty means "any version", per §7 "Empty constraint means the
-// descriptor's stable channel") and is Eligible under policy at now. When no
-// candidate qualifies, it returns an error naming the newest
-// constraint-satisfying candidate and, when that candidate's ineligibility is
-// purely a matter of waiting, how much longer via QuarantineRemaining (§9's
-// requirement that a failed update names the quarantined candidate and its
-// remaining time).
-func selectNewestEligible(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (Candidate, error) {
-	scan, err := scanCandidatesForConstraint(candidates, constraintStr, policy, now)
-	if err != nil {
-		return Candidate{}, err
-	}
-
-	if scan.eligible != nil {
-		return scan.eligible.cand, nil
-	}
-	if scan.newest == nil {
-		if constraintStr == "" {
-			return Candidate{}, fmt.Errorf("no observed candidate; run `wraptool harness refresh` first")
-		}
-		return Candidate{}, fmt.Errorf("no observed candidate satisfies constraint %q; run `wraptool harness refresh` first", constraintStr)
-	}
-	if remaining, ok := QuarantineRemaining(scan.newest.cand, policy, now); ok {
-		return Candidate{}, fmt.Errorf("no eligible candidate satisfies constraint %q: newest matching candidate %s is quarantined, %s remaining",
-			constraintStr, scan.newest.cand.Version, remaining)
-	}
-	return Candidate{}, fmt.Errorf("no eligible candidate satisfies constraint %q: newest matching candidate %s is not eligible (yanked, or a disallowed prerelease)",
-		constraintStr, scan.newest.cand.Version)
-}
-
-// quarantinedCandidate reports the newest candidate satisfying constraint
-// that is currently being held back from selection by policy. version==""
-// means there is nothing to report: either no observed candidate satisfies
-// constraint at all, or the newest one already IS the best eligible one
-// (nothing is being held back). A constraint parse failure is swallowed to
-// version=="" here — this helper only builds an informative message on an
-// already-successful no-op path, where an invalid constraint would already
-// have surfaced as a hard error earlier in the same call.
-func quarantinedCandidate(candidates []Candidate, constraintStr string, policy EffectivePolicy, now time.Time) (version string, remaining time.Duration, ok bool) {
-	scan, err := scanCandidatesForConstraint(candidates, constraintStr, policy, now)
-	if err != nil || scan.newest == nil {
-		return "", 0, false
-	}
-	if scan.eligible != nil && !scan.newest.ver.GreaterThan(scan.eligible.ver) {
-		return "", 0, false
-	}
-	remaining, ok = QuarantineRemaining(scan.newest.cand, policy, now)
-	return scan.newest.cand.Version, remaining, ok
 }
 
 // loadManifestOrEmpty loads the manifest, treating a missing file as an
