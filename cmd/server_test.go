@@ -8,23 +8,23 @@ import (
 )
 
 // withIsolatedRuntime points XDG_RUNTIME_DIR at a temp dir (so pidfile/state
-// helpers never touch a real running server) and reloads xdg. Returns a
-// cleanup func restoring the prior env.
-func withIsolatedRuntime(t *testing.T) func() {
+// helpers never touch a real running server) and reloads xdg. Registers a
+// t.Cleanup that restores the prior env, so callers don't need to defer.
+func withIsolatedRuntime(t *testing.T) {
 	t.Helper()
 	old, had := os.LookupEnv("XDG_RUNTIME_DIR")
 	if err := os.Setenv("XDG_RUNTIME_DIR", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 	xdg.Reload()
-	return func() {
+	t.Cleanup(func() {
 		if had {
 			os.Setenv("XDG_RUNTIME_DIR", old)
 		} else {
 			os.Unsetenv("XDG_RUNTIME_DIR")
 		}
 		xdg.Reload()
-	}
+	})
 }
 
 // TestPidFileRoundTrip covers the single pidfile writer used by every start path
@@ -32,8 +32,7 @@ func withIsolatedRuntime(t *testing.T) func() {
 // readPidFile reads it back, removePidFile clears it. Runs against an isolated
 // XDG_RUNTIME_DIR so it never touches a real running server's pidfile.
 func TestPidFileRoundTrip(t *testing.T) {
-	cleanup := withIsolatedRuntime(t)
-	defer cleanup()
+	withIsolatedRuntime(t)
 
 	if err := writePidFile(); err != nil {
 		t.Fatalf("writePidFile: %v", err)
@@ -56,8 +55,7 @@ func TestPidFileRoundTrip(t *testing.T) {
 // the pidfile, which `up` reads to decide whether a running server matches the
 // desired bind/auth (and restarts it if not).
 func TestServeStateRoundTrip(t *testing.T) {
-	cleanup := withIsolatedRuntime(t)
-	defer cleanup()
+	withIsolatedRuntime(t)
 
 	if err := writeServeState(serveState{Listen: "0.0.0.0:8717", Auth: true}); err != nil {
 		t.Fatalf("writeServeState: %v", err)
@@ -81,8 +79,7 @@ func TestServeStateRoundTrip(t *testing.T) {
 // reports no match when the state file is missing (a server started by an
 // older wraptool or out-of-band — `up` restarts it).
 func TestRunningMatches(t *testing.T) {
-	cleanup := withIsolatedRuntime(t)
-	defer cleanup()
+	withIsolatedRuntime(t)
 
 	if err := writeServeState(serveState{Listen: "0.0.0.0:8717", Auth: true}); err != nil {
 		t.Fatal(err)

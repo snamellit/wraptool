@@ -263,24 +263,18 @@ func ensureServer(cfg *config.Config, configPath string) error {
 	probe := probeAddr(cfg.MCP.Listen)
 	desired := serveState{Listen: cfg.MCP.Listen, Auth: cfg.MCP.AuthTokenFile != ""}
 
-	// Fast path: a matching server is up. Still ensure tokens exist (a server
-	// started before a token file was defaulted in would otherwise leave
-	// readAuthToken with no file to read).
-	if dialOK(probe) && runningMatches(desired) {
-		if err := ensureAuthToken(cfg); err != nil {
-			return err
-		}
-		fmt.Printf("wraptool server already running (%s)\n", probe)
-		return nil
-	}
-
+	// Always acquire the lock before touching tokens or the server: a pre-lock
+	// "already running" fast path would race with a concurrent `up` writing the
+	// same token file. The flock is cheap; correctness beats the micro-opt.
 	unlock, err := lockRuntime()
 	if err != nil {
 		return err
 	}
 	defer unlock()
 
-	// Re-check under the lock; a racing `up` may have reconciled the server.
+	// A matching server is up. Ensure tokens exist under the lock (a server
+	// started before a token file was defaulted in, or whose token file was
+	// later deleted, would otherwise leave readAuthToken with no file to read).
 	if dialOK(probe) && runningMatches(desired) {
 		if err := ensureAuthToken(cfg); err != nil {
 			return err
