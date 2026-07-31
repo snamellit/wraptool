@@ -71,6 +71,50 @@ func (f *fakeHarnessSource) Fetch(_ context.Context, h *pool.LockHarness, _ stri
 	return nil
 }
 
+// Realize writes a small but REAL generation tree and builds its receipt
+// with the real pool receipt helpers (ScanGenerationFiles/ManifestDigest) —
+// internal/pool/orchestrator_test.go's fakeSource.Realize does the same, for
+// the same reason (exercise host-side verification for real).
+func (f *fakeHarnessSource) Realize(_ context.Context, _ backend.Backend, harnessName, binName string, h *pool.LockHarness, key pool.PlatformKey, _, stagingGenDir string) (*pool.Receipt, error) {
+	if f.onCall != nil {
+		f.onCall("realize:" + harnessName)
+	}
+	name := binName
+	if name == "" {
+		name = harnessName
+	}
+	binDir := filepath.Join(stagingGenDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexec true\n"), 0o755); err != nil {
+		return nil, err
+	}
+	files, err := pool.ScanGenerationFiles(stagingGenDir)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := pool.ManifestDigest(files)
+	if err != nil {
+		return nil, err
+	}
+	lockHash, err := h.Hash()
+	if err != nil {
+		return nil, err
+	}
+	return &pool.Receipt{
+		SchemaVersion:  pool.ReceiptSchemaVersion,
+		Harness:        harnessName,
+		Version:        h.Version,
+		Platform:       key,
+		RecipeRevision: h.RecipeRevision,
+		LockEntryHash:  lockHash,
+		Backend:        pool.ReceiptBackend{Name: "fake"},
+		Files:          files,
+		ManifestDigest: digest,
+	}, nil
+}
+
 // fakeHarnessBackend is a no-op backend.Backend: cmd-level tests never
 // actually run a container (fakeHarnessSource.Resolve ignores its backend
 // argument entirely), they only need a value satisfying the interface to
@@ -97,6 +141,7 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 		AdvisoryLock: filepath.Join(dir, "lock"),
 		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
 		Staging:      filepath.Join(dir, "staging"),
+		Runtime:      filepath.Join(dir, "runtime"),
 	}
 }
 
@@ -213,6 +258,8 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 		{"update: --allow-young without --reason", []string{"update", "claude", "--allow-young"}, "--reason"},
 		{"sync: unknown harness", []string{"sync", "bogus"}, "unknown harness"},
 		{"sync: legacy (non-lockable) harness", []string{"sync", "roo"}, "not pool-lockable"},
+		{"sync: unknown --platform lists the closed enum", []string{"sync", "--platform", "bogus-platform"},
+			"linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl"},
 		{"policy set: no flags given", []string{"policy", "set"}, "specify at least one of"},
 		{"policy set: unknown --harness", []string{"policy", "set", "--harness", "bogus", "--minimum-release-age", "1h"}, "unknown harness"},
 		{"policy set: negative --minimum-release-age", []string{"policy", "set", "--minimum-release-age", "-1h"}, "must not be negative"},
@@ -316,6 +363,10 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 				Source: "npm", Package: pkg, Version: "2.1.220",
 				PublishedAt: pool.FormatTimestamp(now.Add(-200 * time.Hour)),
 				FirstSeenAt: pool.FormatTimestamp(now.Add(-200 * time.Hour)),
+				Generations: map[pool.PlatformKey]string{
+					pool.PlatformLinuxAMD64Glibc: "sha256:" + strings.Repeat("a", 64),
+					pool.PlatformLinuxARM64Glibc: "sha256:" + strings.Repeat("b", 64),
+				},
 			},
 		},
 	}
@@ -335,7 +386,7 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 	}
 	out := buf.String()
 
-	if !strings.Contains(out, "HARNESS") || !strings.Contains(out, "CONSTRAINT") || !strings.Contains(out, "QUARANTINED") {
+	if !strings.Contains(out, "HARNESS") || !strings.Contains(out, "CONSTRAINT") || !strings.Contains(out, "QUARANTINED") || !strings.Contains(out, "REALIZED") {
 		t.Fatalf("missing expected header columns, got:\n%s", out)
 	}
 	if !strings.Contains(out, "2.1.224 (3d left)") {
@@ -346,6 +397,16 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 	}
 	if !strings.Contains(out, "legacy (not lockable)") {
 		t.Errorf("expected a legacy-harness row (e.g. agy/gemini/cursor/roo), got:\n%s", out)
+	}
+	if !strings.Contains(out, "linux-amd64-glibc,linux-arm64-glibc") {
+		t.Errorf("expected claude's REALIZED cell to comma-join its two realized platforms, got:\n%s", out)
+	}
+	// A legacy (not pool-lockable) harness's REALIZED cell is "-", same as
+	// every other column that doesn't apply to it.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "legacy (not lockable)") && !strings.HasSuffix(strings.TrimRight(line, " "), "-") {
+			t.Errorf("expected a legacy harness's REALIZED cell to be '-', got line: %q", line)
+		}
 	}
 }
 
@@ -936,6 +997,63 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 	}
 	if status2.Locked != "2.1.224" {
 		t.Errorf("Locked after update = %q, want advanced to 2.1.224", status2.Locked)
+	}
+}
+
+// TestHarnessSyncRealizesRequestedPlatformAndSurfacesInList: `sync
+// --platform <key>` (§16 Phase 2) realizes exactly the requested platform —
+// not necessarily the host's own — and `list`'s REALIZED column then shows
+// it, comma-joined were there more than one.
+func TestHarnessSyncRealizesRequestedPlatformAndSurfacesInList(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// install already realized the host's own platform (linux-amd64-glibc in
+	// this test's runtime.GOARCH-independent case only if amd64 — instead of
+	// depending on the test host's arch, explicitly sync a SECOND, arbitrary
+	// platform key and check both end up recorded.
+	out, err := runHarnessCmdWithDeps(t, deps, "sync", "claude", "--platform", "linux-arm64-musl")
+	if err != nil {
+		t.Fatalf("sync --platform: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "linux-arm64-musl") {
+		t.Errorf("expected sync's output to name the realized platform, got:\n%s", out)
+	}
+
+	status, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, k := range status.Realized {
+		if k == pool.PlatformLinuxARM64Musl {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Realized to include linux-arm64-musl after sync --platform, got %v", status.Realized)
+	}
+
+	var buf bytes.Buffer
+	if err := runHarnessList(paths, filepath.Join(t.TempDir(), "bin"), fixedTestNow, &buf); err != nil {
+		t.Fatalf("runHarnessList: %v", err)
+	}
+	if !strings.Contains(buf.String(), "linux-arm64-musl") {
+		t.Errorf("expected list's REALIZED column to include linux-arm64-musl, got:\n%s", buf.String())
 	}
 }
 
