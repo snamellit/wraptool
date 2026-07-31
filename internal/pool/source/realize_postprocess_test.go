@@ -2,6 +2,7 @@ package source
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -286,67 +287,123 @@ func TestReplaceSymlink_NonNodeShebangIsCopiedVerbatim(t *testing.T) {
 	}
 }
 
-// TestReplaceSymlink_ChainResolvesToFinalTarget_BothOrders covers finding 4's
-// "resolve symlink chains fully before classifying" fix: A -> B -> a real
-// node-shebang file. Both wrappers (for A and for B) must reference the
-// FINAL regular file directly — never the intermediate hop — so neither
-// depends on which order filepath.WalkDir happens to visit A and B in.
-// Without full-chain resolution, whichever of A/B is processed first would
-// bake in a reference to the OTHER (still a symlink at that moment), and
-// once that other link is independently rewritten into a wrapper script, the
-// first-processed link would end up asking node to interpret a /bin/sh
-// wrapper as JavaScript.
-func TestReplaceSymlink_ChainResolvesToFinalTarget_BothOrders(t *testing.T) {
-	runOrder := func(t *testing.T, aName, bName string) {
+// TestReplaceSymlink_CrossDirectoryChain_BothVisitOrders covers finding A: a
+// symlink chain that spans DIRECTORIES, not just filenames within one
+// directory. This is the test that can actually fail without the
+// collect-then-rewrite fix (despymlinkTree's doc comment) — a same-directory
+// chain, which an earlier version of this test used, cannot distinguish a
+// broken resolution from a correct one: when the intermediate hop and the
+// outer link live in the SAME directory, a wrapper mistakenly copied from
+// the (already-rewritten) intermediate hop still happens to compute the
+// right $0-relative offset purely by coincidence of being co-located. Here
+// "direct" and "indirect" live in different directories, so a wrong
+// resolution produces a wrapper whose embedded relative path does not
+// actually reach the real final file — provable by RUNNING it: the wrapper
+// execs a fake "node" that just cats its argument, so a correct resolution
+// prints the final script's own marker content, and a broken one prints the
+// wrong file, an unrelated wrapper, or fails outright.
+//
+// Directory names control filepath.WalkDir's visitation order directly
+// (lexical, top-down): both subtests are run, once with the "direct" hop's
+// directory sorting first and once with the "indirect" hop's directory
+// sorting first, so the fix is proven order-independent both ways.
+func TestReplaceSymlink_CrossDirectoryChain_BothVisitOrders(t *testing.T) {
+	// direct and indirect are deliberately placed at DIFFERENT DEPTHS
+	// (indirect one level deeper, under its own "nested/" subdirectory) —
+	// same-depth siblings would make the correct $0-relative offset for
+	// "direct" and "indirect" IDENTICAL text ("../final/script.js" reads
+	// the same file whichever same-depth sibling directory you compute it
+	// from), which is exactly why an earlier, same-depth version of this
+	// test could not tell a broken resolution from a correct one. With
+	// mismatched depths, a broken resolution that copies "direct"'s own
+	// wrapper text (correct for ITS depth) into "indirect"'s location
+	// produces a script that, when actually run from indirect's (deeper)
+	// directory, looks for the final file in the WRONG place and fails.
+	runCrossDirectoryChain := func(t *testing.T, directDir, indirectDir string) {
 		root := t.TempDir()
-		mustMkdirAll(t, filepath.Join(root, "runtime", "node", "bin"))
-		mustWriteFile(t, filepath.Join(root, "runtime", "node", "bin", "node"), "fake node\n", 0o755)
 
-		dir := filepath.Join(root, "lib", "node_modules", ".bin")
-		mustMkdirAll(t, dir)
-		mustWriteFile(t, filepath.Join(dir, "final.js"), "#!/usr/bin/env node\nconsole.log('final');\n", 0o644)
-		// aName -> bName -> final.js (a 2-hop chain, both links in the same
-		// directory so their WalkDir visit order is controlled purely by
-		// aName/bName's lexical order).
-		mustSymlink(t, bName, filepath.Join(dir, aName))
-		mustSymlink(t, "final.js", filepath.Join(dir, bName))
+		const marker = "UNIQUE_FINAL_SCRIPT_MARKER"
+		finalDir := filepath.Join(root, "final")
+		mustMkdirAll(t, finalDir)
+		mustWriteFile(t, filepath.Join(finalDir, "script.js"), "#!/usr/bin/env node\n"+marker+"\n", 0o644)
+
+		// direct: <directDir>/direct -> ../final/script.js (depth 1).
+		mustMkdirAll(t, filepath.Join(root, directDir))
+		mustSymlink(t, filepath.Join("..", "final", "script.js"), filepath.Join(root, directDir, "direct"))
+
+		// indirect: <indirectDir>/nested/indirect -> ../../<directDir>/direct (depth 2).
+		nestedDir := filepath.Join(root, indirectDir, "nested")
+		mustMkdirAll(t, nestedDir)
+		mustSymlink(t, filepath.Join("..", "..", directDir, "direct"), filepath.Join(nestedDir, "indirect"))
+
+		// A fake "node" that just prints the content of the file it's given
+		// — running the generated wrapper is then a real behavioral proof of
+		// which file it actually reaches, not just a text comparison.
+		nodeBinDir := filepath.Join(root, "runtime", "node", "bin")
+		mustMkdirAll(t, nodeBinDir)
+		mustWriteFile(t, filepath.Join(nodeBinDir, "node"), "#!/bin/sh\ncat \"$1\"\n", 0o755)
 
 		if err := despymlinkTree(root); err != nil {
 			t.Fatalf("despymlinkTree: %v", err)
 		}
 
-		wantWrapper := "#!/bin/sh\n" +
-			`d=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)` + "\n" +
-			`exec "$d/../../../runtime/node/bin/node" "$d/final.js" "$@"` + "\n"
-
-		for _, name := range []string{aName, bName} {
-			p := filepath.Join(dir, name)
+		for _, rel := range []string{filepath.Join(directDir, "direct"), filepath.Join(indirectDir, "nested", "indirect")} {
+			p := filepath.Join(root, rel)
 			info, err := os.Lstat(p)
 			if err != nil {
-				t.Fatalf("lstat %s: %v", name, err)
+				t.Fatalf("lstat %s: %v", rel, err)
 			}
 			if info.Mode()&os.ModeSymlink != 0 {
-				t.Fatalf("%s is still a symlink, want replaced", name)
+				t.Fatalf("%s is still a symlink, want replaced", rel)
 			}
-			data, err := os.ReadFile(p)
+			if info.Mode().Perm()&0o111 == 0 {
+				t.Fatalf("%s is not executable", rel)
+			}
+			out, err := exec.Command(p).CombinedOutput()
 			if err != nil {
-				t.Fatalf("reading %s: %v", name, err)
+				t.Fatalf("executing %s: %v\n%s", rel, err, out)
 			}
-			if string(data) != wantWrapper {
-				t.Errorf("%s content =\n%s\nwant (referencing the FINAL target directly)\n%s", name, data, wantWrapper)
+			if !strings.Contains(string(out), marker) {
+				t.Errorf("executing %s printed %q, want it to contain %q (the TRUE final file's own content — proves it did not resolve to a rewritten intermediate hop)", rel, out, marker)
 			}
 		}
 	}
 
-	// "a" sorts before "b" lexically: WalkDir visits the outer link first.
-	t.Run("outer link visited first", func(t *testing.T) {
-		runOrder(t, "a-outer", "b-inner")
+	// "aaa" < "final" < "zzz" lexically, so naming directDir "aaa" visits
+	// (and rewrites) the direct hop before the indirect one ever looks at it
+	// — the order that broke the old, live-filesystem-resolving
+	// implementation (reproduced by temporarily reverting this fix: this
+	// subtest fails with "executable file not found" against the old code).
+	t.Run("direct hop's directory visited first", func(t *testing.T) {
+		runCrossDirectoryChain(t, "aaa", "zzz")
 	})
-	// Reversed names: WalkDir visits the (functionally) inner-pointing link
-	// first this time.
-	t.Run("inner link visited first", func(t *testing.T) {
-		runOrder(t, "z-outer", "m-inner")
+	// Swapped: the indirect hop's directory is visited first this time.
+	t.Run("indirect hop's directory visited first", func(t *testing.T) {
+		runCrossDirectoryChain(t, "zzz", "aaa")
 	})
+}
+
+// TestReplaceSymlink_RejectsDangerousTargetFilename covers finding B: the
+// $0-relative segments writeRelativeWrapper computes come from real on-disk
+// filenames, which — unlike wraptool's own path constants — can contain
+// whatever bytes an npm package chose to name a file. A double quote in the
+// resolved target's filename must be rejected, not silently interpolated
+// into the generated wrapper's quoting.
+func TestReplaceSymlink_RejectsDangerousTargetFilename(t *testing.T) {
+	root := t.TempDir()
+	mustMkdirAll(t, filepath.Join(root, "runtime", "node", "bin"))
+	mustWriteFile(t, filepath.Join(root, "runtime", "node", "bin", "node"), "fake node\n", 0o755)
+
+	dir := filepath.Join(root, "lib", "node_modules", ".bin")
+	mustMkdirAll(t, dir)
+	dangerousName := `evil"quote.js`
+	mustWriteFile(t, filepath.Join(dir, dangerousName), "#!/usr/bin/env node\nconsole.log('x');\n", 0o644)
+	mustSymlink(t, dangerousName, filepath.Join(dir, "tool"))
+
+	err := despymlinkTree(root)
+	if err == nil {
+		t.Fatal("despymlinkTree: got nil error, want rejection of a target filename containing a double quote")
+	}
 }
 
 // --- finding 2: bin-target classification ----------------------------------

@@ -108,6 +108,15 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	if h.Runtime == nil {
 		return nil, fmt.Errorf("realize: %s: lock has no runtime requirement", harnessName)
 	}
+	// Cheap pre-flight cross-check, before any container run: the harness
+	// package itself must be a top-level entry in its own lock. Without this
+	// here, a mismatched/malformed lock would only surface three container
+	// runs deep, as generateHarnessWrapper failing to find
+	// lib/node_modules/<pkg>/package.json — a confusing failure mode for
+	// what is really a lock-content problem.
+	if _, ok := h.NPMLock.Packages["node_modules/"+h.Package]; !ok {
+		return nil, fmt.Errorf("realize: %s: npm_lock has no top-level entry for the harness package %q (expected key %q)", harnessName, h.Package, "node_modules/"+h.Package)
+	}
 	if _, err := pool.ParsePlatformKey(string(key)); err != nil {
 		return nil, fmt.Errorf("realize: %s: %w", harnessName, err)
 	}
@@ -436,14 +445,31 @@ const wrapperShebang = "#!/bin/sh\n"
 // backend.validateMount takes on Mount paths.
 const generatedShellSegmentForbiddenChars = "\"$`\\"
 
-// validateGeneratedShellSegment rejects a string (a package name or a
-// package.json-declared bin path — both npm-controlled, not wraptool's own)
-// before it is interpolated into a generated sh wrapper's exec line: any of
-// generatedShellSegmentForbiddenChars, or a ".." path segment (which could
-// otherwise escape the generation tree once joined onto a directory).
-func validateGeneratedShellSegment(label, s string) error {
+// validateGeneratedShellCharacters rejects a string about to be
+// interpolated into a generated sh wrapper's exec line if it contains any of
+// generatedShellSegmentForbiddenChars — reject, don't escape, the same
+// stance backend.validateMount takes on Mount paths. Used both for values
+// that must also stay within a fixed directory (see
+// validateGeneratedShellSegment, which adds the ".." check on top) and for
+// filepath.Rel-COMPUTED relative paths (writeRelativeWrapper), which
+// legitimately contain ".." segments by construction and so only need the
+// character check.
+func validateGeneratedShellCharacters(label, s string) error {
 	if strings.ContainsAny(s, generatedShellSegmentForbiddenChars) {
 		return fmt.Errorf("%s %q contains a character not allowed in a generated wrapper (one of %q)", label, s, generatedShellSegmentForbiddenChars)
+	}
+	return nil
+}
+
+// validateGeneratedShellSegment rejects a string (a package name or a
+// package.json-declared bin path — both npm-controlled, not wraptool's own,
+// and both meant to stay WITHIN a fixed directory once joined onto it)
+// before it is interpolated into a generated sh wrapper's exec line: any of
+// generatedShellSegmentForbiddenChars (validateGeneratedShellCharacters), or
+// a ".." path segment, which could otherwise escape that directory.
+func validateGeneratedShellSegment(label, s string) error {
+	if err := validateGeneratedShellCharacters(label, s); err != nil {
+		return err
 	}
 	for _, seg := range strings.Split(s, "/") {
 		if seg == ".." {
@@ -585,7 +611,14 @@ const elfMagic = "\x7fELF"
 
 // readFilePrefix reads up to n bytes from the start of path, without reading
 // the rest of a (potentially large — a native harness binary can be tens of
-// megabytes) file.
+// megabytes) file. Uses io.ReadFull, not a single Read call: a plain Read is
+// permitted by the io.Reader contract to return fewer bytes than requested
+// even when more are available (regular files usually don't, but nothing
+// guarantees it), which could otherwise split a 4-byte ELF magic or a "#!"
+// shebang marker across two reads and silently misclassify the file.
+// io.ReadFull loops until the buffer is full or the file ends; an
+// io.ErrUnexpectedEOF (file shorter than n) is expected and not an error
+// here — the caller works with however many bytes actually exist.
 func readFilePrefix(path string, n int) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -594,8 +627,8 @@ func readFilePrefix(path string, n int) ([]byte, error) {
 	defer f.Close()
 
 	buf := make([]byte, n)
-	got, err := f.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
+	got, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, err
 	}
 	return buf[:got], nil
@@ -661,24 +694,84 @@ func classifyBinTarget(path string) (binTargetKind, error) {
 
 // --- symlink replacement (§11.4 step 5, §6.4) --------------------------------
 
-// despymlinkTree walks root and replaces every symlink it finds with an
-// equivalent $0-relative wrapper (a node-shebang script target) or a plain
-// file copy (anything else — a non-node shebang is already directly
-// executable on its own, and so is a copy of it; see replaceSymlink) —
-// §6.4's symlink-free invariant. filepath.WalkDir's directory entries never
-// resolve symlinks (the same property pool.ScanGenerationFiles' doc comment
-// relies on), so a symlink-to-directory is seen as a symlink (and rejected —
-// npm layouts only ever symlink files) rather than silently walked into.
+// despymlinkTree replaces every symlink under root with an equivalent
+// $0-relative wrapper (a node-shebang script target) or a plain file copy
+// (anything else — a non-node shebang is already directly executable on its
+// own, and so is a copy of it; see replaceSymlink) — §6.4's symlink-free
+// invariant.
+//
+// This is a COLLECT-THEN-REWRITE operation, in that exact order, and the
+// order matters for correctness, not just style: snapshotSymlinks first
+// walks the WHOLE tree read-only, recording every symlink's path and raw
+// target BEFORE anything is mutated. Every chain is then resolved against
+// that frozen snapshot (resolveSymlinkChain), and only once every path is
+// known does the rewrite loop actually touch disk. A single interleaved
+// walk-and-rewrite (visit a symlink, resolve it via the LIVE filesystem,
+// rewrite it, move to the next) is NOT equivalent and was a real bug: once
+// symlink B has been rewritten into a regular file (a wrapper or a copy),
+// a LATER-processed symlink A -> B pointing at it would find B "no longer a
+// symlink" and stop resolution right there, silently treating B's NEW
+// (rewritten) content as if it were the original target — including across
+// different directories, where the resulting wrapper's $0-relative paths
+// are computed for B's directory but end up copied into A's, resolving to
+// nothing (or the wrong file) when A is actually run. Resolving everything
+// against one immutable snapshot up front makes the rewrite phase's order
+// irrelevant to the result.
 func despymlinkTree(root string) error {
-	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	snap, err := snapshotSymlinks(root)
+	if err != nil {
+		return err
+	}
+
+	// Sorted for a deterministic, reproducible rewrite order — no longer a
+	// correctness requirement (every chain already resolves against the
+	// frozen snapshot regardless of rewrite order), but deterministic
+	// output is still worth keeping.
+	paths := make([]string, 0, len(snap))
+	for p := range snap {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+
+	for _, p := range paths {
+		if err := replaceSymlink(root, snap, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// symlinkSnapshot maps a symlink's path to its raw (as os.Readlink returned
+// it, not yet resolved to an absolute path) target, captured once across the
+// whole tree before despymlinkTree rewrites anything.
+type symlinkSnapshot map[string]string
+
+// snapshotSymlinks walks root read-only and records every symlink's path and
+// raw target. filepath.WalkDir's directory entries never resolve symlinks
+// (the same property pool.ScanGenerationFiles' doc comment relies on), so a
+// symlink-to-directory is recorded like any other symlink (and later
+// rejected by replaceSymlink — npm layouts only ever symlink files) rather
+// than silently walked into.
+func snapshotSymlinks(root string) (symlinkSnapshot, error) {
+	snap := make(symlinkSnapshot)
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walking %s: %w", p, err)
 		}
 		if d.Type()&os.ModeSymlink == 0 {
 			return nil
 		}
-		return replaceSymlink(root, p)
+		target, err := os.Readlink(p)
+		if err != nil {
+			return fmt.Errorf("reading symlink %s: %w", p, err)
+		}
+		snap[p] = target
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	return snap, nil
 }
 
 // maxSymlinkChainDepth bounds resolveSymlinkChain — a defensive guard against
@@ -686,65 +779,64 @@ func despymlinkTree(root string) error {
 // resolution from looping forever in a bug either way.
 const maxSymlinkChainDepth = 40
 
-// resolveSymlinkChain follows p (a symlink under root) through as many hops
-// as needed to reach a regular file, resolving each hop itself — via
-// os.Lstat/os.Readlink, never os.Stat's transparent following — so the
-// returned path is the FINAL file's own path on disk, not an intermediate
-// hop. This matters because filepath.WalkDir visits every symlink in the
-// tree independently and in an arbitrary order: if a wrapper referenced an
-// intermediate hop rather than the final regular file, and despymlinkTree
-// later (independently) rewrote that intermediate hop's own content into
-// something else (e.g. a node-wrapping symlink chain A -> B -> script, where
-// A's wrapper is generated before B is visited: node-execing A's captured
-// path would, after B's own unrelated rewrite, hand node a /bin/sh wrapper
-// instead of the original script), the result would silently depend on
-// processing order. Resolving to the final path up front makes classification
-// and wrapper generation immune to that order. Rejects a target whose
-// resolution leaves root or cycles.
-func resolveSymlinkChain(root, p string) (finalPath string, info os.FileInfo, err error) {
+// resolveSymlinkChain follows p through snap (the WHOLE tree's pre-rewrite
+// symlink topology — see despymlinkTree's doc comment for why this must be a
+// frozen snapshot, never the live filesystem) through as many hops as needed
+// to reach a path snap does not itself list as a symlink: the final regular
+// file, per the ORIGINAL tree shape, independent of what despymlinkTree's
+// rewrite phase has done to any other symlink by the time this particular
+// one is processed. Rejects a target whose resolution leaves root or cycles.
+func resolveSymlinkChain(root string, snap symlinkSnapshot, p string) (finalPath string, err error) {
 	visited := make(map[string]bool)
 	cur := p
 	for i := 0; ; i++ {
 		if i > maxSymlinkChainDepth {
-			return "", nil, fmt.Errorf("symlink chain from %s is too deep (possible cycle)", p)
+			return "", fmt.Errorf("symlink chain from %s is too deep (possible cycle)", p)
 		}
-		lst, err := os.Lstat(cur)
-		if err != nil {
-			return "", nil, fmt.Errorf("lstat %s: %w", cur, err)
-		}
-		if lst.Mode()&os.ModeSymlink == 0 {
-			return cur, lst, nil
+		target, isSymlink := snap[cur]
+		if !isSymlink {
+			return cur, nil
 		}
 		if visited[cur] {
-			return "", nil, fmt.Errorf("symlink chain from %s cycles back to %s", p, cur)
+			return "", fmt.Errorf("symlink chain from %s cycles back to %s", p, cur)
 		}
 		visited[cur] = true
 
-		target, err := os.Readlink(cur)
-		if err != nil {
-			return "", nil, fmt.Errorf("reading symlink %s: %w", cur, err)
-		}
 		if filepath.IsAbs(target) {
-			return "", nil, fmt.Errorf("symlink %s has an absolute target %q, which the pool must never contain (§6.3)", cur, target)
+			return "", fmt.Errorf("symlink %s has an absolute target %q, which the pool must never contain (§6.3)", cur, target)
 		}
 		next := filepath.Clean(filepath.Join(filepath.Dir(cur), target))
 		if !pathWithin(root, next) {
-			return "", nil, fmt.Errorf("symlink %s targets %s, which is outside the generation tree", cur, next)
+			return "", fmt.Errorf("symlink %s targets %s, which is outside the generation tree", cur, next)
 		}
 		cur = next
 	}
 }
 
 // replaceSymlink replaces the single symlink at p (somewhere under root)
-// with a wrapper or copy of its FULLY resolved target (resolveSymlinkChain),
-// per despymlinkTree's doc comment. Only a node-named shebang is
-// node-wrapped (finding 4); any other shebang, or no shebang at all
-// (including an ELF target), is copied verbatim — it is already directly
-// executable on its own.
-func replaceSymlink(root, p string) error {
-	finalPath, info, err := resolveSymlinkChain(root, p)
+// with a wrapper or copy of its FULLY resolved target (resolveSymlinkChain,
+// against snap — the pre-rewrite snapshot, per despymlinkTree's doc
+// comment). Only a node-named shebang is node-wrapped (finding 4); any other
+// shebang, or no shebang at all (including an ELF target), is copied
+// verbatim — it is already directly executable on its own.
+//
+// finalPath is guaranteed untouched by any OTHER call this despymlinkTree
+// run makes: by construction it is not a key of snap (that is exactly why
+// resolveSymlinkChain stopped there), and this function only ever writes to
+// paths that ARE keys of snap — so reading finalPath's content here always
+// sees its original bytes, regardless of how many other symlinks in the
+// tree have already been rewritten.
+func replaceSymlink(root string, snap symlinkSnapshot, p string) error {
+	finalPath, err := resolveSymlinkChain(root, snap, p)
 	if err != nil {
 		return err
+	}
+	info, err := os.Lstat(finalPath)
+	if err != nil {
+		return fmt.Errorf("lstat resolved target of %s: %w", p, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("internal error: resolved target %s of symlink %s is unexpectedly still a symlink", finalPath, p)
 	}
 	if info.IsDir() {
 		return fmt.Errorf("symlink %s targets a directory (%s); only file symlinks are supported", p, finalPath)
@@ -785,7 +877,15 @@ func pathWithin(root, target string) bool {
 // writeRelativeWrapper writes a $0-relative wrapper at dstPath (replacing the
 // symlink that used to live there) execing nodeBin against script — both
 // absolute host paths used only to COMPUTE the relative segments embedded in
-// the wrapper text; no absolute path is ever written to disk (§6.3).
+// the wrapper text; no absolute path is ever written to disk (§6.3). The
+// computed relative segments are themselves character-validated
+// (validateGeneratedShellCharacters, NOT the stricter
+// validateGeneratedShellSegment — a filepath.Rel result legitimately
+// contains ".." segments by construction) before interpolation: their
+// FILENAME components are derived from on-disk names, which — unlike
+// wraptool's own path constants — can contain whatever bytes a (possibly
+// malicious) npm package chose to name a file, including characters that
+// would otherwise break out of the generated wrapper's quoting.
 func writeRelativeWrapper(dstPath, nodeBin, script string) error {
 	fromDir := filepath.Dir(dstPath)
 	relNode, err := filepath.Rel(fromDir, nodeBin)
@@ -796,10 +896,18 @@ func writeRelativeWrapper(dstPath, nodeBin, script string) error {
 	if err != nil {
 		return fmt.Errorf("computing relative path to %s: %w", script, err)
 	}
+	relNode = filepath.ToSlash(relNode)
+	relScript = filepath.ToSlash(relScript)
+	if err := validateGeneratedShellCharacters("node runtime path", relNode); err != nil {
+		return err
+	}
+	if err := validateGeneratedShellCharacters("script path", relScript); err != nil {
+		return err
+	}
 
 	content := wrapperShebang +
 		`d=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)` + "\n" +
-		fmt.Sprintf(`exec "$d/%s" "$d/%s" "$@"`, filepath.ToSlash(relNode), filepath.ToSlash(relScript)) + "\n"
+		fmt.Sprintf(`exec "$d/%s" "$d/%s" "$@"`, relNode, relScript) + "\n"
 	if err := os.WriteFile(dstPath, []byte(content), 0o755); err != nil {
 		return err
 	}

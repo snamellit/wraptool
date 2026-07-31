@@ -207,7 +207,7 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 		"index.js":     "module.exports = 1;\n",
 	})
 	harnessTarball := buildNPMTarballGZ(t, map[string]string{
-		"package.json": `{"name":"tiny-harness","version":"1.0.0","bin":{"tiny-harness":"bin/cli.js"},"dependencies":{"tiny-dep":"1.0.0"},"optionalDependencies":{"tiny-win-only":"1.0.0"}}`,
+		"package.json": `{"name":"tiny-harness","version":"1.0.0","bin":{"tiny-harness":"bin/cli.js"},"dependencies":{"tiny-dep":"1.0.0"},"optionalDependencies":{"tiny-mac-only":"1.0.0"}}`,
 		"bin/cli.js":   "#!/usr/bin/env node\nconsole.log('hello from tiny-harness');\n",
 	})
 	nodeTarXZ, ok := buildFakeNodeTarXZ(t, "node-v99.0.0-linux-x64")
@@ -218,24 +218,41 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 	depDigest := sha256Hex(depTarball)
 	harnessDigest := sha256Hex(harnessTarball)
 	nodeDigest := sha256Hex(nodeTarXZ)
-	// tiny-win-only IS still seeded as a well-formed tarball — `npm cache
+	// tiny-mac-only IS still seeded as a well-formed tarball — `npm cache
 	// add` runs (and would fail outright on a malformed archive) for every
 	// locked package regardless of platform, matching today's
 	// not-yet-platform-aware Fetch (§7 follow-up: it downloads/caches every
 	// platform variant unconditionally). The point of this fixture is that
 	// `npm ci` itself SKIPS it during dependency resolution (os mismatch),
 	// never installing it — proven below — not that it's never cached.
-	winOnlyPlaceholder := buildNPMTarballGZ(t, map[string]string{
-		"package.json": `{"name":"tiny-win-only","version":"1.0.0","os":["darwin"]}`,
+	macOnlyPlaceholder := buildNPMTarballGZ(t, map[string]string{
+		"package.json": `{"name":"tiny-mac-only","version":"1.0.0","os":["darwin"]}`,
 	})
-	winOnlyDigest := sha256Hex(winOnlyPlaceholder)
+	macOnlyDigest := sha256Hex(macOnlyPlaceholder)
+
+	// Finding E — the case ruling 1 was written for: a NESTED
+	// version-conflict-shaped entry, node_modules/nest-a/node_modules/nest-b,
+	// only reachable via nest-a's OWN "dependencies" edge (never a root-level
+	// one). The old hand-reconstruction scheme could not represent this
+	// shape at all; verbatim materialization must carry it through and let
+	// npm install it exactly where the lockfile says.
+	nestBTarball := buildNPMTarballGZ(t, map[string]string{
+		"package.json": `{"name":"nest-b","version":"1.0.0"}`,
+	})
+	nestATarball := buildNPMTarballGZ(t, map[string]string{
+		"package.json": `{"name":"nest-a","version":"1.0.0","dependencies":{"nest-b":"1.0.0"}}`,
+	})
+	nestBDigest := sha256Hex(nestBTarball)
+	nestADigest := sha256Hex(nestATarball)
 
 	cacheDir := t.TempDir()
 	for digest, content := range map[string][]byte{
 		depDigest:     depTarball,
 		harnessDigest: harnessTarball,
 		nodeDigest:    nodeTarXZ,
-		winOnlyDigest: winOnlyPlaceholder,
+		macOnlyDigest: macOnlyPlaceholder,
+		nestADigest:   nestATarball,
+		nestBDigest:   nestBTarball,
 	} {
 		if err := os.WriteFile(filepath.Join(cacheDir, digest), content, 0o644); err != nil {
 			t.Fatalf("seeding cache object %s: %v", digest, err)
@@ -248,21 +265,32 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 	const closedPort = "http://127.0.0.1:1"
 
 	rawLockfile := buildRawLockfile(t,
-		map[string]string{"tiny-harness": "1.0.0"},
+		map[string]string{"tiny-harness": "1.0.0", "nest-a": "1.0.0"},
 		map[string]fixtureLockPackage{
 			"node_modules/tiny-harness": {
 				Version: "1.0.0", Resolved: closedPort + "/tiny-harness-1.0.0.tgz", Integrity: sriFor(harnessTarball),
 				Dependencies:         map[string]string{"tiny-dep": "1.0.0"},
-				OptionalDependencies: map[string]string{"tiny-win-only": "1.0.0"},
+				OptionalDependencies: map[string]string{"tiny-mac-only": "1.0.0"},
 			},
 			"node_modules/tiny-dep": {
 				Version: "1.0.0", Resolved: closedPort + "/tiny-dep-1.0.0.tgz", Integrity: sriFor(depTarball),
 			},
 			// os-mismatched (this test always runs on linux) optional
 			// dependency: npm must SKIP it, never install it, never fetch it.
-			"node_modules/tiny-win-only": {
-				Version: "1.0.0", Resolved: closedPort + "/tiny-win-only-1.0.0.tgz", Integrity: sriFor(winOnlyPlaceholder),
+			"node_modules/tiny-mac-only": {
+				Version: "1.0.0", Resolved: closedPort + "/tiny-mac-only-1.0.0.tgz", Integrity: sriFor(macOnlyPlaceholder),
 				Optional: true, OS: []string{"darwin"},
+			},
+			// nest-a is a top-level, root-reachable package; nest-b is
+			// reachable ONLY through nest-a's own "dependencies" edge and is
+			// installed NESTED under it (node_modules/nest-a/node_modules/nest-b),
+			// never promoted to the top level — the shape ruling 1 exists for.
+			"node_modules/nest-a": {
+				Version: "1.0.0", Resolved: closedPort + "/nest-a-1.0.0.tgz", Integrity: sriFor(nestATarball),
+				Dependencies: map[string]string{"nest-b": "1.0.0"},
+			},
+			"node_modules/nest-a/node_modules/nest-b": {
+				Version: "1.0.0", Resolved: closedPort + "/nest-b-1.0.0.tgz", Integrity: sriFor(nestBTarball),
 			},
 		})
 
@@ -291,9 +319,17 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 					Version: "1.0.0", Resolved: closedPort + "/tiny-dep-1.0.0.tgz",
 					Integrity: sriFor(depTarball), SHA256: depDigest,
 				},
-				"node_modules/tiny-win-only": {
-					Version: "1.0.0", Resolved: closedPort + "/tiny-win-only-1.0.0.tgz",
-					Integrity: sriFor(winOnlyPlaceholder), SHA256: winOnlyDigest,
+				"node_modules/tiny-mac-only": {
+					Version: "1.0.0", Resolved: closedPort + "/tiny-mac-only-1.0.0.tgz",
+					Integrity: sriFor(macOnlyPlaceholder), SHA256: macOnlyDigest,
+				},
+				"node_modules/nest-a": {
+					Version: "1.0.0", Resolved: closedPort + "/nest-a-1.0.0.tgz",
+					Integrity: sriFor(nestATarball), SHA256: nestADigest,
+				},
+				"node_modules/nest-a/node_modules/nest-b": {
+					Version: "1.0.0", Resolved: closedPort + "/nest-b-1.0.0.tgz",
+					Integrity: sriFor(nestBTarball), SHA256: nestBDigest,
 				},
 			},
 			Lockfile: rawLockfile,
@@ -335,14 +371,34 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 		}
 	})
 
+	// Finding E: the nested node_modules/nest-a/node_modules/nest-b entry
+	// (reachable only through nest-a's own "dependencies" edge, never a
+	// root-level one) must flow through verbatim and actually get installed
+	// at its nested location — the exact case ruling 1's verbatim
+	// materialization fix exists for.
+	t.Run("nested entry flows through verbatim and installs nested", func(t *testing.T) {
+		nestA := filepath.Join(staging1, "lib", "node_modules", "nest-a", "package.json")
+		if _, err := os.Stat(nestA); err != nil {
+			t.Errorf("nest-a was not installed: %v", err)
+		}
+		nestBTopLevel := filepath.Join(staging1, "lib", "node_modules", "nest-b")
+		if _, err := os.Stat(nestBTopLevel); err == nil {
+			t.Error("nest-b was installed at the TOP level, want it nested under nest-a (it should never have been promoted to the root)")
+		}
+		nestBNested := filepath.Join(staging1, "lib", "node_modules", "nest-a", "node_modules", "nest-b", "package.json")
+		if _, err := os.Stat(nestBNested); err != nil {
+			t.Errorf("nest-b was not installed nested under nest-a: %v", err)
+		}
+	})
+
 	// Finding 1's regression test: a real (verbatim) lockfile lets npm apply
 	// its own os-gating; a hand-reconstructed lockfile (the retired
 	// npmTopLevelDependencies scheme) had no "optional"/"os" fields at all,
 	// which made every such dependency unconditionally required.
 	t.Run("os-mismatched optional dependency is skipped, not installed", func(t *testing.T) {
-		p := filepath.Join(staging1, "lib", "node_modules", "tiny-win-only")
+		p := filepath.Join(staging1, "lib", "node_modules", "tiny-mac-only")
 		if _, err := os.Stat(p); err == nil {
-			t.Error("tiny-win-only was installed despite an os mismatch, want it skipped")
+			t.Error("tiny-mac-only was installed despite an os mismatch, want it skipped")
 		} else if !os.IsNotExist(err) {
 			t.Errorf("stat %s: %v", p, err)
 		}
@@ -422,7 +478,8 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 			t.Errorf("VerifyGenerationTree (sh-bin harness): %v", err)
 		}
 
-		data, err := os.ReadFile(filepath.Join(stagingSh, "bin", "tiny-shell-harness"))
+		wrapperPath := filepath.Join(stagingSh, "bin", "tiny-shell-harness")
+		data, err := os.ReadFile(wrapperPath)
 		if err != nil {
 			t.Fatalf("reading sh-bin wrapper: %v", err)
 		}
@@ -431,6 +488,17 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 		}
 		if !strings.Contains(string(data), "tiny-shell-harness/bin/cli.sh") {
 			t.Errorf("wrapper does not reference the sh script directly:\n%s", data)
+		}
+
+		// Finding D: the first behavioral proof in this suite that a
+		// generated entrypoint actually RUNS, not just that its text looks
+		// right — execute the wrapper for real and check its stdout.
+		out, err := exec.Command(wrapperPath).CombinedOutput()
+		if err != nil {
+			t.Fatalf("executing wrapper: %v\n%s", err, out)
+		}
+		if strings.TrimSpace(string(out)) != "hello from tiny-shell-harness" {
+			t.Errorf("wrapper output = %q, want %q", strings.TrimSpace(string(out)), "hello from tiny-shell-harness")
 		}
 	})
 }

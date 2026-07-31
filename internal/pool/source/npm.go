@@ -511,13 +511,17 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 	// hand-reconstructing one (§8, review finding: a hand-reconstructed
 	// lockfile loses optional/os/cpu gating and nested version-conflict
 	// edges that only the full document carries — see NPMLock.Lockfile's
-	// doc comment). Compacted once here via json.Compact: encoding/json
-	// already normalizes a json.RawMessage's insignificant whitespace
-	// whenever it's embedded in an outer Marshal, but storing (and later
-	// writing to disk during realize) a pre-compacted form keeps both the
-	// persisted harness-lock.json and the materialized package-lock.json
-	// themselves compact, rather than carrying whatever pretty-printing npm
-	// happened to emit.
+	// doc comment). Compacted once here via json.Compact — NOT for
+	// persisted-file compactness (pool.Lock.Marshal's indenting encoder
+	// re-indents an embedded json.RawMessage's bytes when it writes
+	// harness-lock.json to disk regardless of how they were stored, so
+	// compaction buys nothing there), but for DETERMINISM: (*LockHarness).Hash
+	// marshals with encoding/json's plain, non-indenting Marshal, which
+	// embeds a RawMessage's bytes AS-IS with no reformatting at all. Without
+	// compacting here, two functionally-identical lockfiles that happened to
+	// arrive with different (but semantically equivalent) whitespace would
+	// hash differently, breaking Hash's "equal lock entries hash equal"
+	// contract.
 	var compactedLock bytes.Buffer
 	if err := json.Compact(&compactedLock, lockBytes); err != nil {
 		return pool.LockHarness{}, fmt.Errorf("compacting package-lock.json: %w", err)
