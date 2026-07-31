@@ -42,16 +42,32 @@ import (
 // real npm binary, not to test container isolation (that is backend's own
 // test suite, and production `wraptool harness sync`/`update` always select
 // a real guix/oci Backend, never this one). It ignores
-// RunSpec.Network/Platform/User (there is no container to isolate) and
-// treats RunSpec.Mounts as already-host paths (there is no remapping to
-// do), merging Env onto the host's own environment the same way
+// RunSpec.Platform/User (there is no container to isolate) and treats
+// RunSpec.Mounts as already-host paths (there is no remapping to do),
+// merging Env onto the host's own environment the same way
 // backend.execRunner does.
-type hostExecBackend struct{}
+//
+// It DOES record RunSpec.Network (review finding 9a): the realize phase
+// must run with no network access (§6.2's phase matrix, §17 "realize from
+// cache with network disabled ... asserts no egress"), and this backend is
+// the only thing standing between a Realize call and the actual host
+// network, so it's the only place that can catch a Network:true RunSpec
+// before this test would otherwise let it through silently.
+type hostExecBackend struct {
+	// networkRequested is set to true by Run if ANY RunSpec it executes
+	// requests Network — a pointer (not a return value) because Backend.Run
+	// participates in the pool.Source interface's call shape and can't
+	// change its own signature to report this back to the test.
+	networkRequested *bool
+}
 
 func (hostExecBackend) Name() string    { return "host-exec (integration test only)" }
 func (hostExecBackend) Available() bool { return true }
 
-func (hostExecBackend) Run(ctx context.Context, spec backend.RunSpec) error {
+func (b hostExecBackend) Run(ctx context.Context, spec backend.RunSpec) error {
+	if spec.Network {
+		*b.networkRequested = true
+	}
 	if len(spec.Argv) == 0 {
 		return fmt.Errorf("hostExecBackend: RunSpec.Argv must not be empty")
 	}
@@ -148,11 +164,22 @@ func TestIntegration_RealizeGenerationThroughRealNPMRealize(t *testing.T) {
 		t.Skipf("HostPlatformKey: %v", err)
 	}
 
+	// sawNetwork is shared by every hostExecBackend value this test
+	// constructs (review finding 9a) — asserted false after every
+	// RealizeGeneration call, not just the first, since idempotent replays
+	// and a second pool's build all go through Realize's own backend calls
+	// too.
+	var sawNetwork bool
+	backendForRealize := func() hostExecBackend { return hostExecBackend{networkRequested: &sawNetwork} }
+
 	// --- Realize (the seam under test): builds one platform generation
 	// with no network access, using the fetched cache object only. ---
-	receipt, err := pool.RealizeGeneration(context.Background(), n, hostExecBackend{}, paths, harnessName, binName, &h, key)
+	receipt, err := pool.RealizeGeneration(context.Background(), n, backendForRealize(), paths, harnessName, binName, &h, key)
 	if err != nil {
 		t.Fatalf("RealizeGeneration: %v", err)
+	}
+	if sawNetwork {
+		t.Fatal("Realize's backend.Run was invoked with Network:true — the realize phase must run with no network access (§6.2, §17 'asserts no egress')")
 	}
 	if len(receipt.Files) == 0 {
 		t.Fatal("receipt has no files")
@@ -176,21 +203,74 @@ func TestIntegration_RealizeGenerationThroughRealNPMRealize(t *testing.T) {
 
 	// --- Idempotence (§10): realizing again from the SAME (now
 	// Generations-populated) h must succeed without a second build. ---
-	if _, err := pool.RealizeGeneration(context.Background(), n, hostExecBackend{}, paths, harnessName, binName, &h, key); err != nil {
+	if _, err := pool.RealizeGeneration(context.Background(), n, backendForRealize(), paths, harnessName, binName, &h, key); err != nil {
 		t.Fatalf("second RealizeGeneration (idempotent replay): %v", err)
+	}
+	if sawNetwork {
+		t.Fatal("the idempotent replay invoked backend.Run with Network:true")
 	}
 
 	// --- Position independence (§6.3/§11.4): relocate the whole pool root
 	// and confirm the generation directory (and its receipt) survived the
-	// move untouched — the dispatcher/wrapper scripts inside it must never
-	// have encoded root's original path. ---
+	// move untouched, that the wrapper's own bytes never encoded the OLD
+	// absolute root path (review finding 9b — a wrapper that baked in an
+	// absolute path would work by accident here and break the moment the
+	// pool is mounted at a different path on a different runtime), and —
+	// since this test already requires npm (and therefore, in practice,
+	// node) on PATH — that the relocated wrapper actually executes. ---
 	relocated := root + "-relocated"
 	if err := os.Rename(root, relocated); err != nil {
 		t.Fatalf("relocating the pool root: %v", err)
 	}
 	relocatedBin := filepath.Join(relocated, "runtime", "generations", genID, "bin", binName)
-	if _, err := os.Lstat(relocatedBin); err != nil {
-		t.Errorf("expected the generation to survive relocation at %s: %v", relocatedBin, err)
+	relocatedBinData, err := os.ReadFile(relocatedBin)
+	if err != nil {
+		t.Fatalf("expected the generation to survive relocation at %s: %v", relocatedBin, err)
+	}
+	if bytes.Contains(relocatedBinData, []byte(root)) {
+		t.Errorf("the relocated wrapper at %s still contains the OLD absolute pool root %q — it must be $0-relative, never host-path-absolute (§6.3/§11.4)", relocatedBin, root)
+	}
+	if out, err := exec.Command(relocatedBin).CombinedOutput(); err != nil {
+		t.Errorf("executing the relocated wrapper %s failed: %v\noutput:\n%s", relocatedBin, err, out)
+	}
+
+	// --- Digest determinism (§11.5/§17): realizing the SAME lock content
+	// into a SECOND, independent pool root must produce an identical
+	// ManifestDigest (review finding 9c). A second call against the SAME
+	// pool would hit the idempotent fast path instead of a real rebuild
+	// (already covered above), so this uses a fresh root, fresh cache, and
+	// a fresh LockHarness value carrying no Generations — only the lock's
+	// CONTENT (source/package/version/NPMLock) is shared, mirroring what a
+	// real second developer's pool would start from. ---
+	root2 := t.TempDir()
+	paths2 := pool.PoolPaths{
+		Manifest:     filepath.Join(root2, "manifest.yaml"),
+		Lock:         filepath.Join(root2, "harness-lock.json"),
+		Observations: filepath.Join(root2, "observations.json"),
+		Audit:        filepath.Join(root2, "audit.jsonl"),
+		AdvisoryLock: filepath.Join(root2, "lock"),
+		Cache:        filepath.Join(root2, "cache", "sha256"),
+		Staging:      filepath.Join(root2, "staging"),
+		Runtime:      filepath.Join(root2, "runtime"),
+	}
+	h2 := pool.LockHarness{
+		Source: h.Source, Package: h.Package, Version: h.Version,
+		PublishedAt: h.PublishedAt, FirstSeenAt: h.FirstSeenAt,
+		RecipeRevision: h.RecipeRevision, NPMLock: h.NPMLock,
+	}
+	if err := n.Fetch(context.Background(), &h2, paths2.Cache); err != nil {
+		t.Fatalf("Fetch into the second pool: %v", err)
+	}
+	receipt2, err := pool.RealizeGeneration(context.Background(), n, backendForRealize(), paths2, harnessName, binName, &h2, key)
+	if err != nil {
+		t.Fatalf("RealizeGeneration into the second pool: %v", err)
+	}
+	if sawNetwork {
+		t.Fatal("the second pool's Realize invoked backend.Run with Network:true")
+	}
+	if receipt2.ManifestDigest != receipt.ManifestDigest {
+		t.Errorf("second pool's ManifestDigest = %q, want the first pool's %q — identical lock content realized independently must hash identically (§11.5/§17)",
+			receipt2.ManifestDigest, receipt.ManifestDigest)
 	}
 }
 
