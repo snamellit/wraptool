@@ -161,6 +161,22 @@ func validateLockTimestamp(label, s string) error {
 	return nil
 }
 
+// Hash returns "sha256:<hex>" over the deterministic JSON serialization of
+// h — the same determinism argument Marshal's doc comment makes:
+// encoding/json sorts h.Generations' and h.NPMLock.Packages' map keys, and
+// struct field order is fixed by the type. It is the receipt's
+// lock_entry_hash input (§11.5): a generation's receipt records exactly
+// which lock entry produced it, so two lock entries that are equal in every
+// field hash equal, and changing any field changes the hash.
+func (h *LockHarness) Hash() (string, error) {
+	data, err := json.Marshal(h)
+	if err != nil {
+		return "", fmt.Errorf("marshaling lock harness entry for hashing: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 // policyHashPayload is the canonical, minimal representation of an
 // EffectivePolicy hashed by PolicyHash. Keeping it separate from
 // EffectivePolicy insulates the hash from unrelated field additions to the
