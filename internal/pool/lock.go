@@ -161,6 +161,30 @@ func validateLockTimestamp(label, s string) error {
 	return nil
 }
 
+// Hash returns "sha256:<hex>" over h's plain json.Marshal encoding (default
+// HTML escaping left on, unlike Lock.Marshal's SetEscapeHTML(false) — this
+// value is only ever hashed, never written to disk or diffed, so the
+// escaping is immaterial as long as it is consistent). That encoding is
+// still deterministic across calls on an equal value: encoding/json sorts
+// h.Generations' and h.NPMLock.Packages' map keys, and struct field order is
+// fixed by the type. It is the receipt's lock_entry_hash input (§11.5): a
+// generation's receipt records exactly which lock entry produced it, so two
+// lock entries that are equal in every field hash equal, and changing any
+// field changes the hash. h must be non-nil: json.Marshal(nil) encodes to
+// the 4 bytes "null" without error, which would otherwise let a nil
+// *LockHarness hash silently instead of failing.
+func (h *LockHarness) Hash() (string, error) {
+	if h == nil {
+		return "", fmt.Errorf("hashing lock harness entry: receiver must not be nil")
+	}
+	data, err := json.Marshal(h)
+	if err != nil {
+		return "", fmt.Errorf("marshaling lock harness entry for hashing: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return sha256DigestPrefix + hex.EncodeToString(sum[:]), nil
+}
+
 // policyHashPayload is the canonical, minimal representation of an
 // EffectivePolicy hashed by PolicyHash. Keeping it separate from
 // EffectivePolicy insulates the hash from unrelated field additions to the
@@ -185,5 +209,5 @@ func PolicyHash(p EffectivePolicy) (string, error) {
 		return "", fmt.Errorf("marshaling policy for hashing: %w", err)
 	}
 	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return sha256DigestPrefix + hex.EncodeToString(sum[:]), nil
 }
