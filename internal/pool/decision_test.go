@@ -633,8 +633,7 @@ func TestDecideInstallShortCircuitIgnoresCandidatesAndAllowYoung(t *testing.T) {
 					Now:                fixedNow,
 					// Already realized: this test is about candidates/
 					// AllowYoung independence, not the realize axis (see
-					// TestDecideRealizeAxisIndependentOfShortCircuit for
-					// that).
+					// TestDecideRealizeAxisQuadrant for that).
 					GenerationDigestRecorded: true,
 					GenerationDirPresent:     true,
 				})
