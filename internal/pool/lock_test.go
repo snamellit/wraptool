@@ -2,6 +2,8 @@ package pool
 
 import (
 	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -215,6 +217,96 @@ func TestUnmarshalLockRejectsZeroTimestamp(t *testing.T) {
 	}
 	if _, err := UnmarshalLock(data); err == nil {
 		t.Fatal("expected an error for a zero generated_at, got nil")
+	}
+}
+
+// --- NPMLock.Lockfile consistency (Validate) --------------------------
+
+// npmLockfileFixtureFor builds a minimal, valid raw package-lock.json (as
+// json.RawMessage) whose "packages" map contains exactly names.
+func npmLockfileFixtureFor(names ...string) json.RawMessage {
+	pkgs := make(map[string]any, len(names))
+	pkgs[""] = map[string]any{"dependencies": map[string]string{}}
+	for _, n := range names {
+		pkgs[n] = map[string]any{"version": "1.0.0"}
+	}
+	data, err := json.Marshal(map[string]any{
+		"lockfileVersion": 3,
+		"packages":        pkgs,
+	})
+	if err != nil {
+		panic(err) // fixture construction, never expected to fail
+	}
+	return data
+}
+
+func TestLockValidate_NPMLockfileConsistency(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	h.NPMLock.Lockfile = npmLockfileFixtureFor("node_modules/foo", "node_modules/bar")
+	l.Harnesses["claude"] = h
+
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with a consistent Lockfile: %v", err)
+	}
+}
+
+func TestLockValidate_NoLockfileIsANoOp(t *testing.T) {
+	// sampleLock's NPMLock.Lockfile is unset (nil) by default — Validate
+	// must not require it (old locks, or a non-npm source, have none).
+	l := sampleLock()
+	if l.Harnesses["claude"].NPMLock.Lockfile != nil {
+		t.Fatal("test assumption broken: sampleLock already sets Lockfile")
+	}
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with no Lockfile: %v", err)
+	}
+}
+
+func TestLockValidate_RejectsInvalidJSONLockfile(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	h.NPMLock.Lockfile = json.RawMessage(`not json`)
+	l.Harnesses["claude"] = h
+
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of invalid JSON in Lockfile")
+	}
+	if !strings.Contains(err.Error(), "invalid JSON") {
+		t.Errorf("error = %q, want it to mention invalid JSON", err.Error())
+	}
+}
+
+func TestLockValidate_RejectsWrongLockfileVersionInLockfile(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	h.NPMLock.Lockfile = json.RawMessage(`{"lockfileVersion":2,"packages":{}}`)
+	l.Harnesses["claude"] = h
+
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of lockfileVersion != 3")
+	}
+	if !strings.Contains(err.Error(), "lockfileVersion") {
+		t.Errorf("error = %q, want it to mention lockfileVersion", err.Error())
+	}
+}
+
+func TestLockValidate_RejectsLockfileMissingASummaryMapEntry(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	// Lockfile only carries "node_modules/foo"; the summary map (from
+	// sampleLock) also has "node_modules/bar".
+	h.NPMLock.Lockfile = npmLockfileFixtureFor("node_modules/foo")
+	l.Harnesses["claude"] = h
+
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of a summary-map entry missing from Lockfile")
+	}
+	if !strings.Contains(err.Error(), "node_modules/bar") {
+		t.Errorf("error = %q, want it to name node_modules/bar", err.Error())
 	}
 }
 

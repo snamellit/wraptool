@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,12 +20,17 @@ import (
 
 // hostExecBackend is a backend.Backend that runs spec.Argv directly on the
 // host — no container runtime — translating every container-side path
-// (Argv elements, Workdir, Env values) back to the corresponding host path
-// via spec.Mounts before exec.CommandContext. It exists only so this test
-// can drive the REAL Realize (real npm, real tar) without guix/docker,
-// following npm_integration_test.go's local-fixtures-only pattern one level
-// up (that file fakes the backend too; this one actually executes, since
-// Realize's whole point is what happens INSIDE the container).
+// (Argv elements, Workdir) back to the corresponding host path via
+// spec.Mounts before exec.CommandContext. It exists only so this test can
+// drive the REAL Realize (real npm, real tar) without guix/docker, following
+// npm_integration_test.go's local-fixtures-only pattern one level up (that
+// file fakes the backend too; this one actually executes, since Realize's
+// whole point is what happens INSIDE the container). spec.Env is asserted
+// empty (finding 3: Realize never uses it), so this backend does not need to
+// merge/translate it at all — HOME arrives as an argv prefix instead, which
+// exec.Command's own PATH-independent argv handling passes through
+// untouched here (translateContainerPath rewrites the "HOME=<container
+// path>" element like any other argv entry).
 type hostExecBackend struct{}
 
 func (hostExecBackend) Name() string    { return "host-exec-fake" }
@@ -37,6 +43,9 @@ func (hostExecBackend) Run(ctx context.Context, spec backend.RunSpec) error {
 	if len(spec.Argv) == 0 {
 		return fmt.Errorf("hostExecBackend: empty Argv")
 	}
+	if len(spec.Env) != 0 {
+		return fmt.Errorf("hostExecBackend: RunSpec.Env = %v, want empty (finding 3: HOME must be an argv prefix, never RunSpec.Env)", spec.Env)
+	}
 
 	argv := make([]string, len(spec.Argv))
 	for i, a := range spec.Argv {
@@ -44,22 +53,7 @@ func (hostExecBackend) Run(ctx context.Context, spec backend.RunSpec) error {
 	}
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	// Drop any existing key os.Environ() carries that spec.Env overrides, so
-	// the override actually takes effect regardless of how the OS/libc
-	// resolves a duplicate-keyed envp (unspecified by POSIX).
-	baseEnv := os.Environ()
-	env := make([]string, 0, len(baseEnv)+len(spec.Env))
-	for _, e := range baseEnv {
-		key, _, _ := strings.Cut(e, "=")
-		if _, overridden := spec.Env[key]; overridden {
-			continue
-		}
-		env = append(env, e)
-	}
-	for _, k := range sortedEnvKeys(spec.Env) {
-		env = append(env, k+"="+translateContainerPath(spec.Mounts, spec.Env[k]))
-	}
-	cmd.Env = env
+	cmd.Env = os.Environ()
 	if spec.Workdir != "" {
 		cmd.Dir = translateContainerPath(spec.Mounts, spec.Workdir)
 	}
@@ -71,28 +65,28 @@ func (hostExecBackend) Run(ctx context.Context, spec backend.RunSpec) error {
 	return nil
 }
 
-func sortedEnvKeys(env map[string]string) []string {
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
 // translateContainerPath rewrites a container-side path back to its host
 // equivalent using mounts' (Host, Container) pairs — the inverse of what a
-// real backend's mount flag does.
-func translateContainerPath(mounts []backend.Mount, p string) string {
+// real backend's mount flag does. Realize's own argv sometimes embeds a
+// container path as part of a larger token (e.g. "HOME=<container path>"),
+// so this replaces the container root as a substring, not just a whole-token
+// match.
+func translateContainerPath(mounts []backend.Mount, s string) string {
 	for _, m := range mounts {
-		if p == m.Container {
+		if s == m.Container {
 			return m.Host
 		}
-		if rest, ok := strings.CutPrefix(p, m.Container+"/"); ok {
+		if rest, ok := strings.CutPrefix(s, m.Container+"/"); ok {
 			return filepath.Join(m.Host, rest)
 		}
+		if rest, ok := strings.CutPrefix(s, "HOME="+m.Container+"/"); ok {
+			return "HOME=" + filepath.Join(m.Host, rest)
+		}
+		if s == "HOME="+m.Container {
+			return "HOME=" + m.Host
+		}
 	}
-	return p
+	return s
 }
 
 // buildNPMTarballGZ builds an in-memory npm-shaped tarball: every entry in
@@ -163,6 +157,40 @@ func buildFakeNodeTarXZ(t *testing.T, topDir string) (data []byte, ok bool) {
 // sriFor and sha256Hex (npm_test.go's helpers, same package) cover the
 // sha512-SRI and sha256-hex needs here too.
 
+// fixtureLockPackage is one "packages" map entry of a hand-built, but
+// structurally real, npm package-lock.json fixture — see buildRawLockfile.
+type fixtureLockPackage struct {
+	Version              string            `json:"version"`
+	Resolved             string            `json:"resolved,omitempty"`
+	Integrity            string            `json:"integrity,omitempty"`
+	Dependencies         map[string]string `json:"dependencies,omitempty"`
+	OptionalDependencies map[string]string `json:"optionalDependencies,omitempty"`
+	Optional             bool              `json:"optional,omitempty"`
+	OS                   []string          `json:"os,omitempty"`
+}
+
+// buildRawLockfile assembles a real-shaped (lockfileVersion 3) raw
+// package-lock.json: rootDeps becomes the root ("") entry's "dependencies",
+// and packages is copied in verbatim by key — exactly the document shape
+// Resolve stores in NPMLock.Lockfile and Realize materializes byte for byte
+// (ruling 1). Per-package edges (each entry's own "dependencies"/
+// "optionalDependencies") live on the individual fixtureLockPackage values,
+// not just the root — matching how a real npm lockfile represents a
+// transitive dependency graph, which this package no longer hand-reconstructs.
+func buildRawLockfile(t *testing.T, rootDeps map[string]string, packages map[string]fixtureLockPackage) json.RawMessage {
+	t.Helper()
+	all := make(map[string]any, len(packages)+1)
+	all[""] = map[string]any{"dependencies": rootDeps}
+	for k, v := range packages {
+		all[k] = v
+	}
+	data, err := json.Marshal(map[string]any{"lockfileVersion": 3, "packages": all})
+	if err != nil {
+		t.Fatalf("marshaling fixture lockfile: %v", err)
+	}
+	return json.RawMessage(data)
+}
+
 // TestIntegration_RealizeRealNPM drives the REAL Realize (this package's
 // NPM.Realize) with a host-exec fake Backend that runs npm/tar directly on
 // the host — no guix/docker, no real network (registry URLs point at a
@@ -179,7 +207,7 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 		"index.js":     "module.exports = 1;\n",
 	})
 	harnessTarball := buildNPMTarballGZ(t, map[string]string{
-		"package.json": `{"name":"tiny-harness","version":"1.0.0","bin":{"tiny-harness":"bin/cli.js"},"dependencies":{"tiny-dep":"1.0.0"}}`,
+		"package.json": `{"name":"tiny-harness","version":"1.0.0","bin":{"tiny-harness":"bin/cli.js"},"dependencies":{"tiny-dep":"1.0.0"},"optionalDependencies":{"tiny-win-only":"1.0.0"}}`,
 		"bin/cli.js":   "#!/usr/bin/env node\nconsole.log('hello from tiny-harness');\n",
 	})
 	nodeTarXZ, ok := buildFakeNodeTarXZ(t, "node-v99.0.0-linux-x64")
@@ -190,12 +218,24 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 	depDigest := sha256Hex(depTarball)
 	harnessDigest := sha256Hex(harnessTarball)
 	nodeDigest := sha256Hex(nodeTarXZ)
+	// tiny-win-only IS still seeded as a well-formed tarball — `npm cache
+	// add` runs (and would fail outright on a malformed archive) for every
+	// locked package regardless of platform, matching today's
+	// not-yet-platform-aware Fetch (§7 follow-up: it downloads/caches every
+	// platform variant unconditionally). The point of this fixture is that
+	// `npm ci` itself SKIPS it during dependency resolution (os mismatch),
+	// never installing it — proven below — not that it's never cached.
+	winOnlyPlaceholder := buildNPMTarballGZ(t, map[string]string{
+		"package.json": `{"name":"tiny-win-only","version":"1.0.0","os":["darwin"]}`,
+	})
+	winOnlyDigest := sha256Hex(winOnlyPlaceholder)
 
 	cacheDir := t.TempDir()
 	for digest, content := range map[string][]byte{
 		depDigest:     depTarball,
 		harnessDigest: harnessTarball,
 		nodeDigest:    nodeTarXZ,
+		winOnlyDigest: winOnlyPlaceholder,
 	} {
 		if err := os.WriteFile(filepath.Join(cacheDir, digest), content, 0o644); err != nil {
 			t.Fatalf("seeding cache object %s: %v", digest, err)
@@ -206,6 +246,25 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 	// touch the network, dialing these fails the test instead of silently
 	// succeeding against a real registry.
 	const closedPort = "http://127.0.0.1:1"
+
+	rawLockfile := buildRawLockfile(t,
+		map[string]string{"tiny-harness": "1.0.0"},
+		map[string]fixtureLockPackage{
+			"node_modules/tiny-harness": {
+				Version: "1.0.0", Resolved: closedPort + "/tiny-harness-1.0.0.tgz", Integrity: sriFor(harnessTarball),
+				Dependencies:         map[string]string{"tiny-dep": "1.0.0"},
+				OptionalDependencies: map[string]string{"tiny-win-only": "1.0.0"},
+			},
+			"node_modules/tiny-dep": {
+				Version: "1.0.0", Resolved: closedPort + "/tiny-dep-1.0.0.tgz", Integrity: sriFor(depTarball),
+			},
+			// os-mismatched (this test always runs on linux) optional
+			// dependency: npm must SKIP it, never install it, never fetch it.
+			"node_modules/tiny-win-only": {
+				Version: "1.0.0", Resolved: closedPort + "/tiny-win-only-1.0.0.tgz", Integrity: sriFor(winOnlyPlaceholder),
+				Optional: true, OS: []string{"darwin"},
+			},
+		})
 
 	h := &pool.LockHarness{
 		Source:         "npm",
@@ -232,7 +291,12 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 					Version: "1.0.0", Resolved: closedPort + "/tiny-dep-1.0.0.tgz",
 					Integrity: sriFor(depTarball), SHA256: depDigest,
 				},
+				"node_modules/tiny-win-only": {
+					Version: "1.0.0", Resolved: closedPort + "/tiny-win-only-1.0.0.tgz",
+					Integrity: sriFor(winOnlyPlaceholder), SHA256: winOnlyDigest,
+				},
 			},
+			Lockfile: rawLockfile,
 		},
 	}
 
@@ -267,7 +331,20 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 	t.Run("dependency installed", func(t *testing.T) {
 		p := filepath.Join(staging1, "lib", "node_modules", "tiny-dep", "package.json")
 		if _, err := os.Stat(p); err != nil {
-			t.Errorf("tiny-dep was not installed (schema gap workaround failed?): %v", err)
+			t.Errorf("tiny-dep was not installed: %v", err)
+		}
+	})
+
+	// Finding 1's regression test: a real (verbatim) lockfile lets npm apply
+	// its own os-gating; a hand-reconstructed lockfile (the retired
+	// npmTopLevelDependencies scheme) had no "optional"/"os" fields at all,
+	// which made every such dependency unconditionally required.
+	t.Run("os-mismatched optional dependency is skipped, not installed", func(t *testing.T) {
+		p := filepath.Join(staging1, "lib", "node_modules", "tiny-win-only")
+		if _, err := os.Stat(p); err == nil {
+			t.Error("tiny-win-only was installed despite an os mismatch, want it skipped")
+		} else if !os.IsNotExist(err) {
+			t.Errorf("stat %s: %v", p, err)
 		}
 	})
 
@@ -285,6 +362,75 @@ func TestIntegration_RealizeRealNPM(t *testing.T) {
 		}
 		if receipt1.ManifestDigest != receipt2.ManifestDigest {
 			t.Errorf("ManifestDigest differs across two Realize runs of the same lock: %s vs %s", receipt1.ManifestDigest, receipt2.ManifestDigest)
+		}
+	})
+
+	// Finding 2's regression test: a second, independent harness fixture
+	// whose own bin entry is a plain #!/bin/sh script (not JS-under-node,
+	// and not an ELF binary either — the third of classifyBinTarget's four
+	// cases exercised end to end here). The wrapper must exec it directly.
+	t.Run("bin target with a non-node shebang execs directly, not via node", func(t *testing.T) {
+		shTarball := buildNPMTarballGZ(t, map[string]string{
+			"package.json": `{"name":"tiny-shell-harness","version":"1.0.0","bin":{"tiny-shell-harness":"bin/cli.sh"}}`,
+			"bin/cli.sh":   "#!/bin/sh\necho hello from tiny-shell-harness\n",
+		})
+		shDigest := sha256Hex(shTarball)
+		if err := os.WriteFile(filepath.Join(cacheDir, shDigest), shTarball, 0o644); err != nil {
+			t.Fatalf("seeding cache object %s: %v", shDigest, err)
+		}
+
+		shLockfile := buildRawLockfile(t,
+			map[string]string{"tiny-shell-harness": "1.0.0"},
+			map[string]fixtureLockPackage{
+				"node_modules/tiny-shell-harness": {
+					Version: "1.0.0", Resolved: closedPort + "/tiny-shell-harness-1.0.0.tgz", Integrity: sriFor(shTarball),
+				},
+			})
+
+		shHarness := &pool.LockHarness{
+			Source:         "npm",
+			Package:        "tiny-shell-harness",
+			Version:        "1.0.0",
+			PublishedAt:    pool.FormatTimestamp(realizeFixtureNow),
+			FirstSeenAt:    pool.FormatTimestamp(realizeFixtureNow),
+			RecipeRevision: "sha256:" + strings.Repeat("a", 64),
+			Runtime: &pool.LockRuntime{
+				Name:    "node",
+				Version: "99.0.0",
+				Artifacts: map[pool.PlatformKey]pool.LockRuntimeArtifact{
+					pool.PlatformLinuxAMD64Glibc: {URL: closedPort + "/node.tar.xz", SHA256: nodeDigest},
+				},
+			},
+			NPMLock: &pool.NPMLock{
+				LockfileVersion: 3,
+				Packages: map[string]pool.NPMLockPackage{
+					"node_modules/tiny-shell-harness": {
+						Version: "1.0.0", Resolved: closedPort + "/tiny-shell-harness-1.0.0.tgz",
+						Integrity: sriFor(shTarball), SHA256: shDigest,
+					},
+				},
+				Lockfile: shLockfile,
+			},
+		}
+
+		stagingSh := filepath.Join(t.TempDir(), "gen-sh")
+		shReceipt, err := n.Realize(ctx, b, "tiny-shell-harness", "tiny-shell-harness", shHarness, pool.PlatformLinuxAMD64Glibc, cacheDir, stagingSh)
+		if err != nil {
+			t.Fatalf("Realize (sh-bin harness): %v", err)
+		}
+		if err := pool.VerifyGenerationTree(stagingSh, shReceipt); err != nil {
+			t.Errorf("VerifyGenerationTree (sh-bin harness): %v", err)
+		}
+
+		data, err := os.ReadFile(filepath.Join(stagingSh, "bin", "tiny-shell-harness"))
+		if err != nil {
+			t.Fatalf("reading sh-bin wrapper: %v", err)
+		}
+		if strings.Contains(string(data), "runtime/node/bin/node") {
+			t.Errorf("wrapper routes through node, want a direct exec of the #!/bin/sh target:\n%s", data)
+		}
+		if !strings.Contains(string(data), "tiny-shell-harness/bin/cli.sh") {
+			t.Errorf("wrapper does not reference the sh script directly:\n%s", data)
 		}
 	})
 }

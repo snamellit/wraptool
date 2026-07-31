@@ -20,9 +20,36 @@ var realizeFixtureNow = time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
 // --- fixtures ----------------------------------------------------------
 
-// testLockHarness returns a minimal, valid *pool.LockHarness for "@example/harness"
-// at version 1.0.0, one dependency ("leftpad"), and glibc runtime artifacts —
-// enough for reconstructNPMManifests and Realize's own pre-flight checks.
+// testFixtureLockfile is a hand-built, but structurally REAL, npm
+// package-lock.json (lockfileVersion 3) for "@example/harness"@1.0.0
+// depending on "leftpad"@1.0.0 — the edges live on each package's OWN
+// "dependencies" entry, exactly as real npm output has them (ruling 1: this
+// package never hand-reconstructs a lockfile; Realize materializes exactly
+// this kind of document verbatim).
+const testFixtureLockfile = `{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "dependencies": { "@example/harness": "1.0.0" }
+    },
+    "node_modules/@example/harness": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/@example/harness/-/harness-1.0.0.tgz",
+      "integrity": "sha512-AAAA==",
+      "dependencies": { "leftpad": "1.0.0" }
+    },
+    "node_modules/leftpad": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/leftpad/-/leftpad-1.0.0.tgz",
+      "integrity": "sha512-BBBB=="
+    }
+  }
+}`
+
+// testLockHarness returns a minimal, valid *pool.LockHarness for
+// "@example/harness" at version 1.0.0, one dependency ("leftpad"), and
+// glibc runtime artifacts — enough for npmSynthesizePackageJSON and
+// Realize's own pre-flight checks.
 func testLockHarness() *pool.LockHarness {
 	return &pool.LockHarness{
 		Source:         "npm",
@@ -55,6 +82,7 @@ func testLockHarness() *pool.LockHarness {
 					SHA256:    strings.Repeat("e", 64),
 				},
 			},
+			Lockfile: json.RawMessage(testFixtureLockfile),
 		},
 	}
 }
@@ -80,86 +108,53 @@ func seedCache(t *testing.T, cacheDir string, h *pool.LockHarness) {
 	}
 }
 
-// --- reconstructNPMManifests --------------------------------------------
+// --- npmSynthesizePackageJSON (ruling 1: the only thing Realize still
+// synthesizes — package-lock.json itself is written verbatim) -------------
 
-func TestReconstructNPMManifests_Deterministic(t *testing.T) {
-	h := testLockHarness()
-
-	pkgJSON1, lock1, err := reconstructNPMManifests(h)
+func TestNPMSynthesizePackageJSON(t *testing.T) {
+	data, err := npmSynthesizePackageJSON(json.RawMessage(testFixtureLockfile))
 	if err != nil {
-		t.Fatalf("reconstructNPMManifests: %v", err)
+		t.Fatalf("npmSynthesizePackageJSON: %v", err)
 	}
-	pkgJSON2, lock2, err := reconstructNPMManifests(h)
-	if err != nil {
-		t.Fatalf("reconstructNPMManifests (2nd call): %v", err)
+	var parsed npmReconstructedPackageJSON
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parsing result: %v", err)
 	}
-
-	if string(pkgJSON1) != string(pkgJSON2) {
-		t.Errorf("package.json not deterministic:\n%s\n---\n%s", pkgJSON1, pkgJSON2)
+	if len(parsed.Dependencies) != 1 || parsed.Dependencies["@example/harness"] != "1.0.0" {
+		t.Errorf("Dependencies = %v, want only the root entry's own dependency", parsed.Dependencies)
 	}
-	if string(lock1) != string(lock2) {
-		t.Errorf("package-lock.json not deterministic:\n%s\n---\n%s", lock1, lock2)
+	// The transitive "leftpad" edge lives on @example/harness's OWN lock
+	// entry, not the root's — package.json must not promote it.
+	if _, ok := parsed.Dependencies["leftpad"]; ok {
+		t.Error(`Dependencies contains "leftpad", want only the root's own direct dependency`)
 	}
 }
 
-func TestReconstructNPMManifests_NoSHA256Field(t *testing.T) {
-	h := testLockHarness()
-	_, lock, err := reconstructNPMManifests(h)
+func TestNPMSynthesizePackageJSON_Deterministic(t *testing.T) {
+	a, err := npmSynthesizePackageJSON(json.RawMessage(testFixtureLockfile))
 	if err != nil {
-		t.Fatalf("reconstructNPMManifests: %v", err)
+		t.Fatalf("npmSynthesizePackageJSON: %v", err)
 	}
-	if strings.Contains(string(lock), "sha256") {
-		t.Errorf("reconstructed package-lock.json contains a pool-internal sha256 field, want it never emitted:\n%s", lock)
+	b, err := npmSynthesizePackageJSON(json.RawMessage(testFixtureLockfile))
+	if err != nil {
+		t.Fatalf("npmSynthesizePackageJSON (2nd call): %v", err)
 	}
-	if strings.Contains(string(lock), strings.Repeat("d", 64)) || strings.Contains(string(lock), strings.Repeat("e", 64)) {
-		t.Errorf("reconstructed package-lock.json leaks a pool cache digest:\n%s", lock)
-	}
-
-	var parsed npmReconstructedLock
-	if err := json.Unmarshal(lock, &parsed); err != nil {
-		t.Fatalf("parsing reconstructed lock: %v", err)
-	}
-	if parsed.LockfileVersion != 3 {
-		t.Errorf("lockfileVersion = %d, want 3", parsed.LockfileVersion)
-	}
-	root, ok := parsed.Packages[""]
-	if !ok {
-		t.Fatal(`packages[""] missing`)
-	}
-	if root.Dependencies["@example/harness"] != "1.0.0" || root.Dependencies["leftpad"] != "1.0.0" {
-		t.Errorf(`root dependencies = %v, want both top-level packages present`, root.Dependencies)
-	}
-	harnessEntry, ok := parsed.Packages["node_modules/@example/harness"]
-	if !ok {
-		t.Fatal("missing node_modules/@example/harness entry")
-	}
-	if harnessEntry.Version != "1.0.0" || harnessEntry.Resolved == "" || harnessEntry.Integrity == "" {
-		t.Errorf("harness entry incomplete: %+v", harnessEntry)
-	}
-	if len(harnessEntry.Dependencies) != 0 {
-		t.Errorf("non-root entry has Dependencies set: %+v", harnessEntry)
+	if string(a) != string(b) {
+		t.Errorf("not deterministic:\n%s\n---\n%s", a, b)
 	}
 }
 
-func TestReconstructNPMManifests_NestedEntryExcludedFromRootDeps(t *testing.T) {
-	h := testLockHarness()
-	h.NPMLock.Packages["node_modules/@example/harness/node_modules/nested"] = pool.NPMLockPackage{
-		Version: "2.0.0", Resolved: "https://registry.npmjs.org/nested/-/nested-2.0.0.tgz", Integrity: "sha512-CCCC==", SHA256: strings.Repeat("f", 64),
+func TestNPMSynthesizePackageJSON_MissingRootEntry(t *testing.T) {
+	_, err := npmSynthesizePackageJSON(json.RawMessage(`{"lockfileVersion":3,"packages":{}}`))
+	if err == nil {
+		t.Fatal("npmSynthesizePackageJSON: got nil error, want rejection of a lockfile with no root entry")
 	}
-	_, lock, err := reconstructNPMManifests(h)
-	if err != nil {
-		t.Fatalf("reconstructNPMManifests: %v", err)
-	}
-	var parsed npmReconstructedLock
-	if err := json.Unmarshal(lock, &parsed); err != nil {
-		t.Fatalf("parsing reconstructed lock: %v", err)
-	}
-	root := parsed.Packages[""]
-	if _, ok := root.Dependencies["nested"]; ok {
-		t.Error(`root dependencies contains "nested", want nested entries excluded (no reachable edge — documented schema gap)`)
-	}
-	if _, ok := parsed.Packages["node_modules/@example/harness/node_modules/nested"]; !ok {
-		t.Error("nested entry itself missing from packages map, want it preserved verbatim even though unreachable")
+}
+
+func TestNPMSynthesizePackageJSON_RejectsInvalidJSON(t *testing.T) {
+	_, err := npmSynthesizePackageJSON(json.RawMessage(`not json`))
+	if err == nil {
+		t.Fatal("npmSynthesizePackageJSON: got nil error, want rejection of invalid JSON")
 	}
 }
 
@@ -171,7 +166,10 @@ func TestReconstructNPMManifests_NestedEntryExcludedFromRootDeps(t *testing.T) {
 // fabricates the files a real backend run would have produced — following
 // npm_test.go's fakeBackend pattern (record + synthesize expected side
 // effects) one level up, since Realize's container steps write into the
-// staging tree rather than returning data to read back.
+// staging tree rather than returning data to read back. Every Realize argv
+// is itself `env HOME=<dir> <command>...` (finding 3: HOME is never carried
+// via RunSpec.Env), so Run strips that fixed 2-element prefix before
+// dispatching on the real command name.
 type realizeFakeBackend struct {
 	stagingGenDir string
 	pkg           string
@@ -179,24 +177,35 @@ type realizeFakeBackend struct {
 	pkgJSON       []byte // content for lib/node_modules/<pkg>/package.json
 	scriptRel     string // "bin" path (relative to the package dir) to create
 
-	calls  []backend.RunSpec
-	runErr error
+	calls               []backend.RunSpec
+	runErr              error
+	capturedPackageLock []byte // package-lock.json content as seen at `npm ci` time
 }
 
 func (f *realizeFakeBackend) Name() string    { return "fake" }
 func (f *realizeFakeBackend) Available() bool { return true }
+
+// stripEnvPrefix removes Realize's fixed `env HOME=<dir>` argv prefix so the
+// fake can dispatch on the real command (argv[0] after the prefix).
+func stripEnvPrefix(argv []string) []string {
+	if len(argv) >= 2 && argv[0] == "env" && strings.HasPrefix(argv[1], "HOME=") {
+		return argv[2:]
+	}
+	return argv
+}
 
 func (f *realizeFakeBackend) Run(_ context.Context, spec backend.RunSpec) error {
 	f.calls = append(f.calls, spec)
 	if f.runErr != nil {
 		return f.runErr
 	}
-	if len(spec.Argv) < 1 {
-		return fmt.Errorf("realizeFakeBackend: empty Argv")
+	argv := stripEnvPrefix(spec.Argv)
+	if len(argv) < 1 {
+		return fmt.Errorf("realizeFakeBackend: empty Argv after stripping the env prefix")
 	}
-	switch spec.Argv[0] {
+	switch argv[0] {
 	case "npm":
-		if len(spec.Argv) >= 2 && spec.Argv[1] == "ci" {
+		if len(argv) >= 2 && argv[1] == "ci" {
 			return f.simulateNPMCI()
 		}
 		return nil // npm cache add: nothing to fabricate, just recorded
@@ -221,7 +230,18 @@ func (f *realizeFakeBackend) simulateNPMCI() error {
 	}
 	// node_modules/.package-lock.json residue a real `npm ci` leaves behind.
 	nmDir := filepath.Join(f.stagingGenDir, "lib", "node_modules")
-	return os.WriteFile(filepath.Join(nmDir, ".package-lock.json"), []byte("{}"), 0o644)
+	if err := os.WriteFile(filepath.Join(nmDir, ".package-lock.json"), []byte("{}"), 0o644); err != nil {
+		return err
+	}
+	// Capture package-lock.json exactly as Realize wrote it, before
+	// removeBuildResidue deletes it later in the same Realize call — this is
+	// how TestRealize_MaterializesLockfileVerbatim observes it.
+	data, err := os.ReadFile(filepath.Join(f.stagingGenDir, "lib", "package-lock.json"))
+	if err != nil {
+		return err
+	}
+	f.capturedPackageLock = append([]byte(nil), data...)
+	return nil
 }
 
 func (f *realizeFakeBackend) simulateNodeUnpack() error {
@@ -298,30 +318,48 @@ func TestRealize_RunSpecs(t *testing.T) {
 				t.Errorf("User = %q, want empty (guix backend rejects a non-empty User)", spec.User)
 			}
 		})
+		t.Run(fmt.Sprintf("call %d: Env is never used for HOME (finding 3)", i), func(t *testing.T) {
+			if len(spec.Env) != 0 {
+				t.Errorf("Env = %v, want empty — the guix backend merges Env onto the HOST client's own environment, so HOME must be an argv prefix instead", spec.Env)
+			}
+		})
+		t.Run(fmt.Sprintf("call %d: argv carries the env HOME= prefix", i), func(t *testing.T) {
+			if len(spec.Argv) < 2 || spec.Argv[0] != "env" || !strings.HasPrefix(spec.Argv[1], "HOME=") {
+				t.Errorf("Argv = %v, want it to start with [\"env\", \"HOME=...\"]", spec.Argv)
+			}
+		})
 	}
 
 	t.Run("argv shapes", func(t *testing.T) {
 		cacheAdd := fb.calls[0].Argv
-		if cacheAdd[0] != "npm" || cacheAdd[1] != "cache" || cacheAdd[2] != "add" {
-			t.Errorf("call 0 Argv = %v, want npm cache add ...", cacheAdd)
+		want := []string{"env", "", "npm", "cache", "add"} // want[1] (HOME=...) checked above
+		for i, w := range want {
+			if i == 1 {
+				continue
+			}
+			if cacheAdd[i] != w {
+				t.Errorf("call 0 Argv = %v, want prefix %v", cacheAdd, want)
+				break
+			}
 		}
-		if len(cacheAdd) != 3+2+2 { // npm cache add --cache <dir> <tarball1> <tarball2>
+		// env(2) + npm cache add(3) + --cache <dir>(2) + 2 locked tarballs(2)
+		if len(cacheAdd) != 2+3+2+2 {
 			t.Errorf("call 0 Argv = %v, want one tarball arg per locked npm package (2)", cacheAdd)
 		}
-		ci := fb.calls[1].Argv
+		ci := stripEnvPrefix(fb.calls[1].Argv)
 		wantCI := []string{"npm", "ci", "--offline", "--foreground-scripts", "--cache"}
 		for i, w := range wantCI {
 			if ci[i] != w {
-				t.Errorf("call 1 Argv = %v, want prefix %v", ci, wantCI)
+				t.Errorf("call 1 Argv (after env prefix) = %v, want prefix %v", ci, wantCI)
 				break
 			}
 		}
 		if fb.calls[1].Workdir == "" {
 			t.Error("call 1 Workdir is empty, want the container lib dir")
 		}
-		tarArgv := fb.calls[2].Argv
+		tarArgv := stripEnvPrefix(fb.calls[2].Argv)
 		if tarArgv[0] != "tar" {
-			t.Errorf("call 2 Argv = %v, want tar ...", tarArgv)
+			t.Errorf("call 2 Argv (after env prefix) = %v, want tar ...", tarArgv)
 		}
 	})
 
@@ -371,6 +409,36 @@ func TestRealize_RunSpecs(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("materialized package-lock.json is byte-identical to the stored raw bytes (ruling 1)", func(t *testing.T) {
+		if len(fb.capturedPackageLock) == 0 {
+			t.Fatal("fake backend never captured package-lock.json — simulateNPMCI didn't run?")
+		}
+		if string(fb.capturedPackageLock) != testFixtureLockfile {
+			t.Errorf("materialized package-lock.json =\n%s\nwant byte-identical to the stored raw lockfile:\n%s", fb.capturedPackageLock, testFixtureLockfile)
+		}
+	})
+}
+
+func TestRealize_MissingLockfileErrors(t *testing.T) {
+	h := testLockHarness()
+	h.NPMLock.Lockfile = nil
+	cacheDir := t.TempDir()
+	seedCache(t, cacheDir, h)
+	stagingGenDir := t.TempDir()
+	fb := newRealizeFakeBackend(stagingGenDir)
+	n := NewNPM("")
+
+	_, err := n.Realize(context.Background(), fb, "example-harness", fb.binName, h, pool.PlatformLinuxAMD64Glibc, cacheDir, stagingGenDir)
+	if err == nil {
+		t.Fatal("Realize: got nil error, want rejection of a lock with no embedded Lockfile")
+	}
+	if !strings.Contains(err.Error(), "wraptool harness update") {
+		t.Errorf("error = %q, want it to suggest re-running wraptool harness update", err.Error())
+	}
+	if len(fb.calls) != 0 {
+		t.Errorf("backend.Run called %d times, want 0 (must fail before touching the backend)", len(fb.calls))
+	}
 }
 
 func TestRealize_MissingRuntimeArtifact(t *testing.T) {

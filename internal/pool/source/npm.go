@@ -506,6 +506,23 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 		return pool.LockHarness{}, err
 	}
 
+	// Store the verbatim package-lock.json alongside the summary map, so
+	// Realize can materialize npm's own output byte-for-byte instead of
+	// hand-reconstructing one (§8, review finding: a hand-reconstructed
+	// lockfile loses optional/os/cpu gating and nested version-conflict
+	// edges that only the full document carries — see NPMLock.Lockfile's
+	// doc comment). Compacted once here via json.Compact: encoding/json
+	// already normalizes a json.RawMessage's insignificant whitespace
+	// whenever it's embedded in an outer Marshal, but storing (and later
+	// writing to disk during realize) a pre-compacted form keeps both the
+	// persisted harness-lock.json and the materialized package-lock.json
+	// themselves compact, rather than carrying whatever pretty-printing npm
+	// happened to emit.
+	var compactedLock bytes.Buffer
+	if err := json.Compact(&compactedLock, lockBytes); err != nil {
+		return pool.LockHarness{}, fmt.Errorf("compacting package-lock.json: %w", err)
+	}
+
 	return pool.LockHarness{
 		Source:         "npm",
 		Package:        pkg,
@@ -521,6 +538,7 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 		NPMLock: &pool.NPMLock{
 			LockfileVersion: lockFile.LockfileVersion,
 			Packages:        packages,
+			Lockfile:        append([]byte(nil), compactedLock.Bytes()...),
 		},
 	}, nil
 }
