@@ -209,5 +209,5 @@ func PolicyHash(p EffectivePolicy) (string, error) {
 		return "", fmt.Errorf("marshaling policy for hashing: %w", err)
 	}
 	sum := sha256.Sum256(data)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
+	return sha256DigestPrefix + hex.EncodeToString(sum[:]), nil
 }

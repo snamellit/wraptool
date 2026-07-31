@@ -229,6 +229,25 @@ func TestScanGenerationFilesMissingRootFails(t *testing.T) {
 	}
 }
 
+// TestScanGenerationFilesRootIsRegularFileFails covers the other half of
+// the root-is-a-directory check: a root that exists and is not a symlink,
+// but is a plain regular file rather than a directory.
+func TestScanGenerationFilesRootIsRegularFileFails(t *testing.T) {
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "plain-file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := ScanGenerationFiles(notADir)
+	if err == nil {
+		t.Fatal("expected an error for a non-directory root, got nil")
+	}
+	if !strings.Contains(err.Error(), notADir) {
+		t.Errorf("error does not name the root path: %v", err)
+	}
+}
+
 // TestScanGenerationFilesIrregularFileFails covers §6.4's "any irregular
 // file (device, fifo, socket)" rejection using a real fifo (syscall.Mkfifo
 // is POSIX-only; there is no windows equivalent, so this test skips there).
@@ -466,6 +485,11 @@ func TestReceiptValidateRejectsUnsortedFiles(t *testing.T) {
 	}
 }
 
+// TestReceiptValidateRejectsDuplicatePath asserts not just that an exact
+// duplicate path is rejected, but that it is rejected with the *duplicate*
+// error specifically. An exact duplicate trivially case-folds to itself, so
+// if the case-fold collision check ran first it would report a misleading
+// "case-colliding" error instead — duplicate detection must win.
 func TestReceiptValidateRejectsDuplicatePath(t *testing.T) {
 	r := sampleReceipt(t)
 	dup := r.Files[0]
@@ -475,8 +499,12 @@ func TestReceiptValidateRejectsDuplicatePath(t *testing.T) {
 		t.Fatalf("ManifestDigest: %v", err)
 	}
 	r.ManifestDigest = digest
-	if err := r.Validate(); err == nil {
+	err = r.Validate()
+	if err == nil {
 		t.Fatal("expected an error for a duplicate path, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("Validate() error = %q, want it to mention \"duplicate\" (not a case-collision)", err.Error())
 	}
 }
 
@@ -511,16 +539,26 @@ func TestReceiptValidateRejectsMalformedDigest(t *testing.T) {
 	})
 }
 
+// TestReceiptValidateRejectsBadFilePaths includes the host-independence
+// case: "C:/Users/x/bin/claude" must be rejected by validateReceiptFilePath
+// on every GOOS, not only when the test happens to run on Windows.
+// filepath.IsAbs would judge that path absolute only on Windows and "/x"
+// only where GOOS treats a leading "/" as rooted, which would make the same
+// receipt.json validate differently depending on the host running this
+// test (§6.1).
 func TestReceiptValidateRejectsBadFilePaths(t *testing.T) {
 	cases := []struct {
 		name string
 		path string
 	}{
 		{"empty", ""},
-		{"absolute", "/bin/claude"},
+		{"absolute (leading slash)", "/bin/claude"},
+		{"absolute (drive letter)", "C:/Users/x/bin/claude"},
 		{"backslash", `bin\claude`},
 		{"dot segment", "bin/./claude"},
 		{"dotdot segment", "bin/../claude"},
+		{"empty segment (doubled slash)", "bin//claude"},
+		{"empty segment (trailing slash)", "bin/claude/"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -806,6 +844,8 @@ func TestGenerationIDRejectsInvalidInputs(t *testing.T) {
 		{"empty version", "claude", "", PlatformLinuxAMD64Glibc, validDigest},
 		{"harness with slash", "cla/ude", "1.0.0", PlatformLinuxAMD64Glibc, validDigest},
 		{"version with slash", "claude", "1.0/0", PlatformLinuxAMD64Glibc, validDigest},
+		{"harness is dot", ".", "1.0.0", PlatformLinuxAMD64Glibc, validDigest},
+		{"version is dotdot", "claude", "..", PlatformLinuxAMD64Glibc, validDigest},
 		{"bad platform key", "claude", "1.0.0", PlatformKey("bogus"), validDigest},
 		{"malformed digest, no prefix", "claude", "1.0.0", PlatformLinuxAMD64Glibc, strings.Repeat("a", 64)},
 		{"malformed digest, short", "claude", "1.0.0", PlatformLinuxAMD64Glibc, "sha256:abc"},

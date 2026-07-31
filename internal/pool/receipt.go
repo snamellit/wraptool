@@ -241,28 +241,49 @@ func validatePathSegment(label, s string) error {
 
 // validateReceiptFilePath enforces receipt path discipline on one
 // ReceiptFile.Path (§6.3 "nothing inside runtime/ may contain an absolute
-// path ... receipts' file lists"; §6.4): non-empty, never filepath.IsAbs
-// (host-rooted paths have no meaning once the pool is mounted at a
-// different path on a different runtime), never containing a backslash
-// (receipt paths are ToSlash'd forward-slash paths, never host-native on
-// Windows), and no "." or ".." path segment (either could let a consumer
-// that joins Path onto a root escape the generation tree).
+// path ... receipts' file lists"; §6.4): non-empty, never absolute (host-
+// rooted paths have no meaning once the pool is mounted at a different path
+// on a different runtime), never containing a backslash (receipt paths are
+// ToSlash'd forward-slash paths, never host-native on Windows), and no
+// empty, "." or ".." path segment (an empty segment comes from a doubled or
+// trailing slash; either dot-segment could let a consumer that joins Path
+// onto a root escape the generation tree).
+//
+// Absoluteness is checked independent of the host OS deliberately —
+// filepath.IsAbs would judge "C:/x" absolute only on Windows and "/x"
+// absolute only when GOOS treats "/" as rooted, so the same receipt.json
+// would validate differently depending on which host happened to check it
+// (§6.1: host OS must never change target-content judgments). A leading "/"
+// and a drive-letter prefix ("C:", case-insensitive) are rejected on every
+// host.
 func validateReceiptFilePath(p string) error {
 	if p == "" {
 		return fmt.Errorf("path must not be empty")
 	}
-	if filepath.IsAbs(p) {
+	if strings.HasPrefix(p, "/") {
 		return fmt.Errorf("path %q must not be absolute", p)
+	}
+	if len(p) >= 2 && isASCIILetter(p[0]) && p[1] == ':' {
+		return fmt.Errorf("path %q must not be absolute (drive-letter prefix)", p)
 	}
 	if strings.Contains(p, `\`) {
 		return fmt.Errorf("path %q must not contain a backslash", p)
 	}
 	for _, seg := range strings.Split(p, "/") {
-		if seg == "." || seg == ".." {
+		switch seg {
+		case "":
+			return fmt.Errorf("path %q must not contain an empty segment (doubled or trailing slash)", p)
+		case ".", "..":
 			return fmt.Errorf("path %q must not contain a %q segment", p, seg)
 		}
 	}
 	return nil
+}
+
+// isASCIILetter reports whether b is an ASCII letter, for the drive-letter
+// check above.
+func isASCIILetter(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 // parsePrefixedSHA256 validates that digest has the form "sha256:" followed
@@ -376,21 +397,25 @@ func (r *Receipt) Validate() error {
 		if !isLowerHex64(f.SHA256) {
 			return fmt.Errorf("files: %q has a malformed sha256 %q (want 64 lowercase hex characters)", f.Path, f.SHA256)
 		}
+		// Exact-duplicate and sortedness are checked before the case-fold
+		// collision map below: an exact duplicate would otherwise always
+		// hit the fold map first (a path trivially case-folds to itself),
+		// producing a misleading "case-colliding" error that blames
+		// case-insensitivity for what is really just the same path twice.
+		if i > 0 {
+			prev := r.Files[i-1]
+			switch {
+			case f.Path == prev.Path:
+				return fmt.Errorf("files: duplicate path %q", f.Path)
+			case f.Path < prev.Path:
+				return fmt.Errorf("files: not sorted (%q must come after %q)", f.Path, prev.Path)
+			}
+		}
 		fold := strings.ToLower(f.Path)
 		if prior, ok := folded[fold]; ok {
 			return fmt.Errorf("files: case-colliding paths %q and %q would merge on a case-insensitive filesystem", prior, f.Path)
 		}
 		folded[fold] = f.Path
-		if i == 0 {
-			continue
-		}
-		prev := r.Files[i-1]
-		switch {
-		case f.Path == prev.Path:
-			return fmt.Errorf("files: duplicate path %q", f.Path)
-		case f.Path < prev.Path:
-			return fmt.Errorf("files: not sorted (%q must come after %q)", f.Path, prev.Path)
-		}
 	}
 
 	if _, err := parsePrefixedSHA256(r.ManifestDigest); err != nil {
