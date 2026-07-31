@@ -22,7 +22,7 @@ const ReceiptSchemaVersion = 1
 // content is the identity — never mtimes, uids, or host paths).
 type ReceiptFile struct {
 	Path       string `json:"path"`       // generation-relative, forward slashes (path.ToSlash), sorted
-	Executable bool   `json:"executable"` // any owner-exec bit set; the flag, never the raw mode
+	Executable bool   `json:"executable"` // any of the owner/group/other exec bits (0o111) set; the flag, never the raw mode
 	Size       int64  `json:"size"`
 	SHA256     string `json:"sha256"` // lowercase hex, no "sha256:" prefix
 }
@@ -80,10 +80,26 @@ const sha256DigestPrefix = "sha256:"
 // (§6.4: "The receipt records an executable: true flag per entry (not the
 // raw mode), so receipts hash identically across hosts").
 func ScanGenerationFiles(root string) ([]ReceiptFile, error) {
+	// Lstat root itself before walking: WalkDir's callback never sees root's
+	// own entry, so a symlinked root (the reported failure mode: a
+	// symlink-to-directory root silently walked into its target, producing
+	// an empty manifest for an unverified tree) or a missing/non-directory
+	// root would otherwise pass through unnoticed instead of failing loudly.
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return nil, fmt.Errorf("stat generation root %s: %w", root, err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("generation tree contains a symlink at %s: generations must be symlink-free (§6.4)", root)
+	}
+	if !rootInfo.IsDir() {
+		return nil, fmt.Errorf("generation root %s is not a directory", root)
+	}
+
 	var files []ReceiptFile
 	seen := make(map[string]string) // case-folded relative path -> first-seen original relative path
 
-	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return fmt.Errorf("walking %s: %w", p, err)
 		}
@@ -167,7 +183,14 @@ func hashFile(path string) (string, error) {
 // ordered slice. Callers pass the already-sorted result of
 // ScanGenerationFiles (or a Receipt's own Files, which Validate additionally
 // checks are sorted) — ManifestDigest does not itself sort or deduplicate.
+// A nil files is normalized to an empty slice before marshaling: encoding/json
+// renders a nil slice as "null" and an empty (non-nil) slice as "[]", so
+// without this a manifest-less generation would hash differently depending
+// on which of those two equivalent Go values happened to be in hand.
 func ManifestDigest(files []ReceiptFile) (string, error) {
+	if files == nil {
+		files = []ReceiptFile{}
+	}
 	data, err := json.Marshal(files)
 	if err != nil {
 		return "", fmt.Errorf("marshaling files for manifest digest: %w", err)
@@ -212,6 +235,32 @@ func validatePathSegment(label, s string) error {
 	}
 	if s == "." || s == ".." {
 		return fmt.Errorf("%s must not be %q", label, s)
+	}
+	return nil
+}
+
+// validateReceiptFilePath enforces receipt path discipline on one
+// ReceiptFile.Path (§6.3 "nothing inside runtime/ may contain an absolute
+// path ... receipts' file lists"; §6.4): non-empty, never filepath.IsAbs
+// (host-rooted paths have no meaning once the pool is mounted at a
+// different path on a different runtime), never containing a backslash
+// (receipt paths are ToSlash'd forward-slash paths, never host-native on
+// Windows), and no "." or ".." path segment (either could let a consumer
+// that joins Path onto a root escape the generation tree).
+func validateReceiptFilePath(p string) error {
+	if p == "" {
+		return fmt.Errorf("path must not be empty")
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("path %q must not be absolute", p)
+	}
+	if strings.Contains(p, `\`) {
+		return fmt.Errorf("path %q must not contain a backslash", p)
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return fmt.Errorf("path %q must not contain a %q segment", p, seg)
+		}
 	}
 	return nil
 }
@@ -287,11 +336,14 @@ func UnmarshalReceipt(data []byte) (*Receipt, error) {
 // harness/version/recipe revision/lock-entry hash are non-empty, that
 // Platform is one of the closed PlatformKey values (via ParsePlatformKey,
 // reusing platform.go's existing validity check rather than duplicating its
-// exhaustive switch), that Files is sorted by Path with no duplicates and
-// every SHA256 is well-formed, and that ManifestDigest matches recomputing
-// ManifestDigest(r.Files). Exported so a receipt assembled in memory by a
-// Realize implementation can be validated before it is written, not only
-// after being read back via UnmarshalReceipt (which also calls Validate).
+// exhaustive switch), that every file's Path satisfies receipt path
+// discipline (§6.3/§6.4 — non-empty, relative, forward-slash-only, no "."/".."
+// segment) with no two paths colliding after case folding, that Files is
+// sorted by Path with no duplicates and every SHA256 is well-formed, and
+// that ManifestDigest matches recomputing ManifestDigest(r.Files). Exported
+// so a receipt assembled in memory by a Realize implementation can be
+// validated before it is written, not only after being read back via
+// UnmarshalReceipt (which also calls Validate).
 func (r *Receipt) Validate() error {
 	if r.SchemaVersion != ReceiptSchemaVersion {
 		return fmt.Errorf("unsupported receipt schema_version %d (want %d)", r.SchemaVersion, ReceiptSchemaVersion)
@@ -312,10 +364,23 @@ func (r *Receipt) Validate() error {
 		return fmt.Errorf("platform: %w", err)
 	}
 
+	// case-folded path -> first-seen original path, so a collision names
+	// both offending entries even when they are far apart in sort order
+	// (e.g. "Bin/x" and "bin/X" sort on opposite sides of "a.txt") — the
+	// same approach ScanGenerationFiles uses.
+	folded := make(map[string]string, len(r.Files))
 	for i, f := range r.Files {
+		if err := validateReceiptFilePath(f.Path); err != nil {
+			return fmt.Errorf("files: %w", err)
+		}
 		if !isLowerHex64(f.SHA256) {
 			return fmt.Errorf("files: %q has a malformed sha256 %q (want 64 lowercase hex characters)", f.Path, f.SHA256)
 		}
+		fold := strings.ToLower(f.Path)
+		if prior, ok := folded[fold]; ok {
+			return fmt.Errorf("files: case-colliding paths %q and %q would merge on a case-insensitive filesystem", prior, f.Path)
+		}
+		folded[fold] = f.Path
 		if i == 0 {
 			continue
 		}
@@ -348,6 +413,13 @@ func (r *Receipt) Validate() error {
 // present on disk but not in the receipt, a file in the receipt but missing
 // from disk, or a file present in both whose executable flag, size, or
 // content (sha256) differs.
+//
+// r.Files is assumed Validate-clean, in particular sorted by Path: a
+// receipt that has round-tripped through UnmarshalReceipt already satisfies
+// this (Validate is called there), but an in-memory Receipt built by hand
+// with unsorted Files will produce spurious mismatches from this function's
+// merge comparison rather than a meaningful diff. Call r.Validate() first if
+// that isn't already guaranteed.
 func VerifyGenerationTree(root string, r *Receipt) error {
 	actual, err := ScanGenerationFiles(root)
 	if err != nil {
