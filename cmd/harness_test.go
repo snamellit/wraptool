@@ -1000,6 +1000,71 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 	}
 }
 
+// TestHarnessInstallRepairPrintsRealizedNotJustUpToDate is the CLI-
+// truthfulness regression for review finding 5: a repair (§15/§17 — the
+// lock still records a generation digest for this platform, but its
+// directory has vanished) reaches DecisionRealize, which has Changed=false
+// and no Note. Before this fix, printUpdateResult's default case reported
+// that as a plain "already locked ... (up to date)", indistinguishable from
+// a true no-op — even though RealizeGeneration just rebuilt a whole
+// generation. It must instead name the generation it (re)built.
+func TestHarnessInstallRepairPrintsRealizedNotJustUpToDate(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+
+	key, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realized := false
+	for _, k := range status.Realized {
+		if k == key {
+			realized = true
+		}
+	}
+	if !realized {
+		t.Fatalf("expected claude to be realized for %s after install, got %v", key, status.Realized)
+	}
+
+	// Delete the generation directory but leave the lock's recorded digest
+	// alone — the repair scenario.
+	if err := os.RemoveAll(filepath.Join(paths.Runtime, "generations")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	if err := runHarnessInstall(context.Background(), cmd, deps, "claude", d, "", false, ""); err != nil {
+		t.Fatalf("repair install: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "realized") {
+		t.Errorf("expected the repair install's output to mention the rebuilt generation, got:\n%s", out)
+	}
+	if strings.Contains(out, "(up to date)") {
+		t.Errorf("expected the repair install's output NOT to just report plain up-to-date (review finding 5), got:\n%s", out)
+	}
+}
+
 // TestHarnessSyncRealizesRequestedPlatformAndSurfacesInList: `sync
 // --platform <key>` (§16 Phase 2) realizes exactly the requested platform —
 // not necessarily the host's own — and `list`'s REALIZED column then shows

@@ -521,7 +521,14 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 		Advance: false,
 	})
 	if err != nil {
-		return fmt.Errorf("locking %s: %w", name, err)
+		// UpdateHarnessLocked covers resolve+lock+fetch AND realize
+		// (§16 Phase 2); a wrap naming just one phase ("locking %s") would
+		// misreport a Realize failure — locking may well have already
+		// succeeded. Its own per-phase errors ("resolving %s@%s", "fetching
+		// %s@%s", "realizing %s for %s", "validating lock") are already
+		// specific, so this wrap only adds the harness name's context, not
+		// a (possibly wrong) phase claim.
+		return fmt.Errorf("updating %s: %w", name, err)
 	}
 	printUpdateResult(cmd, name, result)
 	if allowYoung && !result.AllowYoungApplied && !result.Changed {
@@ -539,23 +546,44 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 // and integrity" — not just the audit record); otherwise it reports whether
 // a new version was locked, an informative kept-version note (MAJOR 1's
 // "nothing eligible, kept the existing lock" case), or plain up-to-date.
+//
+// result.RealizedGenerationID (§16 Phase 2) is appended to whichever of
+// those it reports, whenever set: DecisionRealize and a DecisionKeepExisting
+// that still needed realizing both have Changed=false and (DecisionRealize)
+// no Note, and would otherwise print the same "already locked ... (up to
+// date)" text as a true no-op — hiding the fact that this call actually
+// built or confirmed a generation. A caller must not read Changed=false as
+// "nothing happened" (review finding 5).
 func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResult) {
 	out := cmd.OutOrStdout()
+
+	var msg string
+	realizedFolded := false // true once the case below has already worked RealizedGenerationID into msg
 	switch {
 	case result.AllowYoungApplied:
-		msg := fmt.Sprintf("%s: --allow-young bypassed quarantine for %s (published %s ago)",
+		msg = fmt.Sprintf("%s: --allow-young bypassed quarantine for %s (published %s ago)",
 			name, result.Harness.Version, formatRemaining(result.CandidateAge))
 		if result.CandidateIntegrity != "" {
 			msg += fmt.Sprintf("; integrity %s", result.CandidateIntegrity)
 		}
-		fmt.Fprintln(out, msg)
 	case result.Changed:
-		fmt.Fprintf(out, "%s: locked %s\n", name, result.Harness.Version)
+		msg = fmt.Sprintf("%s: locked %s", name, result.Harness.Version)
 	case result.Note != "":
-		fmt.Fprintf(out, "%s: %s\n", name, result.Note)
+		msg = fmt.Sprintf("%s: %s", name, result.Note)
+	case result.RealizedGenerationID != "":
+		// Changed=false and no Note: on the resolve axis this is a genuine
+		// no-op, but RealizeGeneration DID run and build/confirm a
+		// generation this call — "(up to date)" alone would misreport that
+		// as nothing having happened (review finding 5).
+		msg = fmt.Sprintf("%s: locked version %s unchanged; realized %s", name, result.Harness.Version, result.RealizedGenerationID)
+		realizedFolded = true
 	default:
-		fmt.Fprintf(out, "%s: already locked at %s (up to date)\n", name, result.Harness.Version)
+		msg = fmt.Sprintf("%s: already locked at %s (up to date)", name, result.Harness.Version)
 	}
+	if result.RealizedGenerationID != "" && !realizedFolded {
+		msg += fmt.Sprintf("; realized %s", result.RealizedGenerationID)
+	}
+	fmt.Fprintln(out, msg)
 }
 
 // maybeInstallLocked runs the harness's legacy installer pinned to

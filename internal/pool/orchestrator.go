@@ -252,6 +252,18 @@ type UpdateResult struct {
 	// the caller to print per §9 ("prints candidate age and integrity").
 	CandidateAge       time.Duration
 	CandidateIntegrity string
+	// RealizedGenerationID is set whenever this call ran RealizeGeneration
+	// for the host platform (DecisionRealize, a DecisionKeepExisting that
+	// still needed realizing, or the unconditional realize after a fresh
+	// DecisionResolveVersion) — the generation id RealizeGeneration
+	// published or confirmed. Empty only for DecisionUpToDate, where
+	// RealizeGeneration is never called because the platform was already
+	// realized — there is nothing new to report. A caller must not infer
+	// "nothing happened" from Changed=false alone: a DecisionRealize/
+	// DecisionKeepExisting-needing-realize result also has Changed=false
+	// (the LOCKED version didn't change) but DID build/confirm a
+	// generation, which RealizedGenerationID surfaces.
+	RealizedGenerationID string
 }
 
 // RefreshHarness runs the metadata-only refresh phase (§9 phase 1, §6.2)
@@ -480,23 +492,35 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return &UpdateResult{Harness: &out, Changed: false}, nil
 	case DecisionRealize:
 		out := existing
-		if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+		receipt, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
+		if err != nil {
 			return nil, err
 		}
-		return &UpdateResult{Harness: &out, Changed: false}, nil
+		genID, err := generationIDFromReceipt(platformKey, receipt)
+		if err != nil {
+			return nil, err
+		}
+		return &UpdateResult{Harness: &out, Changed: false, RealizedGenerationID: genID}, nil
 	case DecisionKeepExisting:
 		out := existing
+		result := &UpdateResult{Harness: &out, Changed: false, Note: decision.Note}
 		// Decide does not fold the realize axis into DecisionKeepExisting
 		// (decision.go's doc comment) — the shell checks the same facts it
 		// already read above (via the same generationRealized predicate
 		// Decide itself uses) and realizes here when needed, same as the
 		// DecisionRealize case.
 		if !generationRealized(digestRecorded != "", dirPresent) {
-			if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+			receipt, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
+			if err != nil {
 				return nil, err
 			}
+			genID, err := generationIDFromReceipt(platformKey, receipt)
+			if err != nil {
+				return nil, err
+			}
+			result.RealizedGenerationID = genID
 		}
-		return &UpdateResult{Harness: &out, Changed: false, Note: decision.Note}, nil
+		return result, nil
 	case DecisionFail:
 		return nil, decision.Err
 	case DecisionResolveVersion:
@@ -608,12 +632,28 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// this point, so a realize failure here is retriable without losing
 	// either.
 	out := resolved
-	if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+	receipt, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
+	if err != nil {
+		return nil, err
+	}
+	genID, err := generationIDFromReceipt(platformKey, receipt)
+	if err != nil {
 		return nil, err
 	}
 	result.Harness = &out
+	result.RealizedGenerationID = genID
 
 	return result, nil
+}
+
+// generationIDFromReceipt computes the generation id a just-returned Receipt
+// describes, for the caller (UpdateResult.RealizedGenerationID) to report —
+// r.Harness/r.Version are already guaranteed (by RealizeGeneration's own
+// pre-publish field-match guard) to agree with what was requested, so this
+// is equivalent to recomputing from the caller's own (harnessName, version,
+// key) inputs.
+func generationIDFromReceipt(key PlatformKey, r *Receipt) (string, error) {
+	return GenerationID(r.Harness, r.Version, key, r.ManifestDigest)
 }
 
 // newScratchDir creates a fresh staging/txn-<id> scratch directory (§5
