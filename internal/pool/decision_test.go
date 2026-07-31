@@ -147,6 +147,38 @@ var (
 	lockDifferentPackage = lockState{has: true, pkg: decisionTestOtherPkg, ver: "2.1.220", recp: decisionTestCurrent}
 )
 
+// --- realize axis (the "realize" dimension) ---
+//
+// realizeAxis lets a table row state its GenerationDigestRecorded/
+// GenerationDirPresent facts explicitly, while leaving them UNSET
+// (realizeUnspecified, the zero value) for every row that predates the
+// realize axis — those rows are about the resolve axis only, and must keep
+// asserting DecisionUpToDate exactly as before, so the zero value is
+// deliberately mapped to "already realized" below rather than to
+// realizeNeverBuilt (which is also nominally {false,false} and would
+// otherwise be indistinguishable from "unset").
+type realizeAxis int
+
+const (
+	realizeUnspecified realizeAxis = iota // unset: treated as realizeAlreadyRealized
+	realizeAlreadyRealized
+	realizeNeverBuilt  // no digest recorded for this platform at all
+	realizeDirVanished // digest recorded, but its generation directory is gone (§15/§17 repair)
+)
+
+func (r realizeAxis) facts() (digestRecorded, dirPresent bool) {
+	switch r {
+	case realizeUnspecified, realizeAlreadyRealized:
+		return true, true
+	case realizeNeverBuilt:
+		return false, false
+	case realizeDirVanished:
+		return true, false
+	default:
+		panic("unknown realizeAxis")
+	}
+}
+
 // --- the table ---
 
 type decisionWant struct {
@@ -167,6 +199,7 @@ func TestDecide(t *testing.T) {
 		candidates []Candidate
 		allowYoung bool
 		policy     EffectivePolicy // zero value means decisionTestPolicy (see the loop below)
+		realize    realizeAxis     // zero value (realizeUnspecified) means already realized (see realizeAxis.facts)
 		want       decisionWant
 	}{
 		// --- install (Advance=false) + a fully agreeing lock: the strict
@@ -180,6 +213,29 @@ func TestDecide(t *testing.T) {
 		{
 			name: "install + lock agrees: up to date, no scan needed",
 			lock: lockAgrees, candidates: candNewerEligible(),
+			want: decisionWant{kind: DecisionUpToDate},
+		},
+
+		// --- the realize axis (§16 Phase 2): install's strict
+		// short-circuit is still purely (Advance, lock)-driven for
+		// WHETHER to scan, but its terminal Kind now also depends on
+		// GenerationDigestRecorded/GenerationDirPresent. Each of the two
+		// facts independently flips the outcome away from
+		// DecisionUpToDate — the mutation-testing property the brief
+		// asks for.
+		{
+			name: "install + lock agrees + platform never realized: needs realize, not up to date",
+			lock: lockAgrees, candidates: candNewerEligible(), realize: realizeNeverBuilt,
+			want: decisionWant{kind: DecisionRealize},
+		},
+		{
+			name: "install + lock agrees + realized generation's directory vanished: needs realize again (repair)",
+			lock: lockAgrees, candidates: candNewerEligible(), realize: realizeDirVanished,
+			want: decisionWant{kind: DecisionRealize},
+		},
+		{
+			name: "install + lock agrees + already realized: up to date (both axes settled)",
+			lock: lockAgrees, candidates: candNewerEligible(), realize: realizeAlreadyRealized,
 			want: decisionWant{kind: DecisionUpToDate},
 		},
 
@@ -197,6 +253,38 @@ func TestDecide(t *testing.T) {
 			name:    "update + lock agrees + only the locked version eligible: up to date (nothing to advance to)",
 			advance: true, lock: lockAgrees, candidates: candOnlySameVersionEligible(),
 			want: decisionWant{kind: DecisionUpToDate},
+		},
+		// --- the same realize axis, reached via the scan-converges-to-
+		// already-locked path (step 3) instead of the strict short-circuit
+		// (step 1) — a second, independent code path in Decide that must
+		// honor the same two facts.
+		{
+			name:    "update + lock agrees + only the locked version eligible + platform never realized: needs realize",
+			advance: true, lock: lockAgrees, candidates: candOnlySameVersionEligible(), realize: realizeNeverBuilt,
+			want: decisionWant{kind: DecisionRealize},
+		},
+		{
+			name:    "update + lock agrees + only the locked version eligible + realized directory vanished: needs realize again (repair)",
+			advance: true, lock: lockAgrees, candidates: candOnlySameVersionEligible(), realize: realizeDirVanished,
+			want: decisionWant{kind: DecisionRealize},
+		},
+		{
+			// Decide does NOT fold the realize axis into DecisionKeepExisting
+			// (see its doc comment) — an unrealized platform here still
+			// yields DecisionKeepExisting; the shell checks the same facts
+			// itself and calls RealizeGeneration on this Kind too.
+			name:    "update + lock agrees + nothing eligible (quarantined) + platform never realized: STILL keeps existing (Decide doesn't fold realize into this path)",
+			advance: true, lock: lockAgrees, candidates: candQuarantinedOnly(), realize: realizeNeverBuilt,
+			want: decisionWant{kind: DecisionKeepExisting, noteContains: []string{"2.1.220", "2.1.230", "quarantined", "remaining"}},
+		},
+		{
+			// A freshly resolved version always needs a fresh realize
+			// regardless of what the OLD generation's digest/dir facts say
+			// — Decide doesn't consult the realize axis for
+			// DecisionResolveVersion either.
+			name:    "update + lock agrees + newer eligible candidate + platform never realized: STILL advances (a fresh resolve always needs a fresh realize)",
+			advance: true, lock: lockAgrees, candidates: candNewerEligible(), realize: realizeNeverBuilt,
+			want: decisionWant{kind: DecisionResolveVersion, selectedVersion: "2.1.224", allowYoungApplied: false},
 		},
 		{
 			name:    "update + lock agrees + nothing eligible (quarantined): keeps existing with a note",
@@ -445,20 +533,24 @@ func TestDecide(t *testing.T) {
 				policy = decisionTestPolicy
 			}
 
+			digestRecorded, dirPresent := tt.realize.facts()
+
 			in := DecisionInput{
-				Harness:            decisionTestHarness,
-				Package:            decisionTestPkg,
-				Advance:            tt.advance,
-				HasLock:            tt.lock.has,
-				LockPackage:        tt.lock.pkg,
-				LockVersion:        tt.lock.ver,
-				LockRecipeRevision: tt.lock.recp,
-				Constraint:         constraint,
-				RecipeRevision:     decisionTestCurrent,
-				Candidates:         tt.candidates,
-				Policy:             policy,
-				AllowYoung:         tt.allowYoung,
-				Now:                fixedNow,
+				Harness:                  decisionTestHarness,
+				Package:                  decisionTestPkg,
+				Advance:                  tt.advance,
+				HasLock:                  tt.lock.has,
+				LockPackage:              tt.lock.pkg,
+				LockVersion:              tt.lock.ver,
+				LockRecipeRevision:       tt.lock.recp,
+				Constraint:               constraint,
+				RecipeRevision:           decisionTestCurrent,
+				Candidates:               tt.candidates,
+				Policy:                   policy,
+				AllowYoung:               tt.allowYoung,
+				Now:                      fixedNow,
+				GenerationDigestRecorded: digestRecorded,
+				GenerationDirPresent:     dirPresent,
 			}
 
 			got := Decide(in)
@@ -468,7 +560,7 @@ func TestDecide(t *testing.T) {
 			}
 
 			switch tt.want.kind {
-			case DecisionUpToDate:
+			case DecisionUpToDate, DecisionRealize:
 				// No payload to check.
 			case DecisionKeepExisting:
 				for _, s := range tt.want.noteContains {
@@ -539,9 +631,69 @@ func TestDecideInstallShortCircuitIgnoresCandidatesAndAllowYoung(t *testing.T) {
 					Policy:             decisionTestPolicy,
 					AllowYoung:         allowYoung,
 					Now:                fixedNow,
+					// Already realized: this test is about candidates/
+					// AllowYoung independence, not the realize axis (see
+					// TestDecideRealizeAxisIndependentOfShortCircuit for
+					// that).
+					GenerationDigestRecorded: true,
+					GenerationDirPresent:     true,
 				})
 				if got.Kind != DecisionUpToDate {
 					t.Fatalf("candidates=%q allowYoung=%v: Kind = %v, want DecisionUpToDate (install must short-circuit before consulting either)", name, allowYoung, got.Kind)
+				}
+			})
+		}
+	}
+}
+
+// TestDecideRealizeAxisQuadrant exhaustively covers the 2×2 realize-axis
+// combination (GenerationDigestRecorded × GenerationDirPresent) against both
+// code paths in Decide that consult it — install's strict short-circuit
+// (Advance=false) and update's scan-converges-to-already-locked path
+// (Advance=true, a candidate set whose only eligible version is the one
+// already locked) — asserting the exact quadrant table: DecisionUpToDate iff
+// BOTH facts are true, DecisionRealize for all three other combinations.
+// Each axis independently flips the outcome (the brief's mutation-testing
+// requirement), and the table is identical across both Advance modes,
+// pinning that the realize axis is orthogonal to the resolve axis.
+func TestDecideRealizeAxisQuadrant(t *testing.T) {
+	quadrant := []struct {
+		name                       string
+		digestRecorded, dirPresent bool
+		want                       DecisionKind
+	}{
+		{name: "digest recorded, dir present: up to date", digestRecorded: true, dirPresent: true, want: DecisionUpToDate},
+		{name: "digest recorded, dir absent (repair)", digestRecorded: true, dirPresent: false, want: DecisionRealize},
+		{name: "digest not recorded, dir absent", digestRecorded: false, dirPresent: false, want: DecisionRealize},
+		{name: "digest not recorded, dir present (should not happen in practice, still not up to date)", digestRecorded: false, dirPresent: true, want: DecisionRealize},
+	}
+
+	for _, advance := range []bool{false, true} {
+		mode := "install"
+		candidates := candOnlySameVersionEligible() // ignored by install's short-circuit; makes update converge to the locked version
+		if advance {
+			mode = "update"
+		}
+		for _, q := range quadrant {
+			t.Run(mode+"/"+q.name, func(t *testing.T) {
+				got := Decide(DecisionInput{
+					Harness:                  decisionTestHarness,
+					Package:                  decisionTestPkg,
+					Advance:                  advance,
+					HasLock:                  true,
+					LockPackage:              lockAgrees.pkg,
+					LockVersion:              lockAgrees.ver,
+					LockRecipeRevision:       lockAgrees.recp,
+					Constraint:               decisionTestConstraint,
+					RecipeRevision:           decisionTestCurrent,
+					Candidates:               candidates,
+					Policy:                   decisionTestPolicy,
+					Now:                      fixedNow,
+					GenerationDigestRecorded: q.digestRecorded,
+					GenerationDirPresent:     q.dirPresent,
+				})
+				if got.Kind != q.want {
+					t.Fatalf("%s: digestRecorded=%v dirPresent=%v: Kind = %v, want %v", mode, q.digestRecorded, q.dirPresent, got.Kind, q.want)
 				}
 			})
 		}
