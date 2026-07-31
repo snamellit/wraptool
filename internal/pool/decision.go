@@ -165,6 +165,19 @@ type Decision struct {
 	Err error
 }
 
+// generationRealized is the single realize-axis predicate: a platform is
+// considered realized only when its lock entry both records a generation
+// digest AND that generation's directory still exists on disk (§15/§17's
+// "repair" case is exactly digestRecorded=true, dirPresent=false). Both
+// Decide (the strict short-circuit and the scan-converges-to-locked path,
+// which fold this into DecisionUpToDate vs DecisionRealize) and
+// UpdateHarnessLocked's shell (the DecisionKeepExisting path, which Decide
+// itself does not consult this on) call this same function — one rule, one
+// place, so the two can never quietly drift apart.
+func generationRealized(digestRecorded, dirPresent bool) bool {
+	return digestRecorded && dirPresent
+}
+
 // Decide chooses one outcome for UpdateHarnessLocked's resolve+lock+fetch
 // pass (§9 phases 2-3, §10 commands) from in, with no I/O of its own. It
 // mirrors UpdateHarnessLocked's pre-refactor control flow exactly (see that
@@ -213,11 +226,12 @@ func Decide(in DecisionInput) Decision {
 	}
 	lockMatchesRecipe := in.HasLock && in.LockPackage == in.Package && in.LockRecipeRevision == in.RecipeRevision
 
-	// realized is the realize axis's own verdict, independent of
-	// everything above: this platform has a recorded generation digest AND
-	// that generation's directory still exists (§16 Phase 2, §15/§17's
-	// "repair" case for the digest-recorded-but-dir-gone combination).
-	realized := in.GenerationDigestRecorded && in.GenerationDirPresent
+	// realized is the realize axis's own verdict, independent of everything
+	// above — see generationRealized's doc comment. The shell (orchestrator.go)
+	// consults the SAME helper on the DecisionKeepExisting path, which Decide
+	// itself does not fold the realize axis into (see DecisionKeepExisting's
+	// doc comment): one rule, one place.
+	realized := generationRealized(in.GenerationDigestRecorded, in.GenerationDirPresent)
 
 	// install's strict short-circuit (Advance=false only): skip scanning
 	// entirely when intent is already fully realized on the resolve axis,

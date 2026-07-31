@@ -488,9 +488,10 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		out := existing
 		// Decide does not fold the realize axis into DecisionKeepExisting
 		// (decision.go's doc comment) — the shell checks the same facts it
-		// already read above and realizes here when needed, same as the
+		// already read above (via the same generationRealized predicate
+		// Decide itself uses) and realizes here when needed, same as the
 		// DecisionRealize case.
-		if digestRecorded == "" || !dirPresent {
+		if !generationRealized(digestRecorded != "", dirPresent) {
 			if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
 				return nil, err
 			}
