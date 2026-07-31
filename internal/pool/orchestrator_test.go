@@ -850,6 +850,57 @@ func findAuditEvent(t *testing.T, path, eventType string) AuditEvent {
 	return AuditEvent{}
 }
 
+// TestUpdateHarnessAllowYoungAuditSurvivesRealizeFailure is the fix-round
+// regression for review finding 1: the allow_young audit event must be
+// written as soon as the lock write succeeds, BEFORE RealizeGeneration runs
+// — not after it. If it ran after and Realize failed, the lock would already
+// be advanced (durably persisted) but carry no audit record of the
+// quarantine bypass that produced it, and a caller's retry would find the
+// lock already matching (DecisionUpToDate/DecisionRealize, not
+// DecisionResolveVersion) — the audit event could never be emitted on any
+// later call either. This test injects a Realize failure on an
+// otherwise-successful allow-young update and asserts BOTH halves survive
+// it: the lock is advanced to the bypassed version, AND the allow_young
+// audit line exists — while UpdateHarness itself still reports the Realize
+// error to its caller.
+func TestUpdateHarnessAllowYoungAuditSurvivesRealizeFailure(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	published := fixedNow.Add(-1 * time.Hour)
+	seedObservations(t, paths, pkg, []Candidate{
+		{Version: "2.1.224", PublishedAt: published, FirstSeenAt: published},
+	})
+
+	src := &fakeSource{realizeErr: errRealizeBoom}
+	_, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", Package: pkg, Now: fixedNow,
+		AllowYoung: true, Reason: "CVE-2026-00000",
+	})
+	if err == nil {
+		t.Fatal("expected UpdateHarness to report the injected Realize failure")
+	}
+
+	// The lock must still have advanced: Realize failing must not roll back
+	// an already-persisted, already-audited resolve+fetch+lock.
+	lockDoc, lerr := loadLockOrEmpty(paths.Lock)
+	if lerr != nil {
+		t.Fatalf("loading lock: %v", lerr)
+	}
+	lh, ok := lockDoc.Harnesses["claude"]
+	if !ok || lh.Version != "2.1.224" {
+		t.Fatalf("lock harness = %+v (ok=%v), want version 2.1.224 advanced despite the Realize failure", lh, ok)
+	}
+
+	// And the allow_young audit event must exist — this is the crux of the
+	// fix: it must not depend on Realize succeeding.
+	evt := findAuditEvent(t, paths.Audit, "allow_young")
+	if evt.Fields["reason"] != "CVE-2026-00000" {
+		t.Errorf("audit event reason = %v, want CVE-2026-00000", evt.Fields["reason"])
+	}
+}
+
 // TestUpdateHarnessAllowYoungNotAppliedWhenAlreadyEligible: requesting
 // --allow-young when the normally-selected candidate is eligible anyway is
 // a no-op bypass — no audit event, AllowYoungApplied stays false.

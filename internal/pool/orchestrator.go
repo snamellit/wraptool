@@ -564,21 +564,21 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 
-	// A freshly resolved version never has a recorded generation for
-	// platformKey (it's a new lock entry), so realization always runs here —
-	// Decide is not consulted for this outcome (decision.go's doc comment on
-	// DecisionResolveVersion).
-	out := resolved
-	if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
-		return nil, err
-	}
-	result := &UpdateResult{Harness: &out, Changed: true}
+	result := &UpdateResult{Harness: &resolved, Changed: true}
 
 	// Only an effective bypass is audited — "only an effective bypass gets
 	// audited" (§9 minor) — and only after the lock write above succeeded.
+	// This MUST happen before RealizeGeneration below: a realize failure
+	// must not be able to leave a quarantine-bypassed lock persisted with no
+	// audit record. If it ran after and realize failed, the caller's retry
+	// would find the lock already matches (DecisionUpToDate/DecisionRealize,
+	// not DecisionResolveVersion) and this AllowYoung branch would never run
+	// again — permanently losing the audit trail for an already-effective
+	// bypass.
+	var age time.Duration
+	var integrity string
 	if allowYoungApplied {
-		age := opts.Now.Sub(selected.PublishedAt)
-		integrity := ""
+		age = opts.Now.Sub(selected.PublishedAt)
 		if resolved.NPMLock != nil {
 			if pkgEntry, ok := resolved.NPMLock.Packages[opts.Package]; ok {
 				integrity = pkgEntry.Integrity
@@ -598,6 +598,19 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		result.CandidateAge = age
 		result.CandidateIntegrity = integrity
 	}
+
+	// A freshly resolved version never has a recorded generation for
+	// platformKey (it's a new lock entry), so realization always runs here —
+	// Decide is not consulted for this outcome (decision.go's doc comment on
+	// DecisionResolveVersion). Runs AFTER the allow_young audit above (see
+	// its comment): the lock is already durably persisted and audited by
+	// this point, so a realize failure here is retriable without losing
+	// either.
+	out := resolved
+	if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+		return nil, err
+	}
+	result.Harness = &out
 
 	return result, nil
 }
