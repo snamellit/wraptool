@@ -13,7 +13,57 @@ import (
 	"time"
 
 	"github.com/pti/wraptool/internal/pool"
+	"github.com/pti/wraptool/internal/pool/backend"
 )
+
+// npmWithStubRealize is a temporary compile-time shim: impl/pool-realize-orchestration
+// extended pool.Source with a Realize method (design/harness/unified-harness-pool.md
+// §11.3/§11.4), but *NPM's own Realize is impl/npm-realize's — a sibling,
+// parallel work package not yet merged onto this branch. It wraps a real
+// *NPM so this pre-existing test keeps satisfying pool.Source, and builds a
+// small but real generation tree so the realize step this work package wires
+// into every UpdateHarness call has something genuine to verify (the same
+// "fake but real receipt helpers" pattern internal/pool's own unit tests
+// use) rather than merely stubbing success. Delete this wrapper (using *NPM
+// directly again) once impl/npm-realize lands *NPM.Realize for real.
+type npmWithStubRealize struct{ *NPM }
+
+func (npmWithStubRealize) Realize(_ context.Context, _ backend.Backend, harnessName, binName string, h *pool.LockHarness, key pool.PlatformKey, _, stagingGenDir string) (*pool.Receipt, error) {
+	name := binName
+	if name == "" {
+		name = harnessName
+	}
+	binDir := filepath.Join(stagingGenDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexec true\n"), 0o755); err != nil {
+		return nil, err
+	}
+	files, err := pool.ScanGenerationFiles(stagingGenDir)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := pool.ManifestDigest(files)
+	if err != nil {
+		return nil, err
+	}
+	lockHash, err := h.Hash()
+	if err != nil {
+		return nil, err
+	}
+	return &pool.Receipt{
+		SchemaVersion:  pool.ReceiptSchemaVersion,
+		Harness:        harnessName,
+		Version:        h.Version,
+		Platform:       key,
+		RecipeRevision: h.RecipeRevision,
+		LockEntryHash:  lockHash,
+		Backend:        pool.ReceiptBackend{Name: "fake"},
+		Files:          files,
+		ManifestDigest: digest,
+	}, nil
+}
 
 // TestIntegration_RealNPMSourceThroughRealOrchestrator drives the REAL npm
 // Source (this package's NPM) against local httptest fixtures — a packument
@@ -104,6 +154,7 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 
 	n := NewNPM(registrySrv.URL)
 	n.nodeDistBaseURL = nodeSrv.URL // in-package field set — see package doc
+	src := npmWithStubRealize{n}    // see its doc comment
 
 	// The resolve-phase Backend is faked (no container runtime): it writes
 	// a canned package-lock.json into the scratch mount, exactly like
@@ -133,6 +184,7 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 		AdvisoryLock: filepath.Join(root, "lock"),
 		Cache:        filepath.Join(root, "cache", "sha256"),
 		Staging:      filepath.Join(root, "staging"),
+		Runtime:      filepath.Join(root, "runtime"),
 	}
 	manifestYAML := "schema_version: 1\npolicy:\n  minimum_release_age: 0h\nharnesses:\n  claude: {}\n"
 	if err := os.MkdirAll(filepath.Dir(paths.Manifest), 0o755); err != nil {
@@ -146,14 +198,15 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
 	// --- Refresh (real Source.Refresh, one registry GET) ---
-	if _, err := pool.RefreshHarness(ctx, n, paths, pkg, now); err != nil {
+	if _, err := pool.RefreshHarness(ctx, src, paths, pkg, now); err != nil {
 		t.Fatalf("RefreshHarness: %v", err)
 	}
 
 	// --- Update (real Source.Resolve via the fake Backend, real
-	// Source.Fetch against the npm + node-dist httptest servers) ---
-	result, err := pool.UpdateHarness(ctx, n, fb, paths, pool.UpdateOptions{
-		Harness: "claude", Package: pkg, Now: now, Advance: false,
+	// Source.Fetch against the npm + node-dist httptest servers; realize via
+	// npmWithStubRealize's small-but-real generation, pending impl/npm-realize) ---
+	result, err := pool.UpdateHarness(ctx, src, fb, paths, pool.UpdateOptions{
+		Harness: "claude", Package: pkg, BinName: "test-harness", Now: now, Advance: false,
 	})
 	if err != nil {
 		t.Fatalf("UpdateHarness: %v", err)

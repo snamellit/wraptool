@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -102,6 +103,19 @@ type Source interface {
 	// are admitted to cache, so UpdateHarness calls Fetch before persisting
 	// h into harness-lock.json, never after.
 	Fetch(ctx context.Context, h *LockHarness, cacheDir string) error
+	// Realize builds one platform generation for harnessName (executable
+	// binName) from h's locked artifacts, inside b with no network access
+	// (§6.2 Realize phase, §11.4), unpacking into stagingGenDir (a fresh,
+	// empty directory RealizeGeneration owns — the Source must not assume
+	// anything about its prior contents beyond that). cacheDir is the same
+	// flat, content-addressed cache Fetch admits objects into. The returned
+	// Receipt describes stagingGenDir's contents (§11.5); RealizeGeneration
+	// — never Source — is responsible for host-side verification, writing
+	// receipt.json, and the atomic rename into
+	// runtime/generations/<generation-id>/. This method's signature is
+	// PINNED: internal/pool/source's npm Source implementation satisfies it
+	// structurally, without this package importing that one.
+	Realize(ctx context.Context, b backend.Backend, harnessName, binName string, h *LockHarness, key PlatformKey, cacheDir, stagingGenDir string) (*Receipt, error)
 }
 
 // PoolPaths bundles the pool file locations one orchestrator command
@@ -130,8 +144,16 @@ type PoolPaths struct {
 	Cache string
 	// Staging roots scratch work directories UpdateHarness creates itself
 	// when a caller's UpdateOptions.WorkDir is empty (§5 layout:
-	// staging/txn-<id>/, never mounted into project containers).
+	// staging/txn-<id>/, never mounted into project containers), and that
+	// RealizeGeneration always creates itself for its own realize txn (it
+	// takes no WorkDir override).
 	Staging string
+	// Runtime is the pool's runtime/ root — RealizeGeneration publishes
+	// generations under Runtime/generations/<generation-id>/ and reads
+	// existing ones back from there. Kept as an explicit field, like Cache
+	// and Staging, so tests operate under a t.TempDir() root instead of the
+	// developer's real pool (production wiring passes pool.RuntimeDir()).
+	Runtime string
 }
 
 // LockPool acquires the pool's single exclusive advisory lock (§6.5) for
@@ -167,6 +189,11 @@ type UpdateOptions struct {
 	Harness string
 	// Package is the source package identity, e.g. "@anthropic-ai/claude-code".
 	Package string
+	// BinName is the harness's executable name inside a realized generation
+	// (internal/harness.Descriptor.Bin), passed through to
+	// RealizeGeneration/Source.Realize. cmd/harness.go is the only caller
+	// that knows Descriptor; this package never imports internal/harness.
+	BinName string
 	// Now is the command's single clock read, threaded through instead of
 	// calling time.Now() internally (§6.6, and this package's own test-
 	// clock-injection convention).
@@ -398,6 +425,28 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 
+	// The realize axis's two facts (§16 Phase 2): read once, here, exactly
+	// like every other DecisionInput fact — Decide itself performs no I/O.
+	// platformKey is always the HOST's own platform (HostPlatformKey, the
+	// one helper §5.1 designates for this) for both install and update;
+	// only `sync` lets a caller target a different platform (SyncHarnessLocked).
+	platformKey, err := HostPlatformKey()
+	if err != nil {
+		return nil, err
+	}
+	var digestRecorded string
+	if hasLock {
+		digestRecorded = existing.Generations[platformKey]
+	}
+	dirPresent := false
+	if digestRecorded != "" {
+		if genID, genErr := GenerationID(opts.Harness, existing.Version, platformKey, digestRecorded); genErr == nil {
+			if _, statErr := os.Stat(runtimeGenerationDir(paths.Runtime, genID)); statErr == nil {
+				dirPresent = true
+			}
+		}
+	}
+
 	// Decide validates hm.Constraint itself (it has to — the table test
 	// exercises that failure directly), which is a deliberate, accepted
 	// ordering change from the pre-decision-core code: an invalid manifest
@@ -408,27 +457,44 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// constraint (manifest.go's Validate) before UpdateHarnessLocked ever
 	// runs — so no real caller can observe the precedence flip.
 	decision := Decide(DecisionInput{
-		Harness:            opts.Harness,
-		Package:            opts.Package,
-		Advance:            opts.Advance,
-		HasLock:            hasLock,
-		LockPackage:        existing.Package,
-		LockVersion:        existing.Version,
-		LockRecipeRevision: existing.RecipeRevision,
-		Constraint:         hm.Constraint,
-		RecipeRevision:     recipeRevision,
-		Candidates:         candidates,
-		Policy:             policy,
-		AllowYoung:         opts.AllowYoung,
-		Now:                opts.Now,
+		Harness:                  opts.Harness,
+		Package:                  opts.Package,
+		Advance:                  opts.Advance,
+		HasLock:                  hasLock,
+		LockPackage:              existing.Package,
+		LockVersion:              existing.Version,
+		LockRecipeRevision:       existing.RecipeRevision,
+		Constraint:               hm.Constraint,
+		RecipeRevision:           recipeRevision,
+		Candidates:               candidates,
+		Policy:                   policy,
+		AllowYoung:               opts.AllowYoung,
+		Now:                      opts.Now,
+		GenerationDigestRecorded: digestRecorded != "",
+		GenerationDirPresent:     dirPresent,
 	})
 
 	switch decision.Kind {
 	case DecisionUpToDate:
 		out := existing
 		return &UpdateResult{Harness: &out, Changed: false}, nil
+	case DecisionRealize:
+		out := existing
+		if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+			return nil, err
+		}
+		return &UpdateResult{Harness: &out, Changed: false}, nil
 	case DecisionKeepExisting:
 		out := existing
+		// Decide does not fold the realize axis into DecisionKeepExisting
+		// (decision.go's doc comment) — the shell checks the same facts it
+		// already read above and realizes here when needed, same as the
+		// DecisionRealize case.
+		if digestRecorded == "" || !dirPresent {
+			if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+				return nil, err
+			}
+		}
 		return &UpdateResult{Harness: &out, Changed: false, Note: decision.Note}, nil
 	case DecisionFail:
 		return nil, decision.Err
@@ -498,7 +564,14 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 
+	// A freshly resolved version never has a recorded generation for
+	// platformKey (it's a new lock entry), so realization always runs here —
+	// Decide is not consulted for this outcome (decision.go's doc comment on
+	// DecisionResolveVersion).
 	out := resolved
+	if _, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey); err != nil {
+		return nil, err
+	}
 	result := &UpdateResult{Harness: &out, Changed: true}
 
 	// Only an effective bypass is audited — "only an effective bypass gets
@@ -547,23 +620,27 @@ func newScratchDir(stagingRoot string) (dir string, cleanup func(), err error) {
 // under its own, self-contained pool lock acquisition. See SyncHarnessLocked
 // for the behavior; this wrapper exists for a caller that isn't already
 // composing multiple orchestrator calls under one LockPool span.
-func SyncHarness(ctx context.Context, src Source, paths PoolPaths, harnessName string) (*LockHarness, error) {
+func SyncHarness(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, harnessName, binName string, key PlatformKey) (*LockHarness, error) {
 	release, err := LockPool(ctx, paths)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return SyncHarnessLocked(ctx, src, paths, harnessName)
+	return SyncHarnessLocked(ctx, src, b, paths, harnessName, binName, key)
 }
 
 // SyncHarnessLocked is SyncHarness's body, assuming the caller already holds
 // the pool lock (via LockPool) — it never acquires one itself. It never
 // calls Source.Resolve (§9's Resolve phase is skipped entirely — sync
-// "resolves NOTHING"), only Source.Fetch, to backfill any cache objects
-// missing since the lock was written (new workstation, cache loss, §10). It
-// errors if no lock entry exists for harnessName; sync has nothing to
-// realize from in that case.
-func SyncHarnessLocked(ctx context.Context, src Source, paths PoolPaths, harnessName string) (*LockHarness, error) {
+// "resolves NOTHING"), only Source.Fetch (to backfill any cache objects
+// missing since the lock was written — new workstation, cache loss, §10) and
+// then RealizeGeneration for key (§10: "a platform the lock already knows
+// about but this pool hasn't realized yet" — key need not be this host's own
+// platform; the caller, cmd/harness.go's `sync --platform`, decides which
+// one). b runs the realize phase's Linux container step (§6.2) — sync skips
+// Resolve but still needs a backend for Realize. Errors if no lock entry
+// exists for harnessName; sync has nothing to realize from in that case.
+func SyncHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, harnessName, binName string, key PlatformKey) (*LockHarness, error) {
 	lockDoc, err := loadLockOrEmpty(paths.Lock)
 	if err != nil {
 		return nil, err
@@ -574,6 +651,9 @@ func SyncHarnessLocked(ctx context.Context, src Source, paths PoolPaths, harness
 	}
 	if err := src.Fetch(ctx, &lh, paths.Cache); err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", harnessName, err)
+	}
+	if _, err := RealizeGeneration(ctx, src, b, paths, harnessName, binName, &lh, key); err != nil {
+		return nil, err
 	}
 	return &lh, nil
 }
@@ -637,6 +717,15 @@ type HarnessStatus struct {
 	// ineligible (no countdown to render), true means QuarantineRemaining is
 	// a meaningful duration.
 	QuarantineOK bool
+
+	// Realized lists the platform keys the locked harness has a recorded
+	// generation digest for (LockHarness.Generations), sorted, in unspecified
+	// separator-free form — cmd/harness.go's `list` renders them
+	// comma-joined as the REALIZED column (§16 Phase 2). Empty when never
+	// locked or never realized for any platform. This reflects what the
+	// LOCK records, not a fresh disk check — `list` never mutates and never
+	// stats runtime/ (§6.5 "list takes no lock").
+	Realized []PlatformKey
 }
 
 // StatusHarness computes one harness's list row (§10) from the pool's
@@ -662,6 +751,10 @@ func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (Har
 	}
 	if lh, ok := lockDoc.Harnesses[harnessName]; ok {
 		status.Locked = lh.Version
+		for key := range lh.Generations {
+			status.Realized = append(status.Realized, key)
+		}
+		sort.Slice(status.Realized, func(i, j int) bool { return status.Realized[i] < status.Realized[j] })
 	}
 
 	obs, err := LoadObservations(paths.Observations)

@@ -29,6 +29,22 @@ type fakeSource struct {
 	fetchErr        error
 	fetchCalls      int
 	fetchedVersions []string
+
+	realizeErr   error
+	realizeCalls int
+	lastRealize  struct {
+		harnessName, binName string
+		key                  PlatformKey
+	}
+	// realizeEmpty makes Realize write no files at all, producing an
+	// empty-manifest receipt — RealizeGeneration must refuse to publish it
+	// (§6.4/§11.4).
+	realizeEmpty bool
+	// realizeMismatch makes Realize write an extra, undeclared file into
+	// stagingGenDir AFTER computing the receipt, so the receipt it returns no
+	// longer matches the tree on disk — RealizeGeneration's host-side
+	// VerifyGenerationTree must catch it.
+	realizeMismatch bool
 }
 
 func (f *fakeSource) Refresh(_ context.Context, pkg string) ([]Candidate, error) {
@@ -70,6 +86,71 @@ func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string) error {
 	return nil
 }
 
+// Realize writes a small but REAL generation tree into stagingGenDir and
+// builds its receipt with the real pool receipt helpers
+// (ScanGenerationFiles/ManifestDigest) rather than fabricating one — so
+// RealizeGeneration's host-side verification (VerifyGenerationTree) is
+// exercised for real, not vacuously against a receipt that trivially agrees
+// with itself.
+func (f *fakeSource) Realize(_ context.Context, _ backend.Backend, harnessName, binName string, h *LockHarness, key PlatformKey, _, stagingGenDir string) (*Receipt, error) {
+	f.realizeCalls++
+	f.lastRealize = struct {
+		harnessName, binName string
+		key                  PlatformKey
+	}{harnessName, binName, key}
+	if f.realizeErr != nil {
+		return nil, f.realizeErr
+	}
+
+	if !f.realizeEmpty {
+		binDir := filepath.Join(stagingGenDir, "bin")
+		if err := os.MkdirAll(binDir, poolDirPerm); err != nil {
+			return nil, err
+		}
+		name := binName
+		if name == "" {
+			name = harnessName
+		}
+		if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexec true\n"), 0o755); err != nil {
+			return nil, err
+		}
+	}
+
+	files, err := ScanGenerationFiles(stagingGenDir)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := ManifestDigest(files)
+	if err != nil {
+		return nil, err
+	}
+
+	if f.realizeMismatch {
+		// Written AFTER the receipt above is computed, so the receipt
+		// Realize returns no longer describes the tree on disk —
+		// RealizeGeneration's VerifyGenerationTree must catch this.
+		if err := os.WriteFile(filepath.Join(stagingGenDir, "undeclared"), []byte("surprise"), 0o644); err != nil {
+			return nil, err
+		}
+	}
+
+	lockHash, err := h.Hash()
+	if err != nil {
+		return nil, err
+	}
+	return &Receipt{
+		SchemaVersion:  ReceiptSchemaVersion,
+		Harness:        harnessName,
+		Version:        h.Version,
+		Platform:       key,
+		RecipeRevision: h.RecipeRevision,
+		LockEntryHash:  lockHash,
+		Backend:        ReceiptBackend{Name: "fake"},
+		Files:          files,
+		ManifestDigest: digest,
+	}, nil
+}
+
 // fakeBackend is a no-op backend.Backend: orchestrator tests never actually
 // run a container, they only need a value satisfying the interface to thread
 // through to fakeSource.Resolve.
@@ -92,6 +173,7 @@ func testPaths(t *testing.T) PoolPaths {
 		AdvisoryLock: filepath.Join(dir, "lock"),
 		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
 		Staging:      filepath.Join(dir, "staging"),
+		Runtime:      filepath.Join(dir, "runtime"),
 	}
 }
 
@@ -724,17 +806,7 @@ func TestUpdateHarnessAllowYoungAppliedBypassesQuarantineAndAudits(t *testing.T)
 		t.Errorf("resolveCalls=%d fetchCalls=%d, want exactly one of each", src.resolveCalls, src.fetchCalls)
 	}
 
-	auditData, err := os.ReadFile(paths.Audit)
-	if err != nil {
-		t.Fatalf("reading audit log: %v", err)
-	}
-	var evt AuditEvent
-	if err := json.Unmarshal(bytesFirstLine(auditData), &evt); err != nil {
-		t.Fatalf("parsing audit event: %v", err)
-	}
-	if evt.Type != "allow_young" {
-		t.Errorf("audit event type = %q, want allow_young", evt.Type)
-	}
+	evt := findAuditEvent(t, paths.Audit, "allow_young")
 	if evt.Fields["reason"] != "CVE-2026-00000" {
 		t.Errorf("audit event reason = %v, want CVE-2026-00000", evt.Fields["reason"])
 	}
@@ -744,6 +816,38 @@ func TestUpdateHarnessAllowYoungAppliedBypassesQuarantineAndAudits(t *testing.T)
 	if evt.Fields["integrity"] != "sha512-fakeintegrity" {
 		t.Errorf("audit event integrity = %v, want sha512-fakeintegrity", evt.Fields["integrity"])
 	}
+	// A fresh resolve also realizes (§16 Phase 2) — its own audit event
+	// coexists with allow_young's, in either order; both are asserted
+	// independently rather than assuming a fixed line position.
+	_ = findAuditEvent(t, paths.Audit, "generation_realized")
+}
+
+// findAuditEvent parses every line of the audit log at path and returns the
+// first event of the given type, failing the test if none is found — used
+// instead of assuming a fixed line number, since more than one command (e.g.
+// a resolve's own "allow_young" event and RealizeGeneration's
+// "generation_realized" event) can append to the same audit log within one
+// call.
+func findAuditEvent(t *testing.T, path, eventType string) AuditEvent {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading audit log: %v", err)
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(data), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		var evt AuditEvent
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			t.Fatalf("parsing audit event %q: %v", line, err)
+		}
+		if evt.Type == eventType {
+			return evt
+		}
+	}
+	t.Fatalf("no audit event of type %q found in %s", eventType, path)
+	return AuditEvent{}
 }
 
 // TestUpdateHarnessAllowYoungNotAppliedWhenAlreadyEligible: requesting
@@ -767,18 +871,16 @@ func TestUpdateHarnessAllowYoungNotAppliedWhenAlreadyEligible(t *testing.T) {
 	if res.AllowYoungApplied {
 		t.Error("expected AllowYoungApplied=false: 2.1.220 is eligible under the real policy already")
 	}
-	if _, err := os.Stat(paths.Audit); err == nil {
-		t.Error("expected no audit.jsonl to be written for a no-op bypass")
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("checking audit file: %v", err)
+	// The realize step (§16 Phase 2) still appends its own
+	// "generation_realized" event for the fresh resolve — only "allow_young"
+	// must be absent for a no-op bypass.
+	data, err := os.ReadFile(paths.Audit)
+	if err != nil {
+		t.Fatalf("reading audit log: %v", err)
 	}
-}
-
-func bytesFirstLine(b []byte) []byte {
-	if i := strings.IndexByte(string(b), '\n'); i >= 0 {
-		return b[:i]
+	if strings.Contains(string(data), `"allow_young"`) {
+		t.Errorf("expected no allow_young audit event for a no-op bypass, got: %s", data)
 	}
-	return b
 }
 
 func TestUpdateHarnessErrorsWithoutManifestEntry(t *testing.T) {
@@ -978,7 +1080,7 @@ func TestSyncHarnessFetchesButNeverResolves(t *testing.T) {
 	})
 
 	src := &fakeSource{}
-	lh, err := SyncHarness(ctxT(t), src, paths, "claude")
+	lh, err := SyncHarness(ctxT(t), src, fakeBackend{}, paths, "claude", "claude", PlatformLinuxAMD64Glibc)
 	if err != nil {
 		t.Fatalf("SyncHarness: %v", err)
 	}
@@ -991,12 +1093,15 @@ func TestSyncHarnessFetchesButNeverResolves(t *testing.T) {
 	if src.fetchCalls != 1 {
 		t.Errorf("fetchCalls = %d, want 1", src.fetchCalls)
 	}
+	if src.realizeCalls != 1 {
+		t.Errorf("realizeCalls = %d, want 1 — sync must realize the platform it's given", src.realizeCalls)
+	}
 }
 
 func TestSyncHarnessErrorsWithoutLockEntry(t *testing.T) {
 	paths := testPaths(t)
 	src := &fakeSource{}
-	if _, err := SyncHarness(ctxT(t), src, paths, "claude"); err == nil {
+	if _, err := SyncHarness(ctxT(t), src, fakeBackend{}, paths, "claude", "claude", PlatformLinuxAMD64Glibc); err == nil {
 		t.Fatal("expected an error when there is no lock entry to sync from")
 	}
 }
