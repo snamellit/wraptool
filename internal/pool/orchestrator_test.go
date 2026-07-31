@@ -45,6 +45,18 @@ type fakeSource struct {
 	// longer matches the tree on disk — RealizeGeneration's host-side
 	// VerifyGenerationTree must catch it.
 	realizeMismatch bool
+	// realizeBadSchema makes Realize return a receipt with SchemaVersion 0 —
+	// RealizeGeneration must reject it via receipt.Validate() BEFORE writing
+	// receipt.json or renaming, since publishing a receipt that later fails
+	// to parse would permanently wedge the idempotent fast path on every
+	// subsequent call.
+	realizeBadSchema bool
+	// realizeWrongVersion makes Realize return a receipt whose Version
+	// disagrees with h.Version — RealizeGeneration must reject the mismatch
+	// before publishing (the receipt must describe exactly what was asked
+	// for, closing the two-different-GenerationID-sources hole between this
+	// function's publish path and the idempotent fast path above it).
+	realizeWrongVersion bool
 }
 
 func (f *fakeSource) Refresh(_ context.Context, pkg string) ([]Candidate, error) {
@@ -138,10 +150,20 @@ func (f *fakeSource) Realize(_ context.Context, _ backend.Backend, harnessName, 
 	if err != nil {
 		return nil, err
 	}
+
+	schemaVersion := ReceiptSchemaVersion
+	if f.realizeBadSchema {
+		schemaVersion = 0
+	}
+	version := h.Version
+	if f.realizeWrongVersion {
+		version = h.Version + "-mismatched"
+	}
+
 	return &Receipt{
-		SchemaVersion:  ReceiptSchemaVersion,
+		SchemaVersion:  schemaVersion,
 		Harness:        harnessName,
-		Version:        h.Version,
+		Version:        version,
 		Platform:       key,
 		RecipeRevision: h.RecipeRevision,
 		LockEntryHash:  lockHash,

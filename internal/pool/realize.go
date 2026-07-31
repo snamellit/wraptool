@@ -85,6 +85,29 @@ func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths
 	if len(receipt.Files) == 0 {
 		return nil, fmt.Errorf("realizing %s for %s produced an empty generation (0 files in the receipt); refusing to publish it (§6.4/§11.4)", harnessName, key)
 	}
+	// Validate BEFORE publish: a malformed receipt (e.g. a zero/unsupported
+	// SchemaVersion, or a Files list that doesn't sort/hash-check) must
+	// never reach disk. Publishing one anyway would permanently wedge the
+	// idempotent fast path above — every later command hits
+	// UnmarshalReceipt's error on the very digest the lock now records,
+	// with no way to recover short of hand-editing the lock or the
+	// generation tree.
+	if err := receipt.Validate(); err != nil {
+		return nil, fmt.Errorf("realizing %s for %s: Source.Realize returned an invalid receipt: %w", harnessName, key, err)
+	}
+	// The receipt must describe exactly what was asked for. Two different
+	// code paths derive a generation id from a LockHarness: this function's
+	// publish path uses the RECEIPT's own Harness/Version/Platform fields,
+	// while the idempotent fast path above (and persistGeneration) uses
+	// harnessName/h.Version/key from the CALLER. A Source that normalized
+	// or mis-set these fields would make the two paths compute different
+	// generation ids for what should be the same realize, and — since the
+	// fast path would then never recognize its own prior publish — would
+	// republish forever instead of erroring once, here.
+	if receipt.Harness != harnessName || receipt.Version != h.Version || receipt.Platform != key {
+		return nil, fmt.Errorf("realizing %s for %s: Source.Realize returned a receipt for %s/%s/%s, which disagrees with the request; refusing to publish it",
+			harnessName, key, receipt.Harness, receipt.Version, receipt.Platform)
+	}
 
 	if err := VerifyGenerationTree(txnDir, receipt); err != nil {
 		return nil, fmt.Errorf("verifying realized generation for %s/%s: %w", harnessName, key, err)
@@ -121,6 +144,10 @@ func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths
 			return nil, fmt.Errorf("generation %s already exists but its receipt records manifest_digest %q, not this realize's %q: immutability violation, refusing to overwrite",
 				genID, onDisk.ManifestDigest, receipt.ManifestDigest)
 		}
+		if h.Generations == nil {
+			h.Generations = map[PlatformKey]string{}
+		}
+		h.Generations[key] = receipt.ManifestDigest
 		if err := persistGeneration(paths, harnessName, key, receipt.ManifestDigest); err != nil {
 			return nil, err
 		}

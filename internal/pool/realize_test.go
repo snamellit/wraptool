@@ -271,6 +271,53 @@ func TestRealizeGenerationExistingTargetRightDigestIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestRealizeGenerationCrashRecoveryPublishesOverExistingIdenticalTarget
+// covers the OTHER "target already exists" branch — the one reached AFTER a
+// real Source.Realize call, not via the pre-check idempotent fast path
+// above. Scenario (§15/§17 crash recovery): a generation directory was
+// already published (e.g. an interrupted prior run got as far as the
+// rename but never got to persist the lock), yet the lock's Generations map
+// does NOT record it — so the fast path is skipped and RealizeGeneration
+// runs a full, real Source.Realize, which happens to reproduce the
+// byte-identical tree (same harness/bin/content) and therefore the same
+// generation id. RealizeGeneration must recognize the existing, matching
+// target, keep it rather than erroring, and — this is review finding 4 —
+// update h.Generations[key] IN MEMORY (not just the on-disk lock) exactly
+// as the fresh-publish path does.
+func TestRealizeGenerationCrashRecoveryPublishesOverExistingIdenticalTarget(t *testing.T) {
+	paths := testPaths(t)
+	// realizeTestHarness == realizeTestBin ("claude"), and fakeSource.Realize
+	// writes bin/<binName> with this exact content — seeding the identical
+	// path+bytes here reproduces the identical tree (and so the identical
+	// manifest digest) a real Realize call will independently produce.
+	_, digest := seedExistingGeneration(t, paths, realizeTestHarness, realizeTestVersion, realizeTestKey, "#!/bin/sh\nexec true\n")
+
+	h := baseRealizeLockHarness() // no Generations recorded — the fast path must NOT fire
+	seedRealizeLock(t, paths, h)
+
+	src := &fakeSource{}
+	receipt, err := RealizeGeneration(ctxT(t), src, fakeBackend{}, paths, realizeTestHarness, realizeTestBin, &h, realizeTestKey)
+	if err != nil {
+		t.Fatalf("RealizeGeneration: %v", err)
+	}
+	if src.realizeCalls != 1 {
+		t.Errorf("realizeCalls = %d, want 1 (no recorded digest means the fast path must not fire; Source.Realize must run and then discover the existing identical target)", src.realizeCalls)
+	}
+	if receipt.ManifestDigest != digest {
+		t.Errorf("returned receipt digest = %q, want the pre-existing %q", receipt.ManifestDigest, digest)
+	}
+	if h.Generations[realizeTestKey] != digest {
+		t.Errorf("in-memory h.Generations[%s] = %q, want the pre-existing %q recorded (review finding 4)", realizeTestKey, h.Generations[realizeTestKey], digest)
+	}
+	lh := readRealizeLock(t, paths)
+	if lh.Generations[realizeTestKey] != digest {
+		t.Errorf("persisted lock Generations[%s] = %q, want %q", realizeTestKey, lh.Generations[realizeTestKey], digest)
+	}
+	if entries := stagingEntries(t, paths); len(entries) != 0 {
+		t.Errorf("staging entries = %v, want none (the txn dir must be cleaned up even though its content was discarded)", entries)
+	}
+}
+
 // TestRealizeGenerationExistingTargetWrongDigestFailsLoudly covers the
 // "existing target with WRONG digest" case: the lock's recorded digest
 // resolves (via its first-8-hex-chars generation id) to an already-published
@@ -377,6 +424,28 @@ func TestRealizeGenerationFailureInjection(t *testing.T) {
 			name:        "a receipt that disagrees with the tree fails host-side verification",
 			src:         &fakeSource{realizeMismatch: true},
 			errContains: "verifying",
+		},
+		{
+			// Review finding 2: a malformed receipt (SchemaVersion 0) must
+			// be rejected via receipt.Validate() BEFORE it is ever written
+			// to disk — publishing it would permanently wedge the
+			// idempotent fast path with an UnmarshalReceipt failure on
+			// every later command.
+			name:        "a receipt with an unsupported schema_version is rejected before publish",
+			src:         &fakeSource{realizeBadSchema: true},
+			errContains: "invalid receipt",
+		},
+		{
+			// Review finding 3: the receipt must describe exactly what was
+			// requested. A Source that returns a receipt for a DIFFERENT
+			// version than h.Version must be rejected before publish, not
+			// silently accepted — accepting it would let the idempotent
+			// fast path (which derives its generation id from
+			// harnessName/h.Version/key) and this publish path (which used
+			// to derive it from the receipt's own fields) disagree forever.
+			name:        "a receipt whose Version disagrees with h.Version is rejected before publish",
+			src:         &fakeSource{realizeWrongVersion: true},
+			errContains: "disagrees with the request",
 		},
 	}
 
