@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,62 +17,49 @@ import (
 	"github.com/pti/wraptool/internal/pool/backend"
 )
 
-// npmWithStubRealize is a temporary compile-time shim: impl/pool-realize-orchestration
-// extended pool.Source with a Realize method (design/harness/unified-harness-pool.md
-// §11.3/§11.4), but *NPM's own Realize is impl/npm-realize's — a sibling,
-// parallel work package not yet merged onto this branch. It wraps a real
-// *NPM so this pre-existing test keeps satisfying pool.Source, and builds a
-// small but real generation tree so the realize step this work package wires
-// into every UpdateHarness call has something genuine to verify (the same
-// "fake but real receipt helpers" pattern internal/pool's own unit tests
-// use) rather than merely stubbing success. Delete this wrapper (using *NPM
-// directly again) once impl/npm-realize lands *NPM.Realize for real.
-type npmWithStubRealize struct{ *NPM }
+// hybridIntegrationBackend intercepts ONLY the resolve-phase `npm install
+// --package-lock-only` RunSpec (writing a canned package-lock.json, exactly
+// like fakeBackend above) — a real npm install against this test's
+// fictional package can't succeed without a registry override NPM.Resolve's
+// argv doesn't support (npm.go's Resolve issues a bare `npm install
+// --package-lock-only --ignore-scripts` with no --registry flag; the real
+// registry endpoint is only ever reached over HTTP, by Refresh/Fetch, which
+// this test already points at local httptest servers). Every OTHER RunSpec
+// — Realize's three calls — is executed for REAL via
+// realize_integration_test.go's own hostExecBackend (same package): once
+// impl/npm-realize's NPM.Realize actually runs, this test's harness/node
+// fixtures must be genuine, extractable archives for that to succeed (see
+// TestIntegration_RealNPMSourceThroughRealOrchestrator's fixture-building
+// below).
+type hybridIntegrationBackend struct {
+	lockJSON []byte
+}
 
-func (npmWithStubRealize) Realize(_ context.Context, _ backend.Backend, harnessName, binName string, h *pool.LockHarness, key pool.PlatformKey, _, stagingGenDir string) (*pool.Receipt, error) {
-	name := binName
-	if name == "" {
-		name = harnessName
+func (hybridIntegrationBackend) Name() string    { return "hybrid (integration test only)" }
+func (hybridIntegrationBackend) Available() bool { return true }
+
+func (h hybridIntegrationBackend) Run(ctx context.Context, spec backend.RunSpec) error {
+	if len(spec.Argv) >= 2 && spec.Argv[0] == "npm" && spec.Argv[1] == "install" {
+		if len(spec.Mounts) == 0 {
+			return fmt.Errorf("hybridIntegrationBackend: resolve RunSpec has no mounts")
+		}
+		return os.WriteFile(filepath.Join(spec.Mounts[0].Host, "package-lock.json"), h.lockJSON, 0o644)
 	}
-	binDir := filepath.Join(stagingGenDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexec true\n"), 0o755); err != nil {
-		return nil, err
-	}
-	files, err := pool.ScanGenerationFiles(stagingGenDir)
-	if err != nil {
-		return nil, err
-	}
-	digest, err := pool.ManifestDigest(files)
-	if err != nil {
-		return nil, err
-	}
-	lockHash, err := h.Hash()
-	if err != nil {
-		return nil, err
-	}
-	return &pool.Receipt{
-		SchemaVersion:  pool.ReceiptSchemaVersion,
-		Harness:        harnessName,
-		Version:        h.Version,
-		Platform:       key,
-		RecipeRevision: h.RecipeRevision,
-		LockEntryHash:  lockHash,
-		Backend:        pool.ReceiptBackend{Name: "fake"},
-		Files:          files,
-		ManifestDigest: digest,
-	}, nil
+	return hostExecBackend{}.Run(ctx, spec)
 }
 
 // TestIntegration_RealNPMSourceThroughRealOrchestrator drives the REAL npm
-// Source (this package's NPM) against local httptest fixtures — a packument
-// server, an nodejs.org-dist-shaped server, and an npm-tarball server —
-// through the REAL command-level orchestrator (pool.RefreshHarness,
-// pool.UpdateHarness), on a t.TempDir pool. No real network request and no
-// container runtime is involved (the resolve phase's backend.Backend is
-// this package's own fakeBackend, reused from npm_test.go).
+// Source (this package's NPM, including its real Realize) against local
+// httptest fixtures — a packument server, an nodejs.org-dist-shaped server,
+// and an npm-tarball server — through the REAL command-level orchestrator
+// (pool.RefreshHarness, pool.UpdateHarness), on a t.TempDir pool. No real
+// network request ever leaves this test (every registry/tarball/node-dist
+// URL points at a local httptest server); the resolve phase's Backend is
+// still faked (hybridIntegrationBackend, see its doc comment — a real `npm
+// install` against this test's fictional package can't succeed without a
+// registry override that doesn't exist), but realize's three calls now run
+// for REAL (real npm/tar on the host, requires npm on PATH — skipped
+// otherwise), since *NPM.Realize is no longer a stub.
 //
 // This is the regression test that would have caught both harness-cli
 // review MAJORs, neither of which produced a build or lint failure and
@@ -91,8 +79,13 @@ func (npmWithStubRealize) Realize(_ context.Context, _ backend.Backend, harnessN
 //     path the orchestrator's own defaultNodeVersion constant drives NPM.Resolve
 //     to request (this test never supplies a Node version itself).
 func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm not on PATH; this integration test's realize phase now runs real npm")
+	}
+
 	const pkg = "@example/test-harness"
 	const version = "1.2.3"
+	const binName = "test-harness"
 	// defaultNodeVersion (internal/pool/orchestrator.go) is unexported and
 	// not passed in by this test — it must match what the orchestrator
 	// itself is pinned to (§8's MAJOR-2 fix) for the SHASUMS assertion
@@ -118,18 +111,34 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	}))
 	defer registrySrv.Close()
 
-	// --- npm tarball server ---
-	tarballContent := []byte("fake npm tarball bytes for the integration test")
+	// --- npm tarball server: a REAL, extractable npm-package tarball (a
+	// #!/bin/sh bin target, not a node one — this test's own node-runtime
+	// fixture below is a placeholder, non-functional file, the same
+	// reasoning realize_orchestration_integration_test.go documents; this
+	// file doesn't exec the wrapper, but `npm ci` DOES need package.json's
+	// bin target to be a real, well-formed file it can chmod). ---
+	tarballContent := buildNPMTarballGZ(t, map[string]string{
+		"package.json": fmt.Sprintf(`{"name":%q,"version":%q,"bin":{%q:"bin/cli.sh"}}`, pkg, version, binName),
+		"bin/cli.sh":   "#!/bin/sh\necho hello from test-harness\n",
+	})
 	npmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(tarballContent)
 	}))
 	defer npmSrv.Close()
 
 	// --- nodejs.org-dist-shaped server: SHASUMS256.txt + the two glibc
-	// tarballs it references, plus a recorder for every SHASUMS256.txt path
+	// tarballs it references (both REAL, extractable .tar.xz archives —
+	// Realize now really unpacks whichever one matches the host's own
+	// HostPlatformKey()), plus a recorder for every SHASUMS256.txt path
 	// requested (this is where MAJOR-2's exact-version assertion comes from).
-	amd64Tarball := []byte("fake node linux-x64 tarball bytes")
-	arm64Tarball := []byte("fake node linux-arm64 tarball bytes")
+	amd64Tarball, ok := buildFakeNodeTarXZ(t, fmt.Sprintf("node-v%s-linux-x64", wantNodeVersion))
+	if !ok {
+		t.Skip("host tar cannot produce .tar.xz output")
+	}
+	arm64Tarball, ok := buildFakeNodeTarXZ(t, fmt.Sprintf("node-v%s-linux-arm64", wantNodeVersion))
+	if !ok {
+		t.Skip("host tar cannot produce .tar.xz output")
+	}
 	amd64Name := fmt.Sprintf("node-v%s-linux-x64.tar.xz", wantNodeVersion)
 	arm64Name := fmt.Sprintf("node-v%s-linux-arm64.tar.xz", wantNodeVersion)
 	shasums := fmt.Sprintf("%s  %s\n%s  %s\n",
@@ -154,23 +163,25 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 
 	n := NewNPM(registrySrv.URL)
 	n.nodeDistBaseURL = nodeSrv.URL // in-package field set — see package doc
-	src := npmWithStubRealize{n}    // see its doc comment
 
-	// The resolve-phase Backend is faked (no container runtime): it writes
-	// a canned package-lock.json into the scratch mount, exactly like
-	// TestResolve's fakeBackend above.
+	// The resolve-phase npm install is faked (hybridIntegrationBackend, see
+	// its doc comment): it writes a canned package-lock.json into the
+	// scratch mount, exactly like TestResolve's fakeBackend above — but with
+	// a root ("") "dependencies" entry this time, so `npm ci` (realize,
+	// which now runs for REAL) actually tries to install something instead
+	// of silently installing nothing.
 	lockJSON := fmt.Sprintf(`{
   "lockfileVersion": 3,
   "packages": {
-    "": {"name": "resolve-scratch", "version": "0.0.0"},
+    "": {"name": "resolve-scratch", "version": "0.0.0", "dependencies": {%q: %q}},
     %q: {
       "version": %q,
       "resolved": %q,
       "integrity": %q
     }
   }
-}`, "node_modules/"+pkg, version, npmSrv.URL+"/test-harness-1.2.3.tgz", sriFor(tarballContent))
-	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+}`, pkg, version, "node_modules/"+pkg, version, npmSrv.URL+"/test-harness-1.2.3.tgz", sriFor(tarballContent))
+	hb := hybridIntegrationBackend{lockJSON: []byte(lockJSON)}
 
 	// --- t.TempDir pool, with Cache wired to the flat, content-addressed
 	// cache/sha256 shape Source.Fetch's contract requires (the MAJOR-1
@@ -198,21 +209,25 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
 	// --- Refresh (real Source.Refresh, one registry GET) ---
-	if _, err := pool.RefreshHarness(ctx, src, paths, pkg, now); err != nil {
+	if _, err := pool.RefreshHarness(ctx, n, paths, pkg, now); err != nil {
 		t.Fatalf("RefreshHarness: %v", err)
 	}
 
-	// --- Update (real Source.Resolve via the fake Backend, real
-	// Source.Fetch against the npm + node-dist httptest servers; realize via
-	// npmWithStubRealize's small-but-real generation, pending impl/npm-realize) ---
-	result, err := pool.UpdateHarness(ctx, src, fb, paths, pool.UpdateOptions{
-		Harness: "claude", Package: pkg, BinName: "test-harness", Now: now, Advance: false,
+	// --- Update (real Source.Resolve via hybridIntegrationBackend's faked
+	// npm install, real Source.Fetch against the npm + node-dist httptest
+	// servers, real Source.Realize via hybridIntegrationBackend's real
+	// exec of npm cache add/npm ci/tar) ---
+	result, err := pool.UpdateHarness(ctx, n, hb, paths, pool.UpdateOptions{
+		Harness: "claude", Package: pkg, BinName: binName, Now: now, Advance: false,
 	})
 	if err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
 	}
 	if !result.Changed || result.Harness.Version != version {
 		t.Fatalf("UpdateResult = %+v, want Changed=true Version=%s", result, version)
+	}
+	if result.RealizedGenerationID == "" {
+		t.Error("expected UpdateResult.RealizedGenerationID to be set — realize now runs for real, not a stub")
 	}
 
 	// --- Assertion 1: the lock file exists and validates. ---
@@ -222,6 +237,16 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	}
 	if _, err := pool.UnmarshalLock(lockBytes); err != nil {
 		t.Fatalf("harness-lock.json failed to validate: %v", err)
+	}
+
+	// --- Assertion (real realize): the generation directory this call
+	// published actually exists, with a receipt inside it. ---
+	genDir := filepath.Join(paths.Runtime, "generations", result.RealizedGenerationID)
+	if _, err := os.Stat(filepath.Join(genDir, "receipt.json")); err != nil {
+		t.Errorf("expected a receipt.json in the published generation %s: %v", genDir, err)
+	}
+	if _, err := os.Stat(filepath.Join(genDir, "bin", binName)); err != nil {
+		t.Errorf("expected the generation's own bin/%s to exist: %v", binName, err)
 	}
 
 	// --- Assertion 2 (MAJOR-1): every cache object landed under
