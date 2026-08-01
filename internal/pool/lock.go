@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // LockSchemaVersion is the schema_version this package writes and
@@ -65,6 +66,25 @@ type LockRuntimeArtifact struct {
 type NPMLock struct {
 	LockfileVersion int                       `json:"lockfile_version"`
 	Packages        map[string]NPMLockPackage `json:"packages"`
+	// Lockfile is the verbatim package-lock.json bytes Resolve read back from
+	// the resolve container (compacted once via json.Compact at Resolve time
+	// — see Hash's doc comment for why a canonical, whitespace-normalized
+	// form matters). This is the only faithful realization source: a
+	// hand-reconstructed lockfile built from Packages alone (name, version,
+	// resolved, integrity — no more) provably loses information npm's own
+	// installer depends on — optional/os/cpu gating (an os-mismatched
+	// optionalDependency with no recorded "os" field becomes
+	// unconditionally required on every platform) and nested
+	// version-conflict edges (a package installed under another package's
+	// own node_modules/, reachable only through that parent's own
+	// "dependencies" entry, never from the root). Packages is NOT
+	// superseded by this field: it remains Fetch's cache-addressing source
+	// of truth (resolved URL, upstream integrity, pool sha256) and
+	// Realize's cache-object verification list; Lockfile is realization's
+	// materialization source, Packages is fetch/cache's. Empty on a lock
+	// produced before this field existed — Realize must re-resolve rather
+	// than degrade silently (see internal/pool/source's Realize).
+	Lockfile json.RawMessage `json:"lockfile,omitempty"`
 }
 
 // NPMLockPackage is one entry of the npm dependency graph.
@@ -140,6 +160,45 @@ func (l *Lock) Validate() error {
 					return fmt.Errorf("harness %q: runtime artifacts: %w", name, err)
 				}
 			}
+		}
+		if h.NPMLock != nil {
+			if err := validateNPMLockfile(h.NPMLock); err != nil {
+				return fmt.Errorf("harness %q: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateNPMLockfile checks n.Lockfile, when present: it must be valid
+// JSON, "lockfileVersion" 3, and every key in n.Packages (the summary map)
+// must appear in its own "packages" map — a consistency check between the
+// two, not a full structural validation of arbitrary npm lockfile content.
+// A no-op when Lockfile is empty (§ "empty on a lock produced before this
+// field existed", NPMLock.Lockfile's doc comment).
+func validateNPMLockfile(n *NPMLock) error {
+	if len(n.Lockfile) == 0 {
+		return nil
+	}
+	var raw struct {
+		LockfileVersion int                        `json:"lockfileVersion"`
+		Packages        map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(n.Lockfile, &raw); err != nil {
+		return fmt.Errorf("npm_lock.lockfile: invalid JSON: %w", err)
+	}
+	if raw.LockfileVersion != 3 {
+		return fmt.Errorf("npm_lock.lockfile: lockfileVersion %d, want 3", raw.LockfileVersion)
+	}
+
+	names := make([]string, 0, len(n.Packages))
+	for name := range n.Packages {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic "first missing key" in the error below
+	for _, name := range names {
+		if _, ok := raw.Packages[name]; !ok {
+			return fmt.Errorf("npm_lock.lockfile: missing packages entry %q, which is present in the summary map", name)
 		}
 	}
 	return nil
