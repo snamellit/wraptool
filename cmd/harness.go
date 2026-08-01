@@ -76,40 +76,38 @@ func defaultHarnessDeps() harnessDeps {
 		// newSource constructs the harness pool's npm artifact-acquisition
 		// Source (design/unified-harness-pool.md §11.3, pool.Source). The
 		// concrete npm Source lives in internal/pool/source; Go's
-		// structural typing binds it to pool.Source.
+		// structural typing binds it to pool.Source, including Realize
+		// (§11.4, implemented by impl/npm-realize).
 		newSource: func() (pool.Source, error) {
-			// npmSourceWithoutRealize (below) is a stand-in for
-			// impl/npm-realize's *source.NPM.Realize until that sibling,
-			// parallel work package merges — see its doc comment.
-			return npmSourceWithoutRealize{source.NewNPM("")}, nil // "" = the default npm registry
+			return source.NewNPM(""), nil // "" = the default npm registry
 		},
 		resolveBackend: defaultResolveBackend,
 	}
 }
 
-// npmSourceWithoutRealize wraps internal/pool/source's NPM Source so this
-// package's production wiring keeps satisfying the (now Realize-extended)
-// pool.Source interface while impl/npm-realize — a sibling, parallel work
-// package — has not yet landed *source.NPM's own Realize method. Its Realize
-// fails loudly rather than pretending to work: sync/install/update's realize
-// step (this work package's addition) is fully wired end-to-end against
-// this Source, so once impl/npm-realize merges, deleting this adapter (and
-// returning *source.NPM directly from newSource, as before) is the only
-// change needed to make it real. Not exported: it exists purely as a build
-// seam, never something a test or another package should construct.
-type npmSourceWithoutRealize struct {
-	*source.NPM
-}
-
-func (npmSourceWithoutRealize) Realize(context.Context, backend.Backend, string, string, *pool.LockHarness, pool.PlatformKey, string, string) (*pool.Receipt, error) {
-	return nil, fmt.Errorf("realizing a generation from the npm source is not wired yet " +
-		"(internal/pool/source.NPM.Realize; pending the impl/npm-realize work package)")
-}
-
-// defaultResolveBackend picks the Linux-container backend the npm resolve
-// phase (§6.2/§8.1) runs in. Phase 1 wires guix only — the same off-guix
-// pointer error `install` has always printed — OCI/--backend selection is
-// Phase 3+ (design/unified-harness-pool.md §16).
+// defaultResolveBackend picks the Linux-container backend BOTH the npm
+// resolve phase (§6.2/§8.1) AND the realize phase (§6.2/§11.4) run in — the
+// same *backend.Guix value is threaded through Source.Resolve and
+// RealizeGeneration/Source.Realize by every caller in this file. Phase 1
+// wires guix only — the same off-guix pointer error `install` has always
+// printed — OCI/--backend selection is Phase 3+ (design/unified-harness-pool.md
+// §16).
+//
+// The guix package set below must cover BOTH phases' needs, since one
+// Backend value serves both: node (npm, for Resolve's `npm install
+// --package-lock-only` and Realize's `npm cache add`/`npm ci --offline`),
+// tar and xz (Realize's node-runtime unpack: `tar -xJf`; Go stdlib has no xz
+// and §6.7 forbids adding one, so tar's -J needs the real `xz` on PATH), and
+// coreutils. coreutils is NOT optional here even though the guix backend
+// itself auto-appends it whenever a RunSpec sets Workdir (backend/guix.go):
+// every one of Realize's three backend.Run calls prefixes its argv with
+// `env HOME=...` (Realize's own doc comment — HOME must travel as an argv
+// prefix, never RunSpec.Env, so it never leaks into the host guix client's
+// own environment), but only ONE of those three calls (`npm ci`) sets
+// Workdir. The other two (`npm cache add`, the node-runtime `tar` unpack)
+// would run inside a container with no `env` binary at all if this list
+// didn't name coreutils explicitly — a per-call, not a per-backend,
+// property the backend's own Workdir-triggered auto-append cannot cover.
 func defaultResolveBackend() (backend.Backend, error) {
 	if !hasGuix() {
 		return nil, fmt.Errorf("`wraptool harness update`/`install` resolves the exact npm version " +
@@ -119,7 +117,7 @@ func defaultResolveBackend() (backend.Backend, error) {
 			"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` " +
 			"shares the pool home so auth/skills persist across projects")
 	}
-	b, err := backend.Select("guix", backend.Options{GuixPackages: []string{"node"}})
+	b, err := backend.Select("guix", backend.Options{GuixPackages: []string{"node", "tar", "xz", "coreutils"}})
 	if err != nil {
 		return nil, err
 	}
