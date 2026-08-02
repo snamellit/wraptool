@@ -510,7 +510,13 @@ npm source, inside the backend container (network: registry only):
 3. Read back `package-lock.json`; embed its `packages` map (version, resolved,
    integrity) into the lock. Reject entries lacking `resolved`+`integrity`
    (git deps, workspace links) — a harness with such deps cannot be locked and
-   fails resolution loudly.
+   fails resolution loudly. One exception: an entry with a registry `resolved`
+   URL but no `integrity` — the shape npm writes when honoring a dependency's
+   bundled `npm-shrinkwrap.json` whose workspace siblings were published
+   without one (pi ships exactly this) — has its integrity backfilled from
+   the registry's own `dist.integrity` for that exact name@version, the same
+   trust root every other entry's integrity came from; Fetch still verifies
+   the downloaded tarball against it.
 4. Record the descriptor-declared runtime requirement (node major) and select
    the pinned runtime version + per-platform nodejs.org artifacts (URL +
    published SHASUMS digest) — fetched metadata, no payloads.

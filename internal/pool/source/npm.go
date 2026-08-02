@@ -127,8 +127,9 @@ func NewNPM(registryBaseURL string) *NPM {
 // npmPackument is the subset of an npm registry packument (the full
 // document, not the abbreviated/corgi format — that omits "time", which
 // Refresh needs) this package reads. Both maps are decoded as raw messages:
-// Versions because this package only needs to know a version key exists,
-// never its manifest content; Time because npm's "time" map is not
+// Versions because most callers only need to know a version key exists —
+// only backfillIntegrity decodes a version's manifest, and then only the one
+// version it needs (npmVersionDist); Time because npm's "time" map is not
 // uniformly string-valued — an "unpublished" key can carry a nested object
 // describing an unpublish event rather than a version's own timestamp — and
 // decoding straight into map[string]string would fail the whole packument
@@ -303,6 +304,87 @@ func (n *NPM) versionPublishedAt(ctx context.Context, pkg, version string) (time
 	return t, nil
 }
 
+// npmVersionDist is the subset of one packument version manifest that
+// backfillIntegrity reads: the registry's own SRI value for the version's
+// tarball.
+type npmVersionDist struct {
+	Dist struct {
+		Integrity string `json:"integrity"`
+	} `json:"dist"`
+}
+
+// lockKeyPackageName extracts the package name from a package-lock.json
+// "packages" key: everything after the key's last "node_modules/" segment,
+// which for nested entries like
+// "node_modules/a/node_modules/@scope/b" is the scoped name "@scope/b".
+func lockKeyPackageName(key string) (string, bool) {
+	const marker = "node_modules/"
+	idx := strings.LastIndex(key, marker)
+	if idx < 0 {
+		return "", false
+	}
+	name := key[idx+len(marker):]
+	return name, name != ""
+}
+
+// backfillIntegrity recovers the missing "integrity" of a lockfile entry
+// whose tarball nonetheless lives on this source's registry. npm copies a
+// dependency's bundled npm-shrinkwrap.json into the consumer's lockfile
+// verbatim, and a shrinkwrap published from a workspace monorepo records the
+// author's workspace-sibling packages with a registry "resolved" URL but no
+// "integrity" (npm never backfills it at install time) — e.g.
+// @earendil-works/pi-coding-agent ships exactly this shape for pi-ai/pi-tui/
+// pi-agent-core. The registry's own dist.integrity for that exact
+// name@version is the same trust root every other entry's integrity came
+// from, so fetching it preserves the everything-pinned-by-hash invariant;
+// Fetch still verifies the downloaded tarball against it, so a resolved URL
+// pointing at different bytes fails there. Anything else missing integrity —
+// a git URL, a non-registry host, a version the registry doesn't know —
+// stays a hard error here.
+//
+// packuments caches one fetch per package name across a single Resolve call;
+// the caller owns the map.
+func (n *NPM) backfillIntegrity(ctx context.Context, packuments map[string]*npmPackument, key string, entry npmLockPackageEntry) (string, error) {
+	if !strings.HasPrefix(entry.Resolved, n.registryBaseURL+"/") {
+		return "", fmt.Errorf(
+			"package-lock.json entry %q has resolved %q but no integrity (git or non-registry dependency cannot be locked)",
+			key, entry.Resolved)
+	}
+	pkg, ok := lockKeyPackageName(key)
+	if !ok || entry.Version == "" {
+		return "", fmt.Errorf(
+			"package-lock.json entry %q has no integrity and no package name/version to backfill it from the registry",
+			key)
+	}
+	doc := packuments[pkg]
+	if doc == nil {
+		var err error
+		doc, err = n.fetchPackument(ctx, pkg)
+		if err != nil {
+			return "", fmt.Errorf("backfilling integrity for %q: %w", key, err)
+		}
+		packuments[pkg] = doc
+	}
+	raw, ok := doc.Versions[entry.Version]
+	if !ok {
+		return "", fmt.Errorf(
+			"backfilling integrity for %q: registry has no version %s of %s",
+			key, entry.Version, pkg)
+	}
+	var manifest npmVersionDist
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return "", fmt.Errorf(
+			"backfilling integrity for %q: decoding registry manifest for %s@%s: %w",
+			key, pkg, entry.Version, err)
+	}
+	if manifest.Dist.Integrity == "" {
+		return "", fmt.Errorf(
+			"backfilling integrity for %q: registry dist for %s@%s carries no integrity",
+			key, pkg, entry.Version)
+	}
+	return manifest.Dist.Integrity, nil
+}
+
 // npmLockFile is the subset of package-lock.json (lockfileVersion 3) this
 // package reads.
 type npmLockFile struct {
@@ -368,6 +450,12 @@ var nodeGlibcPlatforms = map[pool.PlatformKey]string{
 // does not clean up scratchDir (a subdirectory of workDir) when it returns;
 // workDir is a staging transaction directory the caller owns and disposes
 // of.
+//
+// A lockfile entry carrying a registry resolved URL but no integrity — the
+// shape npm writes when honoring a dependency's bundled npm-shrinkwrap.json
+// whose workspace-sibling entries were published without one — has its
+// integrity backfilled from the registry's dist metadata (see
+// backfillIntegrity); every other incomplete entry fails resolution loudly.
 //
 // version must be the exact registry version key — a pool.Candidate.Version
 // as Refresh returns it — never "v"-prefixed. Unlike nodeVersion below,
@@ -456,8 +544,22 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 		return pool.LockHarness{}, fmt.Errorf("package-lock.json: unsupported lockfileVersion %d (want 3)", lockFile.LockfileVersion)
 	}
 
+	// Iterate entries in sorted key order so a lockfile with several
+	// unlockable entries always reports the same (lexicographically first)
+	// one — map iteration order would otherwise name a different entry on
+	// every run.
+	names := make([]string, 0, len(lockFile.Packages))
+	for name := range lockFile.Packages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Packument cache shared by every backfillIntegrity call in this resolve.
+	packuments := make(map[string]*npmPackument)
+
 	packages := make(map[string]pool.NPMLockPackage, len(lockFile.Packages))
-	for name, entry := range lockFile.Packages {
+	for _, name := range names {
+		entry := lockFile.Packages[name]
 		if name == "" {
 			// The "" key is the synthesized project root itself, not a
 			// dependency — it has no resolved/integrity by construction and
@@ -468,10 +570,17 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 			return pool.LockHarness{}, fmt.Errorf(
 				"package-lock.json entry %q is a workspace link (cannot be locked)", name)
 		}
-		if entry.Resolved == "" || entry.Integrity == "" {
+		if entry.Resolved == "" {
 			return pool.LockHarness{}, fmt.Errorf(
-				"package-lock.json entry %q is missing resolved or integrity (git dependency, workspace link, or file: dependency cannot be locked)",
+				"package-lock.json entry %q has no resolved URL (git dependency, workspace link, or file: dependency cannot be locked)",
 				name)
+		}
+		if entry.Integrity == "" {
+			integrity, err := n.backfillIntegrity(ctx, packuments, name, entry)
+			if err != nil {
+				return pool.LockHarness{}, err
+			}
+			entry.Integrity = integrity
 		}
 		if err := validateLockableIntegrity(entry.Integrity); err != nil {
 			return pool.LockHarness{}, fmt.Errorf("package-lock.json entry %q: %w", name, err)

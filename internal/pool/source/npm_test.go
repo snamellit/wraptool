@@ -408,8 +408,9 @@ func TestResolve_RejectsGitDependency(t *testing.T) {
 	defer nodeSrv.Close()
 
 	// A git dependency's package-lock.json entry carries "resolved" (a
-	// git+https URL) but no "integrity" — the resolved-only shape that a
-	// bare "both fields empty" check would miss.
+	// git+https URL) but no "integrity". Its resolved URL is not on the
+	// configured registry, so the integrity backfill must refuse it rather
+	// than try to look it up.
 	lockJSON := resolveFixture("example", "1.0.0", `,
     "node_modules/git-dep": {"version": "1.0.0", "resolved": "git+https://github.com/foo/bar.git#abcdef0"}`)
 
@@ -425,23 +426,21 @@ func TestResolve_RejectsGitDependency(t *testing.T) {
 		t.Errorf("error = %q, want it to name node_modules/git-dep", err.Error())
 	}
 	// Pinning the exact message (not just the entry name) is what makes this
-	// test fail if the "missing resolved or integrity" branch is weakened
-	// back to an "and" — a resolved-only entry like this one would then only
-	// be caught, incidentally, by validateLockableIntegrity("") rejecting an
-	// empty Integrity string with an unrelated "malformed integrity" message.
-	if !strings.Contains(err.Error(), "is missing resolved or integrity") {
-		t.Errorf("error = %q, want it to contain \"is missing resolved or integrity\"", err.Error())
+	// test fail if the non-registry guard in backfillIntegrity were dropped —
+	// the git+https URL would then be sent to the registry as a packument
+	// request and fail with an unrelated fetch error.
+	if !strings.Contains(err.Error(), "but no integrity (git or non-registry dependency cannot be locked)") {
+		t.Errorf("error = %q, want the git/non-registry no-integrity message", err.Error())
 	}
 }
 
-// TestResolve_RejectsIntegrityWithoutResolved covers the other half of the
-// missing-resolved-or-integrity check: an entry that has Integrity but no
-// Resolved. This shape doesn't occur naturally in a real package-lock.json
-// (no known npm dependency kind produces it), but a mutation that narrowed
-// the check from "Resolved == "" || Integrity == """ back to "&&" would pass
-// every other test in this file while silently accepting an entry like this
-// one — so it is exercised directly, on the belt-and-suspenders principle,
-// rather than left to only ever be caught in production.
+// TestResolve_RejectsIntegrityWithoutResolved covers an entry that has
+// Integrity but no Resolved. This shape doesn't occur naturally in a real
+// package-lock.json (no known npm dependency kind produces it), but a
+// mutation that deleted the Resolved check would pass every other test in
+// this file while silently accepting an entry like this one — so it is
+// exercised directly, on the belt-and-suspenders principle, rather than left
+// to only ever be caught in production.
 func TestResolve_RejectsIntegrityWithoutResolved(t *testing.T) {
 	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
 	defer registrySrv.Close()
@@ -462,8 +461,142 @@ func TestResolve_RejectsIntegrityWithoutResolved(t *testing.T) {
 	if !strings.Contains(err.Error(), "node_modules/no-resolved") {
 		t.Errorf("error = %q, want it to name node_modules/no-resolved", err.Error())
 	}
-	if !strings.Contains(err.Error(), "is missing resolved or integrity") {
-		t.Errorf("error = %q, want it to contain \"is missing resolved or integrity\"", err.Error())
+	if !strings.Contains(err.Error(), "has no resolved URL") {
+		t.Errorf("error = %q, want it to contain \"has no resolved URL\"", err.Error())
+	}
+}
+
+// newRoutedRegistryServer serves per-package packument bodies keyed by
+// package name, for tests whose backfill path must fetch a different
+// packument than the top-level package's. Go's http server decodes the %2f
+// that registryURL percent-encodes into scoped package names, so the routing
+// key is the decoded path without its leading slash.
+func newRoutedRegistryServer(t *testing.T, packuments map[string]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, ok := packuments[strings.TrimPrefix(r.URL.Path, "/")]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(body))
+	}))
+}
+
+// TestResolve_BackfillsMissingIntegrityFromRegistry covers the
+// shrinkwrap-published shape (@earendil-works/pi-coding-agent and its
+// workspace siblings): a nested entry with a registry resolved URL but no
+// integrity must be locked with the registry's own dist.integrity for that
+// exact name@version, not rejected.
+func TestResolve_BackfillsMissingIntegrityFromRegistry(t *testing.T) {
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	const siblingIntegrity = "sha512-CCCC=="
+	registrySrv := newRoutedRegistryServer(t, map[string]string{
+		"example": `{
+			"time": {"1.0.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"1.0.0": {}}
+		}`,
+		"@scope/sibling": fmt.Sprintf(`{
+			"time": {"2.0.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"2.0.0": {"dist": {"integrity": %q}}}
+		}`, siblingIntegrity),
+	})
+	defer registrySrv.Close()
+
+	// The sibling entry mirrors what npm writes when honoring a bundled
+	// npm-shrinkwrap.json: nested under the shipping package, resolved on the
+	// registry, no integrity.
+	lockJSON := resolveFixture("example", "1.0.0", fmt.Sprintf(`,
+    "node_modules/example/node_modules/@scope/sibling": {"version": "2.0.0", "resolved": "%s/@scope/sibling/-/sibling-2.0.0.tgz"}`,
+		registrySrv.URL))
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	lh, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v (a registry-resolved entry missing integrity must be backfilled, not rejected)", err)
+	}
+	got, ok := lh.NPMLock.Packages["node_modules/example/node_modules/@scope/sibling"]
+	if !ok {
+		t.Fatal("backfilled entry missing from NPMLock.Packages")
+	}
+	if got.Integrity != siblingIntegrity {
+		t.Errorf("Integrity = %q, want %q (backfilled from the registry's dist.integrity)", got.Integrity, siblingIntegrity)
+	}
+}
+
+// TestResolve_BackfillFailsWhenRegistryLacksIntegrity locks in that the
+// backfill never invents an integrity: a registry-resolved entry whose
+// packument version carries no dist.integrity stays a hard, entry-naming
+// error.
+func TestResolve_BackfillFailsWhenRegistryLacksIntegrity(t *testing.T) {
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	registrySrv := newRoutedRegistryServer(t, map[string]string{
+		"example": `{
+			"time": {"1.0.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"1.0.0": {}}
+		}`,
+		"bare-dist": `{
+			"time": {"2.0.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"2.0.0": {"dist": {"shasum": "c32c9ea53b34df5eec69186cc9795c1ce122f308"}}}
+		}`,
+	})
+	defer registrySrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", fmt.Sprintf(`,
+    "node_modules/bare-dist": {"version": "2.0.0", "resolved": "%s/bare-dist/-/bare-dist-2.0.0.tgz"}`,
+		registrySrv.URL))
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err == nil {
+		t.Fatal("Resolve: got nil error, want backfill failure when the registry has no dist.integrity")
+	}
+	if !strings.Contains(err.Error(), "node_modules/bare-dist") {
+		t.Errorf("error = %q, want it to name node_modules/bare-dist", err.Error())
+	}
+	if !strings.Contains(err.Error(), "no integrity") {
+		t.Errorf("error = %q, want it to mention the missing integrity", err.Error())
+	}
+}
+
+// TestResolve_ReportsFirstUnlockableEntryDeterministically locks in the
+// sorted-key iteration: with several unlockable entries, the error must name
+// the lexicographically first one on every run, not whichever Go's random
+// map order visits first. Repeated runs make a regression to map-order
+// iteration overwhelmingly likely to surface.
+func TestResolve_ReportsFirstUnlockableEntryDeterministically(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/aa-git-dep": {"version": "1.0.0", "resolved": "git+https://github.com/foo/aa.git#abcdef0"},
+    "node_modules/zz-git-dep": {"version": "1.0.0", "resolved": "git+https://github.com/foo/zz.git#abcdef0"}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	for i := 0; i < 8; i++ {
+		_, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+		if err == nil {
+			t.Fatal("Resolve: got nil error, want one naming an unlockable entry")
+		}
+		if !strings.Contains(err.Error(), "node_modules/aa-git-dep") {
+			t.Fatalf("run %d: error = %q, want it to name node_modules/aa-git-dep (the lexicographically first unlockable entry)", i, err.Error())
+		}
 	}
 }
 
