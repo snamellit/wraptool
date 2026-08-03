@@ -48,6 +48,37 @@ func TestRollbackToExplicitVersion(t *testing.T) {
 	}
 }
 
+// TestRollbackToExplicitVersionTiesBreakByNewestGeneration covers version
+// NOT being unique to one generation id (two distinct realizes of the same
+// version, with different content, therefore different digests and
+// generation ids): --to must tie-break by the newest generation directory
+// (ModTime), and the returned id — the exact one cmd/harness.go's rollback
+// command prints — must be that newer generation's, not whichever one
+// happened to be found first.
+func TestRollbackToExplicitVersionTiesBreakByNewestGeneration(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	genOlderSameVersion := seedRollbackGeneration(t, paths, "1.0.0", "same-version-older-content", 0)
+	genNewerSameVersion := seedRollbackGeneration(t, paths, "1.0.0", "same-version-newer-content", time.Hour)
+	genCurrent := seedRollbackGeneration(t, paths, "2.0.0", "current", 2*time.Hour)
+	if err := ActivateGeneration(paths, rollbackTestHarness, rollbackTestKey, genCurrent); err != nil {
+		t.Fatalf("activating current: %v", err)
+	}
+
+	got, err := RollbackHarnessLocked(paths, rollbackTestHarness, rollbackTestKey, "1.0.0")
+	if err != nil {
+		t.Fatalf("RollbackHarnessLocked: %v", err)
+	}
+	if got != genNewerSameVersion {
+		t.Errorf("rolled back to %q, want the NEWEST generation sharing version 1.0.0 (%q), not the older same-version one (%q)",
+			got, genNewerSameVersion, genOlderSameVersion)
+	}
+	active, ok := ActiveGeneration(paths, rollbackTestHarness, rollbackTestKey)
+	if !ok || active != genNewerSameVersion {
+		t.Errorf("ActiveGeneration after rollback = (%q, %v), want (%q, true)", active, ok, genNewerSameVersion)
+	}
+}
+
 func TestRollbackToExplicitVersionErrorListsAvailableVersions(t *testing.T) {
 	t.Parallel()
 	paths := testPaths(t)
