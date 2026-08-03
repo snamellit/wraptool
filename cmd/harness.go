@@ -564,7 +564,6 @@ func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResul
 	out := cmd.OutOrStdout()
 
 	var msg string
-	realizedFolded := false // true once the case below has already worked RealizedGenerationID into msg
 	switch {
 	case result.AllowYoungApplied:
 		msg = fmt.Sprintf("%s: --allow-young bypassed quarantine for %s (published %s ago)",
@@ -578,15 +577,15 @@ func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResul
 		msg = fmt.Sprintf("%s: %s", name, result.Note)
 	case result.RealizedGenerationID != "":
 		// Changed=false and no Note: on the resolve axis this is a genuine
-		// no-op, but RealizeGeneration DID run and build/confirm a
-		// generation this call — "(up to date)" alone would misreport that
-		// as nothing having happened (review finding 5).
-		msg = fmt.Sprintf("%s: locked version %s unchanged; realized %s", name, result.Harness.Version, result.RealizedGenerationID)
-		realizedFolded = true
+		// no-op, but RealizeGeneration DID run this call — "(up to date)"
+		// alone would misreport that as nothing having happened (review
+		// finding 5). The generation id itself lands via the shared suffix
+		// below.
+		msg = fmt.Sprintf("%s: locked version %s unchanged", name, result.Harness.Version)
 	default:
 		msg = fmt.Sprintf("%s: already locked at %s (up to date)", name, result.Harness.Version)
 	}
-	if result.RealizedGenerationID != "" && !realizedFolded {
+	if result.RealizedGenerationID != "" {
 		msg += fmt.Sprintf("; realized %s", result.RealizedGenerationID)
 	}
 	fmt.Fprintln(out, msg)
