@@ -3,6 +3,7 @@ package pool
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -476,6 +477,43 @@ func TestRealizeGenerationFailureInjection(t *testing.T) {
 			generationsDir := runtimeGenerationsDir(paths.Runtime)
 			if entries, err := os.ReadDir(generationsDir); err == nil && len(entries) != 0 {
 				t.Errorf("runtime/generations = %v, want empty (nothing published on failure)", entries)
+			}
+		})
+	}
+}
+
+// TestRealizeGenerationRejectsMalformedBinName is wave1-integration-fixes
+// finding 7: binName must be a single path segment (non-empty, no '/' or
+// '\', not "." or ".."), mirroring GenerationID's own harness/version input
+// validation — checked before Source.Realize is ever called, and the error
+// names the offending value (or, for the empty case, says so explicitly).
+func TestRealizeGenerationRejectsMalformedBinName(t *testing.T) {
+	tests := []struct {
+		binName     string
+		errContains string
+	}{
+		{"", "must not be empty"},
+		{"a/b", fmt.Sprintf("%q", "a/b")},
+		{`a\b`, fmt.Sprintf("%q", `a\b`)},
+		{".", fmt.Sprintf("%q", ".")},
+		{"..", fmt.Sprintf("%q", "..")},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%q", tt.binName), func(t *testing.T) {
+			paths := testPaths(t)
+			h := baseRealizeLockHarness()
+			seedRealizeLock(t, paths, h)
+
+			src := &fakeSource{}
+			_, err := RealizeGeneration(ctxT(t), src, fakeBackend{}, paths, realizeTestHarness, tt.binName, &h, realizeTestKey)
+			if err == nil {
+				t.Fatal("expected an error for a malformed binName")
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tt.errContains)
+			}
+			if src.realizeCalls != 0 {
+				t.Errorf("realizeCalls = %d, want 0 — binName must be validated before Source.Realize is called", src.realizeCalls)
 			}
 		})
 	}
