@@ -3,7 +3,7 @@
 Status: **superseded by [`unified-harness-pool.md`](unified-harness-pool.md)**
 — the mixed-OS/mount analysis (§3, §5) is carried forward there; the
 `ConfigHomeEnv` approach (§4.2) was not adopted (the shipped feature pins
-`HOME=/home/wraptool-harness` instead). Kept for the analysis record.
+`HOME=/home/wraptool-harness` instead). Kept forn the analysis record.
 Scope: make the shared developer **harness pool** — already mounted into the
 Guix-native container runtime — available to the **devcontainer** runtime too.
 The pool plumbing is injected by `wraptool up` at launch, **not** baked into the

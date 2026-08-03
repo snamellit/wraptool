@@ -159,14 +159,18 @@ tracks zero harness versions.
 **Why the split — the pool is a cross-project trust domain.** It is shared, rw in
 part, and survives container teardown, so a compromised agent in one project could
 otherwise poison what *every other* project runs. The mount policy narrows that:
-`bin/` read-only + PATH-appended means a poisoned pool cannot introduce or shadow
-the binaries (`git`/`go`/`bash`/the harness itself) another project's container
-executes — installs are a deliberate host-side act, never something the in-container
-agent can do. `home/` must stay writable for login/config to persist, so it remains
-a residual channel: a harness's own config there (e.g. hooks, MCP entries) runs in
-every session, and its service credential is readable by any project's agent. That
-is an accepted cost of "install/login once per developer," not host-secret exposure
-(SSH/gcloud creds are never mounted — see below); curate `home/` accordingly.
+`bin/` read-only prevents an in-container project from modifying those shared
+files; installs are a deliberate host-side act. PATH-appending also prevents the
+pool from shadowing the image/manifest toolchain. It does not stop writable HOME
+startup/configuration from influencing later process resolution or behavior.
+`home/` currently stays writable for login/config to persist, so it
+remains a residual channel: a harness's own config there (e.g. hooks, MCP entries)
+runs in every session, and its service credential is readable by any project's
+agent. This was accepted by the implemented design, but is now under
+reconsideration. The target in `project-isolation.md` is project-private writable
+state over an operator-curated read-only skills/extensions seed; authentication
+sharing remains an open decision. SSH/gcloud credentials are never mounted (see
+below).
 
 **Curate the pool; never mount `$HOME`.** A harness needs its *own* service
 credential (e.g. Claude Code's Anthropic key) to function — a *developer*
@@ -233,6 +237,25 @@ Trust model is unchanged:
 **per-image** (isolation *stronger* than the read-only bin mount — no shared bin
 surface at all). Per-image binaries can drift in version while sharing one
 `home/` state; pin the version in the feature option for determinism.
+
+### 7b. Proposed isolation revision
+
+`project-isolation.md` supersedes shared writable HOME as the intended end
+state, while this section continues to document implemented behavior. Proposed
+invariants are:
+
+- Guix shared harness executables/libraries mounted read-only and selected by
+  absolute path, or before any writable PATH entry;
+- Dev Container harness binaries kept per-image rather than shared between
+  projects;
+- operator-curated skills/extensions shared read-only;
+- per-worktree writable HOME/config/state using copy-on-write semantics;
+- no project write propagates into the shared seed or another project;
+- project grant credentials remain in project-private state.
+
+The shared service-authentication mechanism is unresolved. Do not switch the
+whole HOME mount to read-only until login and token-refresh behavior has a
+defined replacement.
 
 `wraptool harness install` (guix pool populate) is intentionally **not** extended
 to the devcontainer world — off guix it errors and points at the feature, since
