@@ -2,6 +2,8 @@ package pool
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -316,7 +318,7 @@ func TestUpdateHarnessPicksNewestEligibleUnderConstraint(t *testing.T) {
 
 	src := &fakeSource{}
 	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
@@ -346,7 +348,7 @@ func TestUpdateHarnessNothingEligibleErrors(t *testing.T) {
 
 	src := &fakeSource{}
 	_, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	})
 	if err == nil {
 		t.Fatal("expected an error when nothing is eligible and there is no usable lock")
@@ -391,7 +393,7 @@ func TestUpdateHarnessIdempotentWhenLockAlreadyAgrees(t *testing.T) {
 
 	src := &fakeSource{}
 	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
@@ -453,7 +455,7 @@ func TestUpdateHarnessInstallErrorsOnCorruptObservationsEvenWithAnAgreeingLock(t
 
 	src := &fakeSource{}
 	_, err = UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow, // Advance: false (install)
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, // Advance: false (install)
 	})
 	if err == nil {
 		t.Fatal("expected an error from corrupt observations.json, even though the lock alone would satisfy install's short-circuit")
@@ -491,7 +493,7 @@ func TestUpdateHarnessKeepsExistingLockWhenNothingEligible(t *testing.T) {
 
 	src := &fakeSource{}
 	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	})
 	if err != nil {
 		t.Fatalf("expected a successful no-op, got error: %v", err)
@@ -540,7 +542,7 @@ func TestUpdateHarnessRecipeRevisionMismatchForcesReResolve(t *testing.T) {
 
 			src := &fakeSource{}
 			res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-				Harness: "claude", Package: pkg, Now: fixedNow, Advance: advance,
+				Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: advance,
 			})
 			if err != nil {
 				t.Fatalf("UpdateHarness: %v", err)
@@ -591,7 +593,7 @@ func TestUpdateVsInstallAdvanceSemantics(t *testing.T) {
 		paths, pkg := setup(t)
 		src := &fakeSource{}
 		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-			Harness: "claude", Package: pkg, Now: fixedNow, Advance: false,
+			Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: false,
 		})
 		if err != nil {
 			t.Fatalf("install (Advance=false): %v", err)
@@ -611,7 +613,7 @@ func TestUpdateVsInstallAdvanceSemantics(t *testing.T) {
 		paths, pkg := setup(t)
 		src := &fakeSource{}
 		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-			Harness: "claude", Package: pkg, Now: fixedNow, Advance: true,
+			Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: true,
 		})
 		if err != nil {
 			t.Fatalf("update (Advance=true): %v", err)
@@ -661,7 +663,7 @@ func TestUpdateVsInstallAfterConstraintWidened(t *testing.T) {
 		paths, pkg := setup(t)
 		src := &fakeSource{}
 		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-			Harness: "claude", Package: pkg, Now: fixedNow, Advance: false,
+			Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: false,
 		})
 		if err != nil {
 			t.Fatalf("install (Advance=false): %v", err)
@@ -681,7 +683,7 @@ func TestUpdateVsInstallAfterConstraintWidened(t *testing.T) {
 		paths, pkg := setup(t)
 		src := &fakeSource{}
 		res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-			Harness: "claude", Package: pkg, Now: fixedNow, Advance: true,
+			Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: true,
 		})
 		if err != nil {
 			t.Fatalf("update (Advance=true): %v", err)
@@ -710,7 +712,7 @@ func TestUpdateHarnessAfterAllowYoungPlainRerunIsIdempotent(t *testing.T) {
 
 	src := &fakeSource{}
 	res1, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow, AllowYoung: true, Reason: "test",
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, AllowYoung: true, Reason: "test",
 	})
 	if err != nil {
 		t.Fatalf("first (allow-young) UpdateHarness: %v", err)
@@ -723,7 +725,7 @@ func TestUpdateHarnessAfterAllowYoungPlainRerunIsIdempotent(t *testing.T) {
 	}
 
 	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow.Add(time.Minute),
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("second (plain) UpdateHarness: %v", err)
@@ -751,7 +753,7 @@ func TestUpdateHarnessIdempotentAcrossPolicyTightening(t *testing.T) {
 	})
 
 	src := &fakeSource{}
-	res1, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", Package: pkg, Now: fixedNow})
+	res1, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow})
 	if err != nil {
 		t.Fatalf("first update (loose policy): %v", err)
 	}
@@ -763,7 +765,7 @@ func TestUpdateHarnessIdempotentAcrossPolicyTightening(t *testing.T) {
 	// to be freshly eligible, but it must still be recognized as
 	// already-locked (strict idempotence doesn't consult eligibility).
 	writeManifest(t, paths, claudeManifest)
-	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", Package: pkg, Now: fixedNow.Add(time.Minute)})
+	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow.Add(time.Minute)})
 	if err != nil {
 		t.Fatalf("update after tightening policy: %v", err)
 	}
@@ -780,7 +782,7 @@ func TestUpdateHarnessAllowYoungRequiresReason(t *testing.T) {
 	writeManifest(t, paths, claudeManifest)
 	src := &fakeSource{}
 	_, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: "pkg", Now: fixedNow, AllowYoung: true, Reason: "",
+		Harness: "claude", BinName: "claude", Package: "pkg", Now: fixedNow, AllowYoung: true, Reason: "",
 	})
 	if err == nil {
 		t.Fatal("expected an error for --allow-young with an empty reason")
@@ -806,7 +808,7 @@ func TestUpdateHarnessAllowYoungAppliedBypassesQuarantineAndAudits(t *testing.T)
 
 	src := &fakeSource{}
 	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 		AllowYoung: true, Reason: "CVE-2026-00000",
 	})
 	if err != nil {
@@ -883,8 +885,13 @@ func findAuditEvent(t *testing.T, path, eventType string) AuditEvent {
 // later call either. This test injects a Realize failure on an
 // otherwise-successful allow-young update and asserts BOTH halves survive
 // it: the lock is advanced to the bypassed version, AND the allow_young
-// audit line exists — while UpdateHarness itself still reports the Realize
-// error to its caller.
+// audit line exists.
+//
+// Updated for wave1-integration-fixes finding 2: a Realize failure is now
+// NON-FATAL (UpdateResult.RealizeErr, not a returned error) — see
+// UpdateHarnessLocked's doc comment — so this test now asserts
+// err == nil and RealizeErr carrying the injected failure, instead of the
+// pre-wave1 contract of UpdateHarness itself returning the error.
 func TestUpdateHarnessAllowYoungAuditSurvivesRealizeFailure(t *testing.T) {
 	paths := testPaths(t)
 	writeManifest(t, paths, claudeManifest)
@@ -896,12 +903,18 @@ func TestUpdateHarnessAllowYoungAuditSurvivesRealizeFailure(t *testing.T) {
 	})
 
 	src := &fakeSource{realizeErr: errRealizeBoom}
-	_, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 		AllowYoung: true, Reason: "CVE-2026-00000",
 	})
-	if err == nil {
-		t.Fatal("expected UpdateHarness to report the injected Realize failure")
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v, want nil — a Realize failure is non-fatal (RealizeErr)", err)
+	}
+	if !errors.Is(res.RealizeErr, errRealizeBoom) {
+		t.Errorf("RealizeErr = %v, want the injected %v", res.RealizeErr, errRealizeBoom)
+	}
+	if res.RealizedGenerationID != "" {
+		t.Errorf("RealizedGenerationID = %q, want empty alongside a non-nil RealizeErr", res.RealizedGenerationID)
 	}
 
 	// The lock must still have advanced: Realize failing must not roll back
@@ -923,6 +936,155 @@ func TestUpdateHarnessAllowYoungAuditSurvivesRealizeFailure(t *testing.T) {
 	}
 }
 
+// TestUpdateHarnessRealizeFailureIsNonFatal is wave1-integration-fixes
+// finding 2's dedicated orchestrator-level regression, isolated from the
+// allow-young scenario above: a plain (no --allow-young) first-time resolve
+// whose Realize fails must still report err == nil, with the resolve+
+// fetch+lock effects fully applied (Changed=true, the new version durably
+// persisted) and the failure surfaced only via UpdateResult.RealizeErr —
+// dispatcher/activation/mounting are a later wave, so legacy install (the
+// only thing this wave executes) must still be reachable by the caller.
+func TestUpdateHarnessRealizeFailureIsNonFatal(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+	seedObservations(t, paths, pkg, []Candidate{
+		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+
+	src := &fakeSource{realizeErr: errRealizeBoom}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v, want nil — a Realize failure must be non-fatal", err)
+	}
+	if !res.Changed {
+		t.Error("expected Changed=true: the resolve+fetch+lock effects must still be reported, despite the Realize failure")
+	}
+	if res.Harness.Version != "2.1.220" {
+		t.Errorf("Harness.Version = %q, want the freshly resolved 2.1.220", res.Harness.Version)
+	}
+	if !errors.Is(res.RealizeErr, errRealizeBoom) {
+		t.Errorf("RealizeErr = %v, want the injected %v", res.RealizeErr, errRealizeBoom)
+	}
+	if res.RealizedGenerationID != "" {
+		t.Errorf("RealizedGenerationID = %q, want empty alongside a non-nil RealizeErr", res.RealizedGenerationID)
+	}
+
+	lockDoc, lerr := loadLockOrEmpty(paths.Lock)
+	if lerr != nil {
+		t.Fatalf("loading lock: %v", lerr)
+	}
+	lh, ok := lockDoc.Harnesses["claude"]
+	if !ok || lh.Version != "2.1.220" {
+		t.Fatalf("lock harness = %+v (ok=%v), want version 2.1.220 persisted despite the Realize failure", lh, ok)
+	}
+	if len(lh.Generations) != 0 {
+		t.Errorf("lock Generations = %v, want empty — Realize never succeeded, so nothing should be recorded", lh.Generations)
+	}
+}
+
+// TestUpdateHarnessSelfHealsPhase1RecipeMismatch pins wave1-integration-fixes
+// finding 1: bumping recipeFormatVersion (1 -> 2, §8) must make a Phase-1
+// pool self-heal instead of permanently wedging. A Phase-1 lock has no
+// npm_lock.lockfile field (internal/pool/source's NPM.Realize requires one,
+// added by this wave) and its recipe_revision was computed under the OLD
+// recipeFormatVersion (1). Without the bump: install/update would loop
+// forever — DecisionRealize (the stale Phase-1 recipe_revision still
+// "matches" under the old format, so the resolve axis looks fully agreed) ->
+// NPM.Realize errors "lock predates the embedded-lockfile schema" -> a later
+// update short-circuits right back to DecisionRealize (nothing about
+// RecipeRevision changed) -> the same error again, with Resolve never
+// running and the lockfile field never backfilled. Bumping the format
+// changes the freshly computed recipe_revision, so lockMatchesRecipe
+// (decision.go, §8) is false, Decide instead returns DecisionResolveVersion,
+// and the ensuing Resolve+Fetch+lock-write self-heals the pool on its very
+// next install.
+func TestUpdateHarnessSelfHealsPhase1RecipeMismatch(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	seedObservations(t, paths, pkg, []Candidate{
+		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+
+	phase1Recipe := recipeRevisionForFormat(t, pkg, 1)
+	wantRecipe, err := npmRecipeRevision(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantRecipe == phase1Recipe {
+		t.Fatal("test setup bug: the current recipeFormatVersion's hash must differ from format 1's — did the bump get reverted?")
+	}
+
+	writeLock(t, paths, &Lock{
+		SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+		Harnesses: map[string]LockHarness{
+			"claude": {
+				Source: npmSourceName, Package: pkg, Version: "2.1.220",
+				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+				RecipeRevision: phase1Recipe,
+				// Phase-1 shape: a Packages summary, but no Lockfile field —
+				// internal/pool/source's NPM.Realize refuses to realize this
+				// (its own doc comment), which is exactly the wedge this
+				// format bump exists to break.
+				NPMLock: &NPMLock{LockfileVersion: 3, Packages: map[string]NPMLockPackage{
+					pkg: {Version: "2.1.220", Resolved: "https://registry.npmjs.org/x.tgz", Integrity: "sha512-old", SHA256: "deadbeef"},
+				}},
+			},
+		},
+	})
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, // install (Advance: false)
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected Changed=true: the format bump must invalidate the Phase-1 recipe and force a re-resolve")
+	}
+	if src.resolveCalls != 1 {
+		t.Errorf("resolveCalls = %d, want 1 — the decision path must call Resolve, not just Realize", src.resolveCalls)
+	}
+	if src.realizeCalls != 1 {
+		t.Errorf("realizeCalls = %d, want 1 — the fresh resolve must still realize", src.realizeCalls)
+	}
+
+	lockDoc, err := loadLockOrEmpty(paths.Lock)
+	if err != nil {
+		t.Fatalf("loading persisted lock: %v", err)
+	}
+	lh, ok := lockDoc.Harnesses["claude"]
+	if !ok {
+		t.Fatal("no persisted lock entry for claude")
+	}
+	if lh.RecipeRevision != wantRecipe {
+		t.Errorf("persisted RecipeRevision = %q, want the new format's %q", lh.RecipeRevision, wantRecipe)
+	}
+}
+
+// recipeRevisionForFormat mirrors npmRecipeRevision's hashing exactly but
+// with an explicit format number, so TestUpdateHarnessSelfHealsPhase1RecipeMismatch
+// can construct a recipe_revision as it would have been computed under a
+// PRIOR recipeFormatVersion (here, Phase 1's format 1) without depending on
+// that old constant value still existing anywhere in the source.
+func recipeRevisionForFormat(t *testing.T, pkg string, format int) string {
+	t.Helper()
+	data, err := json.Marshal(struct {
+		Package string `json:"package"`
+		Format  int    `json:"recipe_format_version"`
+	}{Package: pkg, Format: format})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
 // TestUpdateHarnessAllowYoungNotAppliedWhenAlreadyEligible: requesting
 // --allow-young when the normally-selected candidate is eligible anyway is
 // a no-op bypass — no audit event, AllowYoungApplied stays false.
@@ -936,7 +1098,7 @@ func TestUpdateHarnessAllowYoungNotAppliedWhenAlreadyEligible(t *testing.T) {
 
 	src := &fakeSource{}
 	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow, AllowYoung: true, Reason: "just in case",
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, AllowYoung: true, Reason: "just in case",
 	})
 	if err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
@@ -961,7 +1123,7 @@ func TestUpdateHarnessErrorsWithoutManifestEntry(t *testing.T) {
 	writeManifest(t, paths, "schema_version: 1\n")
 	src := &fakeSource{}
 	_, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: "pkg", Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: "pkg", Now: fixedNow,
 	})
 	if err == nil {
 		t.Fatal("expected an error when the harness has no manifest entry")
@@ -983,7 +1145,7 @@ func TestUpdateHarnessWritesLockOnlyAfterFetchFills(t *testing.T) {
 
 	src := &fakeSource{}
 	if _, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	}); err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
 	}
@@ -1036,7 +1198,7 @@ func TestUpdateHarnessFetchFailureLeavesPreviousLockUntouched(t *testing.T) {
 
 	src := &fakeSource{fetchErr: errors.New("network reset mid-download")}
 	_, err = UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	})
 	if err == nil {
 		t.Fatal("expected an error from a failing Fetch")
@@ -1067,7 +1229,7 @@ func TestUpdateHarnessCreatesAndRemovesScratchDirWhenWorkDirEmpty(t *testing.T) 
 
 	src := &fakeSource{}
 	if _, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow, // WorkDir left empty
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, // WorkDir left empty
 	}); err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
 	}
@@ -1096,7 +1258,7 @@ func TestUpdateHarnessRemovesScratchDirOnResolveFailure(t *testing.T) {
 
 	src := &fakeSource{resolveErr: errors.New("resolve blew up")}
 	if _, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 	}); err == nil {
 		t.Fatal("expected an error from a failing Resolve")
 	}
@@ -1126,7 +1288,7 @@ func TestUpdateHarnessRespectsExplicitWorkDir(t *testing.T) {
 	}
 	src := &fakeSource{}
 	if _, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
-		Harness: "claude", Package: pkg, Now: fixedNow, WorkDir: explicit,
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, WorkDir: explicit,
 	}); err != nil {
 		t.Fatalf("UpdateHarness: %v", err)
 	}
@@ -1304,7 +1466,7 @@ func TestSequentialRefreshThenUpdateDoesNotDeadlock(t *testing.T) {
 			return
 		}
 		_, err := UpdateHarness(ctx, src, fakeBackend{}, paths, UpdateOptions{
-			Harness: "claude", Package: pkg, Now: fixedNow,
+			Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 		})
 		done <- err
 	}()
@@ -1346,7 +1508,7 @@ func TestLockPoolComposesRefreshAndUpdateLockedWithoutDeadlock(t *testing.T) {
 			return
 		}
 		_, err = UpdateHarnessLocked(ctx, src, fakeBackend{}, paths, UpdateOptions{
-			Harness: "claude", Package: pkg, Now: fixedNow,
+			Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
 		})
 		done <- err
 	}()
@@ -1373,14 +1535,14 @@ func TestUpdateHarnessSecondCallWithUnchangedInputsIsIdempotent(t *testing.T) {
 	})
 
 	src := &fakeSource{}
-	if _, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", Package: pkg, Now: fixedNow}); err != nil {
+	if _, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow}); err != nil {
 		t.Fatalf("first UpdateHarness: %v", err)
 	}
 	if src.resolveCalls != 1 {
 		t.Fatalf("resolveCalls after first update = %d, want 1", src.resolveCalls)
 	}
 
-	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", Package: pkg, Now: fixedNow.Add(time.Hour)})
+	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("second UpdateHarness: %v", err)
 	}
