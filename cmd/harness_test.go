@@ -292,6 +292,11 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 		{"sync: legacy (non-lockable) harness", []string{"sync", "roo"}, "not pool-lockable"},
 		{"sync: unknown --platform lists the closed enum", []string{"sync", "--platform", "bogus-platform"},
 			"linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl"},
+		{"rollback: unknown harness", []string{"rollback", "bogus"}, "unknown harness"},
+		{"rollback: legacy (non-lockable) harness", []string{"rollback", "roo"}, "not pool-lockable"},
+		{"rollback: unknown --platform lists the closed enum", []string{"rollback", "claude", "--platform", "bogus-platform"},
+			"linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl"},
+		{"rollback: requires exactly one harness", []string{"rollback"}, "accepts 1 arg"},
 		{"policy set: no flags given", []string{"policy", "set"}, "specify at least one of"},
 		{"policy set: unknown --harness", []string{"policy", "set", "--harness", "bogus", "--minimum-release-age", "1h"}, "unknown harness"},
 		{"policy set: negative --minimum-release-age", []string{"policy", "set", "--minimum-release-age", "-1h"}, "must not be negative"},
@@ -1328,5 +1333,278 @@ func TestHarnessPolicySetLeavesUntouchedFieldByteIdentical(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("untouched line %q did not survive byte-identical, got:\n%s", untouchedLine, got)
+	}
+}
+
+// --- rollback / gc / ACTIVE column (pool-activation work package) ---
+
+// tableCell locates rowPrefix's row in a runHarnessList-rendered table and
+// returns the cell under columnHeader, trimmed. Column boundaries are found
+// from the HEADER line (tabwriter aligns every row's column starts
+// identically) rather than assumed from a fixed offset, and a cell is
+// considered to end at the next run of two-or-more spaces (tabwriter's own
+// padding) or end of line — mirroring
+// TestRunHarnessListRendersColumnsAndQuarantineCountdown's existing
+// REALIZED-column lookup, generalized to any column/row.
+func tableCell(t *testing.T, out, columnHeader, rowPrefix string) string {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	var header string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "HARNESS") {
+			header = line
+			break
+		}
+	}
+	if header == "" {
+		t.Fatalf("no header line found in output:\n%s", out)
+	}
+	col := strings.Index(header, columnHeader)
+	if col < 0 {
+		t.Fatalf("%s not found in header %q", columnHeader, header)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, rowPrefix) {
+			continue
+		}
+		if col >= len(line) {
+			t.Fatalf("row %q is shorter than the %s column offset %d", line, columnHeader, col)
+		}
+		rest := line[col:]
+		end := len(rest)
+		for i := 0; i < len(rest)-1; i++ {
+			if rest[i] == ' ' && rest[i+1] == ' ' {
+				end = i
+				break
+			}
+		}
+		return strings.TrimRight(rest[:end], " ")
+	}
+	t.Fatalf("no row with prefix %q found in output:\n%s", rowPrefix, out)
+	return ""
+}
+
+// seedOrphanGeneration builds a small, real, receipt-valid generation
+// directly under paths.Runtime/generations/<id>/ using only pool's exported
+// API (ScanGenerationFiles/ManifestDigest/GenerationID/Receipt/
+// WriteFileAtomic) — cmd-package tests have no access to internal/pool's
+// unexported test helpers. It is deliberately NOT referenced by any lock or
+// pointer, so GC must remove it.
+func seedOrphanGeneration(t *testing.T, paths pool.PoolPaths, harnessName, version string, key pool.PlatformKey, content string) (genID string) {
+	t.Helper()
+	scratch := t.TempDir()
+	binDir := filepath.Join(scratch, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, harnessName), []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files, err := pool.ScanGenerationFiles(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := pool.ManifestDigest(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genID, err = pool.GenerationID(harnessName, version, key, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &pool.Receipt{
+		SchemaVersion:  pool.ReceiptSchemaVersion,
+		Harness:        harnessName,
+		Version:        version,
+		Platform:       key,
+		RecipeRevision: "sha256:" + strings.Repeat("c", 64),
+		LockEntryHash:  "sha256:" + strings.Repeat("d", 64),
+		Backend:        pool.ReceiptBackend{Name: "fake"},
+		Files:          files,
+		ManifestDigest: digest,
+	}
+	data, err := r.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.WriteFileAtomic(filepath.Join(scratch, "receipt.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(paths.Runtime, "generations", genID)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(scratch, dest); err != nil {
+		t.Fatal(err)
+	}
+	return genID
+}
+
+// TestHarnessListActiveColumnShowsHostPlatformActiveVersion: after an
+// `install`, list's ACTIVE column shows the VERSION of the generation
+// currently activated for the HOST's own platform, not merely "yes"/"no" —
+// the pre-Phase-2-wave-2 legacy-bin-based rendering stays only for
+// non-pool-lockable harnesses (proven separately by
+// TestRunHarnessListRendersColumnsAndQuarantineCountdown's "legacy
+// (not lockable)" row).
+func TestHarnessListActiveColumnShowsHostPlatformActiveVersion(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	var buf bytes.Buffer
+	if err := runHarnessList(paths, filepath.Join(t.TempDir(), "bin"), fixedTestNow, &buf); err != nil {
+		t.Fatalf("runHarnessList: %v", err)
+	}
+	if got := tableCell(t, buf.String(), "ACTIVE", "claude"); got != "2.1.220" {
+		t.Errorf("ACTIVE cell = %q, want the installed version 2.1.220", got)
+	}
+}
+
+// TestHarnessRollbackSwitchesActiveGenerationAndListReflectsIt: `update`
+// advances claude to a newer version (activating it); `rollback --to` the
+// original version switches the active pointer back, and list's ACTIVE
+// column shows the rolled-back version even though LOCKED still shows the
+// newer one (rollback never touches the lock, §10).
+func TestHarnessRollbackSwitchesActiveGenerationAndListReflectsIt(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	obs, err := pool.LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.224"),
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := obs.Save(paths.Observations); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runHarnessCmdWithDeps(t, deps, "update", "claude"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	var beforeBuf bytes.Buffer
+	if err := runHarnessList(paths, filepath.Join(t.TempDir(), "bin"), fixedTestNow, &beforeBuf); err != nil {
+		t.Fatalf("runHarnessList (before rollback): %v", err)
+	}
+	if got := tableCell(t, beforeBuf.String(), "ACTIVE", "claude"); got != "2.1.224" {
+		t.Fatalf("ACTIVE cell before rollback = %q, want 2.1.224 (update must have activated it)", got)
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "rollback", "claude", "--to", "2.1.220")
+	if err != nil {
+		t.Fatalf("rollback: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "2.1.220") {
+		t.Errorf("expected rollback's output to name the generation rolled back to, got:\n%s", out)
+	}
+
+	var afterBuf bytes.Buffer
+	if err := runHarnessList(paths, filepath.Join(t.TempDir(), "bin"), fixedTestNow, &afterBuf); err != nil {
+		t.Fatalf("runHarnessList (after rollback): %v", err)
+	}
+	if got := tableCell(t, afterBuf.String(), "ACTIVE", "claude"); got != "2.1.220" {
+		t.Errorf("ACTIVE cell after rollback = %q, want 2.1.220", got)
+	}
+	if got := tableCell(t, afterBuf.String(), "LOCKED", "claude"); got != "2.1.224" {
+		t.Errorf("LOCKED cell after rollback = %q, want unchanged 2.1.224 (rollback never rewrites the lock)", got)
+	}
+}
+
+// TestHarnessRollbackToUnknownVersionListsAvailable pins the cmd-level
+// surface of RollbackHarnessLocked's error: a --to version that was never
+// realized names what IS available.
+func TestHarnessRollbackToUnknownVersionListsAvailable(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	_, err := runHarnessCmdWithDeps(t, deps, "rollback", "claude", "--to", "9.9.9")
+	if err == nil {
+		t.Fatal("expected an error for a --to version that was never realized")
+	}
+	if !strings.Contains(err.Error(), "2.1.220") {
+		t.Errorf("error = %q, want it to list the available version 2.1.220", err.Error())
+	}
+}
+
+// --- gc ---
+
+func TestHarnessGCRemovesOrphanGenerationAndReportsCounts(t *testing.T) {
+	t.Parallel()
+	paths := testHarnessPaths(t)
+	deps := harnessDeps{poolPaths: func() pool.PoolPaths { return paths }}
+
+	genID := seedOrphanGeneration(t, paths, "claude", "1.0.0", pool.PlatformLinuxAMD64Glibc, "orphan")
+
+	out, err := runHarnessCmdWithDeps(t, deps, "gc")
+	if err != nil {
+		t.Fatalf("gc: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "removed 1 generation") {
+		t.Errorf("expected gc's output to report 1 removed generation, got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", genID)); !os.IsNotExist(err) {
+		t.Errorf("expected the orphan generation to be removed, stat err = %v", err)
+	}
+}
+
+func TestHarnessGCDryRunRemovesNothing(t *testing.T) {
+	t.Parallel()
+	paths := testHarnessPaths(t)
+	deps := harnessDeps{poolPaths: func() pool.PoolPaths { return paths }}
+
+	genID := seedOrphanGeneration(t, paths, "claude", "1.0.0", pool.PlatformLinuxAMD64Glibc, "orphan")
+
+	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--dry-run")
+	if err != nil {
+		t.Fatalf("gc --dry-run: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "would remove 1 generation") {
+		t.Errorf("expected dry-run gc's output to say 'would remove', got:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", genID)); err != nil {
+		t.Errorf("dry run must not remove the generation: %v", err)
 	}
 }
