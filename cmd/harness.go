@@ -34,15 +34,15 @@ import (
 type harnessDeps struct {
 	poolPaths      func() pool.PoolPaths
 	poolBinDir     func() (poolDir, poolBin string, err error)
-	newSource      func() (pool.Source, error)
+	newSource      func(d harness.Descriptor) (pool.Source, error)
 	resolveBackend func() (backend.Backend, error)
 }
 
 // defaultHarnessDeps returns the real, production harnessDeps: the
 // developer's actual pool (rooted at pool.Root()), the legacy pool bin/
-// directory (ensureHarnessPool, cmd/guixcontainer.go), the real npm
-// artifact-acquisition Source (internal/pool/source), and the guix
-// resolve-phase backend.
+// directory (ensureHarnessPool, cmd/guixcontainer.go), the real
+// artifact-acquisition Source selected per descriptor (npm or archive,
+// internal/pool/source), and the guix resolve-phase backend.
 func defaultHarnessDeps() harnessDeps {
 	return harnessDeps{
 		// poolPaths builds the pool.PoolPaths for the developer's real pool
@@ -73,25 +73,64 @@ func defaultHarnessDeps() harnessDeps {
 			poolDir, poolBin, _, _, err := ensureHarnessPool()
 			return poolDir, poolBin, err
 		},
-		// newSource constructs the harness pool's npm artifact-acquisition
-		// Source (design/unified-harness-pool.md §11.3, pool.Source). The
-		// concrete npm Source lives in internal/pool/source; Go's
-		// structural typing binds it to pool.Source, including Realize
-		// (§11.4, implemented by impl/npm-realize).
-		newSource: func() (pool.Source, error) {
+		// newSource constructs the harness pool's artifact-acquisition Source
+		// for d (design/harness/unified-harness-pool.md §11.3, pool.Source):
+		// the archive Source for an archive-sourced descriptor (agy), the
+		// npm Source for everything else. Both concrete types live in
+		// internal/pool/source; Go's structural typing binds each to
+		// pool.Source, including Realize (§11.4).
+		newSource: func(d harness.Descriptor) (pool.Source, error) {
+			if d.PoolArchive {
+				return source.NewArchive(""), nil // "" = the production Antigravity CLI release channel
+			}
 			return source.NewNPM(""), nil // "" = the default npm registry
 		},
 		resolveBackend: defaultResolveBackend,
 	}
 }
 
+// harnessBackend resolves the container backend for d's resolve/realize
+// phases, gated on whether d's Source actually needs one (§6.2's phase
+// table): an npm-sourced harness does (Resolve/Realize both run inside a
+// Linux backend container), an archive-sourced harness never does (Resolve
+// and Realize are pure Go, internal/pool/source/archive.go's own doc
+// comment — "EVERY method here is pure Go, host-side, and NEVER invokes the
+// caller-supplied backend.Backend"). deps.resolveBackend is not even called
+// for an archive-sourced harness, so an off-guix/off-OCI host never fails
+// this probe for one — that is what makes `wraptool harness install agy`
+// reach refresh/resolve/fetch/realize/activate with no container runtime
+// present at all (this work package's headline capability). The returned
+// nil Backend for that case is safe: RealizeGeneration/UpdateHarnessLocked
+// only ever pass it through to Source.Resolve/Source.Realize, and Archive's
+// implementations of both never dereference it.
+func harnessBackend(deps harnessDeps, d harness.Descriptor) (backend.Backend, error) {
+	if d.PoolArchive {
+		return nil, nil
+	}
+	return deps.resolveBackend()
+}
+
+// poolSourceKind maps d to the pool.SourceKind its orchestrator calls must
+// be driven with (§8.1's Lock.Source values) — the cmd-level counterpart of
+// harnessBackend/newSource's own per-descriptor dispatch. Only meaningful
+// for a PoolLockable descriptor; callers only invoke it after checking that.
+func poolSourceKind(d harness.Descriptor) pool.SourceKind {
+	if d.PoolArchive {
+		return pool.SourceArchive
+	}
+	return pool.SourceNPM
+}
+
 // defaultResolveBackend picks the Linux-container backend BOTH the npm
 // resolve phase (§6.2/§8.1) AND the realize phase (§6.2/§11.4) run in — the
 // same *backend.Guix value is threaded through Source.Resolve and
-// RealizeGeneration/Source.Realize by every caller in this file. Phase 1
-// wires guix only — the same off-guix pointer error `install` has always
-// printed — OCI/--backend selection is Phase 3+ (design/unified-harness-pool.md
-// §16).
+// RealizeGeneration/Source.Realize by every caller in this file. Only ever
+// called for an npm-sourced harness (harnessBackend skips it entirely for an
+// archive-sourced one, which needs no backend at all — see harnessBackend's
+// doc comment), so its error message below is npm-specific by construction,
+// not merely by wording. Phase 1 wires guix only — the same off-guix pointer
+// error `install` has always printed — OCI/--backend selection is Phase 3+
+// (design/harness/unified-harness-pool.md §16).
 //
 // The guix package set below must cover BOTH phases' needs, since one
 // Backend value serves both: node (npm, for Resolve's `npm install
@@ -117,8 +156,11 @@ func defaultHarnessDeps() harnessDeps {
 func defaultResolveBackend() (backend.Backend, error) {
 	if !hasGuix() {
 		return nil, fmt.Errorf("`wraptool harness update`/`install` resolves the exact npm version " +
-			"inside a guix container, but `guix` is not on PATH.\nOn a devcontainer host, provision " +
-			"harnesses via the wraptool feature instead: add\n  " +
+			"inside a guix container, but `guix` is not on PATH (this applies to npm-sourced harnesses " +
+			"only — an archive-sourced harness like agy resolves/realizes in pure Go and needs no " +
+			"container backend at all).\nNative (guix-pool) install for npm-sourced harnesses on a " +
+			"non-guix host lands with the Phase 3 OCI provisioner (design/harness/unified-harness-pool.md " +
+			"§16); for now, provision harnesses via the wraptool feature instead: add\n  " +
 			`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}` +
 			"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` " +
 			"shares the pool home so auth/skills persist across projects")
@@ -188,7 +230,7 @@ func manifestLockableHarnessArgs(paths pool.PoolPaths, args []string) ([]string,
 		if !ok {
 			return nil, fmt.Errorf("unknown harness %q; supported: %v", name, harness.Names())
 		}
-		if d.PoolPackage == "" {
+		if !d.PoolLockable() {
 			return nil, fmt.Errorf("%q is not pool-lockable yet (legacy install path); see `wraptool harness list`", name)
 		}
 		manifestNames, err := pool.ManifestHarnessNames(paths.Manifest)
@@ -211,7 +253,7 @@ func manifestLockableHarnessArgs(paths pool.PoolPaths, args []string) ([]string,
 	}
 	var names []string
 	for _, name := range harness.Names() {
-		if harness.Registry[name].PoolPackage == "" {
+		if !harness.Registry[name].PoolLockable() {
 			continue
 		}
 		if inManifest[name] {
@@ -238,7 +280,7 @@ func lockHarnessArgs(paths pool.PoolPaths, args []string) ([]string, error) {
 		if !ok {
 			return nil, fmt.Errorf("unknown harness %q; supported: %v", name, harness.Names())
 		}
-		if d.PoolPackage == "" {
+		if !d.PoolLockable() {
 			return nil, fmt.Errorf("%q is not pool-lockable yet (legacy install path); see `wraptool harness list`", name)
 		}
 		lockNames, err := pool.LockHarnessNames(paths.Lock)
@@ -261,7 +303,7 @@ func lockHarnessArgs(paths pool.PoolPaths, args []string) ([]string, error) {
 	}
 	var names []string
 	for _, name := range harness.Names() {
-		if harness.Registry[name].PoolPackage == "" {
+		if !harness.Registry[name].PoolLockable() {
 			continue
 		}
 		if inLock[name] {
@@ -353,7 +395,7 @@ func runHarnessList(paths pool.PoolPaths, poolBin string, now time.Time, out io.
 	for _, name := range harness.Names() {
 		d := harness.Registry[name]
 
-		if d.PoolPackage == "" {
+		if !d.PoolLockable() {
 			active := "-"
 			if d.IsCLI() {
 				if fileExists(filepath.Join(poolBin, d.Bin)) {
@@ -366,7 +408,7 @@ func runHarnessList(paths pool.PoolPaths, poolBin string, now time.Time, out io.
 			continue
 		}
 
-		status, err := pool.StatusHarness(paths, name, d.PoolPackage, now)
+		status, err := pool.StatusHarness(paths, name, poolSourceKind(d), d.PoolPackageID(), now)
 		if err != nil {
 			return fmt.Errorf("harness %q: %w", name, err)
 		}
@@ -479,7 +521,7 @@ func newHarnessInstallCmd(deps harnessDeps) *cobra.Command {
 				return fmt.Errorf("--allow-young requires --reason")
 			}
 
-			if d.PoolPackage == "" {
+			if !d.PoolLockable() {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %q has no locked-pool adapter yet; installing unpinned (legacy path, §8)\n", name)
 				paths := deps.poolPaths()
 				release, err := pool.LockPool(context.Background(), paths)
@@ -507,15 +549,18 @@ func newHarnessInstallCmd(deps harnessDeps) *cobra.Command {
 // refresh, update, install — runs under ONE pool-lock acquisition (§6.5):
 // Source/backend availability is probed BEFORE the lock is taken (and before
 // any manifest mutation), so an off-guix host or an unwired Source fails
-// with zero side effects.
+// with zero side effects. For an archive-sourced harness (agy), that probe
+// never even calls deps.resolveBackend (harnessBackend's doc comment) — an
+// off-guix/off-OCI host reaches refresh/resolve/fetch/realize/activate
+// exactly the same as an on-guix one.
 func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, constraint string, allowYoung bool, reason string) error {
 	paths := deps.poolPaths()
 
-	src, err := deps.newSource()
+	src, err := deps.newSource(d)
 	if err != nil {
 		return err
 	}
-	b, err := deps.resolveBackend()
+	b, err := harnessBackend(deps, d)
 	if err != nil {
 		return err
 	}
@@ -530,13 +575,15 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 		return fmt.Errorf("recording pool intent for %s: %w", name, err)
 	}
 
+	pkg := d.PoolPackageID()
+	kind := poolSourceKind(d)
 	now := time.Now().UTC()
-	if _, err := pool.RefreshHarnessLocked(ctx, src, paths, d.PoolPackage, now); err != nil {
+	if _, err := pool.RefreshHarnessLocked(ctx, src, paths, kind, pkg, now); err != nil {
 		return fmt.Errorf("refreshing %s: %w", name, err)
 	}
 
 	result, err := pool.UpdateHarnessLocked(ctx, src, b, paths, pool.UpdateOptions{
-		Harness: name, Package: d.PoolPackage, BinName: d.Bin, Now: now,
+		Harness: name, Package: pkg, Source: kind, BinName: d.Bin, Now: now,
 		AllowYoung: allowYoung, Reason: reason,
 		// install never advances a floating constraint (§10) — it's
 		// idempotent once manifest/lock/recipe agree, even if a newer
@@ -729,12 +776,24 @@ func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name strin
 		return fmt.Errorf("no automated installer for %q; install version %s into %s yourself", name, version, poolBin)
 	}
 
-	pinned, err := pinInstallVersion(d.Install, d.PoolPackage, version)
-	if err != nil {
-		return fmt.Errorf("pinning install recipe for %s: %w", name, err)
+	// pinInstallVersion only applies to an npm-style recipe (npmInstall's
+	// argv embeds the bare package name to substitute pkg@version into). An
+	// archive-sourced harness's legacy recipe (agy's curl|bash installer)
+	// has no such token — its upstream channel has no "install this exact
+	// version" mode at all — so it runs verbatim, exactly as it always has
+	// (§16 Phase 2 posture: the actual version pin lives in the pool's own
+	// lock/generation, not in this legacy fallback; a version-pinned native
+	// install for these harnesses lands with the Phase 4 cutover).
+	recipe := d.Install
+	if d.PoolPackage != "" {
+		pinned, err := pinInstallVersion(d.Install, d.PoolPackage, version)
+		if err != nil {
+			return fmt.Errorf("pinning install recipe for %s: %w", name, err)
+		}
+		recipe = pinned
 	}
-	argv := make([]string, len(pinned))
-	for i, a := range pinned {
+	argv := make([]string, len(recipe))
+	for i, a := range recipe {
 		argv[i] = strings.ReplaceAll(a, "{prefix}", poolDir)
 	}
 	if argv[0] == "guix" && !hasGuix() {
@@ -804,10 +863,6 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 			if err != nil {
 				return err
 			}
-			src, err := deps.newSource()
-			if err != nil {
-				return err
-			}
 
 			release, err := pool.LockPool(context.Background(), paths)
 			if err != nil {
@@ -815,10 +870,17 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 			}
 			defer release()
 
+			// deps.newSource is per-descriptor (npm vs archive), so it moves
+			// inside the per-harness closure below — a bare `refresh` may
+			// touch harnesses of both source styles in one invocation.
 			now := time.Now().UTC()
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
-				candidates, err := pool.RefreshHarnessLocked(context.Background(), src, paths, d.PoolPackage, now)
+				src, err := deps.newSource(d)
+				if err != nil {
+					return err
+				}
+				candidates, err := pool.RefreshHarnessLocked(context.Background(), src, paths, poolSourceKind(d), d.PoolPackageID(), now)
 				if err != nil {
 					return err
 				}
@@ -853,14 +915,6 @@ listed in the pool manifest.`,
 			if err != nil {
 				return err
 			}
-			src, err := deps.newSource()
-			if err != nil {
-				return err
-			}
-			b, err := deps.resolveBackend()
-			if err != nil {
-				return err
-			}
 
 			release, err := pool.LockPool(context.Background(), paths)
 			if err != nil {
@@ -868,11 +922,24 @@ listed in the pool manifest.`,
 			}
 			defer release()
 
+			// deps.newSource/harnessBackend are per-descriptor (npm vs
+			// archive), so they move inside the per-harness closure below —
+			// a bare `update` may touch harnesses of both source styles in
+			// one invocation, and an archive-sourced one must never probe
+			// resolveBackend at all (harnessBackend's doc comment).
 			now := time.Now().UTC()
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
+				src, err := deps.newSource(d)
+				if err != nil {
+					return err
+				}
+				b, err := harnessBackend(deps, d)
+				if err != nil {
+					return err
+				}
 				result, err := pool.UpdateHarnessLocked(context.Background(), src, b, paths, pool.UpdateOptions{
-					Harness: name, Package: d.PoolPackage, BinName: d.Bin, Now: now,
+					Harness: name, Package: d.PoolPackageID(), Source: poolSourceKind(d), BinName: d.Bin, Now: now,
 					AllowYoung: allowYoung, Reason: reason,
 					// update is the only normal command that advances a
 					// floating constraint (§10): always scan for a newer
@@ -922,14 +989,6 @@ syncs every harness currently present in the lock.`,
 			if err != nil {
 				return err
 			}
-			src, err := deps.newSource()
-			if err != nil {
-				return err
-			}
-			b, err := deps.resolveBackend()
-			if err != nil {
-				return err
-			}
 
 			release, err := pool.LockPool(context.Background(), paths)
 			if err != nil {
@@ -937,8 +996,19 @@ syncs every harness currently present in the lock.`,
 			}
 			defer release()
 
+			// deps.newSource/harnessBackend are per-descriptor (npm vs
+			// archive), so they move inside the per-harness closure below —
+			// see newHarnessRefreshCmd/newHarnessUpdateCmd's matching comment.
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
+				src, err := deps.newSource(d)
+				if err != nil {
+					return err
+				}
+				b, err := harnessBackend(deps, d)
+				if err != nil {
+					return err
+				}
 				lh, err := pool.SyncHarnessLocked(context.Background(), src, b, paths, name, d.Bin, key)
 				if err != nil {
 					return err
@@ -993,7 +1063,7 @@ host's own platform.`,
 			if !ok {
 				return fmt.Errorf("unknown harness %q; supported: %v", name, harness.Names())
 			}
-			if d.PoolPackage == "" {
+			if !d.PoolLockable() {
 				return fmt.Errorf("%q is not pool-lockable yet (legacy install path); see `wraptool harness list`", name)
 			}
 			key, err := resolveSyncPlatform(platform)
