@@ -568,8 +568,12 @@ func TestLockValidate_ArchiveRejectsNonHTTPSURL(t *testing.T) {
 	h.Archive = &LockArchive{Artifacts: artifacts}
 	l.Harnesses["agy"] = h
 
-	if err := l.Validate(); err == nil {
+	err := l.Validate()
+	if err == nil {
 		t.Fatal("Validate: got nil error, want rejection of a non-https artifact URL")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error = %q, want it to mention https", err.Error())
 	}
 }
 
@@ -583,8 +587,12 @@ func TestLockValidate_ArchiveRejectsMalformedSHA512(t *testing.T) {
 	h.Archive = &LockArchive{Artifacts: artifacts}
 	l.Harnesses["agy"] = h
 
-	if err := l.Validate(); err == nil {
+	err := l.Validate()
+	if err == nil {
 		t.Fatal("Validate: got nil error, want rejection of a malformed sha512")
+	}
+	if !strings.Contains(err.Error(), "sha512") {
+		t.Errorf("error = %q, want it to mention sha512", err.Error())
 	}
 }
 
@@ -598,8 +606,12 @@ func TestLockValidate_ArchiveRejectsMalformedSHA256WhenPresent(t *testing.T) {
 	h.Archive = &LockArchive{Artifacts: artifacts}
 	l.Harnesses["agy"] = h
 
-	if err := l.Validate(); err == nil {
+	err := l.Validate()
+	if err == nil {
 		t.Fatal("Validate: got nil error, want rejection of a malformed (non-empty) sha256")
+	}
+	if !strings.Contains(err.Error(), "sha256") {
+		t.Errorf("error = %q, want it to mention sha256", err.Error())
 	}
 }
 

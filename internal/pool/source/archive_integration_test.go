@@ -34,7 +34,15 @@ func TestIntegration_ArchiveFullChain(t *testing.T) {
 	scriptContent := "#!/bin/sh\necho hello from fake agy\n"
 	tarGZ := buildAgyTarGZ(t, "agy-"+version+"-linux-x64", map[string]string{"agy": scriptContent})
 
-	artifactSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// httptest.NewTLSServer, not NewServer: Resolve (review round 1, item 3)
+	// rejects a non-https manifest-supplied artifact URL before it is ever
+	// locked, so the server Fetch actually downloads from must genuinely
+	// speak https for this end-to-end chain to reach Fetch/Realize at all.
+	// The manifest server itself stays plain http — only the URL a manifest
+	// NAMES as the artifact location is scheme-checked, not the transport
+	// used to fetch the manifest document itself (see validateManifest's
+	// doc comment on that split).
+	artifactSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(tarGZ)
 	}))
 	defer artifactSrv.Close()
@@ -47,6 +55,9 @@ func TestIntegration_ArchiveFullChain(t *testing.T) {
 	defer manifestSrv.Close()
 
 	a := NewArchive(manifestSrv.URL)
+	// Trust the TLS test server's self-signed certificate for Fetch's
+	// downloads; production code never overrides this client.
+	a.downloadClient = artifactSrv.Client()
 	fb := &fatalBackend{t: t}
 	ctx := context.Background()
 
@@ -130,8 +141,8 @@ func TestIntegration_ArchiveFullChain(t *testing.T) {
 // tarball-building helper (buildAgyTarGZ, archive_test.go) really does
 // produce a gzip-compressed tar stream a standard reader can parse — a
 // belt-and-braces check independent of this package's own
-// readArchiveEntries, since a bug shared by both the fixture builder and the
-// reader would otherwise never surface as a test failure.
+// streamExtractArchive, since a bug shared by both the fixture builder and
+// the reader would otherwise never surface as a test failure.
 func TestBuildAgyTarGZProducesAValidGzipTarStream(t *testing.T) {
 	data := buildAgyTarGZ(t, "top", map[string]string{"a": "1", "b": "2"})
 

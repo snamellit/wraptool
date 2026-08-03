@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -141,15 +142,19 @@ func validSHA512Hex(s string) bool {
 // url is the manifest's OWN request URL, used only to make an error message
 // name which manifest failed.
 //
-// This does NOT enforce the artifact URL's scheme (https): that check is
-// lock.go's Lock.Validate/validateArchiveArtifact's job (§8 ruling 1, "URL
-// https"), applied to a LockArchiveArtifact once Resolve has locked it —
-// not to every manifest this package merely reads. Production manifests are
-// always https in practice (the work package brief's live endpoint), but
-// pinning that here as well would make this package untestable against a
-// plain-http httptest.Server, exactly the seam every other Source/backend
-// test in this codebase relies on (NewNPM's own registryBaseURL/
-// nodeDistBaseURL test seams are equally scheme-agnostic).
+// This does NOT enforce the artifact URL's scheme (https). That check is
+// deliberately NOT here: it is Resolve's own job (see Resolve's "Scheme
+// check" doc paragraph), applied only at the point a manifest-supplied URL
+// is about to become a LOCKED LockArchiveArtifact, plus lock.go's
+// Lock.Validate/validateArchiveArtifact as a second, independent gate on
+// the persisted lock (§8 ruling 1, "URL https"). Enforcing it here in
+// validateManifest as well — which EVERY fetchManifest call runs, including
+// from Refresh, which never locks anything — would make this package
+// untestable against a plain-http httptest.Server, exactly the seam every
+// other Source/backend test in this codebase relies on (NewNPM's own
+// registryBaseURL/nodeDistBaseURL test seams are equally scheme-agnostic).
+// Production manifests are always https in practice (the work package
+// brief's live endpoint).
 func validateManifest(url string, m *archiveManifest) error {
 	if m.Version == "" {
 		return fmt.Errorf("manifest %s: missing %q", url, "version")
@@ -226,12 +231,40 @@ func (a *Archive) fetchManifest(ctx context.Context, key pool.PlatformKey) (*arc
 // is this work package's explicit non-goal (see this package's top-level
 // doc comment and the work package brief).
 //
-// A platform whose manifest cannot be fetched or fails validation is simply
-// excluded from this call's results, not treated as a hard failure of the
-// whole Refresh — mirroring Resolve's "a mid-rollout platform is simply
-// absent" tolerance (§8.1 ruling 3). Refresh fails outright only when NOT
-// ONE of the four platforms could be reached, aggregating every platform's
-// error via errors.Join for diagnosis.
+// CONCRETE CONSEQUENCE, as of this branch: pool.Eligible
+// (internal/pool/eligibility.go) unconditionally returns false for a zero
+// PublishedAt — it has no source-type branch and does not know "archive"
+// candidates should be judged by FirstSeenAt instead. So an archive
+// candidate returned by THIS method is not merely quarantined, it is
+// PERMANENTLY ineligible under today's Eligible, until the orchestrator
+// wiring package does one of: (a) give Eligible a source-aware branch, or
+// (b) synthesize Candidate.PublishedAt = Candidate.FirstSeenAt for an
+// archive-sourced candidate BEFORE calling Eligible. That synthesis must
+// happen at the Candidate level, and BEFORE the write-once Observe step
+// (§6.6): Observations persists first_seen_at once per (source, package,
+// version) and never updates it, and a caller that ran a refresh under the
+// OLD (pre-wiring) code path would have recorded a candidate whose only
+// timestamp is zero — running refresh even once before that wiring lands
+// would permanently persist a zero timestamp into write-once observations
+// for that version, unrecoverable short of deleting the observation
+// record. This is not merely a documentation note: it blocks any archive
+// harness from ever completing an install until addressed.
+//
+// PARTIAL-FAILURE OBSERVABILITY: a platform whose manifest cannot be
+// fetched or fails validation is simply excluded from this call's results,
+// not treated as a hard failure of the whole Refresh — mirroring Resolve's
+// "a mid-rollout platform is simply absent" tolerance (§8.1 ruling 3).
+// Refresh fails outright only when NOT ONE of the four platforms could be
+// reached, aggregating every platform's error via errors.Join for
+// diagnosis in that all-failed case. Short of that, the CALLER of Refresh
+// cannot distinguish "this platform genuinely has not published this
+// release yet" (a routine, expected mid-rollout state) from "this
+// platform's manifest endpoint is unreachable/misbehaving right now" (an
+// operational problem worth surfacing) — both collapse to the same silent
+// exclusion from the returned candidate set. A future caller that wants to
+// alert on the latter needs a richer return shape (e.g. per-platform
+// results) than this method currently provides; today that distinction is
+// only visible by reading logs/errors this method does not itself emit.
 func (a *Archive) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, error) {
 	versions := make(map[string]struct{})
 	var errs []error
@@ -287,6 +320,18 @@ func (a *Archive) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, er
 // every platform's reason (fetch failure or version mismatch) into one
 // error.
 //
+// PARTIAL-FAILURE OBSERVABILITY (mirrors Refresh's own note): in the
+// SUCCESS case — at least one platform matched — the caller has no way to
+// tell, from the returned LockHarness alone, WHY a platform absent from
+// Archive.Artifacts is absent: "this platform hasn't published this
+// version yet" and "this platform's manifest endpoint was unreachable when
+// Resolve ran" are indistinguishable from the returned value. The per-
+// platform reasons this method collects internally are only surfaced in
+// the error message of the ALL-failed case; a partial success silently
+// discards them. A future caller wanting to alert on "unreachable, not
+// just not-yet-published" needs a richer return shape than this method
+// currently provides.
+//
 // b, workDir, and nodeVersion are accepted only to satisfy the Source
 // interface's shape, pinned to match NPM.Resolve's signature so both
 // implementations satisfy internal/pool.Source structurally without either
@@ -308,6 +353,20 @@ func (a *Archive) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, er
 // (a pool.Candidate.Version as Refresh returns it); Resolve does not
 // normalize it.
 //
+// Scheme check (deliberately split from validateManifest): validateManifest,
+// which fetchManifest applies to every raw manifest this method reads, is
+// intentionally scheme-agnostic (see its doc comment — an httptest.Server
+// test seam cannot serve https). Resolve itself enforces https on the
+// artifact URL of every platform it is about to LOCK — the one point this
+// package turns a manifest-supplied URL into a LockArchiveArtifact that
+// Fetch will later download from unauthenticated (integrity is verified
+// AFTER download, so the transport itself must not be tamperable). A
+// non-https artifact URL for ANY matching platform fails the WHOLE Resolve
+// call immediately (not just that platform): a channel serving plain http
+// for one artifact is a signal the channel itself may be compromised or
+// misconfigured, not a per-platform absence to silently tolerate the way a
+// version mismatch is.
+//
 // PublishedAt and FirstSeenAt are both left at the zero-formatted timestamp
 // on the returned value, mirroring NPM.Resolve's own treatment of
 // FirstSeenAt (see that method's doc comment for the same reasoning): this
@@ -322,8 +381,12 @@ func (a *Archive) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, er
 // THAT SAME fill-in value (i.e., for an archive-sourced harness, treat
 // first-seen as the only available age signal and let published_at and
 // first_seen_at agree) — the "conservative proxy" Refresh's RULING
-// documents. That orchestrator wiring is this work package's explicit
-// non-goal.
+// documents. CONCRETE CONSEQUENCE: until that wiring lands, a LockHarness
+// this method returns cannot be persisted at all — (*pool.Lock).Validate
+// rejects a zero published_at/first_seen_at outright (validateLockTimestamp)
+// — so this is not merely an inert placeholder value, it is a hard block on
+// ever writing an archive-sourced entry into harness-lock.json. That
+// orchestrator wiring is this work package's explicit non-goal.
 func (a *Archive) Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (pool.LockHarness, error) {
 	artifacts := make(map[pool.PlatformKey]pool.LockArchiveArtifact)
 	var reasons []string
@@ -336,6 +399,11 @@ func (a *Archive) Resolve(ctx context.Context, b backend.Backend, pkg, version, 
 		if m.Version != version {
 			reasons = append(reasons, fmt.Sprintf("%s: manifest reports version %q, not %q", key, m.Version, version))
 			continue
+		}
+		if !strings.HasPrefix(m.URL, "https://") {
+			return pool.LockHarness{}, fmt.Errorf(
+				"archive resolve %s@%s: platform %s manifest artifact url %q is not https; refusing to lock it",
+				pkg, version, key, m.URL)
 		}
 		artifacts[key] = pool.LockArchiveArtifact{URL: m.URL, SHA512: m.SHA512}
 	}
@@ -573,7 +641,7 @@ func (a *Archive) Realize(ctx context.Context, b backend.Backend, harnessName, b
 	// unpack step implicitly requires: it fails the whole scan on any
 	// symlink, naming the offending path (defense in depth — this package's
 	// own tar extraction never writes a symlink in the first place, see
-	// readArchiveEntries).
+	// streamExtractArchive).
 	files, err := pool.ScanGenerationFiles(stagingGenDir)
 	if err != nil {
 		return nil, fmt.Errorf("realize: %s: %w", harnessName, err)
@@ -605,23 +673,59 @@ func (a *Archive) Realize(ctx context.Context, b backend.Backend, harnessName, b
 }
 
 // --- tar.gz extraction (§11.4 last line: "unpack + wrap") --------------------
+//
+// SECURITY NOTE (review round 1, BLOCKER): the original implementation here
+// buffered every regular entry's FULL declared Size into memory
+// (archiveTarEntry.data) before deciding anything about the archive's
+// shape. A per-entry cap alone does not bound total memory: GNU/PAX sparse
+// tar entries let a tiny PHYSICAL archive declare an enormous LOGICAL Size
+// (Go's tar.Reader transparently materializes the sparse holes as zero
+// bytes on Read, honoring Header.Size regardless of how little data backs
+// it), so a handful of KB on disk could drive tens of gigabytes of Go heap
+// allocation across several individually-small entries, well before any
+// single entry tripped a per-entry limit. Two independent bounds now apply,
+// BOTH evaluated from tar HEADER metadata alone, before any of an entry's
+// content is read or written:
+//
+//  1. maxArchiveEntrySize — unchanged, a per-entry cap.
+//  2. maxArchiveTotalBytes — NEW, a running total across every entry in the
+//     archive, checked before each entry's content is touched at all.
+//
+// Extraction is also now single-pass STREAMING: each accepted regular
+// entry is copied directly from the tar reader to its destination file via
+// io.CopyN, never buffered whole in a Go slice. Because the "strip one
+// common leading directory" decision (§11.4 last line) needs to see every
+// entry's name to decide whether such a directory exists, and a tar stream
+// cannot be rewound, this is a "write-then-scan on disk" design: entries
+// are streamed to stagingGenDir under their RAW (validated, but
+// unstripped) relative paths first; stripCommonLeadingDirOnDisk then
+// inspects (and rewrites, via directory renames — no re-reading of file
+// content) the resulting ON-DISK tree; locateBinNameOnDisk finally walks
+// that same tree by NAME only to find the binName match. At no point after
+// the streaming copy does this package hold more than one entry's name/
+// metadata in memory at a time.
 
-// maxArchiveEntrySize is the zip-bomb guard: a single tar entry declaring a
-// larger size than this is rejected before any of its content is read.
-const maxArchiveEntrySize = 1 << 30 // 1 GiB
+// maxArchiveEntrySize is the per-entry zip-bomb guard: a single tar entry
+// declaring a larger size than this is rejected before any of its content
+// is read. Package-level VAR (not const) so tests can shrink it to make a
+// "sum of several small-cap entries exceeds the whole-artifact budget"
+// scenario reachable with genuinely tiny fixture data, without needing to
+// fabricate gigabyte-scale (or GNU-sparse-encoded, which Go's tar.Writer
+// cannot produce via its public API) test archives; production code never
+// mutates it.
+var maxArchiveEntrySize int64 = 1 << 30 // 1 GiB
 
-// archiveTarEntry is one regular-file entry extracted from the tar.gz
-// artifact, captured fully in memory: these artifacts are a single flat
-// native binary (tens of megabytes), never large enough to need a
-// two-pass-over-disk approach.
-type archiveTarEntry struct {
-	name string // cleaned, forward-slash, RAW (pre-strip) name from the tar header
-	mode os.FileMode
-	data []byte
-}
+// maxArchiveTotalBytes is the whole-artifact zip-bomb guard (review round
+// 1, BLOCKER item 1b): the running sum of every regular entry's declared
+// Size, checked BEFORE each entry's content is read or written, rejecting
+// the archive the instant the prospective total would exceed this budget —
+// so no entry that would push the cumulative total over budget is ever
+// extracted, regardless of how small its own declared size is. Also a
+// package-level var for the same test-seam reason as maxArchiveEntrySize.
+var maxArchiveTotalBytes int64 = 2 << 30 // 2 GiB
 
 // tarLinkKindLabel renders a tar Typeflag naming a link entry, for
-// readArchiveEntries' rejection error.
+// streamExtractArchive's rejection error.
 func tarLinkKindLabel(t byte) string {
 	if t == tar.TypeLink {
 		return "hardlink"
@@ -645,7 +749,11 @@ func isASCIILetter(b byte) bool {
 // Windows drive-letter prefix — checked independent of host OS, the same
 // stance receipt.go's validateReceiptFilePath takes and for the same
 // reason: a judgment about a foreign archive's content must not depend on
-// which host happens to check it), or any ".." path segment.
+// which host happens to check it), or any ".." path segment. This is the
+// ONLY guard standing between an attacker-controlled tar entry name and an
+// actual write to disk outside stagingGenDir (see
+// TestRealize_ArchiveRejectsPathEscapeEntryMatchingBinName, which proves
+// this by neutering the guard and observing the escape actually happen).
 func validateArchiveEntryName(name string) error {
 	if path.IsAbs(name) {
 		return fmt.Errorf("archive entry %q must not be an absolute path", name)
@@ -661,42 +769,59 @@ func validateArchiveEntryName(name string) error {
 	return nil
 }
 
-// readArchiveEntries decompresses and parses r as a gzip-compressed tar
-// stream, returning every regular-file entry (with its RAW, pre-strip name —
-// stripCommonLeadingDir/relativeArchivePath below handle the leading
-// directory). It rejects, rather than silently skips or accepts (the
-// codebase's "reject, don't escape" stance — see backend.validateMount and
-// realize.go's validateGeneratedShellSegment):
+// streamExtractArchive decompresses and parses r as a gzip-compressed tar
+// stream, streaming every regular-file entry directly to disk under
+// destRoot at its RAW (validated, but not yet leading-dir-stripped)
+// relative path — see this section's top-level SECURITY NOTE for why this
+// is a streaming, single-pass design rather than an in-memory one. It
+// rejects, rather than silently skips or accepts (the codebase's "reject,
+// don't escape" stance — see backend.validateMount and realize.go's
+// validateGeneratedShellSegment):
 //
 //   - a symlink or hardlink entry (tar.TypeSymlink / tar.TypeLink) — §6.4
 //     generations are symlink-free, and a hardlink shares the same
 //     tree-escape/portability hazards on the pool's host filesystems;
 //   - any entry whose name is an absolute path or contains a ".." segment
 //     (validateArchiveEntryName);
-//   - any entry declaring a size over maxArchiveEntrySize (zip-bomb guard);
-//   - any entry that is neither a regular file nor a directory (device,
-//     fifo, socket, ...).
+//   - any entry declaring a negative or over-maxArchiveEntrySize size
+//     (per-entry zip-bomb guard);
+//   - a cumulative declared size over maxArchiveTotalBytes across every
+//     regular entry seen so far, INCLUDING the one currently being
+//     evaluated — checked from hdr.Size alone, before that entry's content
+//     is read (whole-artifact zip-bomb guard);
+//   - two regular entries whose raw name is identical (would silently
+//     overwrite on a naive write, review round 1 item 6) — enforced by
+//     O_EXCL on the destination file, so the SECOND entry with a given
+//     name fails instead of clobbering the first;
+//   - any entry that is neither a regular file, a directory, nor a PAX
+//     global extended header (tar.TypeXGlobalHeader — git-produced
+//     archives prepend one; Go's tar.Reader does NOT auto-absorb this type
+//     the way it does local PAX/GNU-longname headers, so without this case
+//     a legitimate `git archive` tarball would be rejected outright,
+//     review round 1 item 4).
 //
-// A directory entry contributes no archiveTarEntry (Realize creates
-// directories implicitly from file paths via os.MkdirAll) but its name is
+// A directory entry contributes no file (Realize creates directories
+// implicitly via os.MkdirAll ahead of each file it writes) but its name is
 // still validated — a directory entry is exactly as capable of naming an
-// escaping path as a file entry.
-func readArchiveEntries(r io.Reader) ([]archiveTarEntry, error) {
+// escaping path as a file entry. Returns an error if the archive contains
+// no regular file at all.
+func streamExtractArchive(r io.Reader, destRoot string) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
-		return nil, fmt.Errorf("opening gzip stream: %w", err)
+		return fmt.Errorf("opening gzip stream: %w", err)
 	}
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	var entries []archiveTarEntry
+	var totalSize int64
+	sawRegular := false
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("reading tar entry: %w", err)
+			return fmt.Errorf("reading tar entry: %w", err)
 		}
 
 		name := path.Clean(filepath.ToSlash(hdr.Name))
@@ -704,94 +829,187 @@ func readArchiveEntries(r io.Reader) ([]archiveTarEntry, error) {
 			continue // the archive's own root entry ("./"), if present
 		}
 		if err := validateArchiveEntryName(name); err != nil {
-			return nil, err
+			return err
 		}
 
 		switch hdr.Typeflag {
 		case tar.TypeDir:
 			continue
+		case tar.TypeXGlobalHeader:
+			continue // PAX global extended header (e.g. `git archive`'s pax_global_header) — metadata only, not a file
 		case tar.TypeSymlink, tar.TypeLink:
-			return nil, fmt.Errorf("archive entry %q is a %s, which is not allowed (generations must be symlink-free, §6.4)",
+			return fmt.Errorf("archive entry %q is a %s, which is not allowed (generations must be symlink-free, §6.4)",
 				name, tarLinkKindLabel(hdr.Typeflag))
 		case tar.TypeReg:
+			if hdr.Size < 0 {
+				return fmt.Errorf("archive entry %q declares a negative size %d", name, hdr.Size)
+			}
 			if hdr.Size > maxArchiveEntrySize {
-				return nil, fmt.Errorf("archive entry %q declares size %d bytes, over the %d byte limit (zip-bomb guard)",
-					name, hdr.Size, int64(maxArchiveEntrySize))
+				return fmt.Errorf("archive entry %q declares size %d bytes, over the %d byte per-entry limit (zip-bomb guard)",
+					name, hdr.Size, maxArchiveEntrySize)
 			}
-			data := make([]byte, hdr.Size)
-			if _, err := io.ReadFull(tr, data); err != nil {
-				return nil, fmt.Errorf("reading content of archive entry %q: %w", name, err)
+			prospectiveTotal := totalSize + hdr.Size
+			if prospectiveTotal > maxArchiveTotalBytes {
+				return fmt.Errorf(
+					"archive's declared total size would reach %d bytes (over the %d byte whole-artifact limit) at entry %q; rejecting before extracting it (zip-bomb guard)",
+					prospectiveTotal, maxArchiveTotalBytes, name)
 			}
-			entries = append(entries, archiveTarEntry{name: name, mode: os.FileMode(hdr.Mode).Perm(), data: data})
+			totalSize = prospectiveTotal
+			sawRegular = true
+
+			dst := filepath.Join(destRoot, filepath.FromSlash(name))
+			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return fmt.Errorf("creating directory for %s: %w", name, err)
+			}
+			if err := streamExtractRegularEntry(tr, dst, hdr.Size, os.FileMode(hdr.Mode).Perm()); err != nil {
+				return fmt.Errorf("extracting %q: %w", name, err)
+			}
 		default:
-			return nil, fmt.Errorf("archive entry %q has unsupported type %q", name, string(hdr.Typeflag))
+			return fmt.Errorf("archive entry %q has unsupported type %q", name, string(hdr.Typeflag))
 		}
 	}
-	return entries, nil
+	if !sawRegular {
+		return fmt.Errorf("archive contains no regular files")
+	}
+	return nil
 }
 
-// stripCommonLeadingDir computes the single top-level directory name shared
-// by every entry's name, when one exists ("strip any leading directory",
-// §11.4 last line) — the same convention `tar --strip-components=1`
-// encodes, reimplemented in pure Go here since Go stdlib has no CLI tar to
-// shell out to (and CLAUDE.md forbids shell execution regardless). Returns
-// "" when there is no single shared top directory — including when any
-// entry is already a top-level file — in which case entry names are used
-// as-is: this channel's own artifact, per the work package brief, may ship
-// "the flat native binary" with no wrapping directory at all, and this
-// function must handle that shape too, not just the wrapped-directory one.
-func stripCommonLeadingDir(entries []archiveTarEntry) string {
-	if len(entries) == 0 {
-		return ""
+// streamExtractRegularEntry streams exactly size bytes from tr (the tar
+// reader, currently positioned at one regular entry's content) into a new
+// file at dst, then normalizes its mode (review round 1 item 5): 0o755 if
+// archiveMode carries ANY exec bit (owner/group/other, 0o111), else 0o644
+// — umask-independent, and independent of every OTHER bit the archive's
+// header claimed (kills a hostile group/world-writable or setuid mode, and
+// keeps the receipt's digested "executable" flag — which is ITSELF
+// boolean, not the raw mode, see receipt.go's ReceiptFile — identical
+// across hosts regardless of the archive's origin umask, §11.5).
+//
+// dst is created with O_EXCL: a SECOND entry that would extract to the
+// same dst (whether via an exactly-duplicated raw name, review round 1
+// item 6) fails here rather than silently overwriting the first entry's
+// content — "reject, don't guess," matching this file's stance on an
+// ambiguous binName match.
+func streamExtractRegularEntry(tr *tar.Reader, dst string, size int64, archiveMode os.FileMode) error {
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("duplicate entry: %s already extracted from an earlier tar entry", dst)
+		}
+		return fmt.Errorf("creating %s: %w", dst, err)
 	}
-	var common string
-	for i, e := range entries {
-		top, _, ok := strings.Cut(e.name, "/")
-		if !ok {
-			return "" // a top-level file — nothing to strip
-		}
-		if i == 0 {
-			common = top
-			continue
-		}
-		if top != common {
-			return ""
-		}
+	if _, err := io.CopyN(out, tr, size); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return fmt.Errorf("writing content: %w", err)
 	}
-	return common
+	if err := out.Close(); err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("closing %s: %w", dst, err)
+	}
+
+	mode := os.FileMode(0o644)
+	if archiveMode&0o111 != 0 {
+		mode = 0o755
+	}
+	if err := os.Chmod(dst, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", dst, err)
+	}
+	return nil
 }
 
-// relativeArchivePath computes name's final generation-relative path after
-// stripping stripDir (the result of stripCommonLeadingDir), when stripDir is
-// non-empty. name is assumed already validated (validateArchiveEntryName)
-// and, when stripDir is non-empty, is guaranteed by stripCommonLeadingDir's
-// own construction to share that prefix — the prefix-mismatch case below is
-// a defensive impossibility, not a reachable failure mode.
-func relativeArchivePath(name, stripDir string) (string, error) {
-	rel := name
-	if stripDir != "" {
-		cut, ok := strings.CutPrefix(name, stripDir+"/")
-		if !ok {
-			return "", fmt.Errorf("archive entry %q does not share the common leading directory %q", name, stripDir)
+// stripCommonLeadingDirOnDisk inspects destRoot's TOP-LEVEL directory
+// listing (names only — no file content is read) and, if it holds EXACTLY
+// one entry and that entry is itself a directory, moves every child of
+// that directory up one level (via os.Rename — no data copy) and removes
+// the now-empty wrapping directory — the on-disk equivalent of `tar
+// --strip-components=1` (§11.4 last line: "strip any leading directory"),
+// reimplemented here because Go stdlib has no CLI tar to shell out to (and
+// CLAUDE.md forbids shell execution regardless) and because the streaming
+// design above (see this section's SECURITY NOTE) only knows the archive's
+// full shape once every entry is already on disk. Does nothing — leaving
+// entries exactly where streamExtractArchive placed them — when destRoot's
+// top level holds more than one entry, or holds exactly one entry that is
+// itself a plain FILE: this channel's own artifact, per the work package
+// brief, may ship "the flat native binary" with no wrapping directory at
+// all, and that shape must be left untouched, not stripped.
+func stripCommonLeadingDirOnDisk(destRoot string) error {
+	entries, err := os.ReadDir(destRoot)
+	if err != nil {
+		return fmt.Errorf("reading extracted tree %s: %w", destRoot, err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		return nil
+	}
+
+	topName := entries[0].Name()
+	topDir := filepath.Join(destRoot, topName)
+	children, err := os.ReadDir(topDir)
+	if err != nil {
+		return fmt.Errorf("reading wrapping directory %s: %w", topDir, err)
+	}
+	for _, c := range children {
+		oldPath := filepath.Join(topDir, c.Name())
+		newPath := filepath.Join(destRoot, c.Name())
+		if _, err := os.Lstat(newPath); err == nil {
+			return fmt.Errorf("stripping leading directory %q: %q collides with an existing top-level entry", topName, c.Name())
 		}
-		rel = cut
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return fmt.Errorf("stripping leading directory %q: moving %q: %w", topName, c.Name(), err)
+		}
 	}
-	if rel == "" {
-		return "", fmt.Errorf("archive entry %q resolves to an empty path after stripping the leading directory %q", name, stripDir)
+	if err := os.Remove(topDir); err != nil {
+		return fmt.Errorf("removing emptied wrapping directory %s: %w", topDir, err)
 	}
-	return rel, nil
+	return nil
+}
+
+// locateBinNameOnDisk walks root (already leading-dir-stripped, if
+// applicable) and returns the full path of the single regular file whose
+// basename equals binName. More than one match, or none, is rejected
+// rather than guessed (the same "reject, don't guess" stance the rest of
+// this file takes); the "none" case names every regular file root actually
+// contains, for diagnosis.
+func locateBinNameOnDisk(root, binName string) (string, error) {
+	var match string
+	var names []string
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("walking %s: %w", p, err)
+		}
+		if p == root || d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return fmt.Errorf("computing relative path for %s: %w", p, relErr)
+		}
+		relSlash := filepath.ToSlash(rel)
+		names = append(names, relSlash)
+		if path.Base(relSlash) != binName {
+			return nil
+		}
+		if match != "" {
+			return fmt.Errorf("more than one entry named %q (%q and %q); cannot pick one unambiguously", binName, match, p)
+		}
+		match = p
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if match == "" {
+		sort.Strings(names)
+		return "", fmt.Errorf("no entry named %q; contents: %s", binName, strings.Join(names, ", "))
+	}
+	return match, nil
 }
 
 // unpackArchiveArtifact extracts artifactPath's tar.gz content into
 // stagingGenDir, preserving the archive's own relative layout minus one
-// stripped common leading directory (if any, stripCommonLeadingDir), then
-// ensures the entry named binName ends up at stagingGenDir/bin/<binName>
+// stripped common leading directory (if any, stripCommonLeadingDirOnDisk),
+// then ensures the entry named binName ends up at stagingGenDir/bin/<binName>
 // with mode 0o755 — the canonical path the §5.3 dispatcher execs, and the
-// "wrap" half of §11.4's "unpack + wrap". binName is located by a basename
-// match over every extracted regular file's (post-strip) relative path:
-// more than one match, or none, is rejected rather than guessed (the same
-// "reject, don't guess" stance the rest of this file takes), naming the
-// archive's full post-strip content in the "none" case for diagnosis.
+// "wrap" half of §11.4's "unpack + wrap".
 func unpackArchiveArtifact(artifactPath, binName, stagingGenDir string) error {
 	f, err := os.Open(artifactPath)
 	if err != nil {
@@ -799,61 +1017,16 @@ func unpackArchiveArtifact(artifactPath, binName, stagingGenDir string) error {
 	}
 	defer f.Close()
 
-	rawEntries, err := readArchiveEntries(f)
-	if err != nil {
+	if err := streamExtractArchive(f, stagingGenDir); err != nil {
 		return fmt.Errorf("reading archive %s: %w", artifactPath, err)
 	}
-	if len(rawEntries) == 0 {
-		return fmt.Errorf("archive %s contains no regular files", artifactPath)
+	if err := stripCommonLeadingDirOnDisk(stagingGenDir); err != nil {
+		return fmt.Errorf("archive %s: %w", artifactPath, err)
 	}
 
-	stripDir := stripCommonLeadingDir(rawEntries)
-
-	type placedEntry struct {
-		rel  string
-		mode os.FileMode
-		data []byte
-	}
-	placed := make([]placedEntry, 0, len(rawEntries))
-	for _, e := range rawEntries {
-		rel, err := relativeArchivePath(e.name, stripDir)
-		if err != nil {
-			return err
-		}
-		placed = append(placed, placedEntry{rel: rel, mode: e.mode, data: e.data})
-	}
-
-	var binIdx = -1
-	names := make([]string, 0, len(placed))
-	for i, p := range placed {
-		names = append(names, p.rel)
-		if path.Base(p.rel) != binName {
-			continue
-		}
-		if binIdx != -1 {
-			return fmt.Errorf("archive %s has more than one entry named %q (%q and %q); cannot pick one unambiguously",
-				artifactPath, binName, placed[binIdx].rel, p.rel)
-		}
-		binIdx = i
-	}
-	if binIdx == -1 {
-		sort.Strings(names)
-		return fmt.Errorf("archive %s has no entry named %q; contents: %s", artifactPath, binName, strings.Join(names, ", "))
-	}
-
-	for _, p := range placed {
-		dst := filepath.Join(stagingGenDir, filepath.FromSlash(p.rel))
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return fmt.Errorf("creating directory for %s: %w", p.rel, err)
-		}
-		// Every extracted regular file gets at least owner read/write,
-		// regardless of the archive's own recorded mode — the executable
-		// bit specifically is set explicitly on the binary below, not
-		// inherited from the tar header (§6.4: realization sets 0755 on
-		// bin/*, not "whatever the archive happened to record").
-		if err := os.WriteFile(dst, p.data, p.mode.Perm()|0o600); err != nil {
-			return fmt.Errorf("writing %s: %w", p.rel, err)
-		}
+	binPath, err := locateBinNameOnDisk(stagingGenDir, binName)
+	if err != nil {
+		return fmt.Errorf("archive %s: %w", artifactPath, err)
 	}
 
 	binDir := filepath.Join(stagingGenDir, "bin")
@@ -861,13 +1034,12 @@ func unpackArchiveArtifact(artifactPath, binName, stagingGenDir string) error {
 		return fmt.Errorf("creating %s: %w", binDir, err)
 	}
 	wrapperPath := filepath.Join(binDir, binName)
-	extractedPath := filepath.Join(stagingGenDir, filepath.FromSlash(placed[binIdx].rel))
-	if extractedPath != wrapperPath {
+	if binPath != wrapperPath {
 		// hardlinkOrCopy is realize.go's existing helper (this package):
 		// hardlink when possible, falling back to a byte copy across a
 		// volume boundary.
-		if err := hardlinkOrCopy(extractedPath, wrapperPath); err != nil {
-			return fmt.Errorf("placing %s at %s: %w", placed[binIdx].rel, wrapperPath, err)
+		if err := hardlinkOrCopy(binPath, wrapperPath); err != nil {
+			return fmt.Errorf("placing %s at %s: %w", binPath, wrapperPath, err)
 		}
 	}
 	if err := os.Chmod(wrapperPath, 0o755); err != nil {
