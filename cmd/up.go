@@ -554,7 +554,15 @@ func resolvePath(path string) (string, error) {
 
 func bringUpContainer(root, token string, shell bool) error {
 	if !hasDevcontainer(root) {
-		return fmt.Errorf("no dev container found under %s/.devcontainer\n\nScaffold one (see examples/devcontainer) and add the wraptool-connect feature, then re-run `wraptool up`", root)
+		return fmt.Errorf(`no dev container found under %s/.devcontainer
+
+Scaffold one, then re-run `+"`wraptool up`"+`:
+
+  wraptool init devcontainer --lang go        # writes .devcontainer/devcontainer.json
+                                              # (--harness claude|opencode|pi|agy|gemini, --base, --lang; see --help)
+
+Or, with Guix installed, add a manifest.scm to the project root and wraptool
+uses the Guix container runtime instead — no dev container needed`, root)
 	}
 	if _, err := exec.LookPath("devcontainer"); err != nil {
 		return fmt.Errorf("the devcontainer CLI is not installed (npm i -g @devcontainers/cli); needed to bring up %s", root)

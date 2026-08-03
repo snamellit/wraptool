@@ -21,6 +21,9 @@ responses, and capability requests are collected for admin review.
 Run with no arguments in a git repository to bring up an isolated coding
 environment (equivalent to 'wraptool up').`,
 		SilenceUsage: true,
+		// main.go prints the returned error itself; without this cobra
+		// prints it too and every failure shows up twice.
+		SilenceErrors: true,
 		// Bare `wraptool` in a repo → `up`; otherwise show help.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := gitToplevel(); err != nil {
