@@ -31,6 +31,15 @@ func ParsePlatformKey(s string) (PlatformKey, error) {
 	}
 }
 
+// allPlatformKeys lists the closed PlatformKey enum's values, for a caller
+// that needs to probe every platform rather than switch over one (e.g.
+// StatusHarness's ActiveGenerations scan, orchestrator.go) — kept next to
+// this file's own exhaustive-lint-enforced switches (ParsePlatformKey,
+// HostPlatformKey) rather than duplicated at each call site.
+func allPlatformKeys() []PlatformKey {
+	return []PlatformKey{PlatformLinuxAMD64Glibc, PlatformLinuxARM64Glibc, PlatformLinuxAMD64Musl, PlatformLinuxARM64Musl}
+}
+
 // HostPlatformKey returns the guix-runtime platform key for the current host:
 // arch from runtime.GOARCH, libc always glibc — the Guix container always
 // runs with --emulate-fhs (§5.1 "Guix runtime: arch = host arch ... libc =
