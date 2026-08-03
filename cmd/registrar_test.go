@@ -334,3 +334,30 @@ func TestConcurrentReloadAndListChanged(t *testing.T) {
 	})
 	wg.Wait()
 }
+
+// The slice CLIToolNames hands to wraptool_info must not alias registrar
+// state: the info handler sorts it per request, and a caller's sort would
+// otherwise race the next reload's rewrite of r.cliTools.
+func TestCLIToolNamesReturnsCopy(t *testing.T) {
+	reg, _ := newTestRegistrar(t)
+	cfg := serverCfg()
+	cfg.Tools = map[string]config.ToolConfig{
+		"git": {Binary: "/nonexistent/git", Allow: []config.AllowRule{{Subcommand: []string{"status"}}}},
+		"fj":  {Binary: "/nonexistent/fj", Allow: []config.AllowRule{{Subcommand: []string{"pr"}}}},
+	}
+	if err := reg.start(cfg); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	got := reg.CLIToolNames()
+	if len(got) != 2 {
+		t.Fatalf("CLIToolNames = %v, want 2 names", got)
+	}
+	for i := range got {
+		got[i] = "clobbered"
+	}
+	for _, n := range reg.CLIToolNames() {
+		if n == "clobbered" {
+			t.Fatal("CLIToolNames returned a slice aliasing registrar state")
+		}
+	}
+}
