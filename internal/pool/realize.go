@@ -44,6 +44,17 @@ import (
 // is updated in memory, harness-lock.json is persisted with the same
 // update, and (fresh publish only) a "generation_realized" audit event is
 // appended.
+//
+// Every success path — the idempotent fast path, the crash-recovery
+// "target already exists" path, and a fresh publish — ends by calling
+// activateIfNeeded (activate.go) for (harnessName, key) with the resolved
+// generation id (§11.4 step 6: "…renames the tree into runtime/generations/,
+// and activates"; wave 2 activation layer). This is host-local pure Go with
+// no network and no backend, so a realize that itself succeeded but then
+// fails to activate returns that activation error as-is: there is no
+// partial-state hazard to paper over, since WritePointer's rename atomicity
+// means the pointer is either the old generation or the new one, never a
+// partial write.
 func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, harnessName, binName string, h *LockHarness, key PlatformKey) (*Receipt, error) {
 	// binName ends up as a wrapper filename inside the generation tree
 	// (receipt.go/§11.4's generateHarnessWrapper), the same kind of
@@ -75,6 +86,18 @@ func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths
 					genID, onDisk.ManifestDigest, existingDigest, harnessName, key)
 			}
 			if err := persistGeneration(paths, harnessName, key, existingDigest); err != nil {
+				return nil, err
+			}
+			// §11.4 step 6's activation applies to the idempotent path too:
+			// "and also on the idempotent existing-target path when the
+			// pointer is missing or names a different generation" (a repair,
+			// distinct from the directory-vanished repair above — here the
+			// generation itself is fine, only the pointer disagrees or is
+			// unset). activateIfNeeded no-ops when the pointer already names
+			// genID.
+			if err := activateIfNeeded(paths, harnessName, key, genID); err != nil {
+				// Not re-wrapped: ActivateGeneration's own error already
+				// names harnessName/key.
 				return nil, err
 			}
 			return onDisk, nil
@@ -161,6 +184,11 @@ func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths
 		if err := persistGeneration(paths, harnessName, key, receipt.ManifestDigest); err != nil {
 			return nil, err
 		}
+		if err := activateIfNeeded(paths, harnessName, key, genID); err != nil {
+			// Not re-wrapped: ActivateGeneration's own error already names
+			// harnessName/key.
+			return nil, err
+		}
 		return onDisk, nil
 	}
 
@@ -185,7 +213,34 @@ func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths
 		return nil, fmt.Errorf("recording generation_realized audit event: %w", err)
 	}
 
+	// §11.4 step 6: "…renames the tree into runtime/generations/, and
+	// activates." activateIfNeeded degrades to an unconditional
+	// ActivateGeneration here (a freshly published generation id can never
+	// already be the active one) — see its own doc comment for why this
+	// fresh-publish path shares the helper instead of calling
+	// ActivateGeneration directly.
+	if err := activateIfNeeded(paths, harnessName, key, genID); err != nil {
+		// Not re-wrapped: ActivateGeneration's own error already names
+		// harnessName/key.
+		return nil, err
+	}
+
 	return receipt, nil
+}
+
+// GenerationVersion resolves generationID's version by reading its own
+// receipt.json — the authoritative source (not generation-id string
+// parsing: a harness name or a semver prerelease identifier can itself
+// contain hyphens, which would make splitting "<harness>-<version>-<platform-
+// key>-<digest8>" back apart ambiguous). Used by cmd/harness.go's `list` to
+// render the ACTIVE column's version from a HarnessStatus.ActiveGenerations
+// entry.
+func GenerationVersion(paths PoolPaths, generationID string) (string, error) {
+	r, err := readGenerationReceipt(runtimeGenerationDir(paths.Runtime, generationID))
+	if err != nil {
+		return "", fmt.Errorf("resolving version for generation %s: %w", generationID, err)
+	}
+	return r.Version, nil
 }
 
 // readGenerationReceipt reads and validates (via UnmarshalReceipt)
