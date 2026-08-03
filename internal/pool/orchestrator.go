@@ -771,6 +771,178 @@ func SyncHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths
 	return &lh, nil
 }
 
+// rollbackCandidate is one realized generation this package's rollback scan
+// found for a given (harness, platform) pair, with just enough data to
+// choose among them: which version it is, and how recently it was
+// published into runtime/generations/ (used as "most recently created" when
+// no --to version is given).
+type rollbackCandidate struct {
+	id      string
+	version string
+	modTime time.Time
+}
+
+// scanRollbackCandidates lists every generation under
+// runtime/generations/<paths.Runtime> whose OWN receipt.json names
+// (harnessName, key) — receipts are the authoritative source (§10's brief:
+// "prefer reading receipt.json, ids are <harness>-<version>-<platform-key>-
+// <digest8> but receipts are authoritative"), not a string-split of the
+// generation id, which would be ambiguous whenever a harness name or a
+// semver prerelease identifier itself contains a hyphen. A directory that
+// isn't a valid generation (unreadable or unparseable receipt) is skipped,
+// not an error — GC's own eventual cleanup, not rollback, is responsible for
+// judging orphaned/corrupt directories.
+func scanRollbackCandidates(paths PoolPaths, harnessName string, key PlatformKey) ([]rollbackCandidate, error) {
+	entries, err := os.ReadDir(runtimeGenerationsDir(paths.Runtime))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing generations: %w", err)
+	}
+
+	var out []rollbackCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		genDir := runtimeGenerationDir(paths.Runtime, entry.Name())
+		info, err := os.Stat(genDir)
+		if err != nil {
+			continue
+		}
+		r, err := readGenerationReceipt(genDir)
+		if err != nil {
+			continue
+		}
+		if r.Harness != harnessName || r.Platform != key {
+			continue
+		}
+		out = append(out, rollbackCandidate{id: entry.Name(), version: r.Version, modTime: info.ModTime()})
+	}
+	return out, nil
+}
+
+// RollbackHarness switches harnessName's active pointer for key back to a
+// previously realized generation, without any network access or lockfile
+// mutation (§10 "Switch the pointer to a retained generation without network
+// access"), under its own, self-contained pool lock acquisition. See
+// RollbackHarnessLocked for the behavior; this wrapper exists for a caller
+// that isn't already composing multiple orchestrator calls under one
+// LockPool span.
+func RollbackHarness(ctx context.Context, paths PoolPaths, harnessName string, key PlatformKey, toVersion string) (generationID string, err error) {
+	release, err := LockPool(ctx, paths)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return RollbackHarnessLocked(paths, harnessName, key, toVersion)
+}
+
+// RollbackHarnessLocked is RollbackHarness's body, assuming the caller
+// already holds the pool lock (via LockPool) — it never acquires one
+// itself. It performs no network access, calls no Backend, and never
+// touches harness-lock.json (§10: rollback "resolves NOTHING" the way sync
+// does — it only ever rewrites the active pointer, via ActivateGeneration,
+// §5.2/§13's "default rollback switches the pointer only and preserves
+// state").
+//
+// Candidate selection scans every generation already realized for
+// (harnessName, key) via scanRollbackCandidates:
+//
+//   - with toVersion non-empty: the candidate(s) whose receipt version
+//     equals toVersion exactly — version is NOT guaranteed unique to one
+//     generation (e.g. two distinct realizes of the same version, with
+//     different content, each get their own generation id), so ties are
+//     broken by the newest generation directory (ModTime), same as the
+//     no-toVersion case below. An error lists every OTHER version found (so
+//     a typo'd version is immediately correctable) when toVersion matches
+//     none of them.
+//   - with toVersion empty: the candidate with the newest generation
+//     directory (most recently created, by mtime) that is NOT the
+//     currently active generation — rollback's whole point is to switch
+//     to something else. An error names the situation when there is
+//     nothing else retained to roll back to (only the active generation
+//     itself was found, or nothing was found at all).
+//
+// Either way, the returned generationID (and the caller's printed output,
+// cmd/harness.go) names the exact chosen generation, digest8 included —
+// precise even when more than one generation shares the same version.
+//
+// On success it calls ActivateGeneration for the chosen generation (which
+// itself appends a "generation_activated" audit event), then appends a
+// SEPARATE "generation_rollback" audit event naming both the generation
+// switched away from and the one switched to.
+func RollbackHarnessLocked(paths PoolPaths, harnessName string, key PlatformKey, toVersion string) (generationID string, err error) {
+	candidates, err := scanRollbackCandidates(paths, harnessName, key)
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no realized generation found for %s/%s to roll back to", harnessName, key)
+	}
+
+	// "" when nothing is active yet for this platform — a legitimate
+	// rollback target selection still proceeds (there is simply nothing to
+	// exclude as "currently active").
+	currentID, _ := ActiveGeneration(paths, harnessName, key)
+
+	var chosen *rollbackCandidate
+	if toVersion != "" {
+		for i := range candidates {
+			c := &candidates[i]
+			if c.version != toVersion {
+				continue
+			}
+			// version is not guaranteed unique to one generation (two
+			// distinct realizes of the same version can each get their own
+			// generation id) — tie-break by the newest generation directory,
+			// same ordering as the no-toVersion case below.
+			if chosen == nil || c.modTime.After(chosen.modTime) {
+				chosen = c
+			}
+		}
+		if chosen == nil {
+			seen := map[string]bool{}
+			var versions []string
+			for _, c := range candidates {
+				if !seen[c.version] {
+					seen[c.version] = true
+					versions = append(versions, c.version)
+				}
+			}
+			sort.Strings(versions)
+			return "", fmt.Errorf("no realized generation for %s/%s at version %q; available: %s",
+				harnessName, key, toVersion, strings.Join(versions, ", "))
+		}
+	} else {
+		var best *rollbackCandidate
+		for i := range candidates {
+			c := &candidates[i]
+			if c.id == currentID {
+				continue
+			}
+			if best == nil || c.modTime.After(best.modTime) {
+				best = c
+			}
+		}
+		if best == nil {
+			return "", fmt.Errorf("no other realized generation for %s/%s to roll back to (only the currently active generation is retained)", harnessName, key)
+		}
+		chosen = best
+	}
+
+	if err := ActivateGeneration(paths, harnessName, key, chosen.id); err != nil {
+		return "", err
+	}
+	if err := AppendAudit(paths.Audit, "generation_rollback", map[string]any{
+		"harness": harnessName, "platform": string(key), "from_generation": currentID, "to_generation": chosen.id,
+	}); err != nil {
+		return "", fmt.Errorf("recording generation_rollback audit event: %w", err)
+	}
+	return chosen.id, nil
+}
+
 // ManifestHarnessNames returns the harness names currently listed in the
 // pool manifest — i.e. those with recorded developer intent — in
 // unspecified order. A missing manifest returns an empty slice, not an
@@ -835,10 +1007,26 @@ type HarnessStatus struct {
 	// generation digest for (LockHarness.Generations), sorted, in unspecified
 	// separator-free form — cmd/harness.go's `list` renders them
 	// comma-joined as the REALIZED column (§16 Phase 2). Empty when never
-	// locked or never realized for any platform. This reflects what the
-	// LOCK records, not a fresh disk check — `list` never mutates and never
-	// stats runtime/ (§6.5 "list takes no lock").
+	// locked or never realized for any platform. This one field reflects
+	// only what the LOCK records, not a disk check — unlike ActiveGenerations
+	// below, which DOES read runtime/ (pointer files, and — via
+	// GenerationVersion — a generation's own receipt.json). Either way
+	// `list` never mutates and never takes the pool lock (§6.5 "list takes
+	// no lock").
 	Realized []PlatformKey
+
+	// ActiveGenerations maps a platform key to the generation id currently
+	// active for this harness (runtime/active/<key>/<harness>.gen's content,
+	// read via ActiveGeneration/ReadPointer), for whichever of the closed
+	// PlatformKey values currently have a pointer file. A platform with no
+	// pointer yet (never activated, or racing an in-flight activation) is
+	// simply absent from the map — StatusHarness tolerates every
+	// ActiveGeneration failure silently, the same lockless-read tolerance
+	// Realized gets from a missing lock (§6.5 "list takes no lock ... must
+	// tolerate a concurrent transaction"). cmd/harness.go's `list` renders
+	// the ACTIVE column from this host platform's entry only, resolving the
+	// generation id to a human version via GenerationVersion.
+	ActiveGenerations map[PlatformKey]string
 }
 
 // StatusHarness computes one harness's list row (§10) from the pool's
@@ -848,6 +1036,19 @@ type HarnessStatus struct {
 // `install` has ever run.
 func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (HarnessStatus, error) {
 	status := HarnessStatus{Harness: harnessName}
+
+	// Lockless by construction (§6.5): ActiveGeneration is a single
+	// best-effort ReadPointer per platform, tolerating every failure mode
+	// (never activated, an in-flight rename, a missing active/<key> dir) as
+	// "absent from the map" rather than an error.
+	for _, key := range allPlatformKeys() {
+		if id, ok := ActiveGeneration(paths, harnessName, key); ok {
+			if status.ActiveGenerations == nil {
+				status.ActiveGenerations = map[PlatformKey]string{}
+			}
+			status.ActiveGenerations[key] = id
+		}
+	}
 
 	m, err := loadManifestOrEmpty(paths.Manifest)
 	if err != nil {

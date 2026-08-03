@@ -155,6 +155,8 @@ shared harness HOME). This is the developer's toolbox — not the project
 		newHarnessRefreshCmd(deps),
 		newHarnessUpdateCmd(deps),
 		newHarnessSyncCmd(deps),
+		newHarnessRollbackCmd(deps),
+		newHarnessGCCmd(deps),
 		newHarnessPolicyCmd(deps),
 	)
 	return cmd
@@ -329,28 +331,37 @@ func newHarnessListCmd(deps harnessDeps) *cobra.Command {
 }
 
 // runHarnessList renders `harness list`'s table (§10): HARNESS CONSTRAINT
-// LOCKED ACTIVE LATEST ELIGIBLE QUARANTINED REALIZED. ACTIVE reports the legacy pool
-// bin/ install state (Phase 2's real activation-pointer state isn't wired
-// yet). It reads the pool's manifest/lock/observations directly — no pool
-// lock (list never mutates, §6.5) and no Source (pool.StatusHarness works
-// from files already on disk). Factored out from the cobra RunE, taking its
-// inputs as plain parameters, so it can be tested against a temp pool.
+// LOCKED ACTIVE LATEST ELIGIBLE QUARANTINED REALIZED. For a pool-lockable
+// harness, ACTIVE is the VERSION of the generation currently activated
+// (runtime/active/<host-platform>/<harness>.gen) for THIS HOST's own
+// platform — "-" when nothing is active there, regardless of whether an
+// older/newer version is locked or realized for a different platform. For a
+// legacy (not pool-lockable) harness, ACTIVE instead reports the pre-Phase-2
+// legacy pool bin/ install state (there is no generation/activation concept
+// for those). It reads the pool's manifest/lock/observations directly — no
+// pool lock (list never mutates, §6.5) and no Source (pool.StatusHarness
+// works from files already on disk). Factored out from the cobra RunE,
+// taking its inputs as plain parameters, so it can be tested against a temp
+// pool.
 func runHarnessList(paths pool.PoolPaths, poolBin string, now time.Time, out io.Writer) error {
 	w := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(w, "HARNESS\tCONSTRAINT\tLOCKED\tACTIVE\tLATEST\tELIGIBLE\tQUARANTINED\tREALIZED")
+	// A single HostPlatformKey() failure (unsupported host arch) must not
+	// abort the whole table — every pool-lockable row just falls back to
+	// ACTIVE="-", the same as "nothing active yet".
+	hostKey, hostKeyErr := pool.HostPlatformKey()
 	for _, name := range harness.Names() {
 		d := harness.Registry[name]
 
-		active := "-"
-		if d.IsCLI() {
-			if fileExists(filepath.Join(poolBin, d.Bin)) {
-				active = "yes"
-			} else {
-				active = "no"
-			}
-		}
-
 		if d.PoolPackage == "" {
+			active := "-"
+			if d.IsCLI() {
+				if fileExists(filepath.Join(poolBin, d.Bin)) {
+					active = "yes"
+				} else {
+					active = "no"
+				}
+			}
 			fmt.Fprintf(w, "%s\t-\t-\t%s\t-\t-\tlegacy (not lockable)\t-\n", name, active)
 			continue
 		}
@@ -358,6 +369,14 @@ func runHarnessList(paths pool.PoolPaths, poolBin string, now time.Time, out io.
 		status, err := pool.StatusHarness(paths, name, d.PoolPackage, now)
 		if err != nil {
 			return fmt.Errorf("harness %q: %w", name, err)
+		}
+		active := "-"
+		if hostKeyErr == nil {
+			if genID, ok := status.ActiveGenerations[hostKey]; ok {
+				if v, err := pool.GenerationVersion(paths, genID); err == nil {
+					active = v
+				}
+			}
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			name, dashIfEmpty(status.Constraint), dashIfEmpty(status.Locked), active,
@@ -935,16 +954,112 @@ syncs every harness currently present in the lock.`,
 	return cmd
 }
 
-// resolveSyncPlatform resolves `sync --platform`'s string to a validated
+// resolveSyncPlatform resolves a `--platform` flag string to a validated
 // pool.PlatformKey: empty defaults to HostPlatformKey() (the one helper
 // §5.1 designates for "this host's own platform"); non-empty is validated
 // against the closed enum via ParsePlatformKey, whose error already lists
-// every valid value.
+// every valid value. Shared by `sync --platform` and `rollback --platform`
+// (both default to the host's own platform the same way).
 func resolveSyncPlatform(platform string) (pool.PlatformKey, error) {
 	if platform == "" {
 		return pool.HostPlatformKey()
 	}
 	return pool.ParsePlatformKey(platform)
+}
+
+// --- rollback ---
+
+func newHarnessRollbackCmd(deps harnessDeps) *cobra.Command {
+	var toVersion, platform string
+	cmd := &cobra.Command{
+		Use:   "rollback <harness>",
+		Short: "Switch a harness's active generation to a previously realized one (no network access)",
+		Long: `Switches runtime/active/<platform>/<harness>.gen to a generation already
+realized under runtime/generations/ — no network access, and
+harness-lock.json is never rewritten (§10). With --to, rolls back to the
+exact named version (error, listing what IS available, if that version was
+never realized for this platform; ties between multiple generations sharing
+that version break toward the most recently created one); without it, rolls
+back to the most recently created generation other than the one currently
+active (error if none is retained). Selection with no --to relies on
+generation directory creation times, so if the pool was copied or restored
+in a way that lost or reset those times, pass --to explicitly instead of
+relying on the default "most recent" choice. --platform defaults to this
+host's own platform.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			d, ok := harness.Registry[name]
+			if !ok {
+				return fmt.Errorf("unknown harness %q; supported: %v", name, harness.Names())
+			}
+			if d.PoolPackage == "" {
+				return fmt.Errorf("%q is not pool-lockable yet (legacy install path); see `wraptool harness list`", name)
+			}
+			key, err := resolveSyncPlatform(platform)
+			if err != nil {
+				return err
+			}
+
+			genID, err := pool.RollbackHarness(context.Background(), deps.poolPaths(), name, key, toVersion)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s: rolled back to generation %s for %s\n", name, genID, key)
+			// §13, a cheap honor with no snapshot machinery: shared harness
+			// home/ state may already have been migrated/written by the
+			// newer version being rolled back from, and the older binary
+			// activated here has no way to know or repair that.
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: shared harness home state may have been written by a newer version; downgraded harnesses may misread it")
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&toVersion, "to", "", "roll back to this exact version (default: the most recently realized OTHER generation)")
+	cmd.Flags().StringVar(&platform, "platform", "", "target platform key (default: this host's own platform)")
+	return cmd
+}
+
+// --- gc ---
+
+func newHarnessGCCmd(deps harnessDeps) *cobra.Command {
+	var dryRun bool
+	cmd := &cobra.Command{
+		Use:   "gc",
+		Short: "Remove unreferenced generations and cached artifacts",
+		Long: `Removes every generation under runtime/generations/ that is neither
+currently active for any platform, nor referenced by harness-lock.json, nor
+among the 2 most recently created generations for its (harness, platform) —
+that last rule is what keeps an immediately-previous version rollback-able
+after an update replaces the lock's recorded digest (§15). Also removes
+every cache/sha256/ object not referenced by the lock, and every leftover
+staging transaction directory. --dry-run reports what would be removed
+without deleting anything (it still takes the pool lock, for a consistent
+view).`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			report, err := pool.GCPool(context.Background(), deps.poolPaths(), dryRun)
+			if err != nil {
+				return err
+			}
+			printGCReport(cmd, report)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be removed without deleting anything")
+	return cmd
+}
+
+// printGCReport reports one GCReport to cmd.OutOrStdout(), phrasing both
+// removal and freed space as a future ("would remove" / "would free") for a
+// dry run and as a completed action otherwise.
+func printGCReport(cmd *cobra.Command, report pool.GCReport) {
+	verb, freeVerb := "removed", "freed"
+	if report.DryRun {
+		verb, freeVerb = "would remove", "would free"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %d generation(s) (%d retained), %d cache object(s) (%d retained), %d staging directory(ies); %s %d bytes\n",
+		verb, report.RemovedGenerations, report.RetainedGenerations, report.RemovedCacheObjects, report.RetainedCacheObjects,
+		report.RemovedStagingDirs, freeVerb, report.FreedBytes)
 }
 
 // --- policy set ---
