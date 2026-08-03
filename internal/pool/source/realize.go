@@ -127,7 +127,9 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 
 	artifact, ok := h.Runtime.Artifacts[key]
 	if !ok {
-		return nil, fmt.Errorf("realize: %s: no runtime artifact recorded for platform %q", harnessName, key)
+		return nil, fmt.Errorf("realize: %s: no runtime artifact recorded for platform %q (lock records: %s); "+
+			"musl targets are deferred (design §5.1) — realization currently supports glibc platforms only",
+			harnessName, key, recordedRuntimeArtifactKeys(h.Runtime.Artifacts))
 	}
 	if err := verifyCacheObject(cacheDir, artifact.SHA256, fmt.Sprintf("runtime artifact for platform %q", key)); err != nil {
 		return nil, fmt.Errorf("realize: %s: %w", harnessName, err)
@@ -341,6 +343,24 @@ func sortedNPMPackageKeys(pkgs map[string]pool.NPMLockPackage) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// recordedRuntimeArtifactKeys renders a lock's recorded runtime-artifact
+// platform keys, sorted for determinism, for the "no runtime artifact
+// recorded for platform %q" error above to name what IS recorded (rather
+// than leaving the reader to guess). "none" when the map is empty — that
+// shouldn't happen for any lock Resolve produced, but a nil/empty map must
+// still render something other than an empty string.
+func recordedRuntimeArtifactKeys(artifacts map[pool.PlatformKey]pool.LockRuntimeArtifact) string {
+	if len(artifacts) == 0 {
+		return "none"
+	}
+	keys := make([]string, 0, len(artifacts))
+	for k := range artifacts {
+		keys = append(keys, string(k))
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ", ")
 }
 
 // --- host-side package.json synthesis (§11.4 step 1) ------------------------
