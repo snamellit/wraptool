@@ -88,13 +88,13 @@ func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths
 			if err := persistGeneration(paths, harnessName, key, existingDigest); err != nil {
 				return nil, err
 			}
-			// §11.4 step 6's activation applies to the idempotent path too:
-			// "and also on the idempotent existing-target path when the
-			// pointer is missing or names a different generation" (a repair,
-			// distinct from the directory-vanished repair above — here the
-			// generation itself is fine, only the pointer disagrees or is
-			// unset). activateIfNeeded no-ops when the pointer already names
-			// genID.
+			// §11.4 step 6's "renames the tree ... and activates" applies to
+			// the idempotent path too, per this work package's brief: also
+			// activate here when the pointer is missing or names a different
+			// generation (a repair, distinct from the directory-vanished
+			// repair above — here the generation itself is fine, only the
+			// pointer disagrees or is unset). activateIfNeeded no-ops when
+			// the pointer already names genID.
 			if err := activateIfNeeded(paths, harnessName, key, genID); err != nil {
 				// Not re-wrapped: ActivateGeneration's own error already
 				// names harnessName/key.

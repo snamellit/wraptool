@@ -38,13 +38,19 @@ func pointerFile(runtimeRoot string, key PlatformKey, harnessName string) string
 // against activating a generation id that was never actually published, or
 // one built for a different harness/platform than the caller intends.
 //
-// Once validated: it MkdirAlls the active/<key> directory, WritePointers the
+// Once validated: it MkdirAlls the active/<key> directory, regenerates the
+// dispatcher (§5.3: "regenerated, not edited, on every activation" —
+// harmless and idempotent, since dispatcher content depends only on
+// harnessName, never on which generation is active), THEN WritePointers the
 // new generation id (fsync+rename, §5.2 — readers never observe a partial
-// pointer), regenerates the dispatcher (§5.3: "regenerated, not edited, on
-// every activation" — harmless and idempotent, since dispatcher content
-// depends only on harnessName, never on which generation is active), and
-// appends an "activated" audit event. Every step after validation is
-// host-local pure Go with no network and no backend — a failure partway
+// pointer) — the dispatcher is written BEFORE the pointer switch
+// deliberately: §5.2 treats the pointer rename as activation's last,
+// decisive step, and writing the dispatcher first also closes a transient
+// window a container-mounting caller (a sibling package's guix/devcontainer
+// wiring) could otherwise observe, where the pointer already named a new
+// generation but its dispatcher file was still mid-rewrite. Finally it
+// appends a "generation_activated" audit event. Every step after validation
+// is host-local pure Go with no network and no backend — a failure partway
 // through leaves the pointer either at its old value or the new one (rename
 // atomicity), never a partial write, so there is no unrecoverable
 // intermediate state to clean up.
@@ -74,18 +80,20 @@ func ActivateGeneration(paths PoolPaths, harnessName string, key PlatformKey, ge
 		return fmt.Errorf("activating %s for %s: creating %s: %w", harnessName, key, activeDir, err)
 	}
 
-	if err := WritePointer(pointerFile(paths.Runtime, key, harnessName), generationID); err != nil {
-		return fmt.Errorf("activating %s for %s: writing pointer: %w", harnessName, key, err)
-	}
-
+	// Dispatcher before pointer (see the doc comment above): the pointer
+	// rename is the last, decisive step of activation.
 	if err := WriteDispatcher(paths, harnessName); err != nil {
 		return fmt.Errorf("activating %s for %s: %w", harnessName, key, err)
 	}
 
-	if err := AppendAudit(paths.Audit, "activated", map[string]any{
+	if err := WritePointer(pointerFile(paths.Runtime, key, harnessName), generationID); err != nil {
+		return fmt.Errorf("activating %s for %s: writing pointer: %w", harnessName, key, err)
+	}
+
+	if err := AppendAudit(paths.Audit, "generation_activated", map[string]any{
 		"harness": harnessName, "platform": string(key), "generation_id": generationID,
 	}); err != nil {
-		return fmt.Errorf("activating %s for %s: recording activated audit event: %w", harnessName, key, err)
+		return fmt.Errorf("activating %s for %s: recording generation_activated audit event: %w", harnessName, key, err)
 	}
 	return nil
 }
@@ -110,9 +118,11 @@ func ActiveGeneration(paths PoolPaths, harnessName string, key PlatformKey) (gen
 
 // activateIfNeeded activates generationID for harnessName/key unless the
 // active pointer already names it exactly — RealizeGeneration's policy for
-// its idempotent/existing-target paths (§11.4 step 6: "and also on the
-// idempotent existing-target path when the pointer is missing or names a
-// different generation"). A fresh publish always needs activation (the new
+// its idempotent/existing-target paths (this work package's brief: realize
+// activates "also on the idempotent existing-target path when the pointer
+// is missing or names a different generation", extending §11.4 step 6's
+// "renames the tree into runtime/generations/, and activates" to the
+// no-rebuild-needed case). A fresh publish always needs activation (the new
 // generation id can never already be the active one), so RealizeGeneration's
 // fresh-publish path calls this too rather than duplicating the logic —
 // activateIfNeeded degrades to an unconditional ActivateGeneration call

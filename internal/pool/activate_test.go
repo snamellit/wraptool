@@ -118,13 +118,13 @@ func TestActivateGenerationWritesPointerAndDispatcher(t *testing.T) {
 	events := auditEvents(t, paths)
 	found := false
 	for _, e := range events {
-		if e.Type == "activated" && e.Fields["harness"] == activateTestHarness &&
+		if e.Type == "generation_activated" && e.Fields["harness"] == activateTestHarness &&
 			e.Fields["platform"] == string(activateTestKey) && e.Fields["generation_id"] == genID {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("no matching 'activated' audit event, got: %+v", events)
+		t.Errorf("no matching 'generation_activated' audit event, got: %+v", events)
 	}
 }
 

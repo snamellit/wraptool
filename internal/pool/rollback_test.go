@@ -177,7 +177,7 @@ func TestRollbackAppendsRollbackAuditEventNamingBothGenerations(t *testing.T) {
 	events := auditEvents(t, paths)
 	var found *AuditEvent
 	for i := range events {
-		if events[i].Type == "rollback" {
+		if events[i].Type == "generation_rollback" {
 			found = &events[i]
 		}
 	}
