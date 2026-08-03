@@ -224,9 +224,12 @@ func TestIntegration_RealizeOrchestrationThroughRealNPMRealize(t *testing.T) {
 
 	// --- Idempotence (§10), through RealizeGeneration's own fast path (not
 	// NPM.Realize's — realize_integration_test.go already covers a second,
-	// direct NPM.Realize call producing an identical digest; this proves
-	// RealizeGeneration recognizes ITS OWN already-published generation and
-	// skips calling Source.Realize again). ---
+	// direct NPM.Realize call producing an identical digest). This asserts
+	// only that h.Generations[key] is unchanged after a second call; it does
+	// NOT observe whether Source.Realize was actually re-invoked (this test
+	// double has no call-count instrumentation) — see
+	// internal/pool/orchestrator_test.go's fakeSource.realizeCalls for a test
+	// double that does assert non-re-entry. ---
 	beforeDigest := receipt.ManifestDigest
 	if _, err := pool.RealizeGeneration(context.Background(), n, b, paths.PoolPaths, harnessName, binName, h, key); err != nil {
 		t.Fatalf("second RealizeGeneration (idempotent replay): %v", err)

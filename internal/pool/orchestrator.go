@@ -49,7 +49,24 @@ const defaultNodeVersion = "22.11.0"
 // from cmd/harness.go) changes in a way that should invalidate a previously
 // computed recipe_revision, so a resolved-and-locked generation can't be
 // silently reused under changed realization assumptions (§8).
-const recipeFormatVersion = 1
+//
+// 1 -> 2 (wave1-integration-fixes finding 1): this wave changed realization
+// semantics — internal/pool/source's NPM.Realize now requires the embedded
+// verbatim package-lock.json (NPMLock.Lockfile), which a Phase-1 lock (no
+// such field) never carries. Without this bump, a Phase-1 pool is
+// permanently wedged: install -> DecisionRealize (the stale Phase-1
+// recipe_revision still "matches" under the OLD format, so the resolve axis
+// looks fully agreed) -> NPM.Realize errors "lock predates the
+// embedded-lockfile schema; re-run wraptool harness update" -> a later
+// update short-circuits right back to DecisionRealize (nothing about
+// in.RecipeRevision changed) -> the same error, forever — Resolve never
+// runs, so the lockfile field is never backfilled. Bumping the format
+// changes the freshly computed recipe_revision, so lockMatchesRecipe (§8,
+// decision.go) becomes false, Decide instead returns
+// DecisionResolveVersion, and the ensuing Resolve writes a lockfile-carrying
+// entry under the new recipe_revision — a Phase-1 pool self-heals on its
+// very next install/update.
+const recipeFormatVersion = 2
 
 // npmRecipeRevision computes recipe_revision (§8: "sha256 over the
 // descriptor's serialized install recipe + the backend provisioning-image
@@ -264,6 +281,21 @@ type UpdateResult struct {
 	// (the LOCKED version didn't change) but DID build/confirm a
 	// generation, which RealizedGenerationID surfaces.
 	RealizedGenerationID string
+	// RealizeErr is nil on success. It is set instead of UpdateHarnessLocked
+	// returning the error (wave1-integration-fixes finding 2, §16 Phase 2
+	// item 4 "legacy fallback retained"): dispatcher/activation/mounting are
+	// a later wave, so the ONLY thing this wave's `install`/`update` actually
+	// EXECUTE is the legacy npm-install path (cmd/harness.go's
+	// maybeInstallLocked) — a Realize failure must not abort that. The
+	// resolve+lock+fetch effects above (and, for update, any lock advance)
+	// still happened and are reflected in Harness/Changed exactly as if
+	// Realize had succeeded; only the realize attempt itself failed.
+	// RealizedGenerationID is empty whenever this is set. The caller
+	// (cmd/harness.go) is expected to print a clearly-labeled warning and
+	// proceed to the legacy install regardless. SyncHarnessLocked does NOT
+	// use this field — sync's whole purpose is realization, so a sync
+	// failure stays a hard error returned normally.
+	RealizeErr error
 }
 
 // RefreshHarness runs the metadata-only refresh phase (§9 phase 1, §6.2)
@@ -399,6 +431,18 @@ func UpdateHarness(ctx context.Context, src Source, b backend.Backend, paths Poo
 // opts.WorkDir, when empty, is filled with a fresh staging/txn-<id> scratch
 // directory that is always removed (success or failure) before returning —
 // Source.Resolve is never called with an empty workDir.
+//
+// Every RealizeGeneration call this function makes (DecisionRealize, a
+// DecisionKeepExisting that still needs realizing, or the unconditional
+// realize after a fresh DecisionResolveVersion) treats a Realize failure as
+// NON-FATAL: it is captured into the returned UpdateResult.RealizeErr rather
+// than returned as this function's error (wave1-integration-fixes finding 2,
+// §16 Phase 2 item 4 "legacy fallback retained" — dispatcher/activation/
+// mounting are a later wave, so the legacy npm-install path driven from
+// cmd/harness.go is the ONLY thing `install`/`update` actually execute this
+// wave, and a realize failure must not prevent that from running). This is
+// distinct from SyncHarnessLocked, whose entire purpose is realization and
+// which still hard-fails on a Realize error in the ordinary way.
 func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, opts UpdateOptions) (*UpdateResult, error) {
 	if opts.AllowYoung && opts.Reason == "" {
 		return nil, fmt.Errorf("--allow-young requires a non-empty --reason")
@@ -492,15 +536,23 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return &UpdateResult{Harness: &out, Changed: false}, nil
 	case DecisionRealize:
 		out := existing
-		receipt, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
-		if err != nil {
-			return nil, err
+		result := &UpdateResult{Harness: &out, Changed: false}
+		// A Realize failure is non-fatal here (wave1-integration-fixes
+		// finding 2, §16 Phase 2 item 4 "legacy fallback retained"): it is
+		// captured into result.RealizeErr instead of aborting the call, so
+		// the caller's legacy install still runs. See RealizeErr's doc
+		// comment.
+		receipt, rerr := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
+		if rerr != nil {
+			result.RealizeErr = rerr
+			return result, nil
 		}
 		genID, err := generationIDFromReceipt(platformKey, receipt)
 		if err != nil {
 			return nil, err
 		}
-		return &UpdateResult{Harness: &out, Changed: false, RealizedGenerationID: genID}, nil
+		result.RealizedGenerationID = genID
+		return result, nil
 	case DecisionKeepExisting:
 		out := existing
 		result := &UpdateResult{Harness: &out, Changed: false, Note: decision.Note}
@@ -510,9 +562,12 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		// Decide itself uses) and realizes here when needed, same as the
 		// DecisionRealize case.
 		if !generationRealized(digestRecorded != "", dirPresent) {
-			receipt, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
-			if err != nil {
-				return nil, err
+			// Non-fatal, same as the DecisionRealize case above — see
+			// RealizeErr's doc comment.
+			receipt, rerr := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
+			if rerr != nil {
+				result.RealizeErr = rerr
+				return result, nil
 			}
 			genID, err := generationIDFromReceipt(platformKey, receipt)
 			if err != nil {
@@ -630,17 +685,21 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// DecisionResolveVersion). Runs AFTER the allow_young audit above (see
 	// its comment): the lock is already durably persisted and audited by
 	// this point, so a realize failure here is retriable without losing
-	// either.
+	// either. A Realize failure is non-fatal (wave1-integration-fixes finding
+	// 2, RealizeErr's doc comment): the resolve+fetch+lock effects above have
+	// already durably succeeded and are reported as such regardless of what
+	// happens here.
 	out := resolved
-	receipt, err := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
-	if err != nil {
-		return nil, err
+	result.Harness = &out
+	receipt, rerr := RealizeGeneration(ctx, src, b, paths, opts.Harness, opts.BinName, &out, platformKey)
+	if rerr != nil {
+		result.RealizeErr = rerr
+		return result, nil
 	}
 	genID, err := generationIDFromReceipt(platformKey, receipt)
 	if err != nil {
 		return nil, err
 	}
-	result.Harness = &out
 	result.RealizedGenerationID = genID
 
 	return result, nil

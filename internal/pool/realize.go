@@ -45,6 +45,16 @@ import (
 // update, and (fresh publish only) a "generation_realized" audit event is
 // appended.
 func RealizeGeneration(ctx context.Context, src Source, b backend.Backend, paths PoolPaths, harnessName, binName string, h *LockHarness, key PlatformKey) (*Receipt, error) {
+	// binName ends up as a wrapper filename inside the generation tree
+	// (receipt.go/§11.4's generateHarnessWrapper), the same kind of
+	// caller-supplied value GenerationID's harness/version arguments already
+	// guard (validatePathSegment, receipt.go) — validated here, before any
+	// use, so a malformed value (empty, a path separator, "." or "..") fails
+	// loudly instead of silently escaping the intended directory.
+	if err := validatePathSegment("binName", binName); err != nil {
+		return nil, fmt.Errorf("realizing %s for %s: %w", harnessName, key, err)
+	}
+
 	// Idempotent fast path: the lock already claims a digest for this
 	// platform. If the generation it names is still on disk and its own
 	// receipt agrees, there is nothing to build — src.Realize is never
