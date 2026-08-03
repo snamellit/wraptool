@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // LockSchemaVersion is the schema_version this package writes and
@@ -38,6 +39,13 @@ type LockHarness struct {
 	RecipeRevision string       `json:"recipe_revision"` // "sha256:<hex>"
 	Runtime        *LockRuntime `json:"runtime,omitempty"`
 	NPMLock        *NPMLock     `json:"npm_lock,omitempty"`
+	// Archive pins a direct-download ("archive") source's per-platform
+	// artifact (design/harness/unified-harness-pool.md §6.2 phase table: an
+	// archive source resolves and realizes in pure Go, no backend). Mutually
+	// exclusive with NPMLock/Runtime in practice (Source is either "npm" or
+	// "archive" for a given harness), but nothing here enforces that — the
+	// two fields simply describe different sources' additive lock shapes.
+	Archive *LockArchive `json:"archive,omitempty"`
 	// Generations maps a platform key to its receipt digest ("sha256:<hex>"),
 	// present once that platform has been realized (§11.5). Keyed by the
 	// closed PlatformKey enum (not a bare string) so a lock read back from
@@ -58,6 +66,30 @@ type LockRuntime struct {
 type LockRuntimeArtifact struct {
 	URL    string `json:"url"`
 	SHA256 string `json:"sha256"`
+}
+
+// LockArchive is a direct-download ("archive") source's locked artifacts,
+// one per realized platform (§6.2, §11.3: the archive Source implementation
+// lives in internal/pool/source). Unlike NPMLock (a full transitive
+// dependency graph), an archive artifact is a single downloadable file per
+// platform — there is no dependency resolution to lock, only the exact
+// artifact URL and its integrity.
+type LockArchive struct {
+	Artifacts map[PlatformKey]LockArchiveArtifact `json:"artifacts"`
+}
+
+// LockArchiveArtifact is one platform's locked, direct-download artifact.
+// SHA512 is the upstream release channel's own integrity value for the
+// artifact (hex-encoded, unlike npm's base64 SRI strings — see the archive
+// Source's parsing) — the trust root Fetch verifies the download against,
+// mirroring NPMLockPackage.Integrity. SHA256 is the pool's own cache
+// address (cache/sha256/<digest>), empty until Fetch downloads and admits
+// the artifact, mirroring NPMLockPackage.SHA256's split between upstream
+// integrity and pool-local addressing.
+type LockArchiveArtifact struct {
+	URL    string `json:"url"`
+	SHA512 string `json:"sha512"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // NPMLock embeds the resolved npm dependency graph for one harness (§8.1):
@@ -166,8 +198,55 @@ func (l *Lock) Validate() error {
 				return fmt.Errorf("harness %q: %w", name, err)
 			}
 		}
+		if h.Archive != nil {
+			for key, artifact := range h.Archive.Artifacts {
+				if _, err := ParsePlatformKey(string(key)); err != nil {
+					return fmt.Errorf("harness %q: archive artifacts: %w", name, err)
+				}
+				if err := validateArchiveArtifact(key, artifact); err != nil {
+					return fmt.Errorf("harness %q: %w", name, err)
+				}
+			}
+		}
 	}
 	return nil
+}
+
+// validateArchiveArtifact checks one LockArchiveArtifact's shape (§8 ruling:
+// "SHA512 = upstream manifest integrity, hex, validated shape; SHA256 =
+// pool cache address"): URL must be https, SHA512 must be exactly 128
+// lowercase hex characters (a raw SHA-512 digest, hex-encoded — unlike
+// npm's base64 SRI strings), and SHA256, when present, must be exactly 64
+// lowercase hex characters (empty is expected and valid before Fetch has
+// run).
+func validateArchiveArtifact(key PlatformKey, a LockArchiveArtifact) error {
+	if !strings.HasPrefix(a.URL, "https://") {
+		return fmt.Errorf("archive artifact %s: url %q must be https", key, a.URL)
+	}
+	if !isLowerHexOfLen(a.SHA512, 128) {
+		return fmt.Errorf("archive artifact %s: sha512 must be 128 lowercase hex characters", key)
+	}
+	if a.SHA256 != "" && !isLowerHexOfLen(a.SHA256, 64) {
+		return fmt.Errorf("archive artifact %s: sha256 must be empty or 64 lowercase hex characters", key)
+	}
+	return nil
+}
+
+// isLowerHexOfLen reports whether s is exactly n lowercase hexadecimal
+// characters. Kept local to this file (a separate check from receipt.go's
+// isLowerHex64, which is fixed at 64 characters) rather than generalizing
+// that helper — receipt.go is a sibling work package's file this package
+// does not touch.
+func isLowerHexOfLen(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // validateNPMLockfile checks n.Lockfile, when present: it must be valid
