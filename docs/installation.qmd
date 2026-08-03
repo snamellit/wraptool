@@ -60,6 +60,16 @@ Add `$HOME/.local/bin` to your shell's `PATH` configuration if it is not already
 present. macOS release binaries are not currently notarized by Apple; use the
 source-build path below if local policy requires notarized software.
 
+::: {.callout-warning title="macOS upgrades: never `cp` over the old binary"}
+On Apple silicon, overwriting an executable in place (`cp new wraptool`)
+leaves the kernel's code-signing cache holding the *old* file's signature for
+that inode; the next run is refused with `Killed: 9` even though the bytes are
+fine. The script above is safe — `install(1)` unlinks the destination first —
+as is `rm` followed by `cp`, or any write-to-temp-then-`mv`. If a binary is
+already in that state, re-sign it in place: `codesign -s - -f
+~/.local/bin/wraptool`.
+:::
+
 ### Windows PowerShell
 
 This example detects AMD64 versus ARM64, verifies the downloaded executable,

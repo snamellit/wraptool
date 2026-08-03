@@ -60,6 +60,16 @@ macOS release binaries are not Apple-notarized. If local policy requires
 notarized software, build from source (see [Installation](installation.qmd)).
 :::
 
+::: {.callout-warning title="Upgrading: `Killed: 9` after copying over the old binary"}
+When upgrading, don't `cp` the new binary over the existing
+`~/.local/bin/wraptool` — on Apple silicon the kernel caches code-signing
+information per inode, and an in-place overwrite leaves a stale signature that
+makes exec fail with `Killed: 9` (the shell's `hash -r` won't help; it's a
+kernel cache, not a path cache). Remove the old file first (`rm` then `cp`),
+use `install(1)` as in the install script, or repair an already-broken copy
+with `codesign -s - -f ~/.local/bin/wraptool`.
+:::
+
 ## 5. Where your config lives on macOS {#config-location}
 
 ::: {.callout-important}
