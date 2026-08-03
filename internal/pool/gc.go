@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 )
 
 // GCReport summarizes one GCPool/GCPoolLocked call (§10, §17): how many
@@ -30,9 +32,11 @@ type GCReport struct {
 // §15), under its own, self-contained pool lock acquisition. See
 // GCPoolLocked for the retention rules; this wrapper exists for a caller
 // that isn't already composing multiple orchestrator calls under one
-// LockPool span. dryRun still acquires the lock (§10: "a deliberate
-// exception" — dry-run wants a consistent view of what a real run would do)
-// but removes nothing.
+// LockPool span. dryRun still acquires the lock — this work package's brief
+// calls that out as a deliberate exception (no such wording appears in the
+// design doc's own §10 gc entry, which doesn't mention --dry-run at all):
+// dry-run wants a consistent view of what a real run would do, not a peek
+// at a pool a concurrent mutation could be mid-changing.
 func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error) {
 	release, err := LockPool(ctx, paths)
 	if err != nil {
@@ -45,17 +49,40 @@ func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error)
 // GCPoolLocked is GCPool's body, assuming the caller already holds the pool
 // lock (via LockPool) — it never acquires one itself.
 //
-// Retention invariants (§17):
+// Retention invariants (§15, §17) — a generation under runtime/generations/
+// is RETAINED iff ANY of:
 //
-//   - A generation under runtime/generations/ is RETAINED iff (a) some
-//     platform's active pointer (runtime/active/<key>/<harness>.gen, any
-//     harness) currently references it, OR (b) its receipt digest is
-//     recorded in the CURRENT harness-lock.json's Generations map for some
-//     harness/platform. Everything else under runtime/generations/ is
-//     removed. An active generation is therefore never collected (rule a),
-//     matching §15's "an active generation is never garbage-collected" —
-//     even one no longer reachable from the lock (e.g. after a manual lock
-//     edit) stays retained as long as some pointer still names it.
+//   - (a) some platform's active pointer (runtime/active/<key>/<harness>.gen,
+//     any harness) currently references it — read directly from the
+//     pointer's own content (a bare id-string comparison), never by
+//     resolving a generation id and comparing on-disk digests, so this rule
+//     needs no receipt at all;
+//   - (b) its OWN receipt's ManifestDigest matches the CURRENT
+//     harness-lock.json's recorded digest for that receipt's OWN
+//     (Harness, Platform) — read per generation via its own receipt.json
+//     (the scanRollbackCandidates pattern, orchestrator.go), never
+//     reconstructed by recomputing a generation id from
+//     (harnessName, lock's current top-level Version, digest): a platform
+//     realized at an OLDER version than the lock's current top-level
+//     Version would otherwise silently lose retention, because the
+//     reconstructed id would embed the wrong version and never match the
+//     real, on-disk directory name (this was review finding 2's arm64
+//     scenario — imagine claude locked at v2 for amd64 but still only ever
+//     realized at v1 for arm64: reconstructing amd64's v2 onto arm64's
+//     recorded digest computes an id nothing on disk has);
+//   - (c) among everything NOT already retained by (a)/(b), it is one of the
+//     2 most-recently-created generations (directory ModTime — the same
+//     ordering RollbackHarnessLocked uses to pick a rollback target) sharing
+//     its (Harness, Platform) — §15 "Default GC retains at least two
+//     previous generations per harness/platform". This is what makes an
+//     immediately-previous version still rollback-able after an update: an
+//     update's fresh realize overwrites the lock's Generations[key] entry
+//     with the NEW digest only, so the old generation survives purely
+//     through this rule until a second update (or gc, twice) ages it out of
+//     the top 2.
+//
+// Everything else under runtime/generations/ is removed.
+//
 //   - A cache object under cache/sha256/ is RETAINED iff its digest (the
 //     file's own name) is referenced by the current lock: any npm package's
 //     pool-local SHA256 or any runtime artifact's SHA256, across every
@@ -67,6 +94,18 @@ func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error)
 //     someone else currently owns (§15).
 //
 // Legacy bin/+lib/ is never touched (Phase 4, §16).
+//
+// An existing-but-unreadable/corrupt POINTER file is a hard error naming the
+// pointer's path (not a skip): GC holds the exclusive pool lock, so this can
+// only be corruption, never a benign race with a concurrent activation —
+// and silently continuing risks deleting the very generation that pointer
+// references. The error suggests `wraptool harness rollback <name> --to
+// <version>` or re-syncing the affected platform to repair it. A generation
+// directory whose OWN receipt.json is unreadable/unparseable is instead
+// simply excluded from rules (b)/(c) (it can never be the CURRENTLY active
+// one — ActivateGeneration validates a receipt before ever pointing at it —
+// so it is safe to let it fall through to removal rather than aborting the
+// whole run over it).
 //
 // A non-dry-run call appends one "gc" audit event after every removal
 // succeeds; a dry-run call appends nothing (it made no mutation to record).
@@ -106,13 +145,64 @@ func GCPoolLocked(paths PoolPaths, dryRun bool) (GCReport, error) {
 	return report, nil
 }
 
-// retainedGenerationIDs computes the set of generation ids that must be
-// kept: every id any platform's active pointer currently names, unioned
-// with every id the current lock's Generations map resolves to (via
-// GenerationID, using each harness's own locked version — receipts, not
-// generation-id string parsing, remain the per-generation authority
-// elsewhere in this package; here we only need the id strings themselves to
-// match against runtime/generations/ directory names).
+// gcGenerationRecord is one generation directory's identity as read from its
+// OWN receipt.json — never reconstructed from a harness's current lock
+// entry (see GCPoolLocked's doc comment, rule (b)).
+type gcGenerationRecord struct {
+	id       string
+	harness  string
+	platform PlatformKey
+	digest   string
+	modTime  time.Time
+}
+
+// scanGenerationRecords reads every directory under runtime/generations/ and
+// returns a record for each one whose receipt.json parses successfully,
+// silently excluding (not erroring on) any that doesn't — the same
+// tolerance scanRollbackCandidates (orchestrator.go) applies to its own
+// generation scan, and safe for the same reason: a generation whose receipt
+// can't be parsed could never have been legitimately activated in the first
+// place (ActivateGeneration validates a receipt before ever pointing at
+// one), so it can only ever be retained via rule (a) (a bare pointer-content
+// comparison, which needs no receipt at all) — never via (b) or (c), both of
+// which this function's records feed.
+func scanGenerationRecords(paths PoolPaths) ([]gcGenerationRecord, error) {
+	entries, err := os.ReadDir(runtimeGenerationsDir(paths.Runtime))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing generations: %w", err)
+	}
+	var out []gcGenerationRecord
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		genDir := runtimeGenerationDir(paths.Runtime, entry.Name())
+		info, err := os.Stat(genDir)
+		if err != nil {
+			continue
+		}
+		r, err := readGenerationReceipt(genDir)
+		if err != nil {
+			continue
+		}
+		out = append(out, gcGenerationRecord{
+			id: entry.Name(), harness: r.Harness, platform: r.Platform, digest: r.ManifestDigest, modTime: info.ModTime(),
+		})
+	}
+	return out, nil
+}
+
+// retainedGenerationIDs computes the set of generation ids GC must keep —
+// see GCPoolLocked's doc comment for the three retention rules this
+// implements. Pointer files are read STRICTLY: an existing pointer that
+// fails to read is a hard error (ruling: GC holds the exclusive pool lock,
+// so this is corruption, not a benign race), naming the pointer path and
+// suggesting the host-side repair command. A pointer file that simply
+// doesn't exist (that platform was never activated) is not iterated at all
+// by the glob below, so it never reaches this check.
 func retainedGenerationIDs(paths PoolPaths) (map[string]bool, error) {
 	retained := map[string]bool{}
 
@@ -123,12 +213,8 @@ func retainedGenerationIDs(paths PoolPaths) (map[string]bool, error) {
 	for _, ptr := range matches {
 		id, err := ReadPointer(ptr)
 		if err != nil {
-			// An unreadable or mid-rename pointer retains nothing extra;
-			// harmless to skip (§6.5's lockless-read tolerance applies here
-			// too, even though GC itself holds the lock — a pointer can
-			// still be genuinely absent between MkdirAll and the first
-			// WritePointer of a platform that has never been activated).
-			continue
+			return nil, fmt.Errorf("gc: pointer %s is unreadable (%w); this pointer's generation cannot be safely identified for retention — "+
+				"repair it first, e.g. `wraptool harness rollback <name> --to <version>` or `wraptool harness sync --platform <key>`, then re-run gc", ptr, err)
 		}
 		if id != "" {
 			retained[id] = true
@@ -139,16 +225,42 @@ func retainedGenerationIDs(paths PoolPaths) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	for harnessName, h := range lockDoc.Harnesses {
-		for key, digest := range h.Generations {
-			id, err := GenerationID(harnessName, h.Version, key, digest)
-			if err != nil {
-				// A malformed recorded digest can't be resolved to a
-				// generation id at all; skip rather than fail GC entirely —
-				// there is nothing on disk this could even be retaining.
-				continue
-			}
-			retained[id] = true
+
+	records, err := scanGenerationRecords(paths)
+	if err != nil {
+		return nil, err
+	}
+
+	// Rule (b): match by the GENERATION's own (harness, platform, digest) —
+	// never by reconstructing a generation id from the lock's current
+	// top-level Version (review finding 2).
+	for _, rec := range records {
+		if retained[rec.id] {
+			continue
+		}
+		if h, ok := lockDoc.Harnesses[rec.harness]; ok && h.Generations[rec.platform] == rec.digest {
+			retained[rec.id] = true
+		}
+	}
+
+	// Rule (c): among records not yet retained by (a)/(b), keep the 2
+	// most-recently-created (by directory ModTime) per (harness, platform).
+	type groupKey struct {
+		harness  string
+		platform PlatformKey
+	}
+	spares := map[groupKey][]gcGenerationRecord{}
+	for _, rec := range records {
+		if retained[rec.id] {
+			continue
+		}
+		k := groupKey{rec.harness, rec.platform}
+		spares[k] = append(spares[k], rec)
+	}
+	for _, group := range spares {
+		sort.Slice(group, func(i, j int) bool { return group[i].modTime.After(group[j].modTime) })
+		for i := 0; i < len(group) && i < 2; i++ {
+			retained[group[i].id] = true
 		}
 	}
 
