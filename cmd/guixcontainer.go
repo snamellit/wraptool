@@ -121,19 +121,36 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("harness pool: %s (install harness binaries into %s)\n", poolRoot, poolBin)
 
 	// Active-pointer lookup: HostPlatformKey errors only for an unsupported
 	// host arch, which resolveGuixPoolPlan treats the same as "no pointer"
 	// (empty pointerPath fails the read) — §12.1 point 3, never fail `up` for
-	// this.
+	// this. hname is already validated against harness.Registry by the
+	// harness.Write call above, so the map lookup below never misses.
 	var pointerPath string
 	if key, err := pool.HostPlatformKey(); err == nil {
 		pointerPath = pool.PointerFile(key, hname)
 	}
-	plan := resolveGuixPoolPlan(hname, pointerPath, pool.RuntimeDir(), pool.RuntimeBinDir(), poolBin, poolLib)
+	plan := resolveGuixPoolPlan(guixPoolPlanInput{
+		Harness:               hname,
+		PoolLockable:          harness.Registry[hname].PoolPackage != "",
+		PointerPath:           pointerPath,
+		RuntimeDir:            pool.RuntimeDir(),
+		RuntimeBinDir:         pool.RuntimeBinDir(),
+		RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
+		LegacyBin:             poolBin,
+		LegacyLib:             poolLib,
+	})
 	if plan.notice != "" {
 		fmt.Fprintln(os.Stderr, plan.notice)
+	}
+	// Report the ACTIVE plan's own path dir, not the legacy poolBin
+	// unconditionally — runtime mode must not tell the developer to drop
+	// binaries into runtime/bin, which is generated, not a drop-in dir.
+	if plan.active {
+		fmt.Printf("harness pool: %s\n", poolRoot)
+	} else {
+		fmt.Printf("harness pool: %s (install harness binaries into %s)\n", poolRoot, plan.pathDir)
 	}
 
 	entry := buildContainerEntry(root, poolHome, plan.pathDir)
@@ -195,44 +212,105 @@ func shellQuote(s string) string {
 // guixPoolPlan is the harness-pool mount/PATH/notice decision for one guix
 // container invocation (design/harness/unified-harness-pool.md §12.1): the
 // locked runtime/ tree, read-only, when an active pointer exists for the host
-// platform key, else the legacy bin/+lib/ tree with a stderr deprecation
-// notice (§16 migration). home/ is not part of the plan — it stays shared
-// read-write unchanged in either mode (handled directly in
-// bringUpGuixContainer/buildGuixShellArgs).
+// platform key and its generation is present on disk, else the legacy
+// bin/+lib/ tree with a stderr deprecation notice (§16 migration). home/ is
+// not part of the plan — it stays shared read-write unchanged in either mode
+// (handled directly in bringUpGuixContainer/buildGuixShellArgs).
 type guixPoolPlan struct {
 	exposes []string // "--expose=host=host" args, read-only, same-path (§6.3)
 	pathDir string   // directory appended (never prepended) to PATH
+	active  bool     // true: runtime/ tree mounted; false: legacy bin/+lib/
 	notice  string   // non-empty: legacy-fallback deprecation notice for stderr
 }
 
-// resolveGuixPoolPlan decides guixPoolPlan for harness hname. pointerPath is
-// the pointer file (pool.PointerFile(pool.HostPlatformKey(), hname)) for the
-// host platform, or "" when the platform key itself could not be resolved
-// (unsupported host arch) — that also falls back to legacy (§12.1 point 3).
-// runtimeDir/runtimeBinDir are pool.RuntimeDir()/pool.RuntimeBinDir();
-// legacyBin/legacyLib are the pre-existing pool bin/+lib/ dirs. Pure aside
-// from the single pool.ReadPointer file read, so tests drive it against a
-// t.TempDir() pool layout with no guix exec and no real $XDG_DATA_HOME.
-func resolveGuixPoolPlan(hname, pointerPath, runtimeDir, runtimeBinDir, legacyBin, legacyLib string) guixPoolPlan {
-	if pointerPath != "" {
-		// A missing file, an unreadable path (e.g. a directory), or an empty
-		// generation id all count as "no active pointer" (§12.1 point 2).
-		if genID, err := pool.ReadPointer(pointerPath); err == nil && genID != "" {
-			return guixPoolPlan{
-				exposes: []string{"--expose=" + runtimeDir + "=" + runtimeDir},
-				pathDir: runtimeBinDir,
+// guixPoolPlanInput bundles the paths and lockability resolveGuixPoolPlan
+// needs. Named fields replace positional same-typed strings — the untested
+// call site is exactly where several interchangeable path strings transpose
+// silently (pattern: internal/pool.PoolPaths). All fields are plain
+// strings/bool so tests build one against a t.TempDir() layout, with no real
+// $XDG_DATA_HOME and no guix exec.
+type guixPoolPlanInput struct {
+	// Harness is the harness name — the dispatcher/generation entrypoint file
+	// name, and the name cited in any deprecation notice.
+	Harness string
+	// PoolLockable is true when Harness has a pool package
+	// (harness.Registry[Harness].PoolPackage != ""). Non-lockable harnesses
+	// (agy/gemini/cursor/roo today) have no runtime/ path to move to, so
+	// their legacy fallback is silent — a notice promising a fix command
+	// that can't exist for them would be noise (§16).
+	PoolLockable bool
+	// PointerPath is pool.PointerFile(pool.HostPlatformKey(), Harness), or ""
+	// when the platform key itself could not be resolved (unsupported host
+	// arch) — treated identically to "no active pointer" (§12.1 point 3).
+	PointerPath string
+	// RuntimeDir is pool.RuntimeDir() — mounted read-only at the same host
+	// path when the plan is active.
+	RuntimeDir string
+	// RuntimeBinDir is pool.RuntimeBinDir(), the dispatcher directory:
+	// RuntimeBinDir/Harness (the generated dispatcher script) must exist for
+	// the pointer to be considered live.
+	RuntimeBinDir string
+	// RuntimeGenerationsDir is pool.RuntimeGenerationsDir(); the pointer's
+	// referenced generation's own RuntimeGenerationsDir/<genID>/bin/Harness
+	// must also exist (§5, §11.4) — a pointer can outlive its generation
+	// (e.g. deleted by a concurrent `gc`).
+	RuntimeGenerationsDir string
+	// LegacyBin, LegacyLib are the pre-existing pool bin/+lib/ dirs.
+	LegacyBin string
+	LegacyLib string
+}
+
+// resolveGuixPoolPlan decides guixPoolPlan for in.Harness. Pure aside from
+// the pool.ReadPointer file read and the two existence checks below, so
+// tests drive it against a t.TempDir() pool layout with no guix exec.
+func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
+	if in.PointerPath != "" {
+		if raw, err := pool.ReadPointer(in.PointerPath); err == nil {
+			// A missing file, an unreadable path (e.g. a directory), or an
+			// empty/whitespace-only generation id all count as "no active
+			// pointer" (§12.1 point 2). TrimSpace (not just ReadPointer's own
+			// single-trailing-newline trim) so "\n\n" or " " cannot activate
+			// the runtime plan.
+			if genID := strings.TrimSpace(raw); genID != "" {
+				dispatcher := filepath.Join(in.RuntimeBinDir, in.Harness)
+				genBin := filepath.Join(in.RuntimeGenerationsDir, genID, "bin", in.Harness)
+				if fileExists(dispatcher) && fileExists(genBin) {
+					return guixPoolPlan{
+						exposes: []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir},
+						pathDir: in.RuntimeBinDir,
+						active:  true,
+					}
+				}
+				// The pointer resolved but its generation is gone from disk
+				// (e.g. a concurrent gc) — fall back, but with a distinct
+				// notice naming what actually went wrong.
+				return legacyGuixPoolPlan(in, fmt.Sprintf(
+					"notice: active generation %s for %s is missing on disk; using legacy pool — "+
+						"run `wraptool harness sync` to rebuild", genID, in.Harness))
 			}
 		}
 	}
-	return guixPoolPlan{
+	return legacyGuixPoolPlan(in, fmt.Sprintf(
+		"notice: using legacy harness pool for %s; run `wraptool harness install %s` (or `wraptool harness "+
+			"sync` if already installed) to build a locked generation (legacy path is removed in a future release)",
+		in.Harness, in.Harness))
+}
+
+// legacyGuixPoolPlan builds the legacy bin/+lib/ plan, gating notice on
+// in.PoolLockable — a harness with no pool package at all has no runtime/
+// path to move to, so it takes the legacy path silently (§16).
+func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
+	plan := guixPoolPlan{
 		exposes: []string{
-			"--expose=" + legacyBin + "=" + legacyBin,
-			"--expose=" + legacyLib + "=" + legacyLib,
+			"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+			"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
 		},
-		pathDir: legacyBin,
-		notice: fmt.Sprintf("notice: using legacy harness pool for %s; run `wraptool harness sync` "+
-			"to build a locked generation (legacy path is removed in a future release)", hname),
+		pathDir: in.LegacyBin,
 	}
+	if in.PoolLockable {
+		plan.notice = notice
+	}
+	return plan
 }
 
 // buildContainerEntry builds the interactive shell entrypoint run inside the

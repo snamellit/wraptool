@@ -163,120 +163,225 @@ func TestValidateAdminTokenOutsideWorkspace(t *testing.T) {
 
 // --- guix runtime/ mount (design/harness/unified-harness-pool.md §12.1) ---
 
-// TestResolveGuixPoolPlan table-tests the pointer-file decision in isolation:
-// no guix exec, no real pool root — pointerPath is whatever the test writes
-// under t.TempDir(). This pins §12.1's "missing/unreadable/empty pointer ->
-// legacy fallback with a one-line notice" rule and the "valid pointer ->
-// runtime/ read-only, notice-free" rule.
-func TestResolveGuixPoolPlan(t *testing.T) {
-	const (
-		runtimeDir    = "/pool/runtime"
-		runtimeBinDir = "/pool/runtime/bin"
-		legacyBin     = "/pool/bin"
-		legacyLib     = "/pool/lib"
-	)
+// guixPoolPlanTestLayout builds a t.TempDir()-rooted pool layout (runtime/
+// dir + bin/ + generations/, legacy bin/ + lib/) and returns a
+// guixPoolPlanInput seeded from it, so tests can flip pointer content and
+// file presence without touching a real $XDG_DATA_HOME or exec'ing guix.
+func guixPoolPlanTestLayout(t *testing.T, harness string, poolLockable bool) (in guixPoolPlanInput, root string) {
+	t.Helper()
+	root = t.TempDir()
+	in = guixPoolPlanInput{
+		Harness:               harness,
+		PoolLockable:          poolLockable,
+		RuntimeDir:            filepath.Join(root, "runtime"),
+		RuntimeBinDir:         filepath.Join(root, "runtime", "bin"),
+		RuntimeGenerationsDir: filepath.Join(root, "runtime", "generations"),
+		LegacyBin:             filepath.Join(root, "bin"),
+		LegacyLib:             filepath.Join(root, "lib"),
+	}
+	return in, root
+}
 
-	writeFile := func(t *testing.T, content string) string {
-		t.Helper()
-		p := filepath.Join(t.TempDir(), "claude.gen")
-		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+// writePointerFile writes content at <root>/active.gen and returns its path.
+func writePointerFile(t *testing.T, root, content string) string {
+	t.Helper()
+	p := filepath.Join(root, "active.gen")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// writeGeneration creates the two files resolveGuixPoolPlan checks for an
+// active pointer to genID: the dispatcher (runtime/bin/<harness>) and the
+// generation's own entrypoint (runtime/generations/<genID>/bin/<harness>).
+func writeGeneration(t *testing.T, in guixPoolPlanInput, genID string, dispatcher, genBin bool) {
+	t.Helper()
+	if dispatcher {
+		if err := os.MkdirAll(in.RuntimeBinDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		return p
+		if err := os.WriteFile(filepath.Join(in.RuntimeBinDir, in.Harness), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
+	if genBin {
+		dir := filepath.Join(in.RuntimeGenerationsDir, genID, "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, in.Harness), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
 
+// TestResolveGuixPoolPlanNoActivePointer covers every "no active pointer"
+// case (§12.1 point 2/3): missing pointer file, unreadable pointer path, an
+// empty or whitespace/newline-only pointer content, and an empty pointerPath
+// (simulating a HostPlatformKey resolution failure). All fall back to the
+// legacy plan; the deprecation notice is present for a pool-lockable harness
+// and silent for one that is not (item 1: a harness with no runtime/ path
+// gets no notice promising a fix that can't exist for it).
+func TestResolveGuixPoolPlanNoActivePointer(t *testing.T) {
 	cases := []struct {
 		name        string
-		pointerPath func(t *testing.T) string
-		wantActive  bool
+		pointerPath func(t *testing.T, root string) string
 	}{
-		{
-			name:        "valid pointer activates runtime",
-			pointerPath: func(t *testing.T) string { return writeFile(t, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n") },
-			wantActive:  true,
-		},
-		{
-			name:        "missing pointer file falls back",
-			pointerPath: func(t *testing.T) string { return filepath.Join(t.TempDir(), "claude.gen") },
-			wantActive:  false,
-		},
-		{
-			name:        "empty pointer file falls back",
-			pointerPath: func(t *testing.T) string { return writeFile(t, "") },
-			wantActive:  false,
-		},
-		{
-			name:        "empty-after-trim pointer file falls back",
-			pointerPath: func(t *testing.T) string { return writeFile(t, "\n") },
-			wantActive:  false,
-		},
-		{
-			name: "unreadable pointer path (a directory) falls back",
-			pointerPath: func(t *testing.T) string {
-				d := filepath.Join(t.TempDir(), "claude.gen")
-				if err := os.Mkdir(d, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				return d
-			},
-			wantActive: false,
-		},
-		{
-			name:        "empty pointerPath (host platform key unresolved) falls back",
-			pointerPath: func(t *testing.T) string { return "" },
-			wantActive:  false,
-		},
+		{"missing pointer file", func(t *testing.T, root string) string { return filepath.Join(root, "active.gen") }},
+		{"empty pointer file", func(t *testing.T, root string) string { return writePointerFile(t, root, "") }},
+		{"whitespace-only pointer file", func(t *testing.T, root string) string { return writePointerFile(t, root, " ") }},
+		{"newline-only pointer file", func(t *testing.T, root string) string { return writePointerFile(t, root, "\n\n") }},
+		{"unreadable pointer path (a directory)", func(t *testing.T, root string) string {
+			d := filepath.Join(root, "active.gen")
+			if err := os.Mkdir(d, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			return d
+		}},
+		{"empty pointerPath (host platform key unresolved)", func(t *testing.T, root string) string { return "" }},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan := resolveGuixPoolPlan("claude", tc.pointerPath(t), runtimeDir, runtimeBinDir, legacyBin, legacyLib)
+			for _, lockable := range []bool{true, false} {
+				t.Run(map[bool]string{true: "lockable", false: "not lockable"}[lockable], func(t *testing.T) {
+					in, root := guixPoolPlanTestLayout(t, "claude", lockable)
+					in.PointerPath = tc.pointerPath(t, root)
 
-			if tc.wantActive {
-				wantExposes := []string{"--expose=" + runtimeDir + "=" + runtimeDir}
-				if !reflect.DeepEqual(plan.exposes, wantExposes) {
-					t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
-				}
-				if plan.pathDir != runtimeBinDir {
-					t.Errorf("pathDir = %q, want %q", plan.pathDir, runtimeBinDir)
-				}
-				if plan.notice != "" {
-					t.Errorf("notice = %q, want none", plan.notice)
-				}
-				for _, e := range plan.exposes {
-					if strings.Contains(e, legacyBin) || strings.Contains(e, legacyLib) {
-						t.Errorf("active-pointer exposes leaked legacy dir: %v", plan.exposes)
+					plan := resolveGuixPoolPlan(in)
+
+					if plan.active {
+						t.Fatalf("plan.active = true, want legacy fallback")
 					}
-				}
-				return
-			}
+					wantExposes := []string{
+						"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+						"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
+					}
+					if !reflect.DeepEqual(plan.exposes, wantExposes) {
+						t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
+					}
+					if plan.pathDir != in.LegacyBin {
+						t.Errorf("pathDir = %q, want %q", plan.pathDir, in.LegacyBin)
+					}
+					for _, e := range plan.exposes {
+						if strings.Contains(e, in.RuntimeDir) {
+							t.Errorf("legacy-fallback exposes leaked runtime dir: %v", plan.exposes)
+						}
+					}
 
-			wantExposes := []string{
-				"--expose=" + legacyBin + "=" + legacyBin,
-				"--expose=" + legacyLib + "=" + legacyLib,
-			}
-			if !reflect.DeepEqual(plan.exposes, wantExposes) {
-				t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
-			}
-			if plan.pathDir != legacyBin {
-				t.Errorf("pathDir = %q, want %q", plan.pathDir, legacyBin)
-			}
-			if plan.notice == "" {
-				t.Error("expected a legacy-fallback deprecation notice, got none")
-			}
-			if !strings.Contains(plan.notice, "claude") || !strings.Contains(plan.notice, "wraptool harness sync") {
-				t.Errorf("notice = %q, want it to name the harness and the fix command", plan.notice)
-			}
-			for _, e := range plan.exposes {
-				if strings.Contains(e, runtimeDir) {
-					t.Errorf("legacy-fallback exposes leaked runtime dir: %v", plan.exposes)
-				}
+					if lockable {
+						if plan.notice == "" {
+							t.Fatal("expected a legacy-fallback deprecation notice for a pool-lockable harness, got none")
+						}
+						if !strings.Contains(plan.notice, "claude") ||
+							!strings.Contains(plan.notice, "wraptool harness install claude") ||
+							!strings.Contains(plan.notice, "wraptool harness sync") {
+							t.Errorf("notice = %q, want it to name the harness and both the install and sync fix commands", plan.notice)
+						}
+					} else if plan.notice != "" {
+						t.Errorf("notice = %q, want none for a non-pool-lockable harness (silent legacy fallback)", plan.notice)
+					}
+				})
 			}
 		})
 	}
 }
 
-// TestResolveGuixPoolPlanNoticeIsSingleLine pins plan.notice as one line
+// TestResolveGuixPoolPlanActivePointer asserts the happy path: a pointer
+// whose generation id resolves to real dispatcher + generation-bin files on
+// disk activates the runtime/ plan, notice-free, regardless of lockability
+// (an active pointer can only exist for a lockable harness in practice, but
+// the plan itself doesn't need to re-derive that).
+func TestResolveGuixPoolPlanActivePointer(t *testing.T) {
+	in, root := guixPoolPlanTestLayout(t, "claude", true)
+	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
+	writeGeneration(t, in, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4", true, true)
+
+	plan := resolveGuixPoolPlan(in)
+
+	if !plan.active {
+		t.Fatalf("plan.active = false, want true")
+	}
+	wantExposes := []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir}
+	if !reflect.DeepEqual(plan.exposes, wantExposes) {
+		t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
+	}
+	if plan.pathDir != in.RuntimeBinDir {
+		t.Errorf("pathDir = %q, want %q", plan.pathDir, in.RuntimeBinDir)
+	}
+	if plan.notice != "" {
+		t.Errorf("notice = %q, want none", plan.notice)
+	}
+	for _, e := range plan.exposes {
+		if strings.Contains(e, in.LegacyBin) || strings.Contains(e, in.LegacyLib) {
+			t.Errorf("active-pointer exposes leaked legacy dir: %v", plan.exposes)
+		}
+	}
+}
+
+// TestResolveGuixPoolPlanStaleGeneration covers item 3: the pointer resolves
+// to a real generation id, but the generation is gone from disk (dispatcher
+// missing, generation-bin missing, or both) — a concurrent gc, or a pointer
+// copied from another machine. Falls back to legacy with a distinct notice
+// naming the missing generation, again gated on lockability.
+func TestResolveGuixPoolPlanStaleGeneration(t *testing.T) {
+	const genID = "claude-1.2.3-linux-amd64-glibc-a1b2c3d4"
+
+	cases := []struct {
+		name       string
+		dispatcher bool
+		genBin     bool
+	}{
+		{"dispatcher missing", false, true},
+		{"generation bin missing", true, false},
+		{"both missing", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, lockable := range []bool{true, false} {
+				t.Run(map[bool]string{true: "lockable", false: "not lockable"}[lockable], func(t *testing.T) {
+					in, root := guixPoolPlanTestLayout(t, "claude", lockable)
+					in.PointerPath = writePointerFile(t, root, genID+"\n")
+					writeGeneration(t, in, genID, tc.dispatcher, tc.genBin)
+
+					plan := resolveGuixPoolPlan(in)
+
+					if plan.active {
+						t.Fatalf("plan.active = true, want legacy fallback (stale generation)")
+					}
+					wantExposes := []string{
+						"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+						"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
+					}
+					if !reflect.DeepEqual(plan.exposes, wantExposes) {
+						t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
+					}
+					if plan.pathDir != in.LegacyBin {
+						t.Errorf("pathDir = %q, want %q", plan.pathDir, in.LegacyBin)
+					}
+
+					if lockable {
+						if plan.notice == "" {
+							t.Fatal("expected a stale-generation deprecation notice, got none")
+						}
+						if !strings.Contains(plan.notice, genID) ||
+							!strings.Contains(plan.notice, "claude") ||
+							!strings.Contains(plan.notice, "missing on disk") ||
+							!strings.Contains(plan.notice, "wraptool harness sync") {
+							t.Errorf("notice = %q, want it to name the generation id, the harness, and `wraptool harness sync`", plan.notice)
+						}
+					} else if plan.notice != "" {
+						t.Errorf("notice = %q, want none for a non-pool-lockable harness (silent legacy fallback)", plan.notice)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestResolveGuixPoolPlanNoticeIsSingleLine pins each notice as one line
 // containing exactly one occurrence of the notice marker — the actual
 // "printed once, not per mount" behavior lives in bringUpGuixContainer, which
 // calls resolveGuixPoolPlan exactly once and prints plan.notice with exactly
@@ -284,13 +389,25 @@ func TestResolveGuixPoolPlan(t *testing.T) {
 // loop over exposes/mounts), so a single-line, single-occurrence notice here
 // is what guarantees no caller can accidentally duplicate it per mount.
 func TestResolveGuixPoolPlanNoticeIsSingleLine(t *testing.T) {
-	plan := resolveGuixPoolPlan("claude", "", "/pool/runtime", "/pool/runtime/bin", "/pool/bin", "/pool/lib")
-	if n := strings.Count(plan.notice, "notice:"); n != 1 {
-		t.Fatalf("notice contains %d occurrences of \"notice:\", want exactly 1: %q", n, plan.notice)
+	check := func(t *testing.T, notice string) {
+		t.Helper()
+		if n := strings.Count(notice, "notice:"); n != 1 {
+			t.Fatalf("notice contains %d occurrences of \"notice:\", want exactly 1: %q", n, notice)
+		}
+		if strings.Contains(notice, "\n") {
+			t.Fatalf("notice must be a single line: %q", notice)
+		}
 	}
-	if strings.Contains(plan.notice, "\n") {
-		t.Fatalf("notice must be a single line: %q", plan.notice)
-	}
+
+	t.Run("no active pointer", func(t *testing.T) {
+		in, _ := guixPoolPlanTestLayout(t, "claude", true)
+		check(t, resolveGuixPoolPlan(in).notice)
+	})
+	t.Run("stale generation", func(t *testing.T) {
+		in, root := guixPoolPlanTestLayout(t, "claude", true)
+		in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
+		check(t, resolveGuixPoolPlan(in).notice)
+	})
 }
 
 // TestBuildContainerEntryAppendsPathDir pins §12.1's append-not-prepend
@@ -324,7 +441,15 @@ func TestBuildGuixShellArgsLegacyPoolPlan(t *testing.T) {
 	poolBin := "/pool/bin"
 	poolLib := "/pool/lib"
 
-	plan := resolveGuixPoolPlan("claude", "", "/pool/runtime", "/pool/runtime/bin", poolBin, poolLib)
+	plan := resolveGuixPoolPlan(guixPoolPlanInput{
+		Harness:               "claude",
+		PoolLockable:          true,
+		RuntimeDir:            "/pool/runtime",
+		RuntimeBinDir:         "/pool/runtime/bin",
+		RuntimeGenerationsDir: "/pool/runtime/generations",
+		LegacyBin:             poolBin,
+		LegacyLib:             poolLib,
+	})
 	entry := buildContainerEntry(root, poolHome, plan.pathDir)
 	got := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
 
@@ -363,15 +488,17 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 	poolHome := "/pool/home"
 	poolBin := "/pool/bin"
 	poolLib := "/pool/lib"
-	runtimeDir := "/pool/runtime"
-	runtimeBinDir := "/pool/runtime/bin"
 
-	pointerPath := filepath.Join(t.TempDir(), "claude.gen")
-	if err := os.WriteFile(pointerPath, []byte("claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n"), 0o600); err != nil {
-		t.Fatal(err)
+	in, tmpRoot := guixPoolPlanTestLayout(t, "claude", true)
+	in.LegacyBin, in.LegacyLib = poolBin, poolLib // exercise distinct legacy-vs-tmp paths
+	const genID = "claude-1.2.3-linux-amd64-glibc-a1b2c3d4"
+	in.PointerPath = writePointerFile(t, tmpRoot, genID+"\n")
+	writeGeneration(t, in, genID, true, true)
+
+	plan := resolveGuixPoolPlan(in)
+	if !plan.active {
+		t.Fatalf("plan.active = false, want true (setup bug)")
 	}
-
-	plan := resolveGuixPoolPlan("claude", pointerPath, runtimeDir, runtimeBinDir, poolBin, poolLib)
 	entry := buildContainerEntry(root, poolHome, plan.pathDir)
 	got := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
 
@@ -379,7 +506,7 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 		"shell", "--container", "--network",
 		"--emulate-fhs",
 		"--share=" + root + "=" + root,
-		"--expose=" + runtimeDir + "=" + runtimeDir,
+		"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir,
 		"--share=" + poolHome + "=" + poolHome,
 		"--preserve=^WRAPTOOL_",
 		"--preserve=^COLORTERM$",
