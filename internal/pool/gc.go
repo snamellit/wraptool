@@ -258,7 +258,19 @@ func retainedGenerationIDs(paths PoolPaths) (map[string]bool, error) {
 		spares[k] = append(spares[k], rec)
 	}
 	for _, group := range spares {
-		sort.Slice(group, func(i, j int) bool { return group[i].modTime.After(group[j].modTime) })
+		// SliceStable + an explicit generation-id tiebreak (rather than
+		// relying on scanGenerationRecords' incoming os.ReadDir order,
+		// which happens to be name-sorted too, but that's an accident of
+		// the stdlib, not a documented guarantee this package should lean
+		// on): coarse-grained filesystem mtimes (e.g. 1s resolution on some
+		// hosts) can make two generations compare equal, and GC's output
+		// must not depend on directory-iteration order in that case.
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].modTime.Equal(group[j].modTime) {
+				return group[i].id < group[j].id
+			}
+			return group[i].modTime.After(group[j].modTime)
+		})
 		for i := 0; i < len(group) && i < 2; i++ {
 			retained[group[i].id] = true
 		}
