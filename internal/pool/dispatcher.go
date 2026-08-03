@@ -3,6 +3,7 @@ package pool
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 )
 
 // dispatcherTemplate is the §5.3 dispatcher script (normative — pinned
@@ -61,18 +62,37 @@ func runtimeBinFile(runtimeRoot, harnessName string) string {
 	return filepath.Join(runtimeBinDir(runtimeRoot), harnessName)
 }
 
+// harnessNamePattern is the actual shell-safety guarantee for a harness name
+// that ends up interpolated DIRECTLY into generated shell source (the
+// dispatcher's own "name=%s" line, §5.3) with no further escaping: only
+// ASCII letters, digits, dot, underscore, and hyphen. This is strictly
+// tighter than validatePathSegment (receipt.go), which merely rejects an
+// empty value, a path separator, or a bare "."/".." segment — it does NOT
+// reject a space, ";", "$", backtick, or other characters that are harmless
+// as a bare path segment but would break out of (or inject into) the
+// generated sh source if interpolated literally. validatePathSegment is
+// still checked too, redundantly, for the path-segment guarantee proper
+// (WriteDispatcher's file name); harnessNamePattern is what actually makes
+// the interpolation safe.
+var harnessNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
 // WriteDispatcher generates and atomically writes runtime/bin/<harnessName>
 // (§5.3), 0o755 so a project container can exec it directly. harnessName is
-// validated as a single path segment first (validatePathSegment, the same
-// rule GenerationID's harness/version inputs already follow) since it is
-// interpolated directly into shell source with no further escaping, and
-// becomes the dispatcher's own file name under runtime/bin/.
+// validated against harnessNamePattern first (see its doc comment) — this,
+// not validatePathSegment, is what makes it safe to interpolate directly
+// into shell source with no further escaping — and validatePathSegment is
+// applied too, for its complementary path-segment guarantee (harnessName
+// also becomes the dispatcher's own file name under runtime/bin/).
 //
 // Called by ActivateGeneration on every activation (§5.3: "regenerated, not
 // edited, on every activation") — the dispatcher's content never varies by
 // generation id, only by harness name, so repeated calls for the same
 // harness simply rewrite identical bytes.
 func WriteDispatcher(paths PoolPaths, harnessName string) error {
+	if !harnessNamePattern.MatchString(harnessName) {
+		return fmt.Errorf("writing dispatcher for %q: harness name must match %s (it is interpolated directly into generated shell source)",
+			harnessName, harnessNamePattern.String())
+	}
 	if err := validatePathSegment("harness", harnessName); err != nil {
 		return fmt.Errorf("writing dispatcher for %s: %w", harnessName, err)
 	}

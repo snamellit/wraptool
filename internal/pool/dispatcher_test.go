@@ -110,6 +110,22 @@ func TestWriteDispatcherRejectsMultiSegmentHarnessName(t *testing.T) {
 	}
 }
 
+// TestWriteDispatcherRejectsShellUnsafeCharacters pins harnessNamePattern
+// (the actual shell-safety guarantee, distinct from validatePathSegment's
+// looser path-segment rule): a harness name containing a space, ';', or '$'
+// is a valid single path segment but would break out of (or inject into)
+// the dispatcher's generated shell source if interpolated literally, so it
+// must be rejected before ever reaching GenerateDispatcher.
+func TestWriteDispatcherRejectsShellUnsafeCharacters(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	for _, name := range []string{"claude; rm -rf /", "claude$(id)", "claude name", "claude`id`"} {
+		if err := WriteDispatcher(paths, name); err == nil {
+			t.Errorf("WriteDispatcher(%q): expected an error for a shell-unsafe harness name", name)
+		}
+	}
+}
+
 // --- behavioral: run the generated script with /bin/sh ---
 
 // dispatcherTestRoot builds a runtime/ tree under t.TempDir() containing the
@@ -133,15 +149,24 @@ func dispatcherTestRoot(t *testing.T, harnessName string) (root string) {
 }
 
 // seedDispatcherGeneration creates root/generations/<id>/bin/<name> as a
-// tiny real script that echoes its own args (so a test can assert argument
-// pass-through) and root/active/<key>/<name>.gen pointing at it.
+// tiny real script and root/active/<key>/<name>.gen pointing at it. The
+// script prints a fixed "ran:" marker (so simpler tests can just check it
+// ran at all) followed by `printf '[%s]' "$@"` — properly-quoted "$@"
+// preserves each positional argument as one word regardless of embedded
+// spaces, so an argument like "fix the bug" comes out as exactly ONE
+// "[fix the bug]" group. This is deliberately NOT `echo $@` (unquoted): the
+// dispatcher itself execs with `"$@"` (quoted, §5.3) — a regression that
+// dropped those quotes would word-split "fix the bug" into three separate
+// positional arguments before this script ever saw them, producing
+// "[fix][the][bug]" instead, which TestDispatcherHappyPathExecsAndPassesArgsThrough
+// asserts against.
 func seedDispatcherGeneration(t *testing.T, root, key, harnessName, genID string) {
 	t.Helper()
 	binDir := filepath.Join(root, "generations", genID, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\necho ran:$0:$@\n"
+	script := "#!/bin/sh\necho ran:$0\nprintf '[%s]' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(binDir, harnessName), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -198,17 +223,27 @@ func mergeEnv(base, overrides []string) []string {
 	return out
 }
 
+// TestDispatcherHappyPathExecsAndPassesArgsThrough covers both plain
+// pass-through and an unquoted-$@ regression (an argument containing a
+// space must arrive at the generation binary as ONE argument, not
+// word-split into several — §5.3's `exec ... "$@"` is quoted).
 func TestDispatcherHappyPathExecsAndPassesArgsThrough(t *testing.T) {
 	t.Parallel()
 	root := dispatcherTestRoot(t, "claude")
 	seedDispatcherGeneration(t, root, "linux-amd64-glibc", "claude", "claude-2.1.220-linux-amd64-glibc-deadbeef")
 
-	out, err := runDispatcher(t, root, "claude", []string{"WRAPTOOL_PLATFORM=linux-amd64-glibc"}, []string{"foo", "bar"})
+	out, err := runDispatcher(t, root, "claude", []string{"WRAPTOOL_PLATFORM=linux-amd64-glibc"}, []string{"fix the bug"})
 	if err != nil {
 		t.Fatalf("dispatcher failed: %v, output:\n%s", err, out)
 	}
-	if !strings.Contains(out, "ran:") || !strings.Contains(out, "foo bar") {
-		t.Errorf("expected the generation script to run with args passed through, got:\n%s", out)
+	if !strings.Contains(out, "ran:") {
+		t.Errorf("expected the generation script to run, got:\n%s", out)
+	}
+	if !strings.Contains(out, "[fix the bug]") {
+		t.Errorf("expected the space-containing argument to arrive as ONE argument \"[fix the bug]\" (a regression here would word-split it into \"[fix][the][bug]\"), got:\n%s", out)
+	}
+	if strings.Contains(out, "[fix][the][bug]") {
+		t.Error("argument was word-split into three separate arguments — an unquoted $@ regression in the dispatcher's final exec")
 	}
 }
 
