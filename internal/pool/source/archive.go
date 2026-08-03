@@ -724,6 +724,18 @@ var maxArchiveEntrySize int64 = 1 << 30 // 1 GiB
 // package-level var for the same test-seam reason as maxArchiveEntrySize.
 var maxArchiveTotalBytes int64 = 2 << 30 // 2 GiB
 
+// maxArchiveEntryCount bounds the number of regular entries a single
+// archive may contain (review round 2, item 1): the byte budgets above are
+// blind to a "free" attack that never touches either of them — many
+// (potentially millions of) genuinely ZERO-size regular entries, each
+// costing nothing against maxArchiveEntrySize/maxArchiveTotalBytes but
+// still creating a real inode/file on disk per entry, exhausting the
+// staging filesystem's inode table (or just its directory-entry count)
+// long before any byte-size guard would ever fire. Checked per entry,
+// before extraction, the same way as the byte budgets — a package-level
+// var for the same test-seam reason.
+var maxArchiveEntryCount = 65536
+
 // tarLinkKindLabel renders a tar Typeflag naming a link entry, for
 // streamExtractArchive's rejection error.
 func tarLinkKindLabel(t byte) string {
@@ -783,6 +795,9 @@ func validateArchiveEntryName(name string) error {
 //     tree-escape/portability hazards on the pool's host filesystems;
 //   - any entry whose name is an absolute path or contains a ".." segment
 //     (validateArchiveEntryName);
+//   - a regular-entry count over maxArchiveEntryCount (review round 2, item
+//     1: an inode-exhaustion guard the byte-size budgets below cannot
+//     see — many genuinely zero-size entries cost nothing against them);
 //   - any entry declaring a negative or over-maxArchiveEntrySize size
 //     (per-entry zip-bomb guard);
 //   - a cumulative declared size over maxArchiveTotalBytes across every
@@ -814,6 +829,7 @@ func streamExtractArchive(r io.Reader, destRoot string) error {
 
 	tr := tar.NewReader(gz)
 	var totalSize int64
+	var entryCount int
 	sawRegular := false
 	for {
 		hdr, err := tr.Next()
@@ -841,6 +857,11 @@ func streamExtractArchive(r io.Reader, destRoot string) error {
 			return fmt.Errorf("archive entry %q is a %s, which is not allowed (generations must be symlink-free, §6.4)",
 				name, tarLinkKindLabel(hdr.Typeflag))
 		case tar.TypeReg:
+			entryCount++
+			if entryCount > maxArchiveEntryCount {
+				return fmt.Errorf("archive declares more than %d regular entries; rejecting entry %q before extracting it (inode-exhaustion guard)",
+					maxArchiveEntryCount, name)
+			}
 			if hdr.Size < 0 {
 				return fmt.Errorf("archive entry %q declares a negative size %d", name, hdr.Size)
 			}
@@ -893,6 +914,18 @@ func streamExtractRegularEntry(tr *tar.Reader, dst string, size int64, archiveMo
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
+			// O_EXCL reports EEXIST for BOTH a true duplicate file entry
+			// (review round 1, item 6) and for an entry whose path was
+			// already created as a DIRECTORY by an earlier, nested entry
+			// (e.g. archive contains both "foo/bar" — which MkdirAll's
+			// "foo" into existence — and a separate top-level entry
+			// literally named "foo"). Lstat distinguishes them so the
+			// error names the actual cause instead of always claiming
+			// "duplicate entry" for what is really a name/directory
+			// collision (review round 2, item 3).
+			if fi, statErr := os.Lstat(dst); statErr == nil && fi.IsDir() {
+				return fmt.Errorf("entry %s collides with a directory created for nested entries", dst)
+			}
 			return fmt.Errorf("duplicate entry: %s already extracted from an earlier tar entry", dst)
 		}
 		return fmt.Errorf("creating %s: %w", dst, err)
@@ -950,6 +983,16 @@ func stripCommonLeadingDirOnDisk(destRoot string) error {
 	for _, c := range children {
 		oldPath := filepath.Join(topDir, c.Name())
 		newPath := filepath.Join(destRoot, c.Name())
+		// Defensive, not currently reachable (review round 2, item 4): the
+		// `len(entries) != 1` check above already establishes that topDir
+		// is destRoot's ONLY top-level entry, so nothing else at
+		// destRoot's top level exists for a moved child to collide with
+		// in THIS call path. Kept as a guard rather than dropped in case
+		// this function's precondition ever changes (e.g. a future caller
+		// invoking it on a directory that isn't exclusively
+		// freshly-extracted content) — "reject, don't guess" if that ever
+		// happens, rather than silently clobbering an existing entry via
+		// os.Rename's overwrite-on-collision semantics.
 		if _, err := os.Lstat(newPath); err == nil {
 			return fmt.Errorf("stripping leading directory %q: %q collides with an existing top-level entry", topName, c.Name())
 		}

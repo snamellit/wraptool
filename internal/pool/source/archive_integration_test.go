@@ -57,7 +57,12 @@ func TestIntegration_ArchiveFullChain(t *testing.T) {
 	a := NewArchive(manifestSrv.URL)
 	// Trust the TLS test server's self-signed certificate for Fetch's
 	// downloads; production code never overrides this client.
+	// artifactSrv.Client() carries no Timeout at all (httptest's default),
+	// unlike NewArchive's own downloadClient — copy downloadTimeout onto it
+	// so this test's client matches production in every respect except the
+	// trust store (review round 2, item 5).
 	a.downloadClient = artifactSrv.Client()
+	a.downloadClient.Timeout = downloadTimeout
 	fb := &fatalBackend{t: t}
 	ctx := context.Background()
 

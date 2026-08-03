@@ -8,6 +8,7 @@ import (
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -859,6 +860,77 @@ func TestRealize_ArchiveRejectsWhenTotalDeclaredSizeExceedsBudget(t *testing.T) 
 	}
 }
 
+// TestRealize_ArchiveRejectsWhenEntryCountExceedsCap is review round 2 item
+// 1's regression test: the byte-size budgets are blind to many genuinely
+// ZERO-size regular entries (each costs nothing against
+// maxArchiveEntrySize/maxArchiveTotalBytes) — an inode-exhaustion shape a
+// separate entry-count cap is needed to catch. Shrinks maxArchiveEntryCount
+// for its own duration so the scenario is reachable with a handful of
+// entries rather than 65536+1 real ones.
+func TestRealize_ArchiveRejectsWhenEntryCountExceedsCap(t *testing.T) {
+	oldCount := maxArchiveEntryCount
+	maxArchiveEntryCount = 5
+	t.Cleanup(func() { maxArchiveEntryCount = oldCount })
+
+	files := make(map[string]string, maxArchiveEntryCount+1)
+	for i := 0; i <= maxArchiveEntryCount; i++ { // cap+1 entries, one over
+		files[fmt.Sprintf("f%d", i)] = "" // zero-size: the free-inode attack shape
+	}
+	tarGZ := buildAgyTarGZ(t, "", files)
+
+	err := realizeHostileArchive(t, tarGZ)
+	if err == nil {
+		t.Fatal("Realize: got nil error, want rejection when entry count exceeds the cap")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("%d", maxArchiveEntryCount)) {
+		t.Errorf("error = %q, want it to name the cap (%d)", err.Error(), maxArchiveEntryCount)
+	}
+}
+
+// TestRealize_ArchiveRejectsTruncatedEntryContent is review round 2 item
+// 2's regression test: a regular entry whose header declares MORE bytes
+// than the tar stream actually backs it with must fail via the io.CopyN
+// READ path (streamExtractRegularEntry) — as opposed to every OTHER
+// hostile-entry test in this file, which reject purely from header
+// metadata before any content read is attempted. Also asserts the
+// partially-written destination file is removed on that failure.
+func TestRealize_ArchiveRejectsTruncatedEntryContent(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Name: "agy", Typeflag: tar.TypeReg, Mode: 0o755, Size: 100}); err != nil {
+		t.Fatalf("writing header: %v", err)
+	}
+	if _, err := tw.Write(bytes.Repeat([]byte("x"), 10)); err != nil {
+		t.Fatalf("writing partial content: %v", err)
+	}
+	// Deliberately no tw.Close() (archive/tar would error: not all 100
+	// declared bytes were written) — flush the gzip writer directly, the
+	// same technique TestRealize_ArchiveRejectsOversizedEntry and
+	// TestRealize_ArchiveRejectsWhenTotalDeclaredSizeExceedsBudget use.
+	// Here, unlike those two, 10 REAL bytes precede the truncation, so the
+	// reader actually enters the content-copy loop before failing.
+	if err := gz.Close(); err != nil {
+		t.Fatalf("closing gzip writer: %v", err)
+	}
+
+	genRoot := t.TempDir()
+	stagingGenDir := filepath.Join(genRoot, "gen1")
+	err := realizeHostileArchiveIn(t, buf.Bytes(), stagingGenDir)
+	if err == nil {
+		t.Fatal("Realize: got nil error, want rejection of truncated entry content")
+	}
+	if !strings.Contains(err.Error(), "agy") {
+		t.Errorf("error = %q, want it to mention the entry (\"agy\")", err.Error())
+	}
+
+	if _, statErr := os.Stat(filepath.Join(stagingGenDir, "agy")); statErr == nil {
+		t.Error("partially-written destination file still exists, want it removed after the failed copy")
+	} else if !os.IsNotExist(statErr) {
+		t.Fatalf("stat: %v", statErr)
+	}
+}
+
 // TestRealize_ArchiveAllowsPAXGlobalHeader is review round 1 item 4's
 // regression test: `git archive` prepends a pax_global_header entry
 // (tar.TypeXGlobalHeader). Go's tar.Reader does NOT auto-absorb this type
@@ -976,6 +1048,34 @@ func TestRealize_ArchiveRejectsDuplicateEntryNames(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "duplicate entry") {
 		t.Errorf("error = %q, want it to mention a duplicate entry", err.Error())
+	}
+}
+
+// TestRealize_ArchiveDistinguishesDirectoryCollisionFromDuplicateEntry is
+// review round 2 item 3's regression test: an entry named "foo" that
+// collides with a DIRECTORY (created implicitly for a nested entry like
+// "foo/bar") must get its own, more specific error — never the generic
+// "duplicate entry" wording TestRealize_ArchiveRejectsDuplicateEntryNames
+// above exercises for two entries with the identical name.
+func TestRealize_ArchiveDistinguishesDirectoryCollisionFromDuplicateEntry(t *testing.T) {
+	nested := []byte("nested content")
+	colliding := []byte("collides with the directory created for foo/bar")
+	tarGZ := buildRawTarGZ(t,
+		[]tar.Header{
+			{Name: "foo/bar", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(nested))},
+			{Name: "foo", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(colliding))},
+		},
+		[][]byte{nested, colliding})
+
+	err := realizeHostileArchive(t, tarGZ)
+	if err == nil {
+		t.Fatal("Realize: got nil error, want rejection when an entry collides with a directory created for nested entries")
+	}
+	if !strings.Contains(err.Error(), "collides with a directory created for nested entries") {
+		t.Errorf("error = %q, want the specific directory-collision message", err.Error())
+	}
+	if strings.Contains(err.Error(), "duplicate entry") {
+		t.Errorf("error = %q, incorrectly used the duplicate-entry wording for a directory collision", err.Error())
 	}
 }
 
