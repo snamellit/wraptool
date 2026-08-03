@@ -108,6 +108,12 @@ func defaultHarnessDeps() harnessDeps {
 // would run inside a container with no `env` binary at all if this list
 // didn't name coreutils explicitly — a per-call, not a per-backend,
 // property the backend's own Workdir-triggered auto-append cannot cover.
+// bash is likewise required: `npm ci` runs with `--foreground-scripts`
+// (Realize's own doc comment), so a package's lifecycle scripts (the
+// claude/opencode postinstall that places the native ELF binary — load-
+// bearing, not cosmetic) spawn via a shell inside the container; without a
+// real `bash` on PATH there, that spawn fails and the postinstall step never
+// runs.
 func defaultResolveBackend() (backend.Backend, error) {
 	if !hasGuix() {
 		return nil, fmt.Errorf("`wraptool harness update`/`install` resolves the exact npm version " +
@@ -117,7 +123,7 @@ func defaultResolveBackend() (backend.Backend, error) {
 			"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` " +
 			"shares the pool home so auth/skills persist across projects")
 	}
-	b, err := backend.Select("guix", backend.Options{GuixPackages: []string{"node", "tar", "xz", "coreutils"}})
+	b, err := backend.Select("guix", backend.Options{GuixPackages: []string{"node", "tar", "xz", "coreutils", "bash"}})
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +329,7 @@ func newHarnessListCmd(deps harnessDeps) *cobra.Command {
 }
 
 // runHarnessList renders `harness list`'s table (§10): HARNESS CONSTRAINT
-// LOCKED ACTIVE LATEST ELIGIBLE QUARANTINED. ACTIVE reports the legacy pool
+// LOCKED ACTIVE LATEST ELIGIBLE QUARANTINED REALIZED. ACTIVE reports the legacy pool
 // bin/ install state (Phase 2's real activation-pointer state isn't wired
 // yet). It reads the pool's manifest/lock/observations directly — no pool
 // lock (list never mutates, §6.5) and no Source (pool.StatusHarness works
@@ -519,16 +525,18 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 		Advance: false,
 	})
 	if err != nil {
-		// UpdateHarnessLocked covers resolve+lock+fetch AND realize
-		// (§16 Phase 2); a wrap naming just one phase ("locking %s") would
-		// misreport a Realize failure — locking may well have already
-		// succeeded. Its own per-phase errors ("resolving %s@%s", "fetching
-		// %s@%s", "realizing %s for %s", "validating lock") are already
-		// specific, so this wrap only adds the harness name's context, not
-		// a (possibly wrong) phase claim.
+		// UpdateHarnessLocked covers resolve+lock+fetch (§16 Phase 2) — a
+		// Realize failure is no longer reported through this err (it's
+		// non-fatal, result.RealizeErr, handled by printRealizeWarning
+		// below), so anything reaching here is a genuine resolve/fetch/lock
+		// failure. Its own per-phase errors ("resolving %s@%s", "fetching
+		// %s@%s", "validating lock") are already specific, so this wrap only
+		// adds the harness name's context, not a (possibly wrong) phase
+		// claim.
 		return fmt.Errorf("updating %s: %w", name, err)
 	}
 	printUpdateResult(cmd, name, result)
+	printRealizeWarning(cmd, name, result)
 	if allowYoung && !result.AllowYoungApplied && !result.Changed {
 		// install's no-advance short-circuit fires before the bypass is
 		// consulted, so the flag can no-op invisibly on an existing lock.
@@ -582,6 +590,22 @@ func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResul
 		msg += fmt.Sprintf("; realized %s", result.RealizedGenerationID)
 	}
 	fmt.Fprintln(out, msg)
+}
+
+// printRealizeWarning prints a clearly-labeled warning to stderr when
+// result.RealizeErr is set (wave1-integration-fixes finding 2, §16 Phase 2
+// item 4 "legacy fallback retained"): a Realize failure must not abort the
+// legacy install path, since dispatcher/activation/mounting are a later
+// wave and the legacy npm install (maybeInstallLocked) is the ONLY thing
+// `install`/`update` actually execute this wave. install and update both
+// call this immediately after printUpdateResult and then proceed to run the
+// legacy installer regardless of what it prints. A no-op when RealizeErr is
+// nil.
+func printRealizeWarning(cmd *cobra.Command, name string, result *pool.UpdateResult) {
+	if result.RealizeErr == nil {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s: generation realization failed (legacy install continues): %v\n", name, result.RealizeErr)
 }
 
 // maybeInstallLocked runs the harness's legacy installer pinned to
@@ -842,6 +866,7 @@ listed in the pool manifest.`,
 					return err
 				}
 				printUpdateResult(cmd, name, result)
+				printRealizeWarning(cmd, name, result)
 				return maybeInstallLocked(cmd, deps, name, d, result)
 			})
 		},
@@ -906,7 +931,8 @@ syncs every harness currently present in the lock.`,
 		},
 	}
 	cmd.Flags().StringVar(&platform, "platform", "", "target platform key to realize (default: this host's own platform); "+
-		"one of linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl")
+		"one of linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl "+
+		"(musl targets deferred; glibc only for now)")
 	return cmd
 }
 
