@@ -368,6 +368,22 @@ func TestResolve(t *testing.T) {
 			t.Errorf("SHA256 = %q, want empty (Fetch fills it later)", claude.SHA256)
 		}
 	})
+
+	t.Run("Lockfile is the verbatim, compacted package-lock.json", func(t *testing.T) {
+		if len(lh.NPMLock.Lockfile) == 0 {
+			t.Fatal("Lockfile is empty, want the verbatim package-lock.json bytes")
+		}
+		var compacted bytes.Buffer
+		if err := json.Compact(&compacted, []byte(canonicalPackageLock)); err != nil {
+			t.Fatalf("compacting fixture for comparison: %v", err)
+		}
+		if string(lh.NPMLock.Lockfile) != compacted.String() {
+			t.Errorf("Lockfile = %s, want the compacted fixture %s", lh.NPMLock.Lockfile, compacted.String())
+		}
+		if bytes.ContainsAny(lh.NPMLock.Lockfile, "\n\t") {
+			t.Errorf("Lockfile contains whitespace, want a compacted single-line form: %s", lh.NPMLock.Lockfile)
+		}
+	})
 }
 
 // resolveFixture builds a minimal lockJSON with one top-level entry matching

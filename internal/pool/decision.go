@@ -31,24 +31,43 @@ import (
 type DecisionKind string
 
 const (
-	// DecisionUpToDate: no-op — the lock already agrees. Reached either
-	// before any candidate scan (install's strict short-circuit: the
-	// existing lock already matches package, recipe, and the manifest
-	// constraint, so install does not even look for something better) or
-	// after one (update scanned and the newest eligible candidate turned out
-	// to be exactly what's already locked — nothing to advance to). Either
-	// way there is nothing new to report: the caller keeps its own existing
-	// lock entry unchanged, with no Note.
+	// DecisionUpToDate: no-op on BOTH axes — the lock already agrees
+	// (resolve axis: package, recipe, and the manifest constraint) AND the
+	// target platform's generation is already realized (realize axis:
+	// GenerationDigestRecorded && GenerationDirPresent, §16 Phase 2).
+	// Reached either before any candidate scan (install's strict
+	// short-circuit) or after one (update scanned and the newest eligible
+	// candidate turned out to be exactly what's already locked — nothing to
+	// advance to). Either way there is nothing new to report: the caller
+	// keeps its own existing lock entry unchanged, with no Note, and never
+	// calls RealizeGeneration.
 	DecisionUpToDate DecisionKind = "up_to_date"
+	// DecisionRealize: the resolve axis is exactly as settled as it would be
+	// for DecisionUpToDate — a usable lock entry exists, whether
+	// pre-existing (the strict short-circuit's condition) or reached by
+	// scanning to exactly the already-locked version — but the realize axis
+	// is not: GenerationDigestRecorded is false (this platform has never been
+	// realized), or it's true but GenerationDirPresent is false (the
+	// generation directory named by the recorded digest is gone — lost
+	// cache, manual deletion, a fresh workstation from a copied lock file;
+	// §15/§17's "repair" case). The caller must run RealizeGeneration for the
+	// target platform key; nothing on the resolve axis (Source.Resolve/
+	// Fetch, or any lock field besides Generations) runs again.
+	DecisionRealize DecisionKind = "realize"
 	// DecisionKeepExisting: a candidate scan ran and found nothing eligible,
 	// but a usable existing lock covers this harness (same package, still
 	// satisfies the manifest constraint) — kept as-is rather than erroring,
 	// with Note explaining why (the newest quarantined candidate and its
-	// remaining wait, or that nothing is eligible at all, §9).
+	// remaining wait, or that nothing is eligible at all, §9). Decide does
+	// not fold the realize axis into this outcome (unlike DecisionUpToDate/
+	// DecisionRealize above) — the shell checks GenerationDigestRecorded/
+	// GenerationDirPresent itself on this path and calls RealizeGeneration
+	// when needed, since it already has those facts in hand.
 	DecisionKeepExisting DecisionKind = "keep_existing"
 	// DecisionResolveVersion: advance to (or first-lock) Selected.Version.
-	// The caller must run Source.Resolve/Fetch for it and persist a new lock
-	// entry.
+	// The caller must run Source.Resolve/Fetch for it, persist a new lock
+	// entry, and then run RealizeGeneration for the target platform key — a
+	// freshly resolved version never has a recorded generation to reuse.
 	DecisionResolveVersion DecisionKind = "resolve_version"
 	// DecisionFail: no usable existing lock AND nothing eligible (or the
 	// manifest constraint itself failed to parse). Err is the fully
@@ -100,6 +119,21 @@ type DecisionInput struct {
 	AllowYoung bool
 	// Now is the single clock read the whole decision is made against.
 	Now time.Time
+
+	// GenerationDigestRecorded reports whether the pool's existing lock
+	// entry already records a receipt digest for the platform this
+	// update/install targets, i.e. LockHarness.Generations[key] is set — a
+	// plain map lookup the shell does once, no I/O. Meaningless when HasLock
+	// is false (there is no existing entry to have recorded anything in).
+	GenerationDigestRecorded bool
+	// GenerationDirPresent reports whether that recorded generation's
+	// directory still exists on disk (the shell's own os.Stat, read once
+	// before calling Decide — Decide performs no I/O of its own). False
+	// alongside GenerationDigestRecorded true is the "repair" case (§15/§17):
+	// a digest is locked but the tree it names is gone, so realization must
+	// run again even though nothing about the resolve axis changed.
+	// Meaningless when GenerationDigestRecorded is false.
+	GenerationDirPresent bool
 }
 
 // Decision is Decide's outcome: a Kind plus only the fields that Kind
@@ -131,27 +165,49 @@ type Decision struct {
 	Err error
 }
 
+// generationRealized is the single realize-axis predicate: a platform is
+// considered realized only when its lock entry both records a generation
+// digest AND that generation's directory still exists on disk (§15/§17's
+// "repair" case is exactly digestRecorded=true, dirPresent=false). Both
+// Decide (the strict short-circuit and the scan-converges-to-locked path,
+// which fold this into DecisionUpToDate vs DecisionRealize) and
+// UpdateHarnessLocked's shell (the DecisionKeepExisting path, which Decide
+// itself does not consult this on) call this same function — one rule, one
+// place, so the two can never quietly drift apart.
+func generationRealized(digestRecorded, dirPresent bool) bool {
+	return digestRecorded && dirPresent
+}
+
 // Decide chooses one outcome for UpdateHarnessLocked's resolve+lock+fetch
 // pass (§9 phases 2-3, §10 commands) from in, with no I/O of its own. It
 // mirrors UpdateHarnessLocked's pre-refactor control flow exactly (see that
-// function's doc comment for the three-case narrative this implements):
+// function's doc comment for the three-case narrative this implements), now
+// extended with the realize axis (§16 Phase 2, GenerationDigestRecorded/
+// GenerationDirPresent):
 //
 //  1. install's strict short-circuit (in.Advance == false): if the existing
 //     lock already matches in.Package and in.RecipeRevision, AND its version
-//     satisfies in.Constraint, that is fully realized intent —
-//     DecisionUpToDate without even looking at in.Candidates.
+//     satisfies in.Constraint, that is fully realized intent on the resolve
+//     axis — without even looking at in.Candidates. Whether that's
+//     DecisionUpToDate or DecisionRealize then depends purely on the realize
+//     axis: realized (both GenerationDigestRecorded and GenerationDirPresent)
+//     yields DecisionUpToDate, anything else yields DecisionRealize.
 //  2. Otherwise, select the newest candidate that satisfies in.Constraint and
 //     is Eligible under in.Policy (in.AllowYoung, when set, bypasses both age
 //     gates for this selection only — never a yanked or disallowed-
 //     prerelease exclusion, since Eligible enforces those unconditionally).
 //     If nothing qualifies: DecisionKeepExisting when a usable existing lock
 //     (same package, still satisfying in.Constraint) can be kept instead,
-//     otherwise DecisionFail.
+//     otherwise DecisionFail. (Decide does not consult the realize axis on
+//     this path — see DecisionKeepExisting's doc comment.)
 //  3. If selection succeeds but lands on exactly what's already locked (same
-//     package, same recipe, same version): DecisionUpToDate — nothing to
-//     advance to.
+//     package, same recipe, same version): the same realize-axis check as
+//     step 1 decides between DecisionUpToDate and DecisionRealize — nothing
+//     to advance to on the resolve axis either way.
 //  4. Otherwise: DecisionResolveVersion, naming the selected candidate and
-//     whether reaching it required AllowYoung.
+//     whether reaching it required AllowYoung. A freshly resolved version
+//     always needs a fresh realize; the caller does not consult the realize
+//     axis for this outcome.
 func Decide(in DecisionInput) Decision {
 	var constraintObj *semver.Constraints
 	if in.Constraint != "" {
@@ -170,11 +226,23 @@ func Decide(in DecisionInput) Decision {
 	}
 	lockMatchesRecipe := in.HasLock && in.LockPackage == in.Package && in.LockRecipeRevision == in.RecipeRevision
 
+	// realized is the realize axis's own verdict, independent of everything
+	// above — see generationRealized's doc comment. The shell (orchestrator.go)
+	// consults the SAME helper on the DecisionKeepExisting path, which Decide
+	// itself does not fold the realize axis into (see DecisionKeepExisting's
+	// doc comment): one rule, one place.
+	realized := generationRealized(in.GenerationDigestRecorded, in.GenerationDirPresent)
+
 	// install's strict short-circuit (Advance=false only): skip scanning
-	// entirely when intent is already fully realized, even if a newer
-	// eligible candidate exists — install does not advance (§10).
+	// entirely when intent is already fully realized on the resolve axis,
+	// even if a newer eligible candidate exists — install does not advance
+	// (§10). Whether that's a full no-op (DecisionUpToDate) or still needs a
+	// realize (DecisionRealize) depends only on the realize axis above.
 	if !in.Advance && lockMatchesRecipe && lockSatisfiesConstraint {
-		return Decision{Kind: DecisionUpToDate}
+		if realized {
+			return Decision{Kind: DecisionUpToDate}
+		}
+		return Decision{Kind: DecisionRealize}
 	}
 
 	selectPolicy := in.Policy
@@ -214,7 +282,10 @@ func Decide(in DecisionInput) Decision {
 	// mismatch, or an unsatisfied constraint) — so this branch mostly
 	// matters for update, but applies uniformly.
 	if lockMatchesRecipe && in.LockVersion == selected.Version {
-		return Decision{Kind: DecisionUpToDate}
+		if realized {
+			return Decision{Kind: DecisionUpToDate}
+		}
+		return Decision{Kind: DecisionRealize}
 	}
 
 	// An "effective" bypass: in.AllowYoung was set AND it's the reason

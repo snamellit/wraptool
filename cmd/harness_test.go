@@ -35,6 +35,11 @@ type fakeHarnessSource struct {
 	candidates   map[string][]pool.Candidate
 	failPkgs     map[string]bool
 	resolvedPkgs []string
+	// failRealize makes Realize always fail — wave1-integration-fixes finding
+	// 2's cmd-level regression: a Realize failure must be non-fatal for
+	// install/update (RealizeErr, not a returned error), so the legacy
+	// install still runs.
+	failRealize bool
 }
 
 func (f *fakeHarnessSource) Refresh(_ context.Context, pkg string) ([]pool.Candidate, error) {
@@ -58,6 +63,19 @@ func (f *fakeHarnessSource) Resolve(_ context.Context, _ backend.Backend, pkg, v
 	return pool.LockHarness{
 		Source: "npm", Package: pkg, Version: version,
 		PublishedAt: pool.FormatTimestamp(fixedTestNow), RecipeRevision: recipeRevision,
+		// Runtime records artifacts for the glibc platforms only, mirroring
+		// the real npm Source (source/npm.go's nodeGlibcPlatforms, §5.1's
+		// musl deferral) — Realize below consults this map, so a test that
+		// requests a musl platform hits the same "no runtime artifact
+		// recorded" failure a real pool would (wave1-integration-fixes
+		// finding 5).
+		Runtime: &pool.LockRuntime{
+			Name: "node", Version: "22.11.0",
+			Artifacts: map[pool.PlatformKey]pool.LockRuntimeArtifact{
+				pool.PlatformLinuxAMD64Glibc: {URL: "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz", SHA256: "fakeruntimesha"},
+				pool.PlatformLinuxARM64Glibc: {URL: "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-arm64.tar.xz", SHA256: "fakeruntimesha"},
+			},
+		},
 	}, nil
 }
 
@@ -69,6 +87,64 @@ func (f *fakeHarnessSource) Fetch(_ context.Context, h *pool.LockHarness, _ stri
 		h.Package: {Version: h.Version, Resolved: "https://registry.npmjs.org/x.tgz", Integrity: "sha512-fake", SHA256: "deadbeef"},
 	}}
 	return nil
+}
+
+// Realize writes a small but REAL generation tree and builds its receipt
+// with the real pool receipt helpers (ScanGenerationFiles/ManifestDigest) —
+// internal/pool/orchestrator_test.go's fakeSource.Realize does the same, for
+// the same reason (exercise host-side verification for real).
+func (f *fakeHarnessSource) Realize(_ context.Context, _ backend.Backend, harnessName, binName string, h *pool.LockHarness, key pool.PlatformKey, _, stagingGenDir string) (*pool.Receipt, error) {
+	if f.onCall != nil {
+		f.onCall("realize:" + harnessName)
+	}
+	if f.failRealize {
+		return nil, fmt.Errorf("fake realize failure for %s", harnessName)
+	}
+	// Mirror the real npm Source (internal/pool/source/realize.go): a
+	// platform with no recorded runtime artifact — the two musl keys, §5.1's
+	// deferral — must fail here too, so a cmd-level test can't silently
+	// reach a platform production Realize would reject
+	// (wave1-integration-fixes finding 5).
+	if h.Runtime == nil {
+		return nil, fmt.Errorf("realize: %s: lock has no runtime requirement", harnessName)
+	}
+	if _, ok := h.Runtime.Artifacts[key]; !ok {
+		return nil, fmt.Errorf("realize: %s: no runtime artifact recorded for platform %q", harnessName, key)
+	}
+	name := binName
+	if name == "" {
+		name = harnessName
+	}
+	binDir := filepath.Join(stagingGenDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte("#!/bin/sh\nexec true\n"), 0o755); err != nil {
+		return nil, err
+	}
+	files, err := pool.ScanGenerationFiles(stagingGenDir)
+	if err != nil {
+		return nil, err
+	}
+	digest, err := pool.ManifestDigest(files)
+	if err != nil {
+		return nil, err
+	}
+	lockHash, err := h.Hash()
+	if err != nil {
+		return nil, err
+	}
+	return &pool.Receipt{
+		SchemaVersion:  pool.ReceiptSchemaVersion,
+		Harness:        harnessName,
+		Version:        h.Version,
+		Platform:       key,
+		RecipeRevision: h.RecipeRevision,
+		LockEntryHash:  lockHash,
+		Backend:        pool.ReceiptBackend{Name: "fake"},
+		Files:          files,
+		ManifestDigest: digest,
+	}, nil
 }
 
 // fakeHarnessBackend is a no-op backend.Backend: cmd-level tests never
@@ -97,6 +173,7 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 		AdvisoryLock: filepath.Join(dir, "lock"),
 		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
 		Staging:      filepath.Join(dir, "staging"),
+		Runtime:      filepath.Join(dir, "runtime"),
 	}
 }
 
@@ -213,6 +290,8 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 		{"update: --allow-young without --reason", []string{"update", "claude", "--allow-young"}, "--reason"},
 		{"sync: unknown harness", []string{"sync", "bogus"}, "unknown harness"},
 		{"sync: legacy (non-lockable) harness", []string{"sync", "roo"}, "not pool-lockable"},
+		{"sync: unknown --platform lists the closed enum", []string{"sync", "--platform", "bogus-platform"},
+			"linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl"},
 		{"policy set: no flags given", []string{"policy", "set"}, "specify at least one of"},
 		{"policy set: unknown --harness", []string{"policy", "set", "--harness", "bogus", "--minimum-release-age", "1h"}, "unknown harness"},
 		{"policy set: negative --minimum-release-age", []string{"policy", "set", "--minimum-release-age", "-1h"}, "must not be negative"},
@@ -316,6 +395,10 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 				Source: "npm", Package: pkg, Version: "2.1.220",
 				PublishedAt: pool.FormatTimestamp(now.Add(-200 * time.Hour)),
 				FirstSeenAt: pool.FormatTimestamp(now.Add(-200 * time.Hour)),
+				Generations: map[pool.PlatformKey]string{
+					pool.PlatformLinuxAMD64Glibc: "sha256:" + strings.Repeat("a", 64),
+					pool.PlatformLinuxARM64Glibc: "sha256:" + strings.Repeat("b", 64),
+				},
 			},
 		},
 	}
@@ -335,7 +418,7 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 	}
 	out := buf.String()
 
-	if !strings.Contains(out, "HARNESS") || !strings.Contains(out, "CONSTRAINT") || !strings.Contains(out, "QUARANTINED") {
+	if !strings.Contains(out, "HARNESS") || !strings.Contains(out, "CONSTRAINT") || !strings.Contains(out, "QUARANTINED") || !strings.Contains(out, "REALIZED") {
 		t.Fatalf("missing expected header columns, got:\n%s", out)
 	}
 	if !strings.Contains(out, "2.1.224 (3d left)") {
@@ -346,6 +429,49 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 	}
 	if !strings.Contains(out, "legacy (not lockable)") {
 		t.Errorf("expected a legacy-harness row (e.g. agy/gemini/cursor/roo), got:\n%s", out)
+	}
+	if !strings.Contains(out, "linux-amd64-glibc,linux-arm64-glibc") {
+		t.Errorf("expected claude's REALIZED cell to comma-join its two realized platforms, got:\n%s", out)
+	}
+	// A legacy (not pool-lockable) harness's REALIZED cell is "-", same as
+	// every other column that doesn't apply to it. Locate the actual REALIZED
+	// column position from the header (tabwriter aligns every row's column
+	// starts identically) rather than trusting the line's trailing "-" —
+	// QUARANTINED's own value ("legacy (not lockable)") contains no
+	// whitespace-delimited "-", but a naive HasSuffix check would pass even
+	// if REALIZED's cell silently went missing and some earlier column's
+	// padding happened to end in "-".
+	lines := strings.Split(out, "\n")
+	var header string
+	for _, line := range lines {
+		if strings.HasPrefix(line, "HARNESS") {
+			header = line
+			break
+		}
+	}
+	if header == "" {
+		t.Fatalf("no header line found in output:\n%s", out)
+	}
+	col := strings.Index(header, "REALIZED")
+	if col < 0 {
+		t.Fatalf("REALIZED not found in header %q", header)
+	}
+	sawLegacyRow := false
+	for _, line := range lines {
+		if !strings.Contains(line, "legacy (not lockable)") {
+			continue
+		}
+		sawLegacyRow = true
+		if col >= len(line) {
+			t.Fatalf("legacy row %q is shorter than the REALIZED column offset %d", line, col)
+		}
+		cell := strings.TrimRight(line[col:], " ")
+		if cell != "-" {
+			t.Errorf("expected a legacy harness's REALIZED cell to be exactly %q, got %q (row: %q)", "-", cell, line)
+		}
+	}
+	if !sawLegacyRow {
+		t.Fatal("no legacy (not lockable) row found to check")
 	}
 }
 
@@ -936,6 +1062,196 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 	}
 	if status2.Locked != "2.1.224" {
 		t.Errorf("Locked after update = %q, want advanced to 2.1.224", status2.Locked)
+	}
+}
+
+// TestHarnessInstallRepairPrintsRealizedNotJustUpToDate is the CLI-
+// truthfulness regression for review finding 5: a repair (§15/§17 — the
+// lock still records a generation digest for this platform, but its
+// directory has vanished) reaches DecisionRealize, which has Changed=false
+// and no Note. Before this fix, printUpdateResult's default case reported
+// that as a plain "already locked ... (up to date)", indistinguishable from
+// a true no-op — even though RealizeGeneration just rebuilt a whole
+// generation. It must instead name the generation it (re)built.
+func TestHarnessInstallRepairPrintsRealizedNotJustUpToDate(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("initial install: %v", err)
+	}
+
+	key, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realized := false
+	for _, k := range status.Realized {
+		if k == key {
+			realized = true
+		}
+	}
+	if !realized {
+		t.Fatalf("expected claude to be realized for %s after install, got %v", key, status.Realized)
+	}
+
+	// Delete the generation directory but leave the lock's recorded digest
+	// alone — the repair scenario.
+	if err := os.RemoveAll(filepath.Join(paths.Runtime, "generations")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	if err := runHarnessInstall(context.Background(), cmd, deps, "claude", d, "", false, ""); err != nil {
+		t.Fatalf("repair install: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "realized") {
+		t.Errorf("expected the repair install's output to mention the rebuilt generation, got:\n%s", out)
+	}
+	if strings.Contains(out, "(up to date)") {
+		t.Errorf("expected the repair install's output NOT to just report plain up-to-date (review finding 5), got:\n%s", out)
+	}
+}
+
+// TestHarnessInstallSurvivesRealizeFailure is wave1-integration-fixes
+// finding 2's cmd-level regression: a Realize failure must not abort
+// `install` — dispatcher/activation/mounting are a later wave, so the
+// legacy npm install (the only thing this wave actually executes) must
+// still run, and the failure must be surfaced as a clearly-labeled warning,
+// not swallowed or turned into a hard error.
+func TestHarnessInstallSurvivesRealizeFailure(t *testing.T) {
+	swapHasGuix(t, true)
+	installCalls := 0
+	swapRunInstallArgv(t, func([]string) error { installCalls++; return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+		failRealize: true,
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, "")
+	if err != nil {
+		t.Fatalf("install: %v, want nil — a Realize failure must not abort install (legacy install must still run)", err)
+	}
+	if installCalls != 1 {
+		t.Errorf("legacy installer calls = %d, want 1 — install must still run the legacy install despite the Realize failure", installCalls)
+	}
+}
+
+// TestHarnessInstallPrintsRealizeWarning proves the OTHER half of finding 2:
+// the Realize failure must be reported as a clearly-labeled warning on
+// stderr, not silently swallowed.
+func TestHarnessInstallPrintsRealizeWarning(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+		failRealize: true,
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := runHarnessInstall(context.Background(), cmd, deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "warning:") || !strings.Contains(out, "generation realization failed") {
+		t.Errorf("expected a clearly-labeled realization-failure warning, got:\n%s", out)
+	}
+	if !strings.Contains(out, "fake realize failure for claude") {
+		t.Errorf("expected the warning to include the underlying error, got:\n%s", out)
+	}
+}
+
+// TestHarnessSyncRealizesRequestedPlatformAndSurfacesInList: `sync
+// --platform <key>` (§16 Phase 2) realizes exactly the requested platform —
+// not necessarily the host's own — and `list`'s REALIZED column then shows
+// it, comma-joined were there more than one.
+func TestHarnessSyncRealizesRequestedPlatformAndSurfacesInList(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// install already realized the host's own platform (linux-amd64-glibc in
+	// this test's runtime.GOARCH-independent case only if amd64 — instead of
+	// depending on the test host's arch, explicitly sync a SECOND, arbitrary
+	// platform key and check both end up recorded. linux-arm64-glibc, not a
+	// musl key (wave1-integration-fixes finding 5): realization only supports
+	// glibc platforms (§5.1's musl deferral), a path production can't reach —
+	// this test must exercise a platform sync can actually realize.
+	out, err := runHarnessCmdWithDeps(t, deps, "sync", "claude", "--platform", "linux-arm64-glibc")
+	if err != nil {
+		t.Fatalf("sync --platform: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "linux-arm64-glibc") {
+		t.Errorf("expected sync's output to name the realized platform, got:\n%s", out)
+	}
+
+	status, err := pool.StatusHarness(paths, "claude", claudePkg, fixedTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, k := range status.Realized {
+		if k == pool.PlatformLinuxARM64Glibc {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected Realized to include linux-arm64-glibc after sync --platform, got %v", status.Realized)
+	}
+
+	var buf bytes.Buffer
+	if err := runHarnessList(paths, filepath.Join(t.TempDir(), "bin"), fixedTestNow, &buf); err != nil {
+		t.Fatalf("runHarnessList: %v", err)
+	}
+	if !strings.Contains(buf.String(), "linux-arm64-glibc") {
+		t.Errorf("expected list's REALIZED column to include linux-arm64-glibc, got:\n%s", buf.String())
 	}
 }
 
