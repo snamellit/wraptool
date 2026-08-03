@@ -1569,14 +1569,67 @@ func TestHarnessRollbackToUnknownVersionListsAvailable(t *testing.T) {
 	}
 }
 
+// TestHarnessRollbackPrintsSharedHomeWarning pins §13's cheap honor: a
+// successful rollback always prints a static warning about shared harness
+// home/ state possibly having been written by the newer version being
+// rolled back from — no snapshot machinery, just the warning.
+func TestHarnessRollbackPrintsSharedHomeWarning(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	// Roll back to the exact same, only-ever-realized version: still a
+	// valid, successful rollback (RollbackHarnessLocked doesn't require the
+	// target to differ from the current one when --to is given explicitly),
+	// so the warning must still print.
+	out, err := runHarnessCmdWithDeps(t, deps, "rollback", "claude", "--to", "2.1.220")
+	if err != nil {
+		t.Fatalf("rollback: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "warning: shared harness home state") {
+		t.Errorf("expected the shared-home-state warning on a successful rollback, got:\n%s", out)
+	}
+}
+
 // --- gc ---
+
+// seedOrphanGenerationSpares seeds n orphan generations for (harnessName,
+// key) — none referenced by any pointer or lock — with strictly increasing
+// directory mtimes (ids[0] oldest .. ids[n-1] newest), via os.Chtimes: a
+// single orphan is trivially retained by gc's own "2 most recently created
+// spares" rule (§15), so a test that wants an ACTUAL removal needs 3+.
+func seedOrphanGenerationSpares(t *testing.T, paths pool.PoolPaths, harnessName string, key pool.PlatformKey, n int) (ids []string) {
+	t.Helper()
+	ids = make([]string, n)
+	for i := 0; i < n; i++ {
+		id := seedOrphanGeneration(t, paths, harnessName, fmt.Sprintf("%d.0.0", i+1), key, fmt.Sprintf("spare-%d", i))
+		mtime := fixedTestNow.Add(time.Duration(i) * time.Hour)
+		if err := os.Chtimes(filepath.Join(paths.Runtime, "generations", id), mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = id
+	}
+	return ids
+}
 
 func TestHarnessGCRemovesOrphanGenerationAndReportsCounts(t *testing.T) {
 	t.Parallel()
 	paths := testHarnessPaths(t)
 	deps := harnessDeps{poolPaths: func() pool.PoolPaths { return paths }}
 
-	genID := seedOrphanGeneration(t, paths, "claude", "1.0.0", pool.PlatformLinuxAMD64Glibc, "orphan")
+	ids := seedOrphanGenerationSpares(t, paths, "claude", pool.PlatformLinuxAMD64Glibc, 3)
 
 	out, err := runHarnessCmdWithDeps(t, deps, "gc")
 	if err != nil {
@@ -1585,8 +1638,13 @@ func TestHarnessGCRemovesOrphanGenerationAndReportsCounts(t *testing.T) {
 	if !strings.Contains(out, "removed 1 generation") {
 		t.Errorf("expected gc's output to report 1 removed generation, got:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", genID)); !os.IsNotExist(err) {
-		t.Errorf("expected the orphan generation to be removed, stat err = %v", err)
+	if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", ids[0])); !os.IsNotExist(err) {
+		t.Errorf("expected the OLDEST orphan generation to be removed, stat err = %v", err)
+	}
+	for _, id := range ids[1:] {
+		if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", id)); err != nil {
+			t.Errorf("expected the newer orphan generation %s to survive gc (top-2 retention): %v", id, err)
+		}
 	}
 }
 
@@ -1595,7 +1653,7 @@ func TestHarnessGCDryRunRemovesNothing(t *testing.T) {
 	paths := testHarnessPaths(t)
 	deps := harnessDeps{poolPaths: func() pool.PoolPaths { return paths }}
 
-	genID := seedOrphanGeneration(t, paths, "claude", "1.0.0", pool.PlatformLinuxAMD64Glibc, "orphan")
+	ids := seedOrphanGenerationSpares(t, paths, "claude", pool.PlatformLinuxAMD64Glibc, 3)
 
 	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--dry-run")
 	if err != nil {
@@ -1604,7 +1662,12 @@ func TestHarnessGCDryRunRemovesNothing(t *testing.T) {
 	if !strings.Contains(out, "would remove 1 generation") {
 		t.Errorf("expected dry-run gc's output to say 'would remove', got:\n%s", out)
 	}
-	if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", genID)); err != nil {
-		t.Errorf("dry run must not remove the generation: %v", err)
+	if !strings.Contains(out, "would free") {
+		t.Errorf("expected dry-run gc's output to say 'would free' (not 'freed'), got:\n%s", out)
+	}
+	for _, id := range ids {
+		if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", id)); err != nil {
+			t.Errorf("dry run must not remove any generation (including %s, which a real run WOULD remove): %v", id, err)
+		}
 	}
 }

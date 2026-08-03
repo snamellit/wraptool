@@ -978,9 +978,14 @@ func newHarnessRollbackCmd(deps harnessDeps) *cobra.Command {
 realized under runtime/generations/ — no network access, and
 harness-lock.json is never rewritten (§10). With --to, rolls back to the
 exact named version (error, listing what IS available, if that version was
-never realized for this platform); without it, rolls back to the most
-recently realized generation other than the one currently active (error if
-none is retained). --platform defaults to this host's own platform.`,
+never realized for this platform; ties between multiple generations sharing
+that version break toward the most recently created one); without it, rolls
+back to the most recently created generation other than the one currently
+active (error if none is retained). Selection with no --to relies on
+generation directory creation times, so if the pool was copied or restored
+in a way that lost or reset those times, pass --to explicitly instead of
+relying on the default "most recent" choice. --platform defaults to this
+host's own platform.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -1001,6 +1006,11 @@ none is retained). --platform defaults to this host's own platform.`,
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "%s: rolled back to generation %s for %s\n", name, genID, key)
+			// §13, a cheap honor with no snapshot machinery: shared harness
+			// home/ state may already have been migrated/written by the
+			// newer version being rolled back from, and the older binary
+			// activated here has no way to know or repair that.
+			fmt.Fprintln(cmd.ErrOrStderr(), "warning: shared harness home state may have been written by a newer version; downgraded harnesses may misread it")
 			return nil
 		},
 	}
@@ -1016,10 +1026,13 @@ func newHarnessGCCmd(deps harnessDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Remove unreferenced generations and cached artifacts",
-		Long: `Removes every generation under runtime/generations/ that is not currently
-active for any platform and not referenced by harness-lock.json, every
-cache/sha256/ object not referenced by the lock, and every leftover staging
-transaction directory (§10, §15). --dry-run reports what would be removed
+		Long: `Removes every generation under runtime/generations/ that is neither
+currently active for any platform, nor referenced by harness-lock.json, nor
+among the 2 most recently created generations for its (harness, platform) —
+that last rule is what keeps an immediately-previous version rollback-able
+after an update replaces the lock's recorded digest (§15). Also removes
+every cache/sha256/ object not referenced by the lock, and every leftover
+staging transaction directory. --dry-run reports what would be removed
 without deleting anything (it still takes the pool lock, for a consistent
 view).`,
 		Args: cobra.NoArgs,
@@ -1036,17 +1049,17 @@ view).`,
 	return cmd
 }
 
-// printGCReport reports one GCReport to cmd.OutOrStdout(), phrasing removal
-// as a future ("would remove") for a dry run and as a completed action
-// otherwise.
+// printGCReport reports one GCReport to cmd.OutOrStdout(), phrasing both
+// removal and freed space as a future ("would remove" / "would free") for a
+// dry run and as a completed action otherwise.
 func printGCReport(cmd *cobra.Command, report pool.GCReport) {
-	verb := "removed"
+	verb, freeVerb := "removed", "freed"
 	if report.DryRun {
-		verb = "would remove"
+		verb, freeVerb = "would remove", "would free"
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "%s %d generation(s) (%d retained), %d cache object(s) (%d retained), %d staging directory(ies); freed %d bytes\n",
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %d generation(s) (%d retained), %d cache object(s) (%d retained), %d staging directory(ies); %s %d bytes\n",
 		verb, report.RemovedGenerations, report.RetainedGenerations, report.RemovedCacheObjects, report.RetainedCacheObjects,
-		report.RemovedStagingDirs, report.FreedBytes)
+		report.RemovedStagingDirs, freeVerb, report.FreedBytes)
 }
 
 // --- policy set ---
