@@ -27,13 +27,25 @@ func gcWriteLock(t *testing.T, paths PoolPaths, harnesses map[string]LockHarness
 	writeLock(t, paths, l)
 }
 
+// TestGCRetainsGenerationReferencedByLockButNotActive pins rule (b) — the
+// lock-match retention rule. This test used to be VACUOUS: with only one
+// generation in its (harness, platform) group, rule (c)'s "2 most
+// recently created" trivially retains it even with rule (b) deleted
+// entirely (verified: deleting the rule (b) block from
+// retainedGenerationIDs still passed this test unmodified). Fixed by
+// giving the group 4 generations total — the lock-recorded one made the
+// OLDEST by ModTime (so rule (c)'s top-2 cannot cover it), plus 3 newer,
+// unrecorded, unpointed spares (so rule (c) has real work to do in the
+// same run: it retains only the 2 newest of THOSE, proving gc is actually
+// removing something here, not just trivially retaining everything).
 func TestGCRetainsGenerationReferencedByLockButNotActive(t *testing.T) {
 	t.Parallel()
 	paths := testPaths(t)
-	genID := seedActivateGeneration(t, paths, gcTestHarness, "2.1.220", gcTestKey, "in-lock-not-active")
 
-	// Recorded in the lock's Generations map, but NEVER activated (no
-	// pointer file at all) — must still be retained.
+	genID := seedActivateGeneration(t, paths, gcTestHarness, "2.1.220", gcTestKey, "in-lock-not-active")
+	if err := os.Chtimes(runtimeGenerationDir(paths.Runtime, genID), fixedNow.Add(-time.Hour), fixedNow.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	digest := digestFromGenerationID(t, paths, genID)
 	gcWriteLock(t, paths, map[string]LockHarness{
 		gcTestHarness: {
@@ -43,16 +55,31 @@ func TestGCRetainsGenerationReferencedByLockButNotActive(t *testing.T) {
 			Generations:    map[PlatformKey]string{gcTestKey: digest},
 		},
 	})
+	// Not activated (no pointer file at all): retention must come entirely
+	// from rule (b).
+
+	// 3 newer, unrecorded, unpointed spares in the SAME (harness, platform)
+	// group — rule (c) retains only its 2 most recent, so the oldest of
+	// these three is removed in the same run.
+	spareIDs := seedGCSpareGenerations(t, paths, gcTestHarness, gcTestKey, 3)
 
 	report, err := GCPoolLocked(paths, false)
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
-	if report.RemovedGenerations != 0 || report.RetainedGenerations != 1 {
-		t.Errorf("report = %+v, want 0 removed / 1 retained generation", report)
+	if report.RemovedGenerations != 1 || report.RetainedGenerations != 3 {
+		t.Errorf("report = %+v, want 1 removed (the oldest spare) / 3 retained (the lock-recorded generation + the 2 newest spares)", report)
 	}
 	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, genID)); err != nil {
-		t.Errorf("expected the lock-referenced generation to survive GC: %v", err)
+		t.Errorf("expected the lock-referenced (oldest, un-pointed) generation to survive GC via rule (b): %v", err)
+	}
+	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, spareIDs[0])); !os.IsNotExist(err) {
+		t.Errorf("expected the oldest spare %s to be removed by rule (c), stat err = %v", spareIDs[0], err)
+	}
+	for _, id := range spareIDs[1:] {
+		if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, id)); err != nil {
+			t.Errorf("expected spare %s to survive via rule (c)'s top-2: %v", id, err)
+		}
 	}
 }
 
@@ -206,18 +233,42 @@ func TestGCRetainsSupersededVersionAsSpareEnablingRollback(t *testing.T) {
 // id from (harnessName, the lock's current top-level Version, digest),
 // which would embed the wrong version for the older platform's generation
 // and never match its real directory name.
+// TestGCLockRetentionMatchesByReceiptNotReconstructedID is review finding
+// 2's arm64 scenario: a harness locked at a NEWER top-level Version for one
+// platform, whose OTHER platform is still only realized at an OLDER version
+// — GC's lock-retention rule must match by reading each generation's OWN
+// receipt (harness/platform/digest), never by reconstructing a generation
+// id from (harnessName, the lock's current top-level Version, digest),
+// which would embed the wrong version for the older platform's generation
+// and never match its real directory name.
+//
+// Like TestGCRetainsGenerationReferencedByLockButNotActive, this test used
+// to be VACUOUS: with only one generation per (harness, platform) group,
+// rule (c) trivially retained both even with rule (b) deleted entirely
+// (verified the same way). Fixed the same way: each lock-recorded
+// generation is made the OLDEST in its own group, with 3 newer, unrecorded,
+// unpointed spares alongside it, so rule (c) cannot cover the lock-recorded
+// one and has real removal work to do in both groups in the same run.
 func TestGCLockRetentionMatchesByReceiptNotReconstructedID(t *testing.T) {
 	t.Parallel()
 	paths := testPaths(t)
 
 	// arm64 was realized (and is still locked) at the OLDER version 1.0.0.
 	genArm64 := seedActivateGeneration(t, paths, gcTestHarness, "1.0.0", PlatformLinuxARM64Glibc, "arm64-old-version")
+	if err := os.Chtimes(runtimeGenerationDir(paths.Runtime, genArm64), fixedNow.Add(-time.Hour), fixedNow.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	digestArm64 := digestFromGenerationID(t, paths, genArm64)
+	arm64Spares := seedGCSpareGenerations(t, paths, gcTestHarness, PlatformLinuxARM64Glibc, 3)
 
 	// amd64 was realized at the NEWER version 2.0.0 (this is what makes
 	// h.Version, the lock's TOP-LEVEL field, "2.0.0" overall).
 	genAmd64 := seedActivateGeneration(t, paths, gcTestHarness, "2.0.0", PlatformLinuxAMD64Glibc, "amd64-new-version")
+	if err := os.Chtimes(runtimeGenerationDir(paths.Runtime, genAmd64), fixedNow.Add(-time.Hour), fixedNow.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	digestAmd64 := digestFromGenerationID(t, paths, genAmd64)
+	amd64Spares := seedGCSpareGenerations(t, paths, gcTestHarness, PlatformLinuxAMD64Glibc, 3)
 
 	gcWriteLock(t, paths, map[string]LockHarness{
 		gcTestHarness: {
@@ -230,22 +281,30 @@ func TestGCLockRetentionMatchesByReceiptNotReconstructedID(t *testing.T) {
 			},
 		},
 	})
-	// Neither generation is pointed to by any active pointer — retention
-	// must come entirely from rule (b), the lock match.
+	// Neither lock-recorded generation is pointed to by any active pointer
+	// — their retention must come entirely from rule (b): each is the
+	// OLDEST in its own group, so rule (c)'s top-2 cannot cover it.
 
 	report, err := GCPoolLocked(paths, false)
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
-	if report.RemovedGenerations != 0 || report.RetainedGenerations != 2 {
-		t.Errorf("report = %+v, want 0 removed / 2 retained — both platforms' lock-recorded generations must survive "+
-			"regardless of which version the lock's top-level Version field currently names", report)
+	// Per group: the lock-recorded generation (rule b) + the 2 newest
+	// spares (rule c) retained, the oldest spare removed; two groups.
+	if report.RemovedGenerations != 2 || report.RetainedGenerations != 6 {
+		t.Errorf("report = %+v, want 2 removed (the oldest spare per group) / 6 retained (2 lock-recorded + 2x2 newest spares)", report)
 	}
 	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, genArm64)); err != nil {
-		t.Errorf("arm64's OLDER-version generation %s was incorrectly removed (review finding 2): %v", genArm64, err)
+		t.Errorf("arm64's OLDER-version, lock-recorded generation %s was incorrectly removed (review finding 2): %v", genArm64, err)
 	}
 	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, genAmd64)); err != nil {
-		t.Errorf("amd64's newer-version generation %s was incorrectly removed: %v", genAmd64, err)
+		t.Errorf("amd64's lock-recorded generation %s was incorrectly removed: %v", genAmd64, err)
+	}
+	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, arm64Spares[0])); !os.IsNotExist(err) {
+		t.Errorf("expected arm64's oldest spare %s to be removed by rule (c), stat err = %v", arm64Spares[0], err)
+	}
+	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, amd64Spares[0])); !os.IsNotExist(err) {
+		t.Errorf("expected amd64's oldest spare %s to be removed by rule (c), stat err = %v", amd64Spares[0], err)
 	}
 }
 
@@ -255,20 +314,23 @@ func TestGCLockRetentionMatchesByReceiptNotReconstructedID(t *testing.T) {
 // loudly (naming the pointer path) rather than silently continuing —
 // continuing risks deleting the very generation that pointer references.
 // Nothing is removed on this failure.
+// TestGCErrorsLoudlyOnUnreadablePointer seeds 3 spares in the (harness,
+// platform) group the corrupted pointer names — deliberately enough that,
+// absent the pointer-read guard, a real gc run WOULD remove the oldest of
+// the three (rule (c) retains only the 2 newest). "Nothing removed" below
+// therefore proves the loud failure actually PREVENTED a removal that
+// would otherwise have happened, not merely that there was nothing to
+// remove in the first place (a single-generation fixture couldn't
+// distinguish the two).
 func TestGCErrorsLoudlyOnUnreadablePointer(t *testing.T) {
 	t.Parallel()
 	paths := testPaths(t)
-	genID := seedActivateGeneration(t, paths, gcTestHarness, "1.0.0", gcTestKey, "content")
+	ids := seedGCSpareGenerations(t, paths, gcTestHarness, gcTestKey, 3)
 
 	// A directory in place of the pointer FILE reliably makes ReadPointer's
 	// os.ReadFile fail, portably, without permission tricks.
 	ptrPath := pointerFile(paths.Runtime, gcTestKey, gcTestHarness)
 	if err := os.MkdirAll(ptrPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	before, err := os.ReadDir(runtimeGenerationsDir(paths.Runtime))
-	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -278,15 +340,10 @@ func TestGCErrorsLoudlyOnUnreadablePointer(t *testing.T) {
 		t.Errorf("error = %q, want it to name the pointer path %q", err.Error(), ptrPath)
 	}
 
-	after, err := os.ReadDir(runtimeGenerationsDir(paths.Runtime))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(before) != len(after) {
-		t.Errorf("generations directory changed after a failed gc: before %d entries, after %d", len(before), len(after))
-	}
-	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, genID)); err != nil {
-		t.Errorf("expected the generation to survive a failed gc: %v", err)
+	for _, id := range ids {
+		if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, id)); err != nil {
+			t.Errorf("expected generation %s to survive a failed gc — including %s, which a real (non-erroring) run WOULD have removed: %v", id, ids[0], err)
+		}
 	}
 }
 
