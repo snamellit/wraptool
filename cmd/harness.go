@@ -724,22 +724,28 @@ func printRealizeWarning(cmd *cobra.Command, name string, result *pool.UpdateRes
 // silently overwritten by the freshly locked version, so that case gets one
 // explicit line rather than passing in complete silence.
 //
-// Archive-source, off-guix downgrade (§16 Phase 2 posture, review round 2
-// major): for an archive-sourced harness (agy) whose pool generation was
-// genuinely built AND activated (result.RealizeErr == nil AND this host's
-// platform has a live active generation — NOT merely
-// result.RealizedGenerationID != "", which is empty on the already-
-// up-to-date path, UpdateResult's own doc comment), a legacy-install
-// failure caused SPECIFICALLY by guix being absent (errors.Is against
-// offGuixInstallError's wrapped errGuixAbsent — never string-matched) is
-// downgraded to a warning and this function returns nil: the pool has
-// genuinely done its job (refresh/resolve/fetch/realize/activate all
-// succeeded with no backend at all), only the LEGACY bin/ install — which
-// nothing currently mounts runtime/ into any container in place of anyway
-// — didn't run. install/update called via the shared runPerHarness path
-// must still exit non-zero for every OTHER failure (a real Realize
-// failure, an npm-sourced harness, or any error but the guix-absent one),
-// so this downgrade is intentionally this narrow.
+// Archive-source legacy-install downgrade (§16 Phase 2 posture, review
+// round 2 major, WIDENED by wave2-integration-fixes item 4): for an
+// archive-sourced harness (agy) whose pool generation was genuinely built
+// AND activated (result.RealizeErr == nil AND this host's platform has a
+// live active generation — NOT merely result.RealizedGenerationID != "",
+// which is empty on the already-up-to-date path, UpdateResult's own doc
+// comment), ANY legacy-install failure — not just guix being absent — is
+// downgraded to a warning (naming the underlying error) and this function
+// returns nil: the developer's actual goal (`install`/`update agy`)
+// substantively succeeded — a locked, realized, active generation exists,
+// and cmd/guixcontainer.go's guix ACTIVE plan now genuinely mounts
+// runtime/ (read-only) into the container and puts runtime/bin on PATH —
+// so the legacy bin/ copy is no longer the only way the generation reaches
+// a container; it is Phase 4 cleanup, not day-0 blocking. Before item 3's
+// guix runtime mount, only the guix-absent failure was downgradable
+// (errors.Is against offGuixInstallError's wrapped errGuixAbsent) because
+// nothing else made runtime/ reachable at all; now that runtime/ IS
+// reachable, no legacy-install failure reason changes that fact, so every
+// one gets the same treatment. install/update called via the shared
+// runPerHarness path must still exit non-zero when the pool's own work
+// didn't genuinely succeed (a real Realize failure, or an npm-sourced
+// harness — the archive-source downgrade never applies to those).
 func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult) error {
 	_, poolBin, err := deps.poolBinDir()
 	if err != nil {
@@ -759,24 +765,21 @@ func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d har
 	if installErr == nil {
 		return nil
 	}
-	if warned := warnInsteadOfFailForArchiveOffGuix(cmd, deps, name, d, result, installErr); warned {
+	if warned := warnInsteadOfFailForArchiveGeneration(cmd, deps, name, d, result, installErr); warned {
 		return nil
 	}
 	return installErr
 }
 
-// warnInsteadOfFailForArchiveOffGuix implements maybeInstallLocked's
-// archive-source, off-guix downgrade (see that function's doc comment for
-// the full rationale and exact conditions) — factored out so its several
-// preconditions read as one guarded sequence instead of nesting inside
-// maybeInstallLocked itself. Returns true (having already printed the
-// warning) iff every condition held; false means the caller must still
-// treat installErr as a real failure.
-func warnInsteadOfFailForArchiveOffGuix(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult, installErr error) bool {
+// warnInsteadOfFailForArchiveGeneration implements maybeInstallLocked's
+// archive-source legacy-install downgrade (see that function's doc comment
+// for the full rationale and exact conditions) — factored out so its
+// several preconditions read as one guarded sequence instead of nesting
+// inside maybeInstallLocked itself. Returns true (having already printed
+// the warning, which names installErr) iff every condition held; false
+// means the caller must still treat installErr as a real failure.
+func warnInsteadOfFailForArchiveGeneration(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult, installErr error) bool {
 	if !d.PoolArchive {
-		return false
-	}
-	if !errors.Is(installErr, errGuixAbsent) {
 		return false
 	}
 	if result.RealizeErr != nil {
@@ -791,13 +794,21 @@ func warnInsteadOfFailForArchiveOffGuix(cmd *cobra.Command, deps harnessDeps, na
 		return false
 	}
 
+	// installErr is printed in full, not just its top-level message: for
+	// the guix-absent cause specifically, offGuixInstallError's own text
+	// already carries the devcontainer-feature guidance below — appending
+	// it again here unconditionally would print it twice (a real
+	// regression this widening's own transcript caught). For any OTHER
+	// legacy-install failure (e.g. a genuine curl/network error), installErr
+	// carries no such guidance, so printing it in full is exactly the
+	// "names the underlying legacy error" the RULING requires; the devcontainer
+	// route remains a generically-correct next step regardless of cause, but
+	// this warning states the fact (pool generation built and locked) and
+	// the concrete error rather than re-deriving guidance installErr may or
+	// may not already include.
 	fmt.Fprintf(cmd.ErrOrStderr(),
-		"warning: %s: pool generation built and locked, but the pool binary was NOT installed "+
-			"(`guix` is not on PATH, and nothing mounts runtime/ into a container yet).\n"+
-			"On a devcontainer host, provision %q via the wraptool feature instead: add\n  "+
-			`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": %q}`+"\n"+
-			"to your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` shares the pool home so auth/skills persist across projects\n",
-		name, name, name)
+		"warning: %s: pool generation built and locked, but the pool binary was NOT installed (%v)\n",
+		name, installErr)
 	return true
 }
 
@@ -1171,7 +1182,13 @@ active (error if none is retained). Selection with no --to relies on
 generation directory creation times, so if the pool was copied or restored
 in a way that lost or reset those times, pass --to explicitly instead of
 relying on the default "most recent" choice. --platform defaults to this
-host's own platform.`,
+host's own platform.
+
+The rolled-back pointer does not survive a later "wraptool harness sync" for
+this harness/platform — sync always re-activates the lock's own generation,
+undoing the rollback. update/install can do the same whenever they resolve
+a new version or need to repair a missing generation for this platform.
+Re-run rollback afterward if you still need the older generation active.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -1220,7 +1237,12 @@ after an update replaces the lock's recorded digest (§15). Also removes
 every cache/sha256/ object not referenced by the lock, and every leftover
 staging transaction directory. --dry-run reports what would be removed
 without deleting anything (it still takes the pool lock, for a consistent
-view).`,
+view).
+
+A container started before this ran may still hold a generation gc has
+since removed (its bind mount was resolved at container-start time, not
+live). If a harness misbehaves right after a gc, restart the container
+(wraptool up) to pick up gc's retained set.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			report, err := pool.GCPool(context.Background(), deps.poolPaths(), dryRun)

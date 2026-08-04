@@ -148,9 +148,15 @@ var Registry = map[string]Descriptor{
 		// .tar.gz per platform, internal/pool/source/archive.go), so it is
 		// pool-lockable via PoolArchive rather than PoolPackage — the legacy
 		// curl|bash Install above still runs after realize (§16 Phase 2
-		// posture: the realized/activated generation is not yet mounted into
-		// any container, so the pool bin/ install remains the only thing that
-		// actually makes agy runnable today).
+		// posture, WIDENED by wave2-integration-fixes item 4: the realized/
+		// activated generation IS now mounted read-only into a guix container
+		// as runtime/, alongside legacy bin/+lib/, once an active pointer
+		// exists — cmd/guixcontainer.go's guixPoolPlan, §12.1 mixed-state
+		// RULING — so the legacy curl|bash install is no longer the ONLY
+		// thing that makes agy runnable; it stays the only thing that makes
+		// it runnable OUTSIDE a guix container, or before the first
+		// successful realize+activate, and remains unconditional here for
+		// that reason. Full Phase-4 cutover removes it (§16)).
 		PoolArchive: true},
 	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
 		Install: npmInstall("@anthropic-ai/claude-code"), PoolPackage: "@anthropic-ai/claude-code"},

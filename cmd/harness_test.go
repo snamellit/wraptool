@@ -381,13 +381,13 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 
 	obs := pool.Observations{}
 	if err := obs.Observe(pool.ObservationKey("npm", pkg, "2.1.220"),
-		pool.FormatTimestamp(now.Add(-200*time.Hour)), pool.FormatTimestamp(now.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(now.Add(-200*time.Hour)), pool.FormatTimestamp(now.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	// Published exactly 165h ago: 168h - 165h = 3h remaining... use days instead.
 	quarantinedPublished := now.Add(-(168*time.Hour - 3*24*time.Hour))
 	if err := obs.Observe(pool.ObservationKey("npm", pkg, "2.1.224"),
-		pool.FormatTimestamp(quarantinedPublished), pool.FormatTimestamp(quarantinedPublished), false, false); err != nil {
+		pool.FormatTimestamp(quarantinedPublished), pool.FormatTimestamp(quarantinedPublished), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -649,7 +649,7 @@ func TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses(t *testing.T) {
 	claudePkg := harness.Registry["claude"].PoolPackage
 	obs := pool.Observations{}
 	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.220"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -681,7 +681,7 @@ func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
 	obs := pool.Observations{}
 	for _, pkg := range []string{claudePkg, opencodePkg} {
 		if err := obs.Observe(pool.ObservationKey("npm", pkg, "1.0.0"),
-			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1039,7 +1039,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.224"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -1503,7 +1503,7 @@ func TestHarnessRollbackSwitchesActiveGenerationAndListReflectsIt(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.224"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -1763,7 +1763,7 @@ func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
 	obs := pool.Observations{}
 	for _, pkg := range []string{claudePkg, opencodePkg} {
 		if err := obs.Observe(pool.ObservationKey("npm", pkg, "1.0.0"),
-			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1835,8 +1835,18 @@ type fakeArchiveSource struct {
 	failRealize bool
 }
 
+// Refresh returns a ZERO PublishedAt, mirroring the real archive Source's
+// own Refresh (internal/pool/source/archive.go's RULING doc comment: "this
+// channel's manifest has no publish-history field ... this method
+// deliberately does NOT invent one"). wave2-integration-fixes item 1(d):
+// this fake previously carried a non-zero, already-168h+-old PublishedAt,
+// which papered over the eligibility regression this whole work package
+// exists to fix — with a real zero PublishedAt, RefreshHarnessLocked's own
+// synthesis (PublishedAt := FirstSeenAt, marked PublishedAtSynthesized)
+// is what makes these tests' fresh-pool day-0 installs eligible, exactly
+// as it must for the real Source.
 func (f *fakeArchiveSource) Refresh(_ context.Context, pkg string) ([]pool.Candidate, error) {
-	return []pool.Candidate{{Version: "1.1.10", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}}, nil
+	return []pool.Candidate{{Version: "1.1.10"}}, nil
 }
 
 func (f *fakeArchiveSource) Resolve(_ context.Context, _ backend.Backend, pkg, version, _, _, recipeRevision string) (pool.LockHarness, error) {
@@ -2033,7 +2043,7 @@ func TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T
 	// TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses).
 	obs := pool.Observations{}
 	if err := obs.Observe(pool.ObservationKey("archive", "agy", "1.1.10"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -2112,18 +2122,18 @@ func TestHarnessInstallAgyStaysFailedWhenRealizeFailsOnNoGuixHost(t *testing.T) 
 	}
 }
 
-// TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons is
-// the exit-0-on-real-failure hazard the errors.Is guard exists to close
-// (review round 3): with guix PRESENT (so legacyInstallVersionLocked never
-// even reaches its own guix-absent check) and runInstallArgv itself failing
-// with a genuine upstream error (e.g. curl couldn't resolve the host), the
-// legacy-install failure is NOT the guix-absent one — maybeInstallLocked's
-// downgrade must not apply, and the command must still exit non-zero. A
-// reviewer proved that deleting the errors.Is(installErr, errGuixAbsent)
-// check (matching on d.PoolArchive/RealizeErr/ActiveGeneration alone) still
-// left the existing suite green; this test is the missing coverage for
-// exactly that guard.
-func TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons(t *testing.T) {
+// TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning
+// is the WIDENED downgrade (wave2-integration-fixes item 4): with guix
+// PRESENT (so legacyInstallVersionLocked never even reaches its own
+// guix-absent check) and runInstallArgv itself failing with a genuine
+// upstream error (e.g. curl couldn't resolve the host) — NOT the
+// guix-absent one — maybeInstallLocked's archive-source downgrade now
+// still applies (item 3's guix runtime mount makes runtime/ reachable
+// regardless of why the legacy install failed), so the command exits 0
+// with a warning that names the real underlying error. Renamed from (and
+// inverting) the pre-wave2 "StaysFailed..." test, which pinned the OLD
+// narrow guix-absent-only gate this ruling replaces.
+func TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning(t *testing.T) {
 	swapHasGuix(t, true)
 	swapRunInstallArgv(t, func([]string) error { return errors.New("curl: could not resolve host") })
 
@@ -2139,15 +2149,21 @@ func TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons(t *te
 		},
 	}
 
-	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "agy", harness.Registry["agy"], "", false, "")
-	if err == nil {
-		t.Fatal("expected a non-nil error: the legacy install failed for a reason OTHER than guix being absent, so the downgrade must not apply")
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := runHarnessInstall(context.Background(), cmd, deps, "agy", harness.Registry["agy"], "", false, "")
+	if err != nil {
+		t.Fatalf("expected nil error (any legacy-install failure is downgraded to a warning when the pool generation is genuinely built+active): %v\noutput:\n%s", err, buf.String())
 	}
-	if errors.Is(err, errGuixAbsent) {
-		t.Errorf("error = %v, unexpectedly wraps errGuixAbsent — this failure has nothing to do with guix", err)
+	out := buf.String()
+	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
+		t.Errorf("expected the downgraded warning text, got:\n%s", out)
 	}
-	if !strings.Contains(err.Error(), "could not resolve host") {
-		t.Errorf("error = %v, want it to surface the real runInstallArgv failure", err)
+	if !strings.Contains(out, "could not resolve host") {
+		t.Errorf("expected the warning to name the real underlying legacy-install error, got:\n%s", out)
 	}
 
 	// The pool's own work still succeeded (realize/activate both ran fine

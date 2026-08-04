@@ -481,11 +481,19 @@ func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, kind
 			}
 		}
 
+		// synthesized records whether THIS candidate's PublishedAt, as
+		// returned by src.Refresh, was zero — the one place that actually
+		// knows the fact, before it gets overwritten by the firstSeen proxy
+		// below. Persisted verbatim (Candidate.PublishedAtSynthesized's doc
+		// comment): re-deriving it later by comparing the stored
+		// PublishedAt/FirstSeenAt for equality would misclassify a real
+		// PublishedAt that legitimately coincides with FirstSeenAt.
+		synthesized := c.PublishedAt.IsZero()
 		publishedAt := c.PublishedAt
 		if publishedAt.IsZero() {
 			publishedAt = firstSeen
 		}
-		if err := toMerge.Observe(key, FormatTimestamp(firstSeen), FormatTimestamp(publishedAt), c.Prerelease, c.Yanked); err != nil {
+		if err := toMerge.Observe(key, FormatTimestamp(firstSeen), FormatTimestamp(publishedAt), c.Prerelease, c.Yanked, synthesized); err != nil {
 			return nil, fmt.Errorf("recording observation for %s@%s: %w", pkg, c.Version, err)
 		}
 	}
@@ -511,6 +519,11 @@ func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, kind
 			if pa, err := ParseTimestamp(obs.PublishedAt); err == nil {
 				c.PublishedAt = pa
 			}
+			// PublishedAtSynthesized (§9, wave2-integration-fixes item 1):
+			// read from the stored observation, not re-derived — see
+			// Candidate.PublishedAtSynthesized's doc comment for why
+			// re-deriving it from the timestamps alone is unsound.
+			c.PublishedAtSynthesized = obs.PublishedAtSynthesized
 		}
 		out[i] = c
 	}
@@ -1341,6 +1354,11 @@ func candidatesForPackage(obs Observations, kind SourceKind, pkg string) ([]Cand
 			FirstSeenAt: firstSeenAt,
 			Prerelease:  o.Prerelease,
 			Yanked:      o.Yanked,
+			// Read straight from the stored observation — see
+			// Candidate.PublishedAtSynthesized's doc comment for why this
+			// must be the persisted fact, not re-derived from the
+			// timestamps (§9, wave2-integration-fixes item 1).
+			PublishedAtSynthesized: o.PublishedAtSynthesized,
 		})
 	}
 	return out, nil

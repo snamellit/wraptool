@@ -441,6 +441,44 @@ func TestGCRuntimeArtifactCacheDigestIsRetained(t *testing.T) {
 	}
 }
 
+// TestGCArchiveArtifactCacheDigestIsRetained mirrors
+// TestGCRuntimeArtifactCacheDigestIsRetained for LockHarness.Archive
+// (wave2-integration-fixes item 2): retainedCacheDigests originally walked
+// only NPMLock.Packages and Runtime.Artifacts, so GC deleted a still-locked
+// archive-sourced harness's (e.g. agy) cache object.
+func TestGCArchiveArtifactCacheDigestIsRetained(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	if err := os.MkdirAll(paths.Cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	archiveDigest := strings.Repeat("d", 64)
+	if err := os.WriteFile(filepath.Join(paths.Cache, archiveDigest), []byte("agy archive artifact"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	gcWriteLock(t, paths, map[string]LockHarness{
+		gcTestHarness: {
+			Source: archiveSourceName, Package: gcTestHarness, Version: "1.0.0",
+			PublishedAt: FormatTimestamp(fixedNow), FirstSeenAt: FormatTimestamp(fixedNow),
+			RecipeRevision: "sha256:" + strings.Repeat("1", 64),
+			Archive: &LockArchive{
+				Artifacts: map[PlatformKey]LockArchiveArtifact{
+					gcTestKey: {URL: "https://example.invalid/agy.tar.gz", SHA512: strings.Repeat("a", 128), SHA256: archiveDigest},
+				},
+			},
+		},
+	})
+
+	report, err := GCPoolLocked(paths, false)
+	if err != nil {
+		t.Fatalf("GCPoolLocked: %v", err)
+	}
+	if report.RemovedCacheObjects != 0 || report.RetainedCacheObjects != 1 {
+		t.Errorf("report = %+v, want 0 removed / 1 retained cache object", report)
+	}
+}
+
 func TestGCRemovesAllStagingTxnDirsUnderLock(t *testing.T) {
 	t.Parallel()
 	paths := testPaths(t)
