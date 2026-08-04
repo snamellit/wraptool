@@ -144,16 +144,19 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	if plan.notice != "" {
 		fmt.Fprintln(os.Stderr, plan.notice)
 	}
-	// Report the ACTIVE plan's own path dir, not the legacy poolBin
-	// unconditionally — runtime mode must not tell the developer to drop
-	// binaries into runtime/bin, which is generated, not a drop-in dir.
+	// The legacy bin/ drop-in dir mention stays accurate in BOTH modes
+	// (wave2-integration-fixes item 3): legacy bin/+lib/ is genuinely
+	// mounted whether or not an active pointer also mounted runtime/, so
+	// telling the developer where to drop a hand-managed binary is correct
+	// either way — runtime/bin (the generated dispatcher dir, when active)
+	// is never offered as that location, only poolBin.
 	if plan.active {
-		fmt.Printf("harness pool: %s\n", poolRoot)
+		fmt.Printf("harness pool: %s (legacy bin/ also mounted for other harnesses/hand-dropped tools: %s)\n", poolRoot, poolBin)
 	} else {
-		fmt.Printf("harness pool: %s (install harness binaries into %s)\n", poolRoot, plan.pathDir)
+		fmt.Printf("harness pool: %s (install harness binaries into %s)\n", poolRoot, poolBin)
 	}
 
-	entry := buildContainerEntry(root, poolHome, plan.pathDir)
+	entry := buildContainerEntry(root, poolHome, plan.pathDirs)
 	args := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
 	env := append(os.Environ(),
 		"WRAPTOOL_TOKEN="+token,
@@ -210,17 +213,30 @@ func shellQuote(s string) string {
 }
 
 // guixPoolPlan is the harness-pool mount/PATH/notice decision for one guix
-// container invocation (design/harness/unified-harness-pool.md §12.1): the
-// locked runtime/ tree, read-only, when an active pointer exists for the host
-// platform key and its generation is present on disk, else the legacy
-// bin/+lib/ tree with a stderr deprecation notice (§16 migration). home/ is
-// not part of the plan — it stays shared read-write unchanged in either mode
-// (handled directly in bringUpGuixContainer/buildGuixShellArgs).
+// container invocation (design/harness/unified-harness-pool.md §12.1,
+// WIDENED by wave2-integration-fixes item 3): when an active pointer exists
+// for the host platform key and its generation is present on disk, the
+// locked runtime/ tree, read-only, is mounted ALONGSIDE (not instead of) the
+// legacy bin/+lib/ tree — mixed-state Phase 2 RULING: activating one
+// harness must not silently drop every OTHER harness's binary (or a
+// hand-dropped tool) from the container. Whenever no active pointer exists
+// at all, only the legacy bin/+lib/ tree is mounted, with a stderr
+// deprecation notice (§16 migration). home/ is not part of the plan — it
+// stays shared read-write unchanged in either mode (handled directly in
+// bringUpGuixContainer/buildGuixShellArgs). Full Phase-4 cutover drops the
+// legacy exposes/PATH entry entirely (§16 Phase 4 item 5: "gc learns to
+// remove legacy bin/+lib/"); until then this stays a superset, never a
+// replacement.
 type guixPoolPlan struct {
 	exposes []string // "--expose=host=host" args, read-only, same-path (§6.3)
-	pathDir string   // directory appended (never prepended) to PATH
-	active  bool     // true: runtime/ tree mounted; false: legacy bin/+lib/
-	notice  string   // non-empty: legacy-fallback deprecation notice for stderr
+	// pathDirs are appended (never prepended) to PATH, in order. Active mode
+	// is [runtimeBinDir, legacyBin] — the freshly activated generation wins
+	// PATH resolution for THIS harness (runtime/bin listed first) while
+	// every other harness's legacy binary stays reachable right after it;
+	// legacy-only mode is [legacyBin] alone.
+	pathDirs []string
+	active   bool   // true: runtime/ tree ALSO mounted, alongside legacy bin/+lib/ (mixed-state Phase 2); false: legacy bin/+lib/ only
+	notice   string // non-empty: legacy-fallback deprecation notice for stderr (legacy-only mode)
 }
 
 // guixPoolPlanInput bundles the paths and lockability resolveGuixPoolPlan
@@ -277,9 +293,19 @@ func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
 				genBin := filepath.Join(in.RuntimeGenerationsDir, genID, "bin", in.Harness)
 				if fileExists(dispatcher) && fileExists(genBin) {
 					return guixPoolPlan{
-						exposes: []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir},
-						pathDir: in.RuntimeBinDir,
-						active:  true,
+						// Mixed-state Phase 2 (wave2-integration-fixes item 3,
+						// §12.1 RULING): runtime/ AND legacy bin/+lib/ are
+						// BOTH mounted — activating this harness must not
+						// drop every other harness's legacy binary (or a
+						// hand-dropped tool) from the container. See
+						// guixPoolPlan's own doc comment.
+						exposes: []string{
+							"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir,
+							"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+							"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
+						},
+						pathDirs: []string{in.RuntimeBinDir, in.LegacyBin},
+						active:   true,
 					}
 				}
 				// The pointer resolved but its generation is gone from disk
@@ -306,7 +332,7 @@ func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
 			"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
 			"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
 		},
-		pathDir: in.LegacyBin,
+		pathDirs: []string{in.LegacyBin},
 	}
 	if in.PoolLockable {
 		plan.notice = notice
@@ -316,15 +342,20 @@ func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
 
 // buildContainerEntry builds the interactive shell entrypoint run inside the
 // guix container: normalizes TERM (guix defaults to TERM=dumb with no
-// terminfo DB in the container), appends (never prepends) pathDir to PATH so
-// a pool tool can never shadow a project toolchain binary (git/go/bash) —
-// otherwise a poisoned pool could hijack what every project's container
-// runs — pins HOME to the shared pool home, and drops into the workspace.
-// Pure string building, no exec, so tests can pin it exactly.
-func buildContainerEntry(root, poolHome, pathDir string) string {
+// terminfo DB in the container), appends (never prepends) every pathDirs
+// entry to PATH, in order, so a pool tool can never shadow a project
+// toolchain binary (git/go/bash) — otherwise a poisoned pool could hijack
+// what every project's container runs — pins HOME to the shared pool home,
+// and drops into the workspace. Pure string building, no exec, so tests can
+// pin it exactly.
+func buildContainerEntry(root, poolHome string, pathDirs []string) string {
+	pathAppend := ""
+	for _, dir := range pathDirs {
+		pathAppend += ":" + shellQuote(dir)
+	}
 	return "export WRAPTOOL_CONTAINER=1" +
 		"; export TERM=xterm-256color" +
-		"; export PATH=$PATH:" + shellQuote(pathDir) +
+		"; export PATH=$PATH" + pathAppend +
 		"; export HOME=" + shellQuote(poolHome) +
 		"; cd " + shellQuote(root) + "; exec bash -l"
 }

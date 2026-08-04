@@ -261,8 +261,8 @@ func TestResolveGuixPoolPlanNoActivePointer(t *testing.T) {
 					if !reflect.DeepEqual(plan.exposes, wantExposes) {
 						t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
 					}
-					if plan.pathDir != in.LegacyBin {
-						t.Errorf("pathDir = %q, want %q", plan.pathDir, in.LegacyBin)
+					if !reflect.DeepEqual(plan.pathDirs, []string{in.LegacyBin}) {
+						t.Errorf("pathDirs = %v, want %v", plan.pathDirs, []string{in.LegacyBin})
 					}
 					for _, e := range plan.exposes {
 						if strings.Contains(e, in.RuntimeDir) {
@@ -292,7 +292,12 @@ func TestResolveGuixPoolPlanNoActivePointer(t *testing.T) {
 // whose generation id resolves to real dispatcher + generation-bin files on
 // disk activates the runtime/ plan, notice-free, regardless of lockability
 // (an active pointer can only exist for a lockable harness in practice, but
-// the plan itself doesn't need to re-derive that).
+// the plan itself doesn't need to re-derive that). wave2-integration-fixes
+// item 3 (mixed-state Phase 2, §12.1 RULING): active mode mounts BOTH
+// runtime/ AND legacy bin/+lib/ — never legacy-exclusive-of-runtime, but
+// also never runtime-exclusive-of-legacy — with PATH carrying runtime/bin
+// FIRST (this harness's freshly activated generation wins) then legacy bin
+// (every other harness/hand-dropped tool stays reachable).
 func TestResolveGuixPoolPlanActivePointer(t *testing.T) {
 	in, root := guixPoolPlanTestLayout(t, "claude", true)
 	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
@@ -303,20 +308,20 @@ func TestResolveGuixPoolPlanActivePointer(t *testing.T) {
 	if !plan.active {
 		t.Fatalf("plan.active = false, want true")
 	}
-	wantExposes := []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir}
-	if !reflect.DeepEqual(plan.exposes, wantExposes) {
-		t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
+	wantExposes := []string{
+		"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir,
+		"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+		"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
 	}
-	if plan.pathDir != in.RuntimeBinDir {
-		t.Errorf("pathDir = %q, want %q", plan.pathDir, in.RuntimeBinDir)
+	if !reflect.DeepEqual(plan.exposes, wantExposes) {
+		t.Errorf("exposes = %v, want %v (both mounts, mixed-state Phase 2)", plan.exposes, wantExposes)
+	}
+	wantPathDirs := []string{in.RuntimeBinDir, in.LegacyBin}
+	if !reflect.DeepEqual(plan.pathDirs, wantPathDirs) {
+		t.Errorf("pathDirs = %v, want %v (runtime/bin FIRST, then legacy bin)", plan.pathDirs, wantPathDirs)
 	}
 	if plan.notice != "" {
 		t.Errorf("notice = %q, want none", plan.notice)
-	}
-	for _, e := range plan.exposes {
-		if strings.Contains(e, in.LegacyBin) || strings.Contains(e, in.LegacyLib) {
-			t.Errorf("active-pointer exposes leaked legacy dir: %v", plan.exposes)
-		}
 	}
 }
 
@@ -358,8 +363,8 @@ func TestResolveGuixPoolPlanStaleGeneration(t *testing.T) {
 					if !reflect.DeepEqual(plan.exposes, wantExposes) {
 						t.Errorf("exposes = %v, want %v", plan.exposes, wantExposes)
 					}
-					if plan.pathDir != in.LegacyBin {
-						t.Errorf("pathDir = %q, want %q", plan.pathDir, in.LegacyBin)
+					if !reflect.DeepEqual(plan.pathDirs, []string{in.LegacyBin}) {
+						t.Errorf("pathDirs = %v, want %v", plan.pathDirs, []string{in.LegacyBin})
 					}
 
 					if lockable {
@@ -411,22 +416,22 @@ func TestResolveGuixPoolPlanNoticeIsSingleLine(t *testing.T) {
 }
 
 // TestBuildContainerEntryAppendsPathDir pins §12.1's append-not-prepend
-// invariant: pathDir must land strictly after "$PATH:" in the exported PATH
-// assignment, never before "$PATH" (which would let a pool binary shadow a
-// project toolchain binary — git/go/bash).
+// invariant: every pathDirs entry must land strictly after "$PATH:" in the
+// exported PATH assignment, in argument order, never before "$PATH" (which
+// would let a pool binary shadow a project toolchain binary — git/go/bash).
 func TestBuildContainerEntryAppendsPathDir(t *testing.T) {
-	entry := buildContainerEntry("/work/proj", "/pool/home", "/pool/runtime/bin")
+	entry := buildContainerEntry("/work/proj", "/pool/home", []string{"/pool/runtime/bin", "/pool/bin"})
 
-	pathAssign := "export PATH=$PATH:" + shellQuote("/pool/runtime/bin")
+	pathAssign := "export PATH=$PATH:" + shellQuote("/pool/runtime/bin") + ":" + shellQuote("/pool/bin")
 	idx := strings.Index(entry, pathAssign)
 	if idx < 0 {
-		t.Fatalf("entry does not append pathDir after $PATH: entry=%q", entry)
+		t.Fatalf("entry does not append pathDirs, in order, after $PATH: entry=%q", entry)
 	}
-	// The append form is "$PATH:<dir>" — assert the directory never appears as
-	// a prefix ("<dir>:$PATH") anywhere in the entry.
+	// The append form is "$PATH:<dir>..." — assert a directory never appears
+	// as a prefix ("<dir>:$PATH") anywhere in the entry.
 	prependForm := "export PATH=" + shellQuote("/pool/runtime/bin") + ":$PATH"
 	if strings.Contains(entry, prependForm) {
-		t.Fatalf("entry prepends pathDir instead of appending: entry=%q", entry)
+		t.Fatalf("entry prepends pathDirs instead of appending: entry=%q", entry)
 	}
 }
 
@@ -450,7 +455,7 @@ func TestBuildGuixShellArgsLegacyPoolPlan(t *testing.T) {
 		LegacyBin:             poolBin,
 		LegacyLib:             poolLib,
 	})
-	entry := buildContainerEntry(root, poolHome, plan.pathDir)
+	entry := buildContainerEntry(root, poolHome, plan.pathDirs)
 	got := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
 
 	want := []string{
@@ -479,9 +484,11 @@ func TestBuildGuixShellArgsLegacyPoolPlan(t *testing.T) {
 }
 
 // TestBuildGuixShellArgsActivePointerPlan asserts the §12.1 pointer-active
-// mount: runtime/ read-only at the same host path, PATH appended with
-// runtime/bin, and — crucially — no legacy bin/+lib/ exposes at all. home/
-// stays shared exactly as in the legacy case.
+// mount, WIDENED by wave2-integration-fixes item 3 (mixed-state Phase 2):
+// runtime/ read-only at the same host path, AND legacy bin/+lib/ read-only
+// exposes too (never dropped just because a pointer is active) — PATH
+// appended with runtime/bin FIRST, then legacy bin, both strictly after
+// $PATH. home/ stays shared exactly as in the legacy case.
 func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 	root := "/work/proj"
 	manifest := "/work/proj/manifest.scm"
@@ -499,7 +506,7 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 	if !plan.active {
 		t.Fatalf("plan.active = false, want true (setup bug)")
 	}
-	entry := buildContainerEntry(root, poolHome, plan.pathDir)
+	entry := buildContainerEntry(root, poolHome, plan.pathDirs)
 	got := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
 
 	want := []string{
@@ -507,6 +514,8 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 		"--emulate-fhs",
 		"--share=" + root + "=" + root,
 		"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir,
+		"--expose=" + poolBin + "=" + poolBin,
+		"--expose=" + poolLib + "=" + poolLib,
 		"--share=" + poolHome + "=" + poolHome,
 		"--preserve=^WRAPTOOL_",
 		"--preserve=^COLORTERM$",
@@ -516,10 +525,11 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("active-pointer guix shell args =\n%#v\nwant\n%#v", got, want)
 	}
-	for _, a := range got {
-		if strings.Contains(a, poolBin) || strings.Contains(a, poolLib) {
-			t.Fatalf("active-pointer args must not expose legacy bin/lib: %v", got)
-		}
+	// PATH order: runtime/bin strictly before legacy bin, both strictly
+	// after $PATH.
+	wantPathAssign := "export PATH=$PATH:" + shellQuote(in.RuntimeBinDir) + ":" + shellQuote(poolBin)
+	if !strings.Contains(entry, wantPathAssign) {
+		t.Fatalf("entry PATH assignment = %q, want it to contain %q (runtime/bin before legacy bin, both after $PATH)", entry, wantPathAssign)
 	}
 	// home/ share is present and identical to the legacy-mode assertion above.
 	wantHomeShare := "--share=" + poolHome + "=" + poolHome
