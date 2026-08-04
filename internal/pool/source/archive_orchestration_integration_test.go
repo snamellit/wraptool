@@ -77,13 +77,18 @@ func TestIntegration_RealArchiveSourceThroughRealOrchestrator(t *testing.T) {
 		Staging:      filepath.Join(root, "staging"),
 		Runtime:      filepath.Join(root, "runtime"),
 	}
-	// minimum_release_age: 0h ("install with observation-age 0" per this
-	// work package's brief) — an archive candidate's PublishedAt is
-	// synthesized as FirstSeenAt (RefreshHarnessLocked), which is always
-	// "now" on first observation; the default 168h quarantine would
-	// otherwise make this freshly-observed version ineligible for this
-	// single-pass refresh-then-install sequence.
-	manifestYAML := "schema_version: 1\npolicy:\n  minimum_release_age: 0h\nharnesses:\n  agy: {}\n"
+	// DEFAULT manifest policy (168h minimum_release_age, 0h
+	// minimum_observation_age) — no policy override at all — is deliberate
+	// here (wave2-integration-fixes item 1: this test previously carried a
+	// `minimum_release_age: 0h` override that papered over the very
+	// regression it exists to catch). An archive candidate's PublishedAt is
+	// synthesized as FirstSeenAt (RefreshHarnessLocked) and marked
+	// PublishedAtSynthesized, which makes Eligible skip the
+	// minimum_release_age check entirely for it (RULING,
+	// Candidate.PublishedAtSynthesized's doc comment) — so this
+	// single-pass refresh-then-install sequence must succeed at DAY 0 under
+	// the real default policy, not just under a relaxed one.
+	manifestYAML := "schema_version: 1\nharnesses:\n  agy: {}\n"
 	if err := os.MkdirAll(filepath.Dir(paths.Manifest), 0o755); err != nil {
 		t.Fatal(err)
 	}

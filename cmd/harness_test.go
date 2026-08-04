@@ -381,13 +381,13 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 
 	obs := pool.Observations{}
 	if err := obs.Observe(pool.ObservationKey("npm", pkg, "2.1.220"),
-		pool.FormatTimestamp(now.Add(-200*time.Hour)), pool.FormatTimestamp(now.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(now.Add(-200*time.Hour)), pool.FormatTimestamp(now.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	// Published exactly 165h ago: 168h - 165h = 3h remaining... use days instead.
 	quarantinedPublished := now.Add(-(168*time.Hour - 3*24*time.Hour))
 	if err := obs.Observe(pool.ObservationKey("npm", pkg, "2.1.224"),
-		pool.FormatTimestamp(quarantinedPublished), pool.FormatTimestamp(quarantinedPublished), false, false); err != nil {
+		pool.FormatTimestamp(quarantinedPublished), pool.FormatTimestamp(quarantinedPublished), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -649,7 +649,7 @@ func TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses(t *testing.T) {
 	claudePkg := harness.Registry["claude"].PoolPackage
 	obs := pool.Observations{}
 	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.220"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -681,7 +681,7 @@ func TestHarnessUpdatePerHarnessFailureContinuesToNext(t *testing.T) {
 	obs := pool.Observations{}
 	for _, pkg := range []string{claudePkg, opencodePkg} {
 		if err := obs.Observe(pool.ObservationKey("npm", pkg, "1.0.0"),
-			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1039,7 +1039,7 @@ func TestHarnessInstallVsUpdateAdvanceWiring(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.224"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -1503,7 +1503,7 @@ func TestHarnessRollbackSwitchesActiveGenerationAndListReflectsIt(t *testing.T) 
 		t.Fatal(err)
 	}
 	if err := obs.Observe(pool.ObservationKey("npm", claudePkg, "2.1.224"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {
@@ -1763,7 +1763,7 @@ func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
 	obs := pool.Observations{}
 	for _, pkg := range []string{claudePkg, opencodePkg} {
 		if err := obs.Observe(pool.ObservationKey("npm", pkg, "1.0.0"),
-			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1835,8 +1835,18 @@ type fakeArchiveSource struct {
 	failRealize bool
 }
 
+// Refresh returns a ZERO PublishedAt, mirroring the real archive Source's
+// own Refresh (internal/pool/source/archive.go's RULING doc comment: "this
+// channel's manifest has no publish-history field ... this method
+// deliberately does NOT invent one"). wave2-integration-fixes item 1(d):
+// this fake previously carried a non-zero, already-168h+-old PublishedAt,
+// which papered over the eligibility regression this whole work package
+// exists to fix — with a real zero PublishedAt, RefreshHarnessLocked's own
+// synthesis (PublishedAt := FirstSeenAt, marked PublishedAtSynthesized)
+// is what makes these tests' fresh-pool day-0 installs eligible, exactly
+// as it must for the real Source.
 func (f *fakeArchiveSource) Refresh(_ context.Context, pkg string) ([]pool.Candidate, error) {
-	return []pool.Candidate{{Version: "1.1.10", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}}, nil
+	return []pool.Candidate{{Version: "1.1.10"}}, nil
 }
 
 func (f *fakeArchiveSource) Resolve(_ context.Context, _ backend.Backend, pkg, version, _, _, recipeRevision string) (pool.LockHarness, error) {
@@ -2033,7 +2043,7 @@ func TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T
 	// TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses).
 	obs := pool.Observations{}
 	if err := obs.Observe(pool.ObservationKey("archive", "agy", "1.1.10"),
-		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := obs.Save(paths.Observations); err != nil {

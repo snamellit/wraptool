@@ -157,6 +157,53 @@ func TestEligibleZeroFirstSeenAtIneligibleUnderObservationPolicy(t *testing.T) {
 	}
 }
 
+// TestEligibleSynthesizedPublishedAtSkipsReleaseAge covers wave2-
+// integration-fixes item 1 (§9): a PublishedAtSynthesized candidate's
+// PublishedAt is not a real publish timestamp, so minimum_release_age must
+// never gate it — including at DAY 0, when PublishedAt == FirstSeenAt ==
+// now and a non-synthesized candidate at the same age would fail the
+// default 168h release-age check outright. minimum_observation_age still
+// applies unconditionally.
+func TestEligibleSynthesizedPublishedAtSkipsReleaseAge(t *testing.T) {
+	now := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+
+	t.Run("day 0 under default policy", func(t *testing.T) {
+		policy := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0}
+		c := Candidate{PublishedAt: now, FirstSeenAt: now, PublishedAtSynthesized: true}
+		if !Eligible(c, policy, now) {
+			t.Error("a synthesized-PublishedAt candidate observed just now must be eligible under the default policy (minimum_release_age skipped)")
+		}
+		if remaining, ok := QuarantineRemaining(c, policy, now); !ok || remaining != 0 {
+			t.Errorf("QuarantineRemaining() = (%v, %v), want (0, true)", remaining, ok)
+		}
+	})
+
+	t.Run("a non-synthesized candidate at the same age is still gated", func(t *testing.T) {
+		policy := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0}
+		c := Candidate{PublishedAt: now, FirstSeenAt: now, PublishedAtSynthesized: false}
+		if Eligible(c, policy, now) {
+			t.Error("a real (non-synthesized) PublishedAt at age 0 must still fail the default 168h release-age check")
+		}
+	})
+
+	t.Run("minimum_observation_age still applies to a synthesized candidate", func(t *testing.T) {
+		policy := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 24 * time.Hour}
+		fresh := Candidate{PublishedAt: now, FirstSeenAt: now, PublishedAtSynthesized: true}
+		if Eligible(fresh, policy, now) {
+			t.Error("a synthesized candidate must still be quarantined by a nonzero minimum_observation_age")
+		}
+		remaining, ok := QuarantineRemaining(fresh, policy, now)
+		if !ok || remaining != 24*time.Hour {
+			t.Errorf("QuarantineRemaining() = (%v, %v), want (24h, true) — countdown from observation age, not release age", remaining, ok)
+		}
+
+		matured := Candidate{PublishedAt: now.Add(-24 * time.Hour), FirstSeenAt: now.Add(-24 * time.Hour), PublishedAtSynthesized: true}
+		if !Eligible(matured, policy, now) {
+			t.Error("a synthesized candidate observed 24h ago must be eligible once minimum_observation_age elapses, regardless of the 168h release-age policy")
+		}
+	})
+}
+
 func TestQuarantineRemaining(t *testing.T) {
 	now := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
 	policy := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 24 * time.Hour}

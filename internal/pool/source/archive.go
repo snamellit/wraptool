@@ -215,40 +215,31 @@ func (a *Archive) fetchManifest(ctx context.Context, key pool.PlatformKey) (*arc
 // describes the SAME release — so pkg is not used to select or filter
 // anything, only echoed into error messages.
 //
-// RULING (§9, §8.1): this channel's manifest has no publish-history field,
-// only "version" — there is nothing to derive a publication timestamp from.
-// Every returned Candidate therefore carries a ZERO PublishedAt; this
-// method deliberately does NOT invent one. §9's minimum_release_age is
-// consequently NOT the mechanism that quarantines an archive candidate —
-// eligibility for an archive source instead rides on this pool's own
-// write-once first-seen observations (§6.6 first_seen_at, filled in by the
-// orchestrator, never by this Source): minimum_release_age should be read,
-// for an archive-sourced harness, as evaluated against first_seen_at rather
-// than a (nonexistent) published_at — a conservative proxy, since first
-// observation can only ever be at or after actual publication. This is a
-// documented property of the CALLER's eligibility evaluation, not something
-// this method enforces; wiring pool.Eligible/eligibility.go to that reading
-// is this work package's explicit non-goal (see this package's top-level
-// doc comment and the work package brief).
+// RULING (§9, §8.1, wave2-integration-fixes item 1): this channel's manifest
+// has no publish-history field, only "version" — there is nothing to derive
+// a publication timestamp from. Every returned Candidate therefore carries
+// a ZERO PublishedAt; this method deliberately does NOT invent one. For
+// archive sources minimum_release_age is INAPPLICABLE (no publish history
+// to evaluate it against); local quarantine = minimum_observation_age
+// alone, measured against this pool's own write-once first_seen_at (§6.6,
+// filled in by the orchestrator, never by this Source).
 //
-// CONCRETE CONSEQUENCE, as of this branch: pool.Eligible
-// (internal/pool/eligibility.go) unconditionally returns false for a zero
-// PublishedAt — it has no source-type branch and does not know "archive"
-// candidates should be judged by FirstSeenAt instead. So an archive
-// candidate returned by THIS method is not merely quarantined, it is
-// PERMANENTLY ineligible under today's Eligible, until the orchestrator
-// wiring package does one of: (a) give Eligible a source-aware branch, or
-// (b) synthesize Candidate.PublishedAt = Candidate.FirstSeenAt for an
-// archive-sourced candidate BEFORE calling Eligible. That synthesis must
-// happen at the Candidate level, and BEFORE the write-once Observe step
-// (§6.6): Observations persists first_seen_at once per (source, package,
-// version) and never updates it, and a caller that ran a refresh under the
-// OLD (pre-wiring) code path would have recorded a candidate whose only
-// timestamp is zero — running refresh even once before that wiring lands
-// would permanently persist a zero timestamp into write-once observations
-// for that version, unrecoverable short of deleting the observation
-// record. This is not merely a documentation note: it blocks any archive
-// harness from ever completing an install until addressed.
+// The wiring: RefreshHarnessLocked (orchestrator.go) synthesizes
+// PublishedAt := FirstSeenAt for any Candidate whose Source-returned
+// PublishedAt was zero — every one this method returns — and marks it
+// Candidate.PublishedAtSynthesized. pool.Eligible/QuarantineRemaining
+// (eligibility.go) then skip the minimum_release_age check entirely for a
+// synthesized PublishedAt (it does not represent a real publish time, so a
+// 0h or any nonzero value are equally meaningless against it) while still
+// enforcing minimum_observation_age against the real FirstSeenAt
+// unconditionally. Before this wiring, pool.Eligible treated a zero
+// PublishedAt as unconditionally ineligible with no path to ever become
+// eligible — an archive-sourced harness could never complete a first
+// install. This method itself still returns a zero PublishedAt
+// unconditionally (the synthesis lives entirely in the orchestrator, not
+// here) — see RefreshHarnessLocked's and Candidate.PublishedAtSynthesized's
+// doc comments for the full mechanics and the write-once-before-synthesis
+// ordering constraint (§6.6) that makes this the only safe place to do it.
 //
 // PARTIAL-FAILURE OBSERVABILITY: a platform whose manifest cannot be
 // fetched or fails validation is simply excluded from this call's results,
