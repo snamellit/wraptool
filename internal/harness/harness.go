@@ -66,20 +66,52 @@ type Descriptor struct {
 	// Nil means no automated installer (drop the binary in pool/bin by hand).
 	Install []string
 	// PoolPackage is the npm package identity used by the version-locked
-	// harness pool (design/unified-harness-pool.md §7-§8) to refresh/resolve
-	// this harness, e.g. "@anthropic-ai/claude-code". Empty means the
-	// harness is not pool-lockable yet: `harness list` reports it as
-	// "legacy (not lockable)" and `install` falls back to today's unpinned
-	// behavior with a warning (§8: curl|bash recipes like agy's stay legacy
-	// until an artifact-specific adapter exists; host-side IDEs have no
-	// installable package at all).
+	// harness pool (design/harness/unified-harness-pool.md §7-§8) to
+	// refresh/resolve this harness via the npm Source, e.g.
+	// "@anthropic-ai/claude-code". Mutually exclusive with PoolArchive; see
+	// PoolLockable/PoolPackageID.
 	PoolPackage string
+	// PoolArchive marks a harness whose pool Source is the direct-download
+	// ("archive") adapter (internal/pool/source's Archive, §6.2/§8.1) rather
+	// than npm — agy (Antigravity), whose release channel publishes a
+	// single per-platform .tar.gz with no npm package at all. Mutually
+	// exclusive with PoolPackage; see PoolLockable/PoolPackageID.
+	PoolArchive bool
 	Render      func(Params) (path string, content []byte, err error)
 }
 
 // IsCLI reports whether the harness runs as a binary inside the container pool
 // (vs a host-side IDE/extension).
 func (d Descriptor) IsCLI() bool { return d.Bin != "" }
+
+// PoolLockable reports whether the version-locked harness pool
+// (design/harness/unified-harness-pool.md) can refresh/resolve/realize this
+// harness at all — via either PoolPackage (npm) or PoolArchive (direct
+// download). A harness with neither is "legacy (not lockable)": `harness
+// list` reports it as such and `install` falls back to today's unpinned
+// behavior with a warning (host-side IDEs have no installable package at
+// all).
+func (d Descriptor) PoolLockable() bool { return d.PoolPackage != "" || d.PoolArchive }
+
+// PoolPackageID returns the identity a pool-lockable harness is
+// refreshed/resolved/observed under — the orchestrator's "pkg" parameter
+// (design/harness/unified-harness-pool.md §8.1): PoolPackage for an
+// npm-sourced harness, or the harness's own Name for an archive-sourced one.
+// An archive Source's Refresh/Resolve "pkg" parameter has no separate
+// package identity on that channel (every platform's manifest describes the
+// same release, internal/pool/source/archive.go's own doc comment); it only
+// labels the lock/observation entry, so the harness name is the natural,
+// stable choice. Empty for a harness that is not PoolLockable.
+func (d Descriptor) PoolPackageID() string {
+	switch {
+	case d.PoolPackage != "":
+		return d.PoolPackage
+	case d.PoolArchive:
+		return d.Name
+	default:
+		return ""
+	}
+}
 
 // order is the stable listing order (used for `all`, help, and error messages).
 var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo"}
@@ -111,7 +143,15 @@ var Registry = map[string]Descriptor{
 	"agy": {Name: "agy", Auth: AuthHeader, Bin: "agy", Render: renderAgy,
 		Install: []string{"guix", "shell", "curl", "bash", "coreutils", "--", "sh", "-c",
 			`curl -fsSL https://antigravity.google/cli/install.sh | bash && ` +
-				`install -Dm755 "$HOME/.local/bin/agy" "{prefix}/bin/agy"`}},
+				`install -Dm755 "$HOME/.local/bin/agy" "{prefix}/bin/agy"`},
+		// agy has no npm package (its official channel ships a direct-download
+		// .tar.gz per platform, internal/pool/source/archive.go), so it is
+		// pool-lockable via PoolArchive rather than PoolPackage — the legacy
+		// curl|bash Install above still runs after realize (§16 Phase 2
+		// posture: the realized/activated generation is not yet mounted into
+		// any container, so the pool bin/ install remains the only thing that
+		// actually makes agy runnable today).
+		PoolArchive: true},
 	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
 		Install: npmInstall("@anthropic-ai/claude-code"), PoolPackage: "@anthropic-ai/claude-code"},
 	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor}, // host IDE, not pool CLI

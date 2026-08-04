@@ -133,7 +133,7 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	}
 	plan := resolveGuixPoolPlan(guixPoolPlanInput{
 		Harness:               hname,
-		PoolLockable:          harness.Registry[hname].PoolPackage != "",
+		PoolLockable:          harness.Registry[hname].PoolLockable(),
 		PointerPath:           pointerPath,
 		RuntimeDir:            pool.RuntimeDir(),
 		RuntimeBinDir:         pool.RuntimeBinDir(),
@@ -233,11 +233,12 @@ type guixPoolPlanInput struct {
 	// Harness is the harness name — the dispatcher/generation entrypoint file
 	// name, and the name cited in any deprecation notice.
 	Harness string
-	// PoolLockable is true when Harness has a pool package
-	// (harness.Registry[Harness].PoolPackage != ""). Non-lockable harnesses
-	// (agy/gemini/cursor/roo today) have no runtime/ path to move to, so
-	// their legacy fallback is silent — a notice promising a fix command
-	// that can't exist for them would be noise (§16).
+	// PoolLockable is true when Harness is pool-lockable
+	// (harness.Registry[Harness].PoolLockable(): an npm package or an
+	// archive source). Non-lockable harnesses (gemini/cursor/roo today)
+	// have no runtime/ path to move to, so their legacy fallback is silent —
+	// a notice promising a fix command that can't exist for them would be
+	// noise (§16).
 	PoolLockable bool
 	// PointerPath is pool.PointerFile(pool.HostPlatformKey(), Harness), or ""
 	// when the platform key itself could not be resolved (unsupported host
