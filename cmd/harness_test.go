@@ -1745,6 +1745,54 @@ func TestHarnessBackendSkipsResolveBackendForArchiveSource(t *testing.T) {
 	}
 }
 
+// TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses pins backendCache's
+// memoization (review round 2, nit): a bare `update` touching two
+// npm-sourced harnesses in one run must call deps.resolveBackend exactly
+// once, not once per harness — the guix-absent error message would
+// otherwise print (or, here, the probe itself run) once per harness.
+func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n  opencode: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudePkg := harness.Registry["claude"].PoolPackage
+	opencodePkg := harness.Registry["opencode"].PoolPackage
+	obs := pool.Observations{}
+	for _, pkg := range []string{claudePkg, opencodePkg} {
+		if err := obs.Observe(pool.ObservationKey("npm", pkg, "1.0.0"),
+			pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := obs.Save(paths.Observations); err != nil {
+		t.Fatal(err)
+	}
+
+	src := &fakeHarnessSource{}
+	backendCalls := 0
+	binDir := t.TempDir()
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return src, nil },
+		resolveBackend: func() (backend.Backend, error) {
+			backendCalls++
+			return fakeHarnessBackend{}, nil
+		},
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "update")
+	if err != nil {
+		t.Fatalf("update: %v\noutput:\n%s", err, out)
+	}
+	if backendCalls != 1 {
+		t.Errorf("resolveBackend called %d times across 2 npm-sourced harnesses, want exactly 1 (memoized)", backendCalls)
+	}
+}
+
 // TestDefaultResolveBackendErrorMentionsArchiveSourcesDontNeedIt pins the
 // reworded guix-absent message (§16): it must still name the npm-only
 // scope and the Phase 3 OCI provisioner it lands with, while staying
@@ -1778,7 +1826,14 @@ func TestDefaultResolveBackendErrorMentionsArchiveSourcesDontNeedIt(t *testing.T
 // (TestIntegration_RealArchiveSourceThroughRealOrchestrator); this fake
 // keeps the cmd-level proof network/backend-free, "follow[ing] the
 // fakeHarnessSource pattern" per this work package's brief.
-type fakeArchiveSource struct{}
+type fakeArchiveSource struct {
+	// failRealize makes Realize always fail — the negative-case fixture for
+	// maybeInstallLocked's archive/off-guix downgrade (review round 2
+	// major): a Realize failure must NOT be downgraded to a warning, since
+	// the downgrade's whole premise (the pool generation genuinely exists
+	// and is active) doesn't hold.
+	failRealize bool
+}
 
 func (f *fakeArchiveSource) Refresh(_ context.Context, pkg string) ([]pool.Candidate, error) {
 	return []pool.Candidate{{Version: "1.1.10", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}}, nil
@@ -1810,6 +1865,9 @@ func (f *fakeArchiveSource) Fetch(_ context.Context, h *pool.LockHarness, _ stri
 // but with no Runtime-artifact check, since an archive-sourced lock has no
 // Runtime at all.
 func (f *fakeArchiveSource) Realize(_ context.Context, _ backend.Backend, harnessName, binName string, h *pool.LockHarness, key pool.PlatformKey, _, stagingGenDir string) (*pool.Receipt, error) {
+	if f.failRealize {
+		return nil, fmt.Errorf("fake archive realize failure for %s", harnessName)
+	}
 	binDir := filepath.Join(stagingGenDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return nil, err
@@ -1848,13 +1906,19 @@ func (f *fakeArchiveSource) Realize(_ context.Context, _ backend.Backend, harnes
 // refresh -> resolve -> fetch -> realize -> activate with NO backend probe
 // at all (deps.resolveBackend is wired to t.Fatal if ever called). The
 // legacy curl|bash install step is explicitly NOT skipped for agy (this
-// work package's RULING, §16 Phase 2 posture) and DOES still require
-// guix — so the overall command still errors, but only at that final,
-// pre-existing step (Non-goal: "removing the legacy install step"); pool
-// state (lock, generation, pointer, dispatcher) must already be fully
-// populated by the time that happens. This is the exact UX transcript
-// reported alongside this work package.
-func TestHarnessInstallAgyReachesRealizeWithoutBackendOnNoGuixHost(t *testing.T) {
+// work package's RULING, §16 Phase 2 posture) and DOES still require guix
+// — but review round 2's major amendment downgrades THAT SPECIFIC failure
+// (guix absent, AND the pool generation was genuinely built+activated) to
+// a warning rather than a command failure: the developer's actual goal
+// (`install agy`) substantively succeeded — a locked, realized, active
+// generation exists — even though the LEGACY bin/ copy (which nothing
+// currently mounts runtime/ into a container in place of, §16 Phase 2
+// posture) did not run. The command therefore exits 0, with a clearly
+// labeled warning on stderr retaining the devcontainer-feature guidance.
+// Pool state (lock, generation, pointer, dispatcher) is asserted exactly as
+// before. This is the exact UX transcript reported alongside this work
+// package's fix round.
+func TestHarnessInstallAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T) {
 	swapHasGuix(t, false)
 
 	paths := testHarnessPaths(t)
@@ -1871,20 +1935,28 @@ func TestHarnessInstallAgyReachesRealizeWithoutBackendOnNoGuixHost(t *testing.T)
 		},
 	}
 
-	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "agy", harness.Registry["agy"], "", false, "")
-	if err == nil {
-		t.Fatal("expected an error from the (guix-requiring) legacy curl|bash install step")
-	}
-	if !strings.Contains(err.Error(), "not on PATH") {
-		t.Errorf("error = %v, want it to name the guix-absent LEGACY INSTALL failure specifically (pool phases must have already succeeded)", err)
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := runHarnessInstall(context.Background(), cmd, deps, "agy", harness.Registry["agy"], "", false, "")
+	if err != nil {
+		t.Fatalf("expected nil error (guix-absent legacy-install failure downgraded to a warning): %v\noutput:\n%s", err, buf.String())
 	}
 	if backendCalled {
 		t.Fatal("resolveBackend was called — the archive-source backend gate did not hold")
 	}
+	out := buf.String()
+	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
+		t.Errorf("expected the downgraded warning text, got:\n%s", out)
+	}
+	if !strings.Contains(out, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "agy"}`) {
+		t.Errorf("expected the devcontainer-feature guidance to be retained, got:\n%s", out)
+	}
 
-	// Pool state must already be fully populated: refresh/resolve/fetch/
-	// realize/activate all completed before the (unrelated) legacy install
-	// step failed.
+	// Pool state must be fully populated: refresh/resolve/fetch/realize/
+	// activate all completed for real, with no backend at all.
 	lockData, err := os.ReadFile(paths.Lock)
 	if err != nil {
 		t.Fatalf("harness-lock.json missing: %v", err)
@@ -1918,19 +1990,19 @@ func TestHarnessInstallAgyReachesRealizeWithoutBackendOnNoGuixHost(t *testing.T)
 
 	// list/status: agy must render like a pool-lockable (npm) harness, not
 	// "legacy (not lockable)" — the REALIZED/ACTIVE columns must be live.
-	var buf bytes.Buffer
-	if err := runHarnessList(paths, filepath.Join(binDir, "bin"), fixedTestNow, &buf); err != nil {
+	var listBuf bytes.Buffer
+	if err := runHarnessList(paths, filepath.Join(binDir, "bin"), fixedTestNow, &listBuf); err != nil {
 		t.Fatalf("runHarnessList: %v", err)
 	}
 	var agyLine string
-	for _, line := range strings.Split(buf.String(), "\n") {
+	for _, line := range strings.Split(listBuf.String(), "\n") {
 		if strings.HasPrefix(line, "agy ") || strings.HasPrefix(line, "agy\t") {
 			agyLine = line
 			break
 		}
 	}
 	if agyLine == "" {
-		t.Fatalf("no agy row found in `list` output:\n%s", buf.String())
+		t.Fatalf("no agy row found in `list` output:\n%s", listBuf.String())
 	}
 	if strings.Contains(agyLine, "legacy (not lockable)") {
 		t.Errorf("agy still renders as a legacy/non-lockable harness in `list`: %q", agyLine)
@@ -1939,5 +2011,103 @@ func TestHarnessInstallAgyReachesRealizeWithoutBackendOnNoGuixHost(t *testing.T)
 	// HARNESS CONSTRAINT LOCKED ACTIVE LATEST ELIGIBLE QUARANTINED REALIZED
 	if len(fields) < 4 || fields[3] != "1.1.10" {
 		t.Errorf("agy row = %q, want the ACTIVE column (4th field) to be 1.1.10", agyLine)
+	}
+}
+
+// TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning is
+// TestHarnessInstallAgyDowngradesGuixAbsentLegacyInstallToWarning's `update`
+// counterpart — maybeInstallLocked is shared by both commands (review round
+// 2's placement direction), so `update agy` on a no-guix host must exit 0
+// with the same downgraded warning, driven through the full cobra command
+// tree (not a direct function call) to also prove the wiring inside
+// newHarnessUpdateCmd's RunE.
+func TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T) {
+	swapHasGuix(t, false)
+
+	paths := testHarnessPaths(t)
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  agy: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// `update` never refreshes itself — it reads already-observed candidates
+	// (mirrors this file's other update tests, e.g.
+	// TestHarnessUpdateBareOnlyTouchesManifestListedHarnesses).
+	obs := pool.Observations{}
+	if err := obs.Observe(pool.ObservationKey("archive", "agy", "1.1.10"),
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := obs.Save(paths.Observations); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{}, nil },
+		resolveBackend: func() (backend.Backend, error) {
+			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
+			return nil, errors.New("guix not on PATH")
+		},
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "update", "agy")
+	if err != nil {
+		t.Fatalf("update agy: expected nil error (downgraded to a warning): %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
+		t.Errorf("expected the downgraded warning text, got:\n%s", out)
+	}
+	if !strings.Contains(out, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "agy"}`) {
+		t.Errorf("expected the devcontainer-feature guidance to be retained, got:\n%s", out)
+	}
+
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatalf("HostPlatformKey: %v", err)
+	}
+	if _, ok := pool.ActiveGeneration(paths, "agy", hostKey); !ok {
+		t.Error("expected an active generation pointer for agy after update")
+	}
+}
+
+// TestHarnessInstallAgyStaysFailedWhenRealizeFailsOnNoGuixHost is the
+// negative case: when Realize itself fails (result.RealizeErr set), the
+// pool generation was NOT genuinely built — the downgrade's premise doesn't
+// hold — so a guix-absent legacy-install failure on top of that must still
+// fail the command (review round 2 major, explicit negative case).
+func TestHarnessInstallAgyStaysFailedWhenRealizeFailsOnNoGuixHost(t *testing.T) {
+	swapHasGuix(t, false)
+
+	paths := testHarnessPaths(t)
+	binDir := t.TempDir()
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{failRealize: true}, nil },
+		resolveBackend: func() (backend.Backend, error) {
+			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
+			return nil, errors.New("guix not on PATH")
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := runHarnessInstall(context.Background(), cmd, deps, "agy", harness.Registry["agy"], "", false, "")
+	if err == nil {
+		t.Fatal("expected a non-nil error: Realize failed, so the guix-absent legacy-install failure must NOT be downgraded")
+	}
+	if !errors.Is(err, errGuixAbsent) {
+		t.Errorf("error = %v, want it to still be (wrap) the guix-absent legacy-install failure", err)
+	}
+
+	hostKey, err2 := pool.HostPlatformKey()
+	if err2 != nil {
+		t.Fatalf("HostPlatformKey: %v", err2)
+	}
+	if _, ok := pool.ActiveGeneration(paths, "agy", hostKey); ok {
+		t.Error("no generation should have been activated when Realize failed")
 	}
 }
