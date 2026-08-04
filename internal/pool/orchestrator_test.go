@@ -290,16 +290,25 @@ func TestRefreshHarnessPropagatesSourceError(t *testing.T) {
 
 // --- PublishedAt synthesis (pool-source-wiring, §9/§6.6) ---
 
-// TestRefreshHarnessLockedSynthesizesPublishedAtBeforeObserve is the
-// CRITICAL regression this work package exists to close (source/archive.go's
-// review finding): a candidate with no real publish-history timestamp — the
-// shape every candidate an archive Source returns — must never reach
-// observations.json with a zero published_at, because observations.json is
-// write-once per (source, package, version) (§6.6) and a zero value
-// persisted there is permanent. It asserts the synthesis happens BEFORE
-// Observe (not merely somewhere before this function returns) by reading
-// observations.json's raw bytes off disk and checking literally no zero
-// timestamp appears anywhere in it.
+// TestRefreshHarnessLockedSynthesizesPublishedAtBeforeObserve is a
+// regression this work package exists to close (source/archive.go's review
+// finding): a candidate with no real publish-history timestamp — the shape
+// every candidate an archive Source returns — must never reach
+// observations.json with a zero published_at. Note what IS and is NOT
+// write-once here (§6.6): first_seen_at is write-once (Observe never moves
+// it once set); published_at is NOT (Observe overwrites it on every merge,
+// by design, so an upstream republish/reclassify is reflected) — so a zero
+// published_at persisted here would not be "permanent" in the write-once
+// sense, it would simply keep getting recomputed from whatever is fed in at
+// merge time. The synthesis must therefore be deterministic (derived from
+// the write-once first_seen_at), not merely "non-zero once" — see
+// TestRefreshHarnessLockedPublishedAtSynthesisIsStableAcrossRefreshes for
+// the regression that actually matters operationally: a synthesis fed the
+// wrong input drifts published_at forward on every refresh, permanently
+// quarantining the version instead of merely being zero once. This test
+// asserts the synthesis happens BEFORE Observe (not merely somewhere before
+// this function returns) by reading observations.json's raw bytes off disk
+// and checking literally no zero timestamp appears anywhere in it.
 func TestRefreshHarnessLockedSynthesizesPublishedAtBeforeObserve(t *testing.T) {
 	paths := testPaths(t)
 	src := &fakeSource{candidates: map[string][]Candidate{
@@ -327,7 +336,7 @@ func TestRefreshHarnessLockedSynthesizesPublishedAtBeforeObserve(t *testing.T) {
 		t.Fatalf("reading observations.json: %v", err)
 	}
 	if strings.Contains(string(raw), "0001-01-01") {
-		t.Errorf("observations.json contains a zero timestamp — the write-once record is now permanently unrecoverable:\n%s", raw)
+		t.Errorf("observations.json contains a zero timestamp — pool.Eligible unconditionally treats a zero published_at as ineligible:\n%s", raw)
 	}
 
 	// Same assertion via the typed API: every stored observation's
@@ -375,6 +384,94 @@ func TestRefreshHarnessLockedPreservesNonZeroPublishedAt(t *testing.T) {
 	obs := stored[ObservationKey(npmSourceName, "@anthropic-ai/claude-code", "2.1.220")]
 	if obs.PublishedAt != FormatTimestamp(published) {
 		t.Errorf("stored published_at = %q, want %q (unchanged)", obs.PublishedAt, FormatTimestamp(published))
+	}
+}
+
+// TestRefreshHarnessLockedPublishedAtSynthesisIsStableAcrossRefreshes is
+// the BLOCKER regression this fix round exists for: the synthesis must
+// read each candidate's own EXISTING first_seen_at, not this call's own
+// `now`, or a synthesized published_at silently restamps to "now" on every
+// refresh — since published_at (unlike first_seen_at) is NOT write-once,
+// nothing else would ever catch this, and `now - published_at` would never
+// grow past ~0, permanently quarantining the version under any nonzero
+// minimum_release_age. Two refreshes of the SAME still-zero-PublishedAt
+// candidate, spaced >= the default 168h minimum_release_age apart, must
+// record byte-identical published_at.
+func TestRefreshHarnessLockedPublishedAtSynthesisIsStableAcrossRefreshes(t *testing.T) {
+	paths := testPaths(t)
+	src := &fakeSource{candidates: map[string][]Candidate{
+		"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}, // zero, like a real archive candidate
+	}}
+	key := ObservationKey(string(SourceArchive), "agy", "1.1.10")
+
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
+		t.Fatalf("first refresh (T0): %v", err)
+	}
+	first, err := LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatalf("LoadObservations after first refresh: %v", err)
+	}
+	firstPublished := first[key].PublishedAt
+	if firstPublished == "" {
+		t.Fatal("no observation recorded after the first refresh")
+	}
+
+	// 200h > the default 168h minimum_release_age — exactly the gap the
+	// drift bug would have re-zeroed the effective age for.
+	later := fixedNow.Add(200 * time.Hour)
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", later); err != nil {
+		t.Fatalf("second refresh (T0+200h): %v", err)
+	}
+	second, err := LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatalf("LoadObservations after second refresh: %v", err)
+	}
+	secondPublished := second[key].PublishedAt
+
+	if secondPublished != firstPublished {
+		t.Errorf("published_at drifted across refreshes: %q (T0) vs %q (T0+200h) — want byte-identical", firstPublished, secondPublished)
+	}
+}
+
+// TestRefreshThenUpdateSelectsArchiveVersionAfterDefaultQuarantineWindow is
+// this fix round's end-to-end proof, under the DEFAULT (unmodified) 168h
+// minimum_release_age policy: refresh at T0, refresh again at T0+200h (the
+// exact "refresh, wait, refresh again" pattern a developer running a timer
+// would produce), then update at T0+200h — the version must be SELECTED,
+// not quarantined. Before this fix round, the second refresh would have
+// restamped published_at to T0+200h itself, so update's own `now -
+// published_at` would read ~0h < 168h and the version would stay
+// quarantined forever.
+func TestRefreshThenUpdateSelectsArchiveVersionAfterDefaultQuarantineWindow(t *testing.T) {
+	paths := testPaths(t)
+	// No policy override — the default 168h minimum_release_age applies.
+	writeManifest(t, paths, `
+schema_version: 1
+harnesses:
+  agy:
+    constraint: ">=1 <2"
+`)
+	src := &fakeSource{
+		candidates:             map[string][]Candidate{"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}},
+		resolveZeroPublishedAt: true,
+	}
+
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
+		t.Fatalf("refresh at T0: %v", err)
+	}
+	later := fixedNow.Add(200 * time.Hour)
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", later); err != nil {
+		t.Fatalf("refresh at T0+200h: %v", err)
+	}
+
+	res, err := UpdateHarnessLocked(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "agy", Package: "agy", Source: SourceArchive, BinName: "agy", Now: later,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarnessLocked at T0+200h: %v", err)
+	}
+	if !res.Changed || res.Harness == nil || res.Harness.Version != "1.1.10" {
+		t.Fatalf("UpdateResult = %+v, want Changed=true Version=1.1.10 (selected, not quarantined)", res)
 	}
 }
 

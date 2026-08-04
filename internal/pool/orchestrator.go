@@ -415,43 +415,76 @@ func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, kind Sourc
 // values, not this call's fresh ones). Refresh never touches the lock, and
 // never calls Source.Resolve or Source.Fetch.
 //
-// PublishedAt synthesis (CRITICAL, §9/§6.6): a candidate with no real
-// publish-history timestamp — every candidate an archive Source returns
+// PublishedAt synthesis (§9/§6.6): a candidate with no real publish-history
+// timestamp — every candidate an archive Source returns
 // (internal/pool/source/archive.go's Refresh doc comment: "this channel's
 // manifest has no publish-history field ... this method deliberately does
 // NOT invent one"), and occasionally an npm one missing registry "time"
 // metadata (NPM.Refresh's own doc comment) — gets PublishedAt synthesized as
-// FirstSeenAt here, BEFORE the Observe call below: observations.json is
-// write-once per (source, package, version) (§6.6), so a refresh that
-// persisted a zero PublishedAt would permanently record 0001-01-01 for that
-// version, with no way to correct it short of deleting the observation
-// record — and pool.Eligible unconditionally treats a zero PublishedAt as
-// ineligible, so that version could never become eligible again. Treating
-// first-seen as the age signal is a conservative proxy (first observation
-// can only ever be at or after actual publication); for an archive-sourced
-// harness this makes minimum_release_age effectively evaluated against
+// FirstSeenAt: first observation can only ever be at or after actual
+// publication, so it's a conservative proxy; for an archive-sourced harness
+// this makes minimum_release_age effectively evaluated against
 // first_seen_at, since no real published_at exists at all. Doing the
 // synthesis HERE means pool.Eligible/QuarantineRemaining themselves need NO
 // source-aware branch: by the time any candidate is ever visible to them, a
 // zero PublishedAt has already been replaced by a real (if conservative)
 // timestamp.
+//
+// CORRECTNESS-CRITICAL: unlike first_seen_at, published_at is NOT
+// write-once (Observe overwrites it on every merge, by design — an upstream
+// republish/reclassify must be reflected). If the synthesis above were fed
+// THIS CALL's own `now` (or, worse, the local `firstSeen` variable when that
+// itself defaulted to `now`), a repeated refresh of the same still-zero-
+// PublishedAt candidate would restamp published_at forward every time,
+// so `now - published_at` never grows and the version stays quarantined
+// forever under any nonzero minimum_release_age. The fix: synthesis must be
+// DETERMINISTIC across repeated refreshes, so it reads each candidate's own
+// EXISTING first_seen_at (loaded below, BEFORE the merge loop) — which
+// itself only ever gets set once, on first observation — and uses that
+// (never this call's `now`) for both the candidate's FirstSeenAt and the
+// synthesized PublishedAt. The correct framing is: first_seen_at is
+// write-once; published_at, when synthesized, must be DERIVED from it
+// deterministically so it does not drift with every refresh.
 func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, kind SourceKind, pkg string, now time.Time) ([]Candidate, error) {
 	candidates, err := src.Refresh(ctx, pkg)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing %s: %w", pkg, err)
 	}
 
+	// Loaded BEFORE the merge loop, deliberately: the PublishedAt synthesis
+	// below must read each candidate's own ALREADY-STORED first_seen_at (if
+	// any), not this call's `now` — see this function's own doc comment for
+	// why using `now` there would make published_at drift forward on every
+	// refresh instead of staying stable.
+	existing, err := LoadObservations(paths.Observations)
+	if err != nil {
+		return nil, fmt.Errorf("loading observations: %w", err)
+	}
+
 	toMerge := make(Observations, len(candidates))
 	for _, c := range candidates {
+		key := ObservationKey(string(kind), pkg, c.Version)
+
+		// firstSeen is `now` only the FIRST time this (source, package,
+		// version) is ever observed (matching today's behavior); a version
+		// already on record keeps its own already-stored first_seen_at
+		// (§6.6 write-once) — read HERE, not left to MergeObservations'
+		// later write-once check, because this value also feeds the
+		// PublishedAt synthesis below, which must be deterministic.
 		firstSeen := c.FirstSeenAt
 		if firstSeen.IsZero() {
 			firstSeen = now
 		}
+		if prior, ok := existing[key]; ok {
+			if fsa, perr := ParseTimestamp(prior.FirstSeenAt); perr == nil {
+				firstSeen = fsa
+			}
+		}
+
 		publishedAt := c.PublishedAt
 		if publishedAt.IsZero() {
 			publishedAt = firstSeen
 		}
-		key := ObservationKey(string(kind), pkg, c.Version)
 		if err := toMerge.Observe(key, FormatTimestamp(firstSeen), FormatTimestamp(publishedAt), c.Prerelease, c.Yanked); err != nil {
 			return nil, fmt.Errorf("recording observation for %s@%s: %w", pkg, c.Version, err)
 		}
@@ -743,8 +776,15 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// (NPM.Resolve's own doc comment), so this is a no-op for npm in
 	// practice. (*Lock).Validate rejects a zero published_at outright
 	// (validateLockTimestamp) — without this, an archive-sourced lock entry
-	// could never be persisted at all.
-	if resolved.PublishedAt == FormatTimestamp(time.Time{}) {
+	// could never be persisted at all. Parsed (not string-compared against a
+	// formatted zero value) so a malformed published_at from a Source fails
+	// loudly here instead of silently being treated as either zero or
+	// non-zero.
+	resolvedPublishedAt, err := ParseTimestamp(resolved.PublishedAt)
+	if err != nil {
+		return nil, fmt.Errorf("resolving %s@%s: published_at: %w", opts.Package, selected.Version, err)
+	}
+	if resolvedPublishedAt.IsZero() {
 		resolved.PublishedAt = resolved.FirstSeenAt
 	}
 
@@ -1275,9 +1315,12 @@ func StatusHarness(paths PoolPaths, harnessName string, kind SourceKind, pkg str
 // "foo" would also match a stored key for an unrelated package "foo-bar"
 // ("npm/foo-bar/1.0.0" starts with "npm/foo" but not "npm/foo/"). This is a
 // literal string-prefix check, not a path split, so a scoped npm package
-// name (which itself contains "/") is handled correctly too.
+// name (which itself contains "/") is handled correctly too. kind is
+// normalized via SourceKind.effective (the zero value means SourceNPM, the
+// same convention UpdateOptions.Source uses) so a caller's zero-value kind
+// can never silently mean "match nothing" instead of "npm".
 func candidatesForPackage(obs Observations, kind SourceKind, pkg string) ([]Candidate, error) {
-	prefix := string(kind) + "/" + pkg + "/"
+	prefix := string(kind.effective()) + "/" + pkg + "/"
 	var out []Candidate
 	for key, o := range obs {
 		version, ok := strings.CutPrefix(key, prefix)
