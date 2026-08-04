@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // dispatcherGoldenClaude is typed out independently from dispatcherTemplate
@@ -189,11 +191,32 @@ func seedDispatcherGeneration(t *testing.T, root, key, harnessName, genID string
 func runDispatcher(t *testing.T, root, harnessName string, extraEnv, args []string) (output string, err error) {
 	t.Helper()
 	scriptPath := filepath.Join(root, "bin", harnessName)
-	//nolint:gosec // test helper, fixed script path under t.TempDir()
-	cmd := exec.Command(scriptPath, args...)
-	cmd.Env = mergeEnv(os.Environ(), extraEnv)
-	out, runErr := cmd.CombinedOutput()
-	return string(out), runErr
+	env := mergeEnv(os.Environ(), extraEnv)
+
+	// Pre-existing test flake, now surfaced (review round 2, item 8): on
+	// Linux, exec of a just-written, just-closed regular file can
+	// transiently fail with ETXTBSY ("text file busy") — a fork() of THIS
+	// TEST PROCESS (fork/exec's first half) can briefly duplicate an
+	// already-open write file descriptor from an earlier os.WriteFile in
+	// the SAME process into the child, so the kernel still sees the
+	// executable open-for-write at the instant execve() checks, even
+	// though nothing here holds it open intentionally. This is a test-
+	// harness artifact of fork+exec racing a preceding write in the same
+	// process, not a product bug (the dispatcher/generation files
+	// themselves are written once, read-only, and never held open) — so
+	// it's retried here rather than changing when/how product code writes
+	// scripts.
+	const maxAttempts = 5
+	for attempt := 1; ; attempt++ {
+		//nolint:gosec // test helper, fixed script path under t.TempDir()
+		cmd := exec.Command(scriptPath, args...)
+		cmd.Env = env
+		out, runErr := cmd.CombinedOutput()
+		if runErr == nil || attempt >= maxAttempts || !errors.Is(runErr, syscall.ETXTBSY) {
+			return string(out), runErr
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // mergeEnv returns base with every "KEY=VALUE" in overrides replacing base's
