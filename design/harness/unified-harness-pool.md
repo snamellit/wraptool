@@ -525,8 +525,15 @@ Archive/direct-download source (pure Go, no backend): resolve version from the
 adapter's release metadata endpoint; record per-platform final URL + sha256.
 
 `observations.json` is a flat map `"<source>/<package>/<version>" →
-{first_seen_at, published_at, prerelease, yanked}`, merged write-once per key
-(§6.6).
+{first_seen_at, published_at, prerelease, yanked, published_at_synthesized}`,
+merged write-once per key (§6.6; only `first_seen_at` is write-once — the
+other fields track the registry's latest claims). `published_at_synthesized`
+marks a `published_at` the pool derived from its own `first_seen_at` because
+the source publishes no history (archive sources, §11.4's last paragraph):
+for such candidates `minimum_release_age` is inapplicable and
+`minimum_observation_age` is the operative quarantine (§9) — the flag is
+persisted, not re-derived, because a genuine registry timestamp can
+legitimately equal `first_seen_at`.
 
 ## 9. Quarantine and delayed download
 
@@ -777,7 +784,12 @@ break that equality.
 ### 12.1 Guix
 
 `wraptool up --runtime=guix` resolves the current platform key, then mounts
-(replacing today's `bin/`+`lib/` exposes, preserving their trust boundary):
+(replacing today's `bin/`+`lib/` exposes, preserving their trust boundary —
+**Phase-2 mixed state**: while the migration is per-harness (§16), the legacy
+`bin/`+`lib/` exposes are RETAINED read-only alongside `runtime/`, with
+`runtime/bin` preceding legacy `bin/` on the appended PATH, so activating one
+harness cannot unmount another developer-installed harness; the replacement
+becomes literal at the Phase-4 cutover):
 
 ```text
 pool/runtime  -> same host path, read-only   (--expose)
