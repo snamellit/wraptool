@@ -2122,18 +2122,18 @@ func TestHarnessInstallAgyStaysFailedWhenRealizeFailsOnNoGuixHost(t *testing.T) 
 	}
 }
 
-// TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons is
-// the exit-0-on-real-failure hazard the errors.Is guard exists to close
-// (review round 3): with guix PRESENT (so legacyInstallVersionLocked never
-// even reaches its own guix-absent check) and runInstallArgv itself failing
-// with a genuine upstream error (e.g. curl couldn't resolve the host), the
-// legacy-install failure is NOT the guix-absent one — maybeInstallLocked's
-// downgrade must not apply, and the command must still exit non-zero. A
-// reviewer proved that deleting the errors.Is(installErr, errGuixAbsent)
-// check (matching on d.PoolArchive/RealizeErr/ActiveGeneration alone) still
-// left the existing suite green; this test is the missing coverage for
-// exactly that guard.
-func TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons(t *testing.T) {
+// TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning
+// is the WIDENED downgrade (wave2-integration-fixes item 4): with guix
+// PRESENT (so legacyInstallVersionLocked never even reaches its own
+// guix-absent check) and runInstallArgv itself failing with a genuine
+// upstream error (e.g. curl couldn't resolve the host) — NOT the
+// guix-absent one — maybeInstallLocked's archive-source downgrade now
+// still applies (item 3's guix runtime mount makes runtime/ reachable
+// regardless of why the legacy install failed), so the command exits 0
+// with a warning that names the real underlying error. Renamed from (and
+// inverting) the pre-wave2 "StaysFailed..." test, which pinned the OLD
+// narrow guix-absent-only gate this ruling replaces.
+func TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning(t *testing.T) {
 	swapHasGuix(t, true)
 	swapRunInstallArgv(t, func([]string) error { return errors.New("curl: could not resolve host") })
 
@@ -2149,15 +2149,21 @@ func TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons(t *te
 		},
 	}
 
-	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "agy", harness.Registry["agy"], "", false, "")
-	if err == nil {
-		t.Fatal("expected a non-nil error: the legacy install failed for a reason OTHER than guix being absent, so the downgrade must not apply")
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := runHarnessInstall(context.Background(), cmd, deps, "agy", harness.Registry["agy"], "", false, "")
+	if err != nil {
+		t.Fatalf("expected nil error (any legacy-install failure is downgraded to a warning when the pool generation is genuinely built+active): %v\noutput:\n%s", err, buf.String())
 	}
-	if errors.Is(err, errGuixAbsent) {
-		t.Errorf("error = %v, unexpectedly wraps errGuixAbsent — this failure has nothing to do with guix", err)
+	out := buf.String()
+	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
+		t.Errorf("expected the downgraded warning text, got:\n%s", out)
 	}
-	if !strings.Contains(err.Error(), "could not resolve host") {
-		t.Errorf("error = %v, want it to surface the real runInstallArgv failure", err)
+	if !strings.Contains(out, "could not resolve host") {
+		t.Errorf("expected the warning to name the real underlying legacy-install error, got:\n%s", out)
 	}
 
 	// The pool's own work still succeeded (realize/activate both ran fine
