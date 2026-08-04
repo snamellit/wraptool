@@ -109,6 +109,14 @@ func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error)
 //
 // A non-dry-run call appends one "gc" audit event after every removal
 // succeeds; a dry-run call appends nothing (it made no mutation to record).
+//
+// GC-under-live-mount (wave2-integration-fixes item 5): a container started
+// before this call may hold a bind mount of runtime/ resolved at
+// container-start time, including a generation this call is about to
+// remove — GC has no way to know about, let alone wait for, an
+// already-running container's mount table. If a harness misbehaves
+// immediately after a gc, restart the container (`wraptool up`) so it
+// re-resolves the mount against gc's retained set.
 func GCPoolLocked(paths PoolPaths, dryRun bool) (GCReport, error) {
 	report := GCReport{DryRun: dryRun}
 
@@ -282,7 +290,11 @@ func retainedGenerationIDs(paths PoolPaths) (map[string]bool, error) {
 // retainedCacheDigests computes the set of cache/sha256/<digest> file names
 // (bare hex, matching ReceiptFile.SHA256/NPMLockPackage.SHA256's own
 // unprefixed form) that the current lock still references, across every
-// harness's npm package cache addresses and runtime artifact digests.
+// harness's npm package cache addresses, runtime artifact digests, and
+// archive artifact digests (lock.go's LockHarness.Archive — wave2-
+// integration-fixes item 2: this walk originally covered only
+// NPMLock.Packages and Runtime.Artifacts, so GC deleted a still-locked
+// archive-sourced harness's (e.g. agy) cache object out from under it).
 func retainedCacheDigests(paths PoolPaths) (map[string]bool, error) {
 	retained := map[string]bool{}
 
@@ -300,6 +312,13 @@ func retainedCacheDigests(paths PoolPaths) (map[string]bool, error) {
 		}
 		if h.Runtime != nil {
 			for _, artifact := range h.Runtime.Artifacts {
+				if artifact.SHA256 != "" {
+					retained[artifact.SHA256] = true
+				}
+			}
+		}
+		if h.Archive != nil {
+			for _, artifact := range h.Archive.Artifacts {
 				if artifact.SHA256 != "" {
 					retained[artifact.SHA256] = true
 				}
