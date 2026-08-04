@@ -402,3 +402,26 @@ func TestRegistryNeverSetsBothPoolPackageAndPoolArchive(t *testing.T) {
 		}
 	}
 }
+
+// TestPoolLockableDescriptorsHaveNameEqualBin is a registry-wide invariant
+// check (wave2-integration-fixes item 6): every pool-lockable descriptor's
+// Name must equal its Bin. Two independent consumers assume this without
+// re-deriving it — cmd/harness.go's dispatcher/orchestrator calls, which key
+// the pool by the harness name (map key into Registry, e.g. "claude") but
+// pass d.Bin as the generation's executable name (RealizeGeneration's
+// binName), and cmd/guixcontainer.go's guixPoolPlanInput.Harness (also the
+// registry key), which resolveGuixPoolPlan uses to build BOTH the dispatcher
+// path (RuntimeBinDir/Harness) and the generation's own entrypoint path
+// (RuntimeGenerationsDir/<genID>/bin/Harness) — the latter must match
+// exactly what RealizeGeneration wrote under d.Bin, or the guix-plan probe
+// silently falls back to legacy on every pool-lockable harness.
+func TestPoolLockableDescriptorsHaveNameEqualBin(t *testing.T) {
+	for name, d := range Registry {
+		if !d.PoolLockable() {
+			continue
+		}
+		if d.Name != d.Bin {
+			t.Errorf("Registry[%q]: Name = %q, Bin = %q — a pool-lockable descriptor's dispatcher/guix-plan lookups assume these are equal", name, d.Name, d.Bin)
+		}
+	}
+}
