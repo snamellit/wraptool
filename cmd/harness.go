@@ -127,10 +127,13 @@ type backendCache struct {
 
 // get returns d's backend via harnessBackend, probing deps.resolveBackend
 // at most once per backendCache regardless of how many npm-sourced
-// descriptors are passed to it.
+// descriptors are passed to it. The archive-source gate itself is NOT
+// re-implemented here — it delegates to harnessBackend so the §6.2
+// source-gating rule (archive needs no backend at all) lives in exactly
+// one place.
 func (c *backendCache) get(deps harnessDeps, d harness.Descriptor) (backend.Backend, error) {
 	if d.PoolArchive {
-		return nil, nil
+		return harnessBackend(deps, d)
 	}
 	if !c.done {
 		c.b, c.err = deps.resolveBackend()

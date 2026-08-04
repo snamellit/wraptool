@@ -2111,3 +2111,78 @@ func TestHarnessInstallAgyStaysFailedWhenRealizeFailsOnNoGuixHost(t *testing.T) 
 		t.Error("no generation should have been activated when Realize failed")
 	}
 }
+
+// TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons is
+// the exit-0-on-real-failure hazard the errors.Is guard exists to close
+// (review round 3): with guix PRESENT (so legacyInstallVersionLocked never
+// even reaches its own guix-absent check) and runInstallArgv itself failing
+// with a genuine upstream error (e.g. curl couldn't resolve the host), the
+// legacy-install failure is NOT the guix-absent one — maybeInstallLocked's
+// downgrade must not apply, and the command must still exit non-zero. A
+// reviewer proved that deleting the errors.Is(installErr, errGuixAbsent)
+// check (matching on d.PoolArchive/RealizeErr/ActiveGeneration alone) still
+// left the existing suite green; this test is the missing coverage for
+// exactly that guard.
+func TestHarnessInstallAgyStaysFailedWhenLegacyInstallFailsForOtherReasons(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return errors.New("curl: could not resolve host") })
+
+	paths := testHarnessPaths(t)
+	binDir := t.TempDir()
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{}, nil },
+		resolveBackend: func() (backend.Backend, error) {
+			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
+			return nil, errors.New("guix not on PATH")
+		},
+	}
+
+	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "agy", harness.Registry["agy"], "", false, "")
+	if err == nil {
+		t.Fatal("expected a non-nil error: the legacy install failed for a reason OTHER than guix being absent, so the downgrade must not apply")
+	}
+	if errors.Is(err, errGuixAbsent) {
+		t.Errorf("error = %v, unexpectedly wraps errGuixAbsent — this failure has nothing to do with guix", err)
+	}
+	if !strings.Contains(err.Error(), "could not resolve host") {
+		t.Errorf("error = %v, want it to surface the real runInstallArgv failure", err)
+	}
+
+	// The pool's own work still succeeded (realize/activate both ran fine
+	// with guix present) — only the unrelated upstream curl failure did
+	// not.
+	hostKey, hkErr := pool.HostPlatformKey()
+	if hkErr != nil {
+		t.Fatalf("HostPlatformKey: %v", hkErr)
+	}
+	if _, ok := pool.ActiveGeneration(paths, "agy", hostKey); !ok {
+		t.Error("expected an active generation for agy even though the legacy install failed")
+	}
+}
+
+// TestHarnessInstallClaudeStaysFailedOnGuixAbsentLegacyInstall pins the
+// !d.PoolArchive guard: an npm-sourced harness (claude) whose legacy
+// install fails with the guix-absent error must still fail the command —
+// the archive-source downgrade (maybeInstallLocked) must never apply to a
+// non-archive-sourced harness, regardless of realize/activate outcome.
+func TestHarnessInstallClaudeStaysFailedOnGuixAbsentLegacyInstall(t *testing.T) {
+	swapHasGuix(t, false)
+
+	paths := testHarnessPaths(t)
+	src := &fakeHarnessSource{
+		candidates: map[string][]pool.Candidate{
+			"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		},
+	}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+
+	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], "", false, "")
+	if err == nil {
+		t.Fatal("expected a non-nil error: claude is npm-sourced, so the archive-source downgrade must never apply to it")
+	}
+	if !errors.Is(err, errGuixAbsent) {
+		t.Errorf("error = %v, want it to (wrap) the guix-absent legacy-install failure", err)
+	}
+}
