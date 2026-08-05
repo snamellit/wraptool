@@ -703,7 +703,31 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	switch decision.Kind {
 	case DecisionUpToDate:
 		out := existing
-		return &UpdateResult{Harness: &out, Changed: false}, nil
+		result := &UpdateResult{Harness: &out, Changed: false}
+		// Activation repair on the up-to-date path: a pool whose generation
+		// was realized before activation existed (Phase 2 wave 1) is locked
+		// AND realized — so Decide correctly reports up-to-date — but has no
+		// pointer or dispatcher, and nothing else in this call would ever
+		// write them. §10 makes the ACTIVE receipt part of install's
+		// idempotence contract, so repair it here: activateIfNeeded no-ops
+		// when the pointer already names this generation, and a failure is
+		// non-fatal (RealizeErr) like every other realize-phase failure on
+		// the install/update path.
+		if generationRealized(digestRecorded != "", dirPresent) {
+			genID, genErr := GenerationID(opts.Harness, out.Version, platformKey, digestRecorded)
+			if genErr != nil {
+				result.RealizeErr = genErr
+				return result, nil
+			}
+			if active, ok := ActiveGeneration(paths, opts.Harness, platformKey); !ok || active != genID {
+				if aerr := activateIfNeeded(paths, opts.Harness, platformKey, genID); aerr != nil {
+					result.RealizeErr = aerr
+				} else {
+					result.Note = "activated " + genID
+				}
+			}
+		}
+		return result, nil
 	case DecisionRealize:
 		out := existing
 		result := &UpdateResult{Harness: &out, Changed: false}

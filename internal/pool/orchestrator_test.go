@@ -1981,3 +1981,71 @@ func TestUpdateHarnessSecondCallWithUnchangedInputsIsIdempotent(t *testing.T) {
 		t.Errorf("resolveCalls after second (idempotent) update = %d, want still 1", src.resolveCalls)
 	}
 }
+
+// TestUpdateHarnessUpToDateRepairsMissingActivation reproduces the
+// wave-1-to-wave-2 upgrade pool found on a real developer machine: the
+// generation exists on disk and the lock records its digest (wave 1 realized
+// it), so Decide correctly returns DecisionUpToDate — but activation did not
+// exist when the generation was built, so there is no pointer and no
+// dispatcher, and before this repair nothing on the up-to-date path would
+// ever write them. §10 includes the ACTIVE receipt in install's idempotence
+// contract, so the up-to-date path must repair activation in place, without
+// calling Source.Resolve or Source.Realize.
+func TestUpdateHarnessUpToDateRepairsMissingActivation(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+	key, err := HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wave-1-shaped pool: realized generation + lock digest, no pointer.
+	genID, digest := seedExistingGeneration(t, paths, "claude", "2.1.220", key, "#!/bin/sh\nexec true\n")
+	rr, err := npmRecipeRevision(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := baseRealizeLockHarness()
+	h.Package = pkg
+	h.Version = "2.1.220"
+	h.RecipeRevision = rr
+	h.Generations = map[PlatformKey]string{key: digest}
+	seedRealizeLock(t, paths, h)
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if res.RealizeErr != nil {
+		t.Fatalf("RealizeErr = %v, want nil", res.RealizeErr)
+	}
+	if want := "activated " + genID; res.Note != want {
+		t.Errorf("Note = %q, want %q", res.Note, want)
+	}
+	if src.resolveCalls != 0 || src.realizeCalls != 0 {
+		t.Errorf("source calls = resolve:%d realize:%d, want 0/0 — repair must not resolve or rebuild", src.resolveCalls, src.realizeCalls)
+	}
+	if active, ok := ActiveGeneration(paths, "claude", key); !ok || active != genID {
+		t.Errorf("ActiveGeneration = %q ok=%v, want %q", active, ok, genID)
+	}
+	if fi, statErr := os.Stat(filepath.Join(paths.Runtime, "bin", "claude")); statErr != nil {
+		t.Errorf("dispatcher missing after repair: %v", statErr)
+	} else if fi.Mode().Perm() != 0o755 {
+		t.Errorf("dispatcher mode = %v, want 0755", fi.Mode().Perm())
+	}
+
+	// Second run: pointer already correct — silent no-op, no duplicate note.
+	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("second UpdateHarness: %v", err)
+	}
+	if res2.Note != "" {
+		t.Errorf("second run Note = %q, want empty (no re-repair)", res2.Note)
+	}
+}
