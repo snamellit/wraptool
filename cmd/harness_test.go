@@ -186,7 +186,11 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 // is constructor injection, not global mutation — a test builds its own
 // harnessDeps value and passes it directly to newHarnessCmdWithDeps or a
 // helper function, so concurrent tests (t.Parallel()) using their own
-// testHarnessDeps never contend with each other. It does NOT cover hasGuix
+// testHarnessDeps never contend with each other. Tests that swap a
+// package-level seam (swapHasGuix/swapOCIAvailable/swapHostArch/
+// swapProvisioningImage/swapRunInstallArgv) must stay serial; each helper
+// enforces that mechanically via t.Setenv, which panics under t.Parallel.
+// It does NOT cover hasGuix
 // or runInstallArgv, which stay package vars (out of the MR59 review's
 // scope — see runInstallArgv's doc comment) — a test that reaches the
 // legacy npm-install recipe still needs swapHasGuix/swapRunInstallArgv
@@ -201,6 +205,10 @@ func testHarnessDeps(paths pool.PoolPaths, binDir string, src pool.Source) harne
 }
 
 func swapHasGuix(t *testing.T, v bool) {
+	// t.Setenv panics inside a t.Parallel test — a mechanical guard that a
+	// test swapping this package-level seam can never run concurrently with
+	// the rest of the suite (the swap would race every reader).
+	t.Setenv("WRAPTOOL_TEST_SEAM_SWAP", "1")
 	t.Helper()
 	orig := hasGuix
 	hasGuix = func() bool { return v }
@@ -212,6 +220,10 @@ func swapHasGuix(t *testing.T, v bool) {
 // the tests — the cmd-package analogue of internal/pool/backend's own
 // lookPath seam, one layer up.
 func swapOCIAvailable(t *testing.T, v bool) {
+	// t.Setenv panics inside a t.Parallel test — a mechanical guard that a
+	// test swapping this package-level seam can never run concurrently with
+	// the rest of the suite (the swap would race every reader).
+	t.Setenv("WRAPTOOL_TEST_SEAM_SWAP", "1")
 	t.Helper()
 	orig := ociAvailable
 	ociAvailable = func() bool { return v }
@@ -223,6 +235,10 @@ func swapOCIAvailable(t *testing.T, v bool) {
 // deterministically regardless of which architecture actually runs the test
 // binary.
 func swapHostArch(t *testing.T, v string) {
+	// t.Setenv panics inside a t.Parallel test — a mechanical guard that a
+	// test swapping this package-level seam can never run concurrently with
+	// the rest of the suite (the swap would race every reader).
+	t.Setenv("WRAPTOOL_TEST_SEAM_SWAP", "1")
 	t.Helper()
 	orig := hostArch
 	hostArch = func() string { return v }
@@ -235,6 +251,10 @@ func swapHostArch(t *testing.T, v string) {
 // reference actually reaches recipe_revision without a real second image to
 // install against.
 func swapProvisioningImage(t *testing.T, v string) {
+	// t.Setenv panics inside a t.Parallel test — a mechanical guard that a
+	// test swapping this package-level seam can never run concurrently with
+	// the rest of the suite (the swap would race every reader).
+	t.Setenv("WRAPTOOL_TEST_SEAM_SWAP", "1")
 	t.Helper()
 	orig := provisioningImage
 	provisioningImage = v
@@ -268,6 +288,10 @@ func readLockRecipeRevision(t *testing.T, path, harnessName string) string {
 }
 
 func swapRunInstallArgv(t *testing.T, fn func([]string) error) {
+	// t.Setenv panics inside a t.Parallel test — a mechanical guard that a
+	// test swapping this package-level seam can never run concurrently with
+	// the rest of the suite (the swap would race every reader).
+	t.Setenv("WRAPTOOL_TEST_SEAM_SWAP", "1")
 	t.Helper()
 	orig := runInstallArgv
 	runInstallArgv = fn
@@ -1933,7 +1957,7 @@ func TestDefaultResolveBackendSelectionMatrix(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected an error, got backend %q", b.Name())
 				}
-				for _, want := range []string{"install guix, or docker, or podman"} {
+				for _, want := range []string{"install guix", "install docker or podman"} {
 					if !strings.Contains(err.Error(), want) {
 						t.Errorf("no-backend error = %q, want it to contain %q", err.Error(), want)
 					}
@@ -1982,7 +2006,7 @@ func TestDefaultResolveBackendNoBackendErrorNamesAllThreeOptions(t *testing.T) {
 		t.Fatal("expected an error when neither guix nor an oci engine is available")
 	}
 	msg := err.Error()
-	for _, want := range []string{"install guix, or docker, or podman", "npm-sourced harnesses only"} {
+	for _, want := range []string{"install guix", "install docker or podman", "npm-sourced harnesses need a backend"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("no-backend error = %q, want it to contain %q", msg, want)
 		}

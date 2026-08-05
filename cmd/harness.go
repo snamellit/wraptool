@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -189,6 +190,11 @@ type backendCache struct {
 	done bool
 	b    backend.Backend
 	err  error
+	// key is the target platform the cached probe resolved, recorded so a
+	// future caller reusing one cache across DIFFERENT targets — the doc
+	// above says the target is fixed per run, but nothing else enforces it
+	// — fails loudly instead of silently reusing a wrong-platform backend.
+	key pool.PlatformKey
 }
 
 // get returns d's backend via harnessBackend, probing deps.resolveBackend
@@ -201,10 +207,19 @@ func (c *backendCache) get(deps harnessDeps, d harness.Descriptor, target platfo
 	if d.PoolArchive {
 		return harnessBackend(deps, d, target)
 	}
-	if !c.done {
-		c.b, c.err = harnessBackend(deps, d, target)
-		c.done = true
+	key, err := target()
+	if err != nil {
+		return nil, err
 	}
+	if c.done {
+		if key != c.key {
+			return nil, fmt.Errorf("backendCache reused across targets (%s cached, %s requested) — one cache per command run, one target per run", c.key, key)
+		}
+		return c.b, c.err
+	}
+	c.b, c.err = harnessBackend(deps, d, func() (pool.PlatformKey, error) { return key, nil })
+	c.done = true
+	c.key = key
 	return c.b, c.err
 }
 
@@ -263,7 +278,9 @@ var ociAvailable = func() bool {
 	if err != nil {
 		// provisioningImage is a non-empty package constant; NewOCI only
 		// errors on an empty image, so this is unreachable outside a
-		// wraptool bug — treated as "not available" rather than panicking.
+		// wraptool bug — treated as "not available" rather than panicking,
+		// but logged so a future NewOCI failure mode is not invisible.
+		log.Printf("ociAvailable: backend.NewOCI unexpectedly failed (treating oci as unavailable): %v", err)
 		return false
 	}
 	return o.Available()
@@ -338,14 +355,13 @@ func defaultResolveBackend(target pool.PlatformKey) (backend.Backend, error) {
 			"handles cross-platform realize — install docker or podman", target, hostArch())
 	}
 
-	return nil, fmt.Errorf("no provisioning backend available for target platform %s: guix requires "+
-		"a matching host architecture (this host is %q) and either was not found on PATH or has a "+
-		"different architecture, and neither docker nor podman were found for the oci backend; "+
-		"install guix, or docker, or podman (this applies to npm-sourced harnesses only — an "+
-		"archive-sourced harness like agy resolves/realizes in pure Go and needs no container backend "+
-		"at all).\nOn a devcontainer host, provision harnesses via the wraptool feature instead: add\n  "+
-		`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}`+
-		"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` "+
+	return nil, fmt.Errorf("no provisioning backend available for target platform %s. Fix one of:\n"+
+		"  - install guix (host architecture is %q; guix serves matching-arch targets only)\n"+
+		"  - install docker or podman (the oci backend, works for any target architecture)\n"+
+		"Only npm-sourced harnesses need a backend; archive-sourced ones (agy) build in pure Go.\n"+
+		"On a devcontainer host, provision harnesses via the wraptool feature instead: add\n"+
+		`  "forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}`+"\n"+
+		"to your .devcontainer/devcontainer.json (see examples/devcontainer); `wraptool up` "+
 		"shares the pool home so auth/skills persist across projects", target, hostArch())
 }
 
