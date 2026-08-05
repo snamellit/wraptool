@@ -116,7 +116,7 @@ jobs:
               payload=$(jq -n \
                 --arg tag "$RELEASE_TAG" \
                 --arg sha "$RELEASE_COMMIT" \
-                --arg body "Precompiled wraptool binaries, build metadata, and SHA-256 checksums." \
+                --arg body "Precompiled wraptool binaries, build metadata, and SHA-256 checksums. Release notes: CHANGELOG.md at this tag." \
                 "{tag_name: \$tag, target_commitish: \$sha, name: \$tag, body: \$body, draft: false, prerelease: false}")
               release=$(curl --silent --show-error --fail-with-body \
                 --request POST --header "$auth" --header "Content-Type: application/json" \
