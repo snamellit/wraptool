@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -1091,5 +1092,46 @@ func TestRealize_ArchiveRejectsAmbiguousBinNameMatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "more than one entry named") {
 		t.Errorf("error = %q, want it to mention the ambiguity", err.Error())
+	}
+}
+
+// TestRealize_ArchiveSingleFlatBinaryFallsBackRegardlessOfName reproduces the
+// real agy 1.1.10 artifact found in the field: the tarball's single file is
+// named "antigravity" (the product), not "agy" (the harness command), so a
+// strict basename match on binName failed the whole realize. A single-file
+// flat-binary archive is unambiguous — the file IS the binary, whatever its
+// name — and lands at bin/<binName> as usual. Multi-file archives without a
+// match keep the reject-don't-guess error (previous test).
+func TestRealize_ArchiveSingleFlatBinaryFallsBackRegardlessOfName(t *testing.T) {
+	tarGZ := buildAgyTarGZ(t, "agy-1.1.10-linux-x64", map[string]string{
+		"antigravity": "#!/bin/sh\necho antigravity-runs\n",
+	})
+	cacheDir := t.TempDir()
+	h := seedArchiveCache(t, cacheDir, pool.PlatformLinuxAMD64Glibc, tarGZ)
+
+	a := NewArchive(unroutableManifestBaseURL)
+	fb := &fatalBackend{t: t}
+	gen := filepath.Join(t.TempDir(), "gen1")
+	receipt, err := a.Realize(context.Background(), fb, "agy", "agy", h, pool.PlatformLinuxAMD64Glibc, cacheDir, gen)
+	if err != nil {
+		t.Fatalf("Realize: %v, want the single flat binary accepted despite its name", err)
+	}
+	binPath := filepath.Join(gen, "bin", "agy")
+	fi, statErr := os.Stat(binPath)
+	if statErr != nil {
+		t.Fatalf("bin/agy missing after fallback: %v", statErr)
+	}
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("bin/agy mode = %v, want 0755", fi.Mode().Perm())
+	}
+	out, runErr := exec.Command(binPath).Output()
+	if runErr != nil {
+		t.Fatalf("executing bin/agy: %v", runErr)
+	}
+	if !strings.Contains(string(out), "antigravity-runs") {
+		t.Errorf("bin/agy output = %q, want the flat binary's own content to run", out)
+	}
+	if err := pool.VerifyGenerationTree(gen, receipt); err != nil {
+		t.Errorf("VerifyGenerationTree after fallback: %v", err)
 	}
 }

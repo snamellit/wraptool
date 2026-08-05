@@ -1032,8 +1032,19 @@ func locateBinNameOnDisk(root, binName string) (string, error) {
 		return "", err
 	}
 	if match == "" {
+		// Flat-binary fallback: real channels name the shipped binary after
+		// the PRODUCT, not the harness command (verified live: agy 1.1.10's
+		// tarball contains a single file named "antigravity"). When exactly
+		// one regular file was extracted, it is unambiguously the binary
+		// this flat-native channel ships — use it; installArchiveBin places
+		// it at bin/<binName> regardless of its archive name. Anything else
+		// (zero or several files, none matching) stays a reject-don't-guess
+		// error listing the contents.
+		if len(names) == 1 {
+			return filepath.Join(root, filepath.FromSlash(names[0])), nil
+		}
 		sort.Strings(names)
-		return "", fmt.Errorf("no entry named %q; contents: %s", binName, strings.Join(names, ", "))
+		return "", fmt.Errorf("no entry named %q and the archive is not a single flat binary; contents: %s", binName, strings.Join(names, ", "))
 	}
 	return match, nil
 }
