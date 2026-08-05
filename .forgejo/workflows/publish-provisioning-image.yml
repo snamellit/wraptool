@@ -1,0 +1,60 @@
+name: Publish harness-pool provisioning image
+
+# Builds the §11.2 provisioning OCI image from images/provisioning-manifest.scm
+# (node/npm, tar, xz, coreutils, bash, CA certs — the same contract as the
+# guix backend's package set) and pushes it to the Forgejo registry as
+# forge.snamellit.com/pti/wraptool/pool-provisioning. The pushed image's
+# digest is printed prominently at the end of the job: cmd/harness.go pins
+# it, and every npm recipe_revision folds it in (§8), so publishing a new
+# image deliberately invalidates existing locks once the pin is updated.
+#
+# Triggers on any branch so a feature branch introducing or changing the
+# manifest gets its digest before merge; blob-level dedup makes repeat
+# pushes cheap.
+on:
+  push:
+    paths:
+      - images/provisioning-manifest.scm
+      - channels.scm
+  workflow_dispatch:
+
+jobs:
+  publish:
+    # Native (host-mode) Guix runner: guix-daemon present, `guix pack`
+    # realizes the closure here; the resulting image needs no daemon to run.
+    runs-on: guix
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image from provisioning manifest
+        run: |
+          # -S /bin=bin           → /bin/sh + coreutils on PATH (npm spawns
+          #                         lifecycle scripts via /bin/sh)
+          # -S /usr/bin=bin       → /usr/bin/env for env-prefixed argv and
+          #                         '#!/usr/bin/env node' shims
+          # -S /etc/ssl/certs=... → CA bundle for the resolve phase's HTTPS
+          img=$(guix time-machine -C channels.scm -- pack -f docker \
+                  -S /bin=bin -S /usr/bin=bin -S /etc/ssl/certs=etc/ssl/certs \
+                  -m images/provisioning-manifest.scm)
+          echo "IMG=$img" >> "$GITHUB_ENV"
+
+      - name: Push to Forgejo registry
+        env:
+          # Username must own REGISTRY_TOKEN; defaults to the dispatch actor.
+          # Mirrors publish-ci-image.yml.
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER || github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          guix time-machine -C channels.scm -- shell skopeo jq -- sh -c '
+            dest="forge.snamellit.com/${{ github.repository }}/pool-provisioning"
+            for tag in latest "${GITHUB_SHA:0:12}"; do
+              skopeo copy --dest-creds "$REGISTRY_USER:$REGISTRY_TOKEN" \
+                "docker-archive:$IMG" "docker://$dest:$tag"
+            done
+            digest=$(skopeo inspect --creds "$REGISTRY_USER:$REGISTRY_TOKEN" \
+              "docker://$dest:${GITHUB_SHA:0:12}" | jq -r .Digest)
+            echo "=============================================================="
+            echo "PROVISIONING IMAGE PINNED REFERENCE (update cmd/harness.go):"
+            echo "$dest@$digest"
+            echo "=============================================================="
+          '
