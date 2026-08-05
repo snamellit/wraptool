@@ -152,12 +152,13 @@ func npmRecipeRevision(pkg, provisioningImage string) (string, error) {
 const archiveRecipeFormatVersion = 1
 
 // archiveRecipeRevision computes recipe_revision (§8) for one archive
-// harness — the archive-source counterpart of npmRecipeRevision. Like npm's
-// version, archive resolution/realization has no backend provisioning image
-// to fold in (internal/pool/source/archive.go's own doc comment: "EVERY
-// method here is pure Go, host-side, and NEVER invokes ... backend.Backend"),
-// so this is package identity + archiveRecipeFormatVersion only — it still
-// changes the moment either input does.
+// harness — the archive-source counterpart of npmRecipeRevision. UNLIKE
+// npm's version (which now folds in the provisioning image, oci-backend-
+// wiring), archive resolution/realization has no backend provisioning image
+// to fold in at all (internal/pool/source/archive.go's own doc comment:
+// "EVERY method here is pure Go, host-side, and NEVER invokes ...
+// backend.Backend"), so this is package identity + archiveRecipeFormatVersion
+// only — it still changes the moment either input does.
 func archiveRecipeRevision(pkg string) (string, error) {
 	data, err := json.Marshal(struct {
 		Package string `json:"package"`

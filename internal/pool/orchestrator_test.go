@@ -1623,6 +1623,30 @@ func TestNPMRecipeRevisionFoldsProvisioningImage(t *testing.T) {
 	}
 }
 
+// TestNPMRecipeRevisionGoldenValue pins npmRecipeRevision's exact output
+// (fix-round RULING, item 6): a hard-coded sha256 literal, not just the
+// mutation-sensitivity properties TestNPMRecipeRevisionFoldsProvisioningImage
+// above already checks. This is what actually catches a silent change to the
+// hashed struct's field names, field order, or JSON tags (encoding/json's
+// output is order-preserving over struct field declaration order, so
+// reordering the Package/ProvisioningImage/Format fields — or renaming any
+// one JSON tag — changes the hash even though every other property
+// (stability, mutation-sensitivity) would still hold) — the 2->3 bump this
+// work package made was exactly this kind of change, and it shipped with no
+// golden-value test pinning the new format at all.
+func TestNPMRecipeRevisionGoldenValue(t *testing.T) {
+	const wantGolden = "sha256:731931a44a2ee5550777cc52c6183d10d7177125082669af5f62ce57414e61a5"
+	got, err := npmRecipeRevision("x", "img")
+	if err != nil {
+		t.Fatalf("npmRecipeRevision: %v", err)
+	}
+	if got != wantGolden {
+		t.Errorf(`npmRecipeRevision("x", "img") = %q, want golden value %q — if this change is`+
+			` intentional (a deliberate recipe_format_version/field-shape bump), update wantGolden`+
+			` here AND bump recipeFormatVersion with a doc-comment entry explaining why`, got, wantGolden)
+	}
+}
+
 // recipeRevisionForFormat mirrors npmRecipeRevision's hashing exactly but
 // with an explicit format number, so TestUpdateHarnessSelfHealsPhase1RecipeMismatch
 // can construct a recipe_revision as it would have been computed under a
