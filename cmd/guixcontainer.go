@@ -131,9 +131,17 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	if key, err := pool.HostPlatformKey(); err == nil {
 		pointerPath = pool.PointerFile(key, hname)
 	}
+	// hname was validated by the harness.Write call above, so the lookup
+	// cannot miss today — but a missing key would silently yield a zero
+	// Descriptor (non-lockable, quiet legacy plan) rather than an error,
+	// so make the dependency on that validation explicit.
+	desc, knownHarness := harness.Registry[hname]
+	if !knownHarness {
+		return fmt.Errorf("unknown harness %q resolving the pool plan (registry lookup after validation — this is a bug)", hname)
+	}
 	plan := resolveGuixPoolPlan(guixPoolPlanInput{
 		Harness:               hname,
-		PoolLockable:          harness.Registry[hname].PoolLockable(),
+		PoolLockable:          desc.PoolLockable(),
 		PointerPath:           pointerPath,
 		RuntimeDir:            pool.RuntimeDir(),
 		RuntimeBinDir:         pool.RuntimeBinDir(),
@@ -349,9 +357,13 @@ func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
 // and drops into the workspace. Pure string building, no exec, so tests can
 // pin it exactly.
 func buildContainerEntry(root, poolHome string, pathDirs []string) string {
-	pathAppend := ""
+	quoted := make([]string, 0, len(pathDirs))
 	for _, dir := range pathDirs {
-		pathAppend += ":" + shellQuote(dir)
+		quoted = append(quoted, shellQuote(dir))
+	}
+	pathAppend := ""
+	if len(quoted) > 0 {
+		pathAppend = ":" + strings.Join(quoted, ":")
 	}
 	return "export WRAPTOOL_CONTAINER=1" +
 		"; export TERM=xterm-256color" +
