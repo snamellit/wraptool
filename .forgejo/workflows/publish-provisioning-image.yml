@@ -23,10 +23,11 @@ name: Publish harness-pool provisioning image
 # republish :latest. Feature branches needing a digest use workflow_dispatch.
 on:
   push:
-    branches: [main]
+    branches: [main, feat/oci-provisioner] # TEMPORARY branch entry: mint the first multi-arch digest pre-merge (workflow_dispatch is invisible until the file reaches main); revert to main-only before merge
     paths:
       - images/provisioning-manifest.scm
       - channels.scm
+      - .forgejo/workflows/publish-provisioning-image.yml
   workflow_dispatch:
 
 jobs:
