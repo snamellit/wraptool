@@ -24,8 +24,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// provisioningImage is the pinned pool-provisioning OCI image (§11.2): a
-// small image containing only resolver/build prerequisites (node+npm, tar,
+// defaultProvisioningImage is the pinned pool-provisioning OCI image (§11.2):
+// a small image containing only resolver/build prerequisites (node+npm, tar,
 // coreutils), built by .forgejo/workflows/publish-provisioning-image.yml
 // from images/provisioning-manifest.scm and pinned by DIGEST, not just tag —
 // §11.2 makes "the provisioning image reference and digest" a lock input
@@ -33,8 +33,20 @@ import (
 // upgrade must be an explicit, auditable recipe-revision bump, never a
 // silent content change under a floating tag. The digest placeholder below
 // is substituted by the architect from the CI job log before merge; nothing
-// in this package (or its tests) depends on the literal digest value.
-const provisioningImage = "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:PENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDING"
+// in this package (or its tests) depends on the literal digest value — see
+// TestProvisioningImageIsDigestPinned, which stays skipped until the
+// placeholder is gone. This is the true, immutable constant; provisioningImage
+// below is the var seam production code actually reads.
+const defaultProvisioningImage = "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:PENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDING"
+
+// provisioningImage is the package-level var every production call site
+// reads (backend selection, recipe_revision folding) — a var, not a plain
+// use of defaultProvisioningImage, so a cmd-level test can swap it (like
+// hasGuix/ociAvailable/hostArch) to prove the image reference actually
+// reaches recipe_revision end to end, without needing a real second image to
+// install against. Starts equal to defaultProvisioningImage; nothing outside
+// a test ever reassigns it.
+var provisioningImage = defaultProvisioningImage
 
 // harnessDeps bundles the harness commands' host-environment dependencies:
 // pool paths, the legacy pool bin/ directory, the artifact-acquisition
@@ -131,8 +143,11 @@ func hostPlatformTarget() (pool.PlatformKey, error) { return pool.HostPlatformKe
 // comment — "EVERY method here is pure Go, host-side, and NEVER invokes the
 // caller-supplied backend.Backend"). Neither deps.resolveBackend nor target
 // is even called for an archive-sourced harness, so an off-guix/off-OCI host
-// (or one with an unsupported HostPlatformKey architecture) never fails this
-// probe for one — that is what makes `wraptool harness install agy` reach
+// never fails this probe for one — nor does a target() failure (e.g.
+// install/update's hostPlatformTarget hitting an unsupported host
+// architecture; sync's own target thunk never calls HostPlatformKey at all,
+// since --platform is already validated against the closed PlatformKey enum)
+// — that is what makes `wraptool harness install agy` reach
 // refresh/resolve/fetch/realize/activate with no container runtime present
 // at all (this work package's headline capability). The returned nil
 // Backend for that case is safe: RealizeGeneration/UpdateHarnessLocked only
@@ -276,19 +291,42 @@ func targetArch(target pool.PlatformKey) (string, error) {
 // through Source.Resolve and RealizeGeneration/Source.Realize by every
 // caller in this file. Only ever called for an npm-sourced harness
 // (harnessBackend skips it entirely for an archive-sourced one, which needs
-// no backend at all — see harnessBackend's doc comment), so the error below
-// is npm-specific by construction, not merely by wording.
+// no backend at all — see harnessBackend's doc comment), so both error
+// messages below are npm-specific by construction, not merely by wording.
+//
+// When neither backend can serve the request, the error names the ACTUAL
+// cause rather than one generic message (fix-round RULING) — the two
+// distinct shapes reaching this point can't both be blamed on "guix is
+// missing":
+//
+//   - guix absent (on PATH or not, it doesn't matter which — no candidate
+//     backend exists at all): names all three install options.
+//   - guix PRESENT but target's arch differs from the host's, and no oci
+//     engine either: the failure is guix's lack of cross-arch execution, not
+//     guix being "absent" — attributing it to the wrong cause would send a
+//     developer chasing a guix reinstall that can never fix a cross-arch
+//     request.
 func defaultResolveBackend(target pool.PlatformKey) (backend.Backend, error) {
 	arch, err := targetArch(target)
 	if err != nil {
 		return nil, err
 	}
 
-	if hasGuix() && arch == hostArch() {
+	guixOK := hasGuix()
+	if guixOK && arch == hostArch() {
 		return backend.Select("guix", backend.Options{GuixPackages: guixResolveRealizePackages})
 	}
 	if ociAvailable() {
 		return backend.Select("oci", backend.Options{OCIImage: provisioningImage})
+	}
+
+	if guixOK {
+		// Reaching here with guixOK true means the early guix-selection
+		// branch above did NOT return — i.e. arch != hostArch(): guix is
+		// on PATH but cannot serve this cross-arch target, and no oci engine
+		// is available to fall back to.
+		return nil, fmt.Errorf("guix cannot cross-build for %s on this %s host; the oci backend "+
+			"handles cross-platform realize — install docker or podman", target, hostArch())
 	}
 
 	return nil, fmt.Errorf("no provisioning backend available for target platform %s: guix requires "+
@@ -827,28 +865,47 @@ func printRealizeWarning(cmd *cobra.Command, name string, result *pool.UpdateRes
 // silently overwritten by the freshly locked version, so that case gets one
 // explicit line rather than passing in complete silence.
 //
-// Archive-source legacy-install downgrade (§16 Phase 2 posture, review
-// round 2 major, WIDENED by wave2-integration-fixes item 4): for an
-// archive-sourced harness (agy) whose pool generation was genuinely built
-// AND activated (result.RealizeErr == nil AND this host's platform has a
-// live active generation — NOT merely result.RealizedGenerationID != "",
-// which is empty on the already-up-to-date path, UpdateResult's own doc
-// comment), ANY legacy-install failure — not just guix being absent — is
+// Realized-generation legacy-install downgrade (§16 Phase 2 posture, review
+// round 2 major, WIDENED by wave2-integration-fixes item 4, and WIDENED
+// AGAIN by this work package's fix round to cover every pool-lockable
+// source, not just archive): for a pool-lockable harness (npm OR archive)
+// whose pool generation was genuinely built AND activated (result.RealizeErr
+// == nil AND this host's platform has a live active generation — NOT merely
+// result.RealizedGenerationID != "", which is empty on the already-up-to-date
+// path, UpdateResult's own doc comment), a legacy-install failure is
 // downgraded to a warning (naming the underlying error) and this function
-// returns nil: the developer's actual goal (`install`/`update agy`)
-// substantively succeeded — a locked, realized, active generation exists,
-// and cmd/guixcontainer.go's guix ACTIVE plan now genuinely mounts
-// runtime/ (read-only) into the container and puts runtime/bin on PATH —
-// so the legacy bin/ copy is no longer the only way the generation reaches
-// a container; it is Phase 4 cleanup, not day-0 blocking. Before item 3's
-// guix runtime mount, only the guix-absent failure was downgradable
-// (errors.Is against offGuixInstallError's wrapped errGuixAbsent) because
-// nothing else made runtime/ reachable at all; now that runtime/ IS
-// reachable, no legacy-install failure reason changes that fact, so every
-// one gets the same treatment. install/update called via the shared
-// runPerHarness path must still exit non-zero when the pool's own work
-// didn't genuinely succeed (a real Realize failure, or an npm-sourced
-// harness — the archive-source downgrade never applies to those).
+// returns nil: the developer's actual goal (`install`/`update`) substantively
+// succeeded — a locked, realized, active generation exists, and
+// cmd/guixcontainer.go's guix ACTIVE plan now genuinely mounts runtime/
+// (read-only) into the container and puts runtime/bin on PATH — so the
+// legacy bin/ copy is no longer the only way the generation reaches a
+// container; it is Phase 4 cleanup, not day-0 blocking.
+//
+// The downgrade's SCOPE differs by source, though (fix-round RULING):
+//
+//   - archive (agy): ANY legacy-install failure downgrades, unchanged from
+//     before — its curl|bash legacy installer has failure modes (a genuine
+//     network error, a changed release layout) that are just as "the pool
+//     already did the real work" as guix being absent, and nothing about
+//     this source's realize story makes one cause more forgivable than
+//     another.
+//   - npm (claude/opencode/pi): ONLY the guix-absent cause downgrades
+//     (errors.Is against errGuixAbsent). This is deliberately narrower: on a
+//     docker/podman-only host (this work package's headline capability),
+//     the host-side legacy npm installer is impossible PERMANENTLY and BY
+//     DESIGN — it literally shells `guix shell node -- npm install ...`
+//     (internal/harness's npmInstall recipe) — so guix being absent there is
+//     not a "real installer problem" at all, it is the expected shape of a
+//     successful oci-backend install. Any OTHER legacy-install failure on a
+//     guix host (a broken npm registry, a failing postinstall script) IS a
+//     real installer problem and must still fail the command — the pool's
+//     own realize succeeding doesn't mean the legacy binary SHOULD have
+//     failed to install too.
+//
+// install/update called via the shared runPerHarness path must still exit
+// non-zero when the pool's own work didn't genuinely succeed (a real Realize
+// failure, a non-guix-absent npm legacy-install failure, or a non-lockable
+// harness).
 func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult) error {
 	_, poolBin, err := deps.poolBinDir()
 	if err != nil {
@@ -868,21 +925,22 @@ func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d har
 	if installErr == nil {
 		return nil
 	}
-	if warned := warnInsteadOfFailForArchiveGeneration(cmd, deps, name, d, result, installErr); warned {
+	if warned := warnInsteadOfFailForRealizedGeneration(cmd, deps, name, d, result, installErr); warned {
 		return nil
 	}
 	return installErr
 }
 
-// warnInsteadOfFailForArchiveGeneration implements maybeInstallLocked's
-// archive-source legacy-install downgrade (see that function's doc comment
-// for the full rationale and exact conditions) — factored out so its
-// several preconditions read as one guarded sequence instead of nesting
-// inside maybeInstallLocked itself. Returns true (having already printed
-// the warning, which names installErr) iff every condition held; false
-// means the caller must still treat installErr as a real failure.
-func warnInsteadOfFailForArchiveGeneration(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult, installErr error) bool {
-	if !d.PoolArchive {
+// warnInsteadOfFailForRealizedGeneration implements maybeInstallLocked's
+// realized-generation legacy-install downgrade (see that function's doc
+// comment for the full rationale, the archive-vs-npm scope split, and the
+// exact preconditions) — factored out so its several preconditions read as
+// one guarded sequence instead of nesting inside maybeInstallLocked itself.
+// Returns true (having already printed the warning, which names installErr)
+// iff every condition held; false means the caller must still treat
+// installErr as a real failure.
+func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult, installErr error) bool {
+	if !d.PoolLockable() {
 		return false
 	}
 	if result.RealizeErr != nil {
@@ -897,21 +955,42 @@ func warnInsteadOfFailForArchiveGeneration(cmd *cobra.Command, deps harnessDeps,
 		return false
 	}
 
-	// installErr is printed in full, not just its top-level message: for
-	// the guix-absent cause specifically, offGuixInstallError's own text
-	// already carries the devcontainer-feature guidance below — appending
-	// it again here unconditionally would print it twice (a real
-	// regression this widening's own transcript caught). For any OTHER
-	// legacy-install failure (e.g. a genuine curl/network error), installErr
-	// carries no such guidance, so printing it in full is exactly the
-	// "names the underlying legacy error" the RULING requires; the devcontainer
-	// route remains a generically-correct next step regardless of cause, but
-	// this warning states the fact (pool generation built and locked) and
-	// the concrete error rather than re-deriving guidance installErr may or
-	// may not already include.
+	if d.PoolArchive {
+		// installErr is printed in full, not just its top-level message: for
+		// the guix-absent cause specifically, offGuixInstallError's own text
+		// already carries the devcontainer-feature guidance below — appending
+		// it again here unconditionally would print it twice (a real
+		// regression this widening's own transcript caught). For any OTHER
+		// legacy-install failure (e.g. a genuine curl/network error), installErr
+		// carries no such guidance, so printing it in full is exactly the
+		// "names the underlying legacy error" the RULING requires; the devcontainer
+		// route remains a generically-correct next step regardless of cause, but
+		// this warning states the fact (pool generation built and locked) and
+		// the concrete error rather than re-deriving guidance installErr may or
+		// may not already include.
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"warning: %s: pool generation built and locked, but the pool binary was NOT installed (%v)\n",
+			name, installErr)
+		return true
+	}
+
+	// npm-sourced: only the guix-absent cause is downgradable (see this
+	// function's caller's doc comment for why) — any other legacy-install
+	// failure is a real installer problem and must stay fatal.
+	if !errors.Is(installErr, errGuixAbsent) {
+		return false
+	}
+	// installErr (offGuixInstallError's text) already names what succeeded
+	// from a legacy-installer-shape perspective is impossible here AND
+	// carries the devcontainer-feature guidance — printed in full below, not
+	// duplicated. This message additionally names the pool-side fact
+	// installErr itself knows nothing about: a generation WAS built and
+	// activated for this harness, so containers on this host already have a
+	// working path to it (the guix runtime's runtime/ mount) even though the
+	// host-side legacy binary does not exist.
 	fmt.Fprintf(cmd.ErrOrStderr(),
-		"warning: %s: pool generation built and locked, but the pool binary was NOT installed (%v)\n",
-		name, installErr)
+		"warning: %s: pool generation built and activated (locked %s); host-side legacy install was skipped (%v)\n",
+		name, result.Harness.Version, installErr)
 	return true
 }
 
@@ -1151,9 +1230,10 @@ listed in the pool manifest.`,
 			// one invocation, and an archive-sourced one must never probe
 			// resolveBackend at all (harnessBackend's doc comment). bc
 			// memoizes the (possibly failing) resolveBackend probe across
-			// every npm-sourced harness in this one run, so an off-guix host
-			// prints the guix-absent message once, not once per npm-sourced
-			// harness (review round 2, nit — backendCache's doc comment).
+			// every npm-sourced harness in this one run, so a host with no
+			// usable backend prints the no-backend-available message once,
+			// not once per npm-sourced harness (review round 2, nit —
+			// backendCache's doc comment).
 			now := time.Now().UTC()
 			var bc backendCache
 			return runPerHarness(cmd, names, func(name string) error {
@@ -1201,11 +1281,18 @@ func newHarnessSyncCmd(deps harnessDeps) *cobra.Command {
 		Use:   "sync [harness]",
 		Short: "Realize the exact existing lock without resolving a new version",
 		Long: `Fetches any cache objects missing for the version already recorded in
-harness-lock.json, then realizes (§16 Phase 2) and installs exactly that
-version — never resolving a new one. For a new workstation, a lost cache, or
-a platform the lock already knows about but this pool hasn't realized yet
-(--platform, default: this host's own platform). With no harness argument,
-syncs every harness currently present in the lock.`,
+harness-lock.json, then realizes (§16 Phase 2) exactly that version — never
+resolving a new one. For a new workstation, a lost cache, or a platform the
+lock already knows about but this pool hasn't realized yet (--platform,
+default: this host's own platform). With no harness argument, syncs every
+harness currently present in the lock.
+
+When --platform names this host's own platform (the default), sync also
+installs the harness's legacy host-side binary, same as install/update. When
+it names a DIFFERENT platform (cross-platform realize, e.g. building a Linux
+arm64 artifact from an amd64 or non-Linux host, §11.2), the legacy install
+step is skipped entirely: it is a foreign-platform artifact operation, and
+the host's own legacy bin/ is out of scope for it.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// --platform validation is pure (no filesystem access) and runs
@@ -1216,6 +1303,17 @@ syncs every harness currently present in the lock.`,
 			if err != nil {
 				return err
 			}
+			// crossPlatform gates the legacy-install step below (fix-round
+			// RULING, item 5): the legacy installer always produces a
+			// HOST-native artifact (it shells the harness's own npm/curl
+			// installer on THIS machine), so it can only ever be correct for
+			// this host's own platform. A HostPlatformKey failure (an
+			// unsupported host architecture) is treated the same as a
+			// mismatch — such a host has no "own platform" the legacy
+			// installer could target correctly either.
+			hostKey, hostErr := pool.HostPlatformKey()
+			crossPlatform := hostErr != nil || key != hostKey
+
 			paths := deps.poolPaths()
 			names, err := lockHarnessArgs(paths, args)
 			if err != nil {
@@ -1251,6 +1349,16 @@ syncs every harness currently present in the lock.`,
 				lh, err := pool.SyncHarnessLocked(context.Background(), src, b, paths, name, d.Bin, key)
 				if err != nil {
 					return err
+				}
+				if crossPlatform {
+					// Foreign-platform artifact operation (fix-round RULING,
+					// item 5): the realized generation is for a DIFFERENT
+					// platform than this host runs, so a host-side legacy
+					// install here would produce a broken (wrong-platform)
+					// binary at best — skip it entirely, not attempt-and-warn.
+					fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s "+
+						"(not this host's own platform — skipping host-side legacy install)\n", name, lh.Version, key)
+					return nil
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s; installing ...\n", name, lh.Version, key)
 				return legacyInstallVersionLocked(cmd, deps, name, d, lh.Version)

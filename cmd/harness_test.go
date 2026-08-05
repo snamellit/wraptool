@@ -3,10 +3,12 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +227,44 @@ func swapHostArch(t *testing.T, v string) {
 	orig := hostArch
 	hostArch = func() string { return v }
 	t.Cleanup(func() { hostArch = orig })
+}
+
+// swapProvisioningImage stubs the provisioningImage package var (the
+// production default lives in the immutable defaultProvisioningImage
+// const — see that const's doc comment) so a test can prove the image
+// reference actually reaches recipe_revision without a real second image to
+// install against.
+func swapProvisioningImage(t *testing.T, v string) {
+	t.Helper()
+	orig := provisioningImage
+	provisioningImage = v
+	t.Cleanup(func() { provisioningImage = orig })
+}
+
+// readLockRecipeRevision reads harness-lock.json at path and returns the
+// named harness's persisted recipe_revision — a plain JSON read rather than
+// going through internal/pool's own unexported lock loader, since cmd tests
+// have no access to it (and don't need the rest of pool.Lock's validation
+// machinery just to read one field back).
+func readLockRecipeRevision(t *testing.T, path, harnessName string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var doc struct {
+		Harnesses map[string]struct {
+			RecipeRevision string `json:"recipe_revision"`
+		} `json:"harnesses"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	h, ok := doc.Harnesses[harnessName]
+	if !ok {
+		t.Fatalf("%s: no lock entry for %q", path, harnessName)
+	}
+	return h.RecipeRevision
 }
 
 func swapRunInstallArgv(t *testing.T, fn func([]string) error) {
@@ -1822,6 +1862,19 @@ func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
 // provisioningImage constant is what actually gets wired in (via
 // backend.Select's own requireOCIImage guard: an empty image would error,
 // so a nil error here already proves a non-empty image reached Select).
+// errKindAbsent/errKindCrossArch are TestDefaultResolveBackendSelectionMatrix's
+// labels for defaultResolveBackend's two distinct "no backend at all" error
+// shapes (fix-round RULING, item 4): guix outright absent (or present but
+// irrelevant because no candidate backend exists at all) vs. guix PRESENT
+// but unable to cross-build for the requested target. Attributing the wrong
+// one would blame guix's cross-arch limitation on it being "missing", or
+// vice versa.
+const (
+	errKindNone      = "" // success — a backend was selected
+	errKindAbsent    = "absent"
+	errKindCrossArch = "crossarch"
+)
+
 func TestDefaultResolveBackendSelectionMatrix(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1829,7 +1882,8 @@ func TestDefaultResolveBackendSelectionMatrix(t *testing.T) {
 		oci      bool
 		hostArch string
 		target   pool.PlatformKey
-		want     string // backend.Backend.Name(), or "" for "no backend at all"
+		want     string // backend.Backend.Name(), or "" (errKindNone) when errKind is set
+		errKind  string // errKindAbsent/errKindCrossArch when want == ""
 	}{
 		{
 			name: "guix available, host-arch target -> guix",
@@ -1852,14 +1906,14 @@ func TestDefaultResolveBackendSelectionMatrix(t *testing.T) {
 			want: "oci",
 		},
 		{
-			name: "guix absent, oci absent -> no backend at all",
+			name: "guix absent, oci absent -> no backend at all (absent-guix wording)",
 			guix: false, oci: false, hostArch: "amd64", target: pool.PlatformLinuxAMD64Glibc,
-			want: "",
+			errKind: errKindAbsent,
 		},
 		{
-			name: "guix available but wrong arch, oci absent -> no backend at all (guix can't serve this target)",
+			name: "guix available but wrong arch, oci absent -> no backend at all (cross-arch wording)",
 			guix: true, oci: false, hostArch: "amd64", target: pool.PlatformLinuxARM64Glibc,
-			want: "",
+			errKind: errKindCrossArch,
 		},
 		{
 			name: "musl target routes the same as its glibc arch sibling (deferral happens later, at realize)",
@@ -1875,14 +1929,31 @@ func TestDefaultResolveBackendSelectionMatrix(t *testing.T) {
 			swapHostArch(t, tc.hostArch)
 
 			b, err := defaultResolveBackend(tc.target)
-			if tc.want == "" {
+			switch tc.errKind {
+			case errKindAbsent:
 				if err == nil {
 					t.Fatalf("expected an error, got backend %q", b.Name())
 				}
-				for _, want := range []string{"guix", "docker", "podman"} {
+				for _, want := range []string{"install guix, or docker, or podman"} {
 					if !strings.Contains(err.Error(), want) {
-						t.Errorf("no-backend error = %q, want it to mention %q", err.Error(), want)
+						t.Errorf("no-backend error = %q, want it to contain %q", err.Error(), want)
 					}
+				}
+				if strings.Contains(err.Error(), "cross-build") {
+					t.Errorf("guix-absent error unexpectedly used the cross-arch wording: %q", err.Error())
+				}
+				return
+			case errKindCrossArch:
+				if err == nil {
+					t.Fatalf("expected an error, got backend %q", b.Name())
+				}
+				for _, want := range []string{"cannot cross-build", string(tc.target), tc.hostArch, "install docker or podman"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("cross-arch error = %q, want it to contain %q", err.Error(), want)
+					}
+				}
+				if strings.Contains(err.Error(), "install guix") {
+					t.Errorf("cross-arch error wrongly attributes the failure to guix being absent (guix IS present): %q", err.Error())
 				}
 				return
 			}
@@ -2018,6 +2089,141 @@ func TestHarnessSyncCrossArchThreadsTargetPlatformIntoRealize(t *testing.T) {
 	}
 }
 
+// crossArchTargetKey returns a pool.PlatformKey guaranteed to differ from
+// this test host's own HostPlatformKey() — the opposite glibc arch — so a
+// test can request a genuinely cross-platform `sync --platform` regardless
+// of which architecture actually runs the test binary.
+func crossArchTargetKey(t *testing.T) pool.PlatformKey {
+	t.Helper()
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatalf("HostPlatformKey: %v", err)
+	}
+	if hostKey == pool.PlatformLinuxARM64Glibc {
+		return pool.PlatformLinuxAMD64Glibc
+	}
+	return pool.PlatformLinuxARM64Glibc
+}
+
+// TestHarnessSyncSkipsLegacyInstallForCrossPlatformTarget pins the fix-round
+// RULING (item 5): a cross-platform `sync --platform` (one that names
+// something other than this host's own platform) must perform ZERO
+// runInstallArgv calls — the realized generation is a foreign-platform
+// artifact, and mutating the host's own legacy bin/ with it is out of scope
+// — while an ordinary host-platform sync keeps installing exactly as before
+// (regression guard, same subtest so both behaviors are pinned side by
+// side).
+func TestHarnessSyncSkipsLegacyInstallForCrossPlatformTarget(t *testing.T) {
+	swapHasGuix(t, true) // claude's legacy install recipe starts with "guix"
+	installCalls := 0
+	swapRunInstallArgv(t, func([]string) error { installCalls++; return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	installCalls = 0 // reset: only interested in sync's own install calls below
+
+	t.Run("cross-platform sync installs nothing", func(t *testing.T) {
+		crossKey := crossArchTargetKey(t)
+		out, err := runHarnessCmdWithDeps(t, deps, "sync", "claude", "--platform", string(crossKey))
+		if err != nil {
+			t.Fatalf("sync --platform %s: %v\noutput:\n%s", crossKey, err, out)
+		}
+		if installCalls != 0 {
+			t.Errorf("runInstallArgv called %d times for a cross-platform sync, want 0", installCalls)
+		}
+		if !strings.Contains(out, "skipping host-side legacy install") {
+			t.Errorf("expected sync's output to explain the skip, got:\n%s", out)
+		}
+	})
+
+	t.Run("host-platform sync still installs", func(t *testing.T) {
+		installCalls = 0
+		hostKey, err := pool.HostPlatformKey()
+		if err != nil {
+			t.Fatalf("HostPlatformKey: %v", err)
+		}
+		out, err := runHarnessCmdWithDeps(t, deps, "sync", "claude", "--platform", string(hostKey))
+		if err != nil {
+			t.Fatalf("sync --platform %s: %v\noutput:\n%s", hostKey, err, out)
+		}
+		if installCalls != 1 {
+			t.Errorf("runInstallArgv called %d times for a host-platform sync, want 1", installCalls)
+		}
+	})
+}
+
+// TestHarnessInstallFoldsProvisioningImageIntoRecipeRevision pins the
+// fix-round RULING (item 2): the provisioningImage var must actually reach
+// the persisted harness-lock.json recipe_revision, not just the in-memory
+// UpdateOptions value some other test already checks. Two installs of the
+// SAME harness, differing only in provisioningImage between them, must
+// persist two DIFFERENT recipe_revision values — install's own
+// Advance=false short-circuit does not suppress this: a recipe_revision
+// mismatch against the persisted lock defeats the short-circuit's
+// lockMatchesRecipe precondition (decision.go), so the second install still
+// re-resolves under the new image. This is deliberately an end-to-end
+// (cmd -> orchestrator -> lock file) test, not just a unit test of
+// npmRecipeRevision's hashing (that lives in internal/pool/orchestrator_test.go)
+// — it is what actually catches a wiring regression like the second
+// install's `ProvisioningImage: provisioningImage` field going missing from
+// the UpdateOptions literal.
+func TestHarnessInstallFoldsProvisioningImageIntoRecipeRevision(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	d := harness.Registry["claude"]
+
+	swapProvisioningImage(t, "forge.example/pool-provisioning@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	revA := readLockRecipeRevision(t, paths.Lock, "claude")
+	if revA == "" {
+		t.Fatal("first install persisted an empty recipe_revision")
+	}
+
+	swapProvisioningImage(t, "forge.example/pool-provisioning@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", d, "", false, ""); err != nil {
+		t.Fatalf("second install (after provisioningImage changed): %v", err)
+	}
+	revB := readLockRecipeRevision(t, paths.Lock, "claude")
+
+	if revA == revB {
+		t.Fatalf("recipe_revision unchanged (%q) after provisioningImage changed between installs — "+
+			"the image reference is not reaching harness-lock.json's recipe_revision", revA)
+	}
+}
+
+// TestProvisioningImageIsDigestPinned is the fat-finger guard for the
+// architect's placeholder substitution (fix-round RULING, item 3): it stays
+// skipped while defaultProvisioningImage still carries the PENDING
+// placeholder (nothing to check yet), and once that's substituted for a real
+// digest, asserts the reference actually has the name@sha256:<64 hex> shape
+// §11.2 requires (a digest, not a floating tag).
+func TestProvisioningImageIsDigestPinned(t *testing.T) {
+	if defaultProvisioningImage == "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:PENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDING" {
+		t.Skip("defaultProvisioningImage still carries the PENDING placeholder")
+	}
+	if !regexp.MustCompile(`^[^@]+@sha256:[0-9a-f]{64}$`).MatchString(defaultProvisioningImage) {
+		t.Errorf("defaultProvisioningImage = %q, want name@sha256:<64 lowercase hex digest>", defaultProvisioningImage)
+	}
+}
+
 // fakeArchiveSource is a minimal pool.Source test double simulating an
 // archive-sourced harness (agy) — the cmd-package analogue of
 // fakeHarnessSource, but without npm's Runtime/NPMLock plumbing (an
@@ -2113,6 +2319,143 @@ func (f *fakeArchiveSource) Realize(_ context.Context, _ backend.Backend, harnes
 		Files:          files,
 		ManifestDigest: digest,
 	}, nil
+}
+
+// TestHarnessInstallClaudeOnDockerOnlyHostDowngradesGuixAbsentToWarning pins
+// the fix-round RULING (item 1): the legacy-install guix-absent downgrade
+// must apply to an npm-sourced harness (claude), not just PoolArchive ones —
+// this is the reviewer's own probe scenario (a docker-only host: no guix on
+// PATH, so the host-side legacy npm installer — which literally shells `guix
+// shell node -- npm install ...`, internal/harness's npmInstall recipe — is
+// impossible PERMANENTLY and BY DESIGN there) made into a real test.
+// deps.resolveBackend simulates a working oci backend (the thing that
+// actually makes this host's install succeed, per this work package's
+// headline capability) — the backend-selection POLICY itself
+// (guix-vs-oci-vs-error) is exercised separately by
+// TestDefaultResolveBackendSelectionMatrix; this test is about what happens
+// AFTER resolve/realize/activate succeed and only the legacy step is
+// guix-absent-blocked. Exit 0, a clearly labeled warning, and full pool
+// state (lock, generation, active pointer) — exactly the archive-source
+// downgrade's existing guarantee, now extended to npm.
+func TestHarnessInstallClaudeOnDockerOnlyHostDowngradesGuixAbsentToWarning(t *testing.T) {
+	swapHasGuix(t, false)
+
+	paths := testHarnessPaths(t)
+	binDir := t.TempDir()
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	backendCalled := false
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return src, nil },
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
+			backendCalled = true
+			return fakeHarnessBackend{}, nil // simulates a working oci backend
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+
+	err := runHarnessInstall(context.Background(), cmd, deps, "claude", harness.Registry["claude"], ">=2 <3", false, "")
+	if err != nil {
+		t.Fatalf("expected nil error (guix-absent legacy-install failure downgraded to a warning on a docker-only host): %v\noutput:\n%s", err, buf.String())
+	}
+	if !backendCalled {
+		t.Fatal("resolveBackend should have been called for npm-sourced claude (simulating a docker-only host's oci backend)")
+	}
+	out := buf.String()
+	if !strings.Contains(out, "pool generation built and activated") {
+		t.Errorf("expected the downgraded warning text to name what succeeded, got:\n%s", out)
+	}
+	if !strings.Contains(out, "host-side legacy install was skipped") {
+		t.Errorf("expected the downgraded warning to say the host-side legacy binary was not installed, got:\n%s", out)
+	}
+	if !strings.Contains(out, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "claude"}`) {
+		t.Errorf("expected the devcontainer-feature guidance to be retained, got:\n%s", out)
+	}
+
+	// Pool state must be fully populated: refresh/resolve/fetch/realize/
+	// activate all completed for real, with no guix at all.
+	lockData, err := os.ReadFile(paths.Lock)
+	if err != nil {
+		t.Fatalf("harness-lock.json missing: %v", err)
+	}
+	lockDoc, err := pool.UnmarshalLock(lockData)
+	if err != nil {
+		t.Fatalf("harness-lock.json failed to validate: %v", err)
+	}
+	lh, ok := lockDoc.Harnesses["claude"]
+	if !ok || lh.Source != "npm" || lh.Version != "2.1.220" {
+		t.Fatalf("lock entry = %+v, ok=%v, want source=npm version=2.1.220", lh, ok)
+	}
+
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatalf("HostPlatformKey: %v", err)
+	}
+	genID, ok := pool.ActiveGeneration(paths, "claude", hostKey)
+	if !ok {
+		t.Fatal("expected an active generation pointer for claude")
+	}
+	if _, err := os.Stat(filepath.Join(paths.Runtime, "generations", genID, "receipt.json")); err != nil {
+		t.Errorf("expected a receipt.json in the published generation: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(paths.Runtime, "bin", "claude")); err != nil {
+		t.Errorf("expected a generated dispatcher at runtime/bin/claude: %v", err)
+	}
+}
+
+// TestHarnessInstallClaudeGuixHostFailingLegacyInstallerStillFails pins the
+// SCOPE half of the fix-round RULING (item 1): on a guix host, a
+// legacy-install failure that is NOT the guix-absent cause (e.g. a broken
+// npm registry, a failing postinstall) must NOT be downgraded — it is a real
+// installer problem, and the pool's own realize succeeding doesn't excuse
+// it. This is what distinguishes npm's narrow downgrade rule from archive's
+// wide one.
+func TestHarnessInstallClaudeGuixHostFailingLegacyInstallerStillFails(t *testing.T) {
+	swapHasGuix(t, true) // guix IS present, so the guix-absent path never fires
+	swapRunInstallArgv(t, func([]string) error {
+		return errors.New("npm ERR! registry unreachable")
+	})
+
+	paths := testHarnessPaths(t)
+	binDir := t.TempDir()
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return src, nil },
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
+			return fakeHarnessBackend{}, nil // simulates the guix backend
+		},
+	}
+
+	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], ">=2 <3", false, "")
+	if err == nil {
+		t.Fatal("expected an error: a non-guix-absent legacy-install failure on a guix host must stay fatal for an npm-sourced harness")
+	}
+	if !strings.Contains(err.Error(), "registry unreachable") {
+		t.Errorf("error = %q, want it to name the underlying legacy-install failure", err.Error())
+	}
+
+	// The realized generation must still exist — realize itself succeeded;
+	// only the legacy step (correctly) failed the command.
+	hostKey, hkErr := pool.HostPlatformKey()
+	if hkErr != nil {
+		t.Fatalf("HostPlatformKey: %v", hkErr)
+	}
+	if _, ok := pool.ActiveGeneration(paths, "claude", hostKey); !ok {
+		t.Error("expected an active generation for claude despite the legacy-install failure (realize itself succeeded)")
+	}
 }
 
 // TestHarnessInstallAgyReachesRealizeWithoutBackendOnNoGuixHost is this
@@ -2383,27 +2726,12 @@ func TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning
 	}
 }
 
-// TestHarnessInstallClaudeStaysFailedOnGuixAbsentLegacyInstall pins the
-// !d.PoolArchive guard: an npm-sourced harness (claude) whose legacy
-// install fails with the guix-absent error must still fail the command —
-// the archive-source downgrade (maybeInstallLocked) must never apply to a
-// non-archive-sourced harness, regardless of realize/activate outcome.
-func TestHarnessInstallClaudeStaysFailedOnGuixAbsentLegacyInstall(t *testing.T) {
-	swapHasGuix(t, false)
-
-	paths := testHarnessPaths(t)
-	src := &fakeHarnessSource{
-		candidates: map[string][]pool.Candidate{
-			"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
-		},
-	}
-	deps := testHarnessDeps(paths, t.TempDir(), src)
-
-	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], "", false, "")
-	if err == nil {
-		t.Fatal("expected a non-nil error: claude is npm-sourced, so the archive-source downgrade must never apply to it")
-	}
-	if !errors.Is(err, errGuixAbsent) {
-		t.Errorf("error = %v, want it to (wrap) the guix-absent legacy-install failure", err)
-	}
-}
+// NOTE: TestHarnessInstallClaudeStaysFailedOnGuixAbsentLegacyInstall used to
+// live here, pinning the pre-fix-round rule that the archive-source
+// downgrade never applies to npm-sourced harnesses at all. Fix-round RULING
+// item 1 deliberately widens the downgrade to cover npm too (scoped to the
+// guix-absent cause only — see warnInsteadOfFailForRealizedGeneration's doc
+// comment) — a docker-only host installing claude is now the ordinary,
+// exit-0 case (TestHarnessInstallClaudeOnDockerOnlyHostDowngradesGuixAbsentToWarning),
+// and only a non-guix-absent legacy-install failure on a guix host still
+// fails the command (TestHarnessInstallClaudeGuixHostFailingLegacyInstallerStillFails).
