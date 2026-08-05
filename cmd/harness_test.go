@@ -2496,17 +2496,13 @@ func TestHarnessUpdateFoldsProvisioningImageIntoRecipeRevision(t *testing.T) {
 	}
 }
 
-// TestProvisioningImageIsDigestPinned stays skipped while
-// defaultProvisioningImage still carries the PENDING placeholder (nothing to
-// check yet); once that's substituted for a real digest, it asserts the
-// reference has the name@sha256:<64 hex> shape §11.2 requires (a digest, not
-// a floating tag).
+// TestProvisioningImageIsDigestPinned asserts the reference has the
+// name@sha256:<64 hex> shape §11.2 requires (a digest, not a floating tag)
+// and is registry-qualified (podman has no unqualified-search default, so a
+// bare "node@sha256:..." would fail there).
 func TestProvisioningImageIsDigestPinned(t *testing.T) {
-	if defaultProvisioningImage == "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:PENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDING" {
-		t.Skip("defaultProvisioningImage still carries the PENDING placeholder")
-	}
-	if !regexp.MustCompile(`^[^@]+@sha256:[0-9a-f]{64}$`).MatchString(defaultProvisioningImage) {
-		t.Errorf("defaultProvisioningImage = %q, want name@sha256:<64 lowercase hex digest>", defaultProvisioningImage)
+	if !regexp.MustCompile(`^[a-z0-9.-]+\.[a-z]{2,}/[^@]+@sha256:[0-9a-f]{64}$`).MatchString(defaultProvisioningImage) {
+		t.Errorf("defaultProvisioningImage = %q, want <registry>/<name>@sha256:<64 lowercase hex digest>", defaultProvisioningImage)
 	}
 }
 

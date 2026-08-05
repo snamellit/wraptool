@@ -12,11 +12,11 @@ non-Guix Linux — through Docker or Podman.
 
 ### Added
 
-- A pinned provisioning image (`pool-provisioning`, built reproducibly by
-  CI with `guix pack` from `images/provisioning-manifest.scm`) drives npm
-  resolve/realize on non-Guix hosts. The image digest is folded into every
-  npm `recipe_revision`, so upgrading the image deliberately re-resolves
-  locks.
+- A pinned provisioning image (upstream `node:24-bookworm`, pinned by its
+  multi-architecture manifest-list digest — amd64 and arm64, so Apple
+  silicon works natively) drives npm resolve/realize on non-Guix hosts.
+  The image digest is folded into every npm `recipe_revision`, so
+  upgrading the image deliberately re-resolves locks.
 - Backend auto-selection: Guix when available and the target matches the
   host architecture, otherwise Docker/Podman. Cross-architecture
   `harness sync --platform` routes through the OCI backend even on Guix

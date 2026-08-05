@@ -25,19 +25,25 @@ import (
 )
 
 // defaultProvisioningImage is the pinned pool-provisioning OCI image (§11.2):
-// a small image containing only resolver/build prerequisites (node+npm, tar,
-// coreutils), built by .forgejo/workflows/publish-provisioning-image.yml
-// from images/provisioning-manifest.scm and pinned by DIGEST, not just tag —
-// §11.2 makes "the provisioning image reference and digest" a lock input
-// (recipe_revision, §8/orchestrator.go's npmRecipeRevision), so an image
-// upgrade must be an explicit, auditable recipe-revision bump, never a
-// silent content change under a floating tag. The digest placeholder below
-// is substituted by the architect from the CI job log before merge; nothing
-// in this package (or its tests) depends on the literal digest value — see
-// TestProvisioningImageIsDigestPinned, which stays skipped until the
-// placeholder is gone. This is the true, immutable constant; provisioningImage
+// it must carry node+npm (resolve, npm ci), tar+xz (node-runtime unpack),
+// coreutils (the `env HOME=` argv prefix), bash (npm lifecycle scripts), and
+// CA certs (registry HTTPS) — the same contract as the guix backend's
+// package set. It is the upstream node:24-bookworm image pinned by its
+// MANIFEST-LIST digest, not a tag: the list carries both linux/amd64 and
+// linux/arm64, so Apple-silicon Docker Desktop and cross-arch `sync
+// --platform` both resolve a native image. §11.2 makes "the provisioning
+// image reference and digest" a lock input (recipe_revision, §8/
+// orchestrator.go's npmRecipeRevision), so an image upgrade must be an
+// explicit, auditable recipe-revision change, never a silent content change
+// under a floating tag. The fully-qualified docker.io reference keeps podman
+// (no unqualified-search default) working. An earlier revision built this
+// image with `guix pack` from the repo's own pinned channels for
+// backend-parity; cross-building its aarch64 half needs qemu-binfmt on the
+// CI runner, which does not exist — resurrect that approach only with an
+// arm64-capable runner. TestProvisioningImageIsDigestPinned guards the
+// reference's shape. This is the immutable constant; provisioningImage
 // below is the var seam production code actually reads.
-const defaultProvisioningImage = "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:6d1d4434fadb1bf1f16166f4dfc6227a6eb6509ac3b005cc56e3824646e4bd03"
+const defaultProvisioningImage = "docker.io/library/node@sha256:934240a162082fd8b8a2f90cd5114446443f1eba1c5378f6687167ca405e6584"
 
 // provisioningImage is the package-level var every production call site
 // reads (backend selection, recipe_revision folding) — a var, not a plain
