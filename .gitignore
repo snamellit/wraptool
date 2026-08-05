@@ -1,5 +1,9 @@
 # Compiled binary
 /wraptool
+# Cross-compiled release/test binaries (mirrors CI's dist/ layout). Untracked
+# output here otherwise dirties the tree, which -buildvcs then stamps into
+# every subsequent binary as vcs.modified=true.
+/dist/
 
 # Wraptool runtime data
 /requests.jsonl

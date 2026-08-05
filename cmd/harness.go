@@ -1017,25 +1017,31 @@ func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d har
 	if installErr == nil {
 		return nil
 	}
-	if warned := warnInsteadOfFailForRealizedGeneration(cmd, deps, name, d, result, installErr); warned {
+	if warned := warnInsteadOfFailForRealizedGeneration(cmd, deps, name, d, result.RealizeErr, result.Harness.Version, installErr); warned {
 		return nil
 	}
 	return installErr
 }
 
-// warnInsteadOfFailForRealizedGeneration implements maybeInstallLocked's
-// realized-generation legacy-install downgrade (see that function's doc
-// comment for the full rationale, the archive-vs-npm scope split, and the
-// exact preconditions) — factored out so its several preconditions read as
-// one guarded sequence instead of nesting inside maybeInstallLocked itself.
-// Returns true (having already printed the warning, which names installErr)
-// iff every condition held; false means the caller must still treat
-// installErr as a real failure.
-func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult, installErr error) bool {
+// warnInsteadOfFailForRealizedGeneration implements the realized-generation
+// legacy-install downgrade (see maybeInstallLocked's doc comment for the full
+// rationale, the archive-vs-npm scope split, and the exact preconditions) —
+// factored out so its several preconditions read as one guarded sequence
+// instead of nesting inside its callers. Returns true (having already printed
+// the warning, which names installErr) iff every condition held; false means
+// the caller must still treat installErr as a real failure.
+//
+// Shared by all three commands that run the host-side legacy installer:
+// install/update via maybeInstallLocked, and sync's own-platform path
+// directly. It takes realizeErr and version rather than a *pool.UpdateResult
+// because sync has no UpdateResult — it holds a *pool.LockHarness, and its
+// realize already succeeded (SyncHarnessLocked returning nil error IS that
+// guarantee), so it passes a nil realizeErr.
+func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, realizeErr error, version string, installErr error) bool {
 	if !d.PoolLockable() {
 		return false
 	}
-	if result.RealizeErr != nil {
+	if realizeErr != nil {
 		return false
 	}
 	paths := deps.poolPaths()
@@ -1084,7 +1090,7 @@ func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps
 	// succeeded.
 	fmt.Fprintf(cmd.ErrOrStderr(),
 		"warning: %s: pool generation built and activated (locked %s); host-side legacy install was skipped (%v)\n",
-		name, result.Harness.Version, installErr)
+		name, version, installErr)
 	return true
 }
 
@@ -1125,7 +1131,7 @@ func legacyInstall(cmd *cobra.Command, deps harnessDeps, name string, d harness.
 		argv[i] = strings.ReplaceAll(a, "{prefix}", poolDir)
 	}
 	if argv[0] == "guix" && !hasGuix() {
-		return offGuixInstallError(name)
+		return offGuixInstallError(cmd.CommandPath(), name)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
 	if err := runInstallArgv(argv); err != nil {
@@ -1176,7 +1182,7 @@ func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name strin
 		argv[i] = strings.ReplaceAll(a, "{prefix}", poolDir)
 	}
 	if argv[0] == "guix" && !hasGuix() {
-		return offGuixInstallError(name)
+		return offGuixInstallError(cmd.CommandPath(), name)
 	}
 	// An unpinned recipe (d.PoolPackage == "") never actually installs
 	// exactly `version` — printing "installing agy@1.1.10" would claim a
@@ -1229,13 +1235,23 @@ var errGuixAbsent = errors.New("`guix` is not on PATH")
 // path (legacy and pool-lockable): the pool installers run inside a guix
 // container (FHS emulation dodges npm's detect-libc misread on bare guix).
 // Off guix — a devcontainer host — the pool isn't the delivery path at all.
-func offGuixInstallError(name string) error {
-	return fmt.Errorf("`wraptool harness install` provisions the guix-container pool, but %w.\n"+
+// invoked is the full path of the command the user actually ran (cobra's
+// CommandPath, e.g. "wraptool harness sync"): the host-side legacy install
+// step is shared by install/update/sync, so hardcoding "install" here sent a
+// reader who ran `sync` looking at the wrong command's docs. CommandPath is
+// empty for a cobra.Command with no Use (a bare test double), so fall back
+// rather than emit an empty pair of backticks — the message must stay
+// readable even when the caller isn't a fully-built command tree.
+func offGuixInstallError(invoked, name string) error {
+	if invoked == "" {
+		invoked = "wraptool harness install"
+	}
+	return fmt.Errorf("`%s` provisions the guix-container pool, but %w.\n"+
 		"On a devcontainer host, provision %q via the "+
 		"wraptool feature instead: add\n  "+
 		`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": %q}`+
 		"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). "+
-		"`wraptool up` shares the pool home so auth/skills persist across projects", errGuixAbsent, name, name)
+		"`wraptool up` shares the pool home so auth/skills persist across projects", invoked, errGuixAbsent, name, name)
 }
 
 // --- refresh ---
@@ -1464,7 +1480,22 @@ the host's own legacy bin/ is out of scope for it.`,
 					return nil
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s; installing ...\n", name, lh.Version, key)
-				return legacyInstallVersionLocked(cmd, deps, name, d, lh.Version)
+				installErr := legacyInstallVersionLocked(cmd, deps, name, d, lh.Version)
+				if installErr == nil {
+					return nil
+				}
+				// Same realized-generation downgrade install/update get via
+				// maybeInstallLocked: reaching here means SyncHarnessLocked
+				// already realized AND activated the generation, so on a
+				// docker/podman-only host the guix-absent legacy step is the
+				// expected shape of success, not a failure. Without this,
+				// sync was the one command that hard-failed after doing all
+				// of its real work — precisely on the hosts the oci
+				// provisioner exists to support.
+				if warnInsteadOfFailForRealizedGeneration(cmd, deps, name, d, nil, lh.Version, installErr) {
+					return nil
+				}
+				return installErr
 			})
 		},
 	}
