@@ -104,22 +104,36 @@ const defaultNodeVersion = "22.11.0"
 // DecisionResolveVersion, and the ensuing Resolve writes a lockfile-carrying
 // entry under the new recipe_revision — a Phase-1 pool self-heals on its
 // very next install/update.
-const recipeFormatVersion = 2
+//
+// 2 -> 3 (oci-backend-wiring, §8/§11.2): the pinned pool-provisioning OCI
+// image reference is now part of the hashed payload
+// (UpdateOptions.ProvisioningImage, folded in by npmRecipeRevision below) —
+// realization can now run inside that image (the oci backend) as well as
+// inside guix, and §8 requires recipe_revision to cover "the backend
+// provisioning-image digest". A wave-2-era lock has no provisioning image
+// folded into its recipe_revision at all, so it can't simply be reinterpreted
+// under the new formula; the format bump forces the same self-heal path as
+// the 1->2 bump above — a stale recipe_revision no longer matches, Decide
+// returns DecisionResolveVersion, and the ensuing Resolve+Fetch+Realize
+// re-locks under the new, image-aware recipe_revision.
+const recipeFormatVersion = 3
 
 // npmRecipeRevision computes recipe_revision (§8: "sha256 over the
 // descriptor's serialized install recipe + the backend provisioning-image
 // digest (§11.2) + a recipe-format version constant") for one npm package.
-// Phase 1 has no backend provisioning image to fold in — §16 Phase 1 keeps
-// the actual harness install on the legacy, non-backend npm path, only
-// resolve/lock/fetch move to the pool — so this is a deliberate
-// simplification: package identity + recipeFormatVersion only. It still
-// changes the moment either input does, which is the property recipe_revision
-// exists to guarantee.
-func npmRecipeRevision(pkg string) (string, error) {
+// provisioningImage is UpdateOptions.ProvisioningImage, folded in verbatim —
+// see that field's doc comment for why it is included regardless of which
+// backend (guix or oci) a given call actually realizes through. §16 Phase 1
+// kept the actual harness install on the legacy, non-backend npm path;
+// resolve/realize now do run inside a backend (this work package), so the
+// image identity is a genuine input to the realization-environment contract,
+// not a placeholder.
+func npmRecipeRevision(pkg, provisioningImage string) (string, error) {
 	data, err := json.Marshal(struct {
-		Package string `json:"package"`
-		Format  int    `json:"recipe_format_version"`
-	}{Package: pkg, Format: recipeFormatVersion})
+		Package           string `json:"package"`
+		ProvisioningImage string `json:"provisioning_image"`
+		Format            int    `json:"recipe_format_version"`
+	}{Package: pkg, ProvisioningImage: provisioningImage, Format: recipeFormatVersion})
 	if err != nil {
 		return "", fmt.Errorf("marshaling recipe for hashing: %w", err)
 	}
@@ -157,14 +171,16 @@ func archiveRecipeRevision(pkg string) (string, error) {
 }
 
 // recipeRevisionForSource computes recipe_revision (§8) for pkg under kind,
-// dispatching to npmRecipeRevision or archiveRecipeRevision. Exhaustive over
+// dispatching to npmRecipeRevision or archiveRecipeRevision. provisioningImage
+// is passed through to npmRecipeRevision only — archiveRecipeRevision ignores
+// it (archive resolve/realize invoke no backend, §6.2). Exhaustive over
 // SourceKind (golangci-lint's exhaustive check, .golangci.yml): a future
 // SourceKind added without wiring its own recipe formula fails loudly here
 // instead of silently reusing another source's revision.
-func recipeRevisionForSource(kind SourceKind, pkg string) (string, error) {
+func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage string) (string, error) {
 	switch kind {
 	case SourceNPM:
-		return npmRecipeRevision(pkg)
+		return npmRecipeRevision(pkg, provisioningImage)
 	case SourceArchive:
 		return archiveRecipeRevision(pkg)
 	default:
@@ -335,6 +351,19 @@ type UpdateOptions struct {
 	//     eligible, the existing rules apply (keep an existing
 	//     constraint-satisfying lock with a Note, or error if none exists).
 	Advance bool
+	// ProvisioningImage is the pinned pool-provisioning OCI image reference
+	// (§11.2, cmd/harness.go's provisioningImage constant), folded into
+	// npmRecipeRevision's hashed payload (§8: recipe_revision covers "the
+	// backend provisioning-image digest"). Only meaningful for SourceNPM —
+	// archiveRecipeRevision never consults it, since archive resolve/realize
+	// invoke no backend at all (§6.2). The RULING behind this field is that
+	// the image identity is folded regardless of which backend a given call
+	// actually executes through (guix or oci): the recipe describes ONE
+	// realization-environment contract, and §17's cross-backend receipt
+	// equality requires a guix host and a Mac to agree on the same lock. So
+	// cmd/harness.go always passes its provisioningImage constant here, even
+	// on a call that resolves to use the guix backend.
+	ProvisioningImage string
 }
 
 // UpdateResult is UpdateHarness's outcome.
@@ -631,7 +660,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	policy := m.EffectivePolicy(opts.Harness)
 
 	kind := opts.Source.effective()
-	recipeRevision, err := recipeRevisionForSource(kind, opts.Package)
+	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage)
 	if err != nil {
 		return nil, err
 	}

@@ -673,7 +673,7 @@ func seedObservationsForSource(t *testing.T, paths PoolPaths, kind SourceKind, p
 func TestArchiveRecipeRevisionDistinctFromNPMAndStable(t *testing.T) {
 	const pkg = "agy"
 
-	npmRev, err := npmRecipeRevision(pkg)
+	npmRev, err := npmRecipeRevision(pkg, "")
 	if err != nil {
 		t.Fatalf("npmRecipeRevision: %v", err)
 	}
@@ -694,13 +694,13 @@ func TestArchiveRecipeRevisionDistinctFromNPMAndStable(t *testing.T) {
 	}
 
 	// recipeRevisionForSource must dispatch to exactly the same functions.
-	if got, err := recipeRevisionForSource(SourceNPM, pkg); err != nil || got != npmRev {
+	if got, err := recipeRevisionForSource(SourceNPM, pkg, ""); err != nil || got != npmRev {
 		t.Errorf("recipeRevisionForSource(SourceNPM, %q) = %q, %v, want %q, nil", pkg, got, err, npmRev)
 	}
-	if got, err := recipeRevisionForSource(SourceArchive, pkg); err != nil || got != archRev1 {
+	if got, err := recipeRevisionForSource(SourceArchive, pkg, ""); err != nil || got != archRev1 {
 		t.Errorf("recipeRevisionForSource(SourceArchive, %q) = %q, %v, want %q, nil", pkg, got, err, archRev1)
 	}
-	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg); err == nil {
+	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg, ""); err == nil {
 		t.Error("recipeRevisionForSource with an unknown SourceKind should fail closed, got nil error")
 	}
 }
@@ -804,7 +804,7 @@ func TestUpdateHarnessIdempotentWhenLockAlreadyAgrees(t *testing.T) {
 	// Pre-seed a lock that already agrees with what selection would produce
 	// — including the recipe revision, which strict idempotence also
 	// requires to match (§8/§10).
-	recipeRevision, err := npmRecipeRevision(pkg)
+	recipeRevision, err := npmRecipeRevision(pkg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +857,7 @@ func TestUpdateHarnessInstallErrorsOnCorruptObservationsEvenWithAnAgreeingLock(t
 	writeManifest(t, paths, claudeManifest)
 	pkg := "@anthropic-ai/claude-code"
 
-	recipeRevision, err := npmRecipeRevision(pkg)
+	recipeRevision, err := npmRecipeRevision(pkg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1002,7 +1002,7 @@ func TestUpdateVsInstallAdvanceSemantics(t *testing.T) {
 			{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
 			{Version: "2.1.224", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)}, // also eligible, newer
 		})
-		recipeRevision, err := npmRecipeRevision(pkg)
+		recipeRevision, err := npmRecipeRevision(pkg, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1072,7 +1072,7 @@ func TestUpdateVsInstallAfterConstraintWidened(t *testing.T) {
 			{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
 			{Version: "3.0.0", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)}, // eligible under the widened constraint
 		})
-		recipeRevision, err := npmRecipeRevision(pkg)
+		recipeRevision, err := npmRecipeRevision(pkg, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1439,7 +1439,7 @@ func TestUpdateHarnessSelfHealsPhase1RecipeMismatch(t *testing.T) {
 	})
 
 	phase1Recipe := recipeRevisionForFormat(t, pkg, 1)
-	wantRecipe, err := npmRecipeRevision(pkg)
+	wantRecipe, err := npmRecipeRevision(pkg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1492,6 +1492,134 @@ func TestUpdateHarnessSelfHealsPhase1RecipeMismatch(t *testing.T) {
 	}
 	if lh.RecipeRevision != wantRecipe {
 		t.Errorf("persisted RecipeRevision = %q, want the new format's %q", lh.RecipeRevision, wantRecipe)
+	}
+}
+
+// TestUpdateHarnessSelfHealsPhase2RecipeMismatch pins this work package's own
+// recipeFormatVersion bump (2 -> 3, §8/§11.2): a wave-2-era lock's
+// recipe_revision was computed over {package, recipe_format_version} only —
+// recipeRevisionForFormat(t, pkg, 2) reproduces that exact old payload shape,
+// since no provisioning_image field existed before this bump. Without the
+// format bump, that stale recipe_revision would keep matching forever
+// regardless of which provisioning image a fresh resolve now folds in
+// (lockMatchesRecipe would never see a difference), so a generation realized
+// before the OCI backend's image identity became a locked input could never
+// be invalidated by an image upgrade. The v2->v3 bump forces the same
+// self-heal path as 1->2 above: the freshly computed (image-aware)
+// recipe_revision differs from the persisted v2 one, Decide returns
+// DecisionResolveVersion, and the ensuing Resolve+Fetch+Realize re-locks
+// under the new, image-aware recipe_revision.
+func TestUpdateHarnessSelfHealsPhase2RecipeMismatch(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	seedObservations(t, paths, pkg, []Candidate{
+		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+
+	const testProvisioningImage = "forge.example/pool-provisioning@sha256:aaaa"
+	phase2Recipe := recipeRevisionForFormat(t, pkg, 2)
+	wantRecipe, err := npmRecipeRevision(pkg, testProvisioningImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wantRecipe == phase2Recipe {
+		t.Fatal("test setup bug: the current recipeFormatVersion's hash must differ from format 2's — did the bump get reverted?")
+	}
+
+	writeLock(t, paths, &Lock{
+		SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+		Harnesses: map[string]LockHarness{
+			"claude": {
+				Source: npmSourceName, Package: pkg, Version: "2.1.220",
+				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+				RecipeRevision: phase2Recipe,
+				// Wave-2 shape: recipe_revision predates the provisioning
+				// image becoming a hashed input, but is otherwise a
+				// perfectly ordinary current-schema lock entry (unlike the
+				// Phase-1 test above, this one DOES carry Lockfile) — the
+				// mismatch under test here is purely the recipe_revision
+				// format bump, not any other schema gap.
+				NPMLock: &NPMLock{
+					LockfileVersion: 3,
+					Lockfile:        json.RawMessage(sampleLockNPMLockfile),
+					Packages: map[string]NPMLockPackage{
+						"node_modules/bar": {Version: "2.0.0", Resolved: "https://registry.npmjs.org/bar.tgz", Integrity: "sha512-abc", SHA256: "deadbeef"},
+					},
+				},
+			},
+		},
+	})
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, // install (Advance: false)
+		ProvisioningImage: testProvisioningImage,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected Changed=true: the format bump must invalidate the wave-2 recipe and force a re-resolve")
+	}
+	if src.resolveCalls != 1 {
+		t.Errorf("resolveCalls = %d, want 1 — the decision path must call Resolve, not just Realize", src.resolveCalls)
+	}
+	if src.realizeCalls != 1 {
+		t.Errorf("realizeCalls = %d, want 1 — the fresh resolve must still realize", src.realizeCalls)
+	}
+
+	lockDoc, err := loadLockOrEmpty(paths.Lock)
+	if err != nil {
+		t.Fatalf("loading persisted lock: %v", err)
+	}
+	lh, ok := lockDoc.Harnesses["claude"]
+	if !ok {
+		t.Fatal("no persisted lock entry for claude")
+	}
+	if lh.RecipeRevision != wantRecipe {
+		t.Errorf("persisted RecipeRevision = %q, want the new format's %q", lh.RecipeRevision, wantRecipe)
+	}
+}
+
+// TestNPMRecipeRevisionFoldsProvisioningImage pins §8/§11.2's requirement
+// that recipe_revision cover the provisioning image identity: two calls
+// differing only in provisioningImage must produce different revisions (a
+// mutation of the "constant" changes the revision — exactly the property
+// that makes an image upgrade force a fresh generation instead of silently
+// reusing one built under different assumptions), the empty string is a
+// valid (if degenerate) input rather than an error, and the function is
+// otherwise pure/stable.
+func TestNPMRecipeRevisionFoldsProvisioningImage(t *testing.T) {
+	pkg := "@anthropic-ai/claude-code"
+
+	revA1, err := npmRecipeRevision(pkg, "forge.example/pool-provisioning@sha256:aaaa")
+	if err != nil {
+		t.Fatalf("npmRecipeRevision: %v", err)
+	}
+	revA2, err := npmRecipeRevision(pkg, "forge.example/pool-provisioning@sha256:aaaa")
+	if err != nil {
+		t.Fatalf("npmRecipeRevision (2nd call): %v", err)
+	}
+	if revA1 != revA2 {
+		t.Errorf("npmRecipeRevision(%q, image) is not stable: %s vs %s", pkg, revA1, revA2)
+	}
+
+	revB, err := npmRecipeRevision(pkg, "forge.example/pool-provisioning@sha256:bbbb")
+	if err != nil {
+		t.Fatalf("npmRecipeRevision (different image): %v", err)
+	}
+	if revA1 == revB {
+		t.Errorf("npmRecipeRevision(%q, ...) did not change when the provisioning image changed: %s", pkg, revA1)
+	}
+
+	revEmpty, err := npmRecipeRevision(pkg, "")
+	if err != nil {
+		t.Fatalf("npmRecipeRevision (empty image): %v", err)
+	}
+	if revEmpty == revA1 {
+		t.Errorf("npmRecipeRevision(%q, \"\") unexpectedly matched a non-empty image's revision", pkg)
 	}
 }
 
@@ -2002,7 +2130,7 @@ func TestUpdateHarnessUpToDateRepairsMissingActivation(t *testing.T) {
 
 	// Wave-1-shaped pool: realized generation + lock digest, no pointer.
 	genID, digest := seedExistingGeneration(t, paths, "claude", "2.1.220", key, "#!/bin/sh\nexec true\n")
-	rr, err := npmRecipeRevision(pkg)
+	rr, err := npmRecipeRevision(pkg, "")
 	if err != nil {
 		t.Fatal(err)
 	}
