@@ -18,6 +18,11 @@ HARNESS="${HARNESS:-claude}"
 CONNECT="${CONNECT:-true}"
 PORT="${PORT:-8717}"
 URL="${URL:-}"
+# HARNESS is deliberately NOT validated here anymore — the old provisioning
+# major's install-time case/default guard went away with provisioning itself.
+# Validation now lives at the JSON schema level (the `enum` in
+# devcontainer-feature.json) and at connect.sh's own case default (unsupported
+# harness -> loud error) plus its unconditional "$HARNESS not on PATH" check.
 # WT_POOL_HOME overrides the mount target (test hook, like connect.sh's WT_*).
 # Must match containerEnv.HOME in devcontainer-feature.json and cmd/guixcontainer.go.
 POOL_HOME="${WT_POOL_HOME:-/home/wraptool-harness}"

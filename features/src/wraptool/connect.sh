@@ -3,8 +3,13 @@
 # workspace folder. Writes the MCP client config pointing at the host-side
 # wraptool. POSIX sh (dash-safe); installs nothing.
 #
-# Self-skips when connect is disabled (WT_CONNECT != true), so the feature's
-# static postCreateCommand is harmless when only provisioning was wanted.
+# Checks that the selected harness resolves on PATH (§12.2/§12.3: the binary
+# now comes from the host pool's runtime/ mount, not this feature) before doing
+# anything else, UNCONDITIONALLY — regardless of WT_CONNECT, since a missing
+# binary means the feature's remaining purpose (wiring a harness that will
+# never run) cannot be satisfied either way. Self-skips the MCP-config write
+# when connect is disabled (WT_CONNECT != true), so the feature's static
+# postCreateCommand is harmless when only the pool binary was wanted.
 #
 # Inputs (env, set by the feature / wraptool up / the user):
 #   WRAPTOOL_TOKEN   bearer token for wraptool auth (empty if server trusts localhost)
@@ -27,6 +32,17 @@ SHARE="${WT_SHARE_DIR:-/usr/local/share/wraptool}"
 : "${WT_PORT:=8717}"
 : "${WT_URL:=}"
 ROUTE_FILE="${WT_ROUTE_FILE:-/proc/net/route}"
+
+# Fail postCreate loudly if the selected harness isn't on PATH — unconditional,
+# not gated by WT_CONNECT (§12.3): the pool mount is this feature's remaining
+# reason to exist, so a missing binary is always an error, not a silent no-op.
+if ! command -v "$WT_HARNESS" >/dev/null 2>&1; then
+  echo "wraptool: ERROR '$WT_HARNESS' not found on PATH." >&2
+  echo "  The harness binary comes from the host pool, not this feature." >&2
+  echo "  Run 'wraptool harness install $WT_HARNESS' on the host, then reopen." >&2
+  echo "  Standalone devcontainer up (no wraptool up): declare the runtime mount yourself — see this feature's description." >&2
+  exit 1
+fi
 
 # Self-skip when connect is disabled — wiring is the user's job in that mode.
 if [ "$WT_CONNECT" != true ]; then
