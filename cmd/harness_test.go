@@ -194,7 +194,7 @@ func testHarnessDeps(paths pool.PoolPaths, binDir string, src pool.Source) harne
 		poolPaths:      func() pool.PoolPaths { return paths },
 		poolBinDir:     func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:      func(harness.Descriptor) (pool.Source, error) { return src, nil },
-		resolveBackend: func() (backend.Backend, error) { return fakeHarnessBackend{}, nil },
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) { return fakeHarnessBackend{}, nil },
 	}
 }
 
@@ -203,6 +203,28 @@ func swapHasGuix(t *testing.T, v bool) {
 	orig := hasGuix
 	hasGuix = func() bool { return v }
 	t.Cleanup(func() { hasGuix = orig })
+}
+
+// swapOCIAvailable stubs ociAvailable (defaultResolveBackend's docker/podman
+// probe) without requiring a real container engine on the machine running
+// the tests — the cmd-package analogue of internal/pool/backend's own
+// lookPath seam, one layer up.
+func swapOCIAvailable(t *testing.T, v bool) {
+	t.Helper()
+	orig := ociAvailable
+	ociAvailable = func() bool { return v }
+	t.Cleanup(func() { ociAvailable = orig })
+}
+
+// swapHostArch stubs hostArch (defaultResolveBackend's own arch() comparison
+// input) so cross-arch-vs-host-arch backend routing can be tested
+// deterministically regardless of which architecture actually runs the test
+// binary.
+func swapHostArch(t *testing.T, v string) {
+	t.Helper()
+	orig := hostArch
+	hostArch = func() string { return v }
+	t.Cleanup(func() { hostArch = orig })
 }
 
 func swapRunInstallArgv(t *testing.T, fn func([]string) error) {
@@ -810,7 +832,7 @@ func TestRunHarnessInstallProbesBeforeAnyManifestMutation(t *testing.T) {
 				return "", "", nil
 			},
 			newSource: func(harness.Descriptor) (pool.Source, error) { return nil, errors.New("source unavailable") },
-			resolveBackend: func() (backend.Backend, error) {
+			resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 				t.Fatal("resolveBackend must not be called once newSource fails")
 				return nil, nil
 			},
@@ -847,7 +869,7 @@ func TestRunHarnessInstallProbesBeforeAnyManifestMutation(t *testing.T) {
 				return "", "", nil
 			},
 			newSource:      func(harness.Descriptor) (pool.Source, error) { return &fakeHarnessSource{}, nil },
-			resolveBackend: func() (backend.Backend, error) { return nil, errors.New("guix not on PATH") },
+			resolveBackend: func(pool.PlatformKey) (backend.Backend, error) { return nil, errors.New("guix not on PATH") },
 		}
 
 		if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], "", false, ""); err == nil {
@@ -1719,13 +1741,13 @@ func TestPoolSourceKind(t *testing.T) {
 func TestHarnessBackendSkipsResolveBackendForArchiveSource(t *testing.T) {
 	called := false
 	deps := harnessDeps{
-		resolveBackend: func() (backend.Backend, error) {
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			called = true
 			return fakeHarnessBackend{}, nil
 		},
 	}
 
-	b, err := harnessBackend(deps, harness.Registry["agy"])
+	b, err := harnessBackend(deps, harness.Registry["agy"], hostPlatformTarget)
 	if err != nil {
 		t.Fatalf("harnessBackend(agy): %v", err)
 	}
@@ -1737,7 +1759,7 @@ func TestHarnessBackendSkipsResolveBackendForArchiveSource(t *testing.T) {
 	}
 
 	called = false
-	if _, err := harnessBackend(deps, harness.Registry["claude"]); err != nil {
+	if _, err := harnessBackend(deps, harness.Registry["claude"], hostPlatformTarget); err != nil {
 		t.Fatalf("harnessBackend(claude): %v", err)
 	}
 	if !called {
@@ -1778,7 +1800,7 @@ func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
 		poolPaths:  func() pool.PoolPaths { return paths },
 		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:  func(harness.Descriptor) (pool.Source, error) { return src, nil },
-		resolveBackend: func() (backend.Backend, error) {
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			backendCalls++
 			return fakeHarnessBackend{}, nil
 		},
@@ -1793,23 +1815,206 @@ func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
 	}
 }
 
-// TestDefaultResolveBackendErrorMentionsArchiveSourcesDontNeedIt pins the
-// reworded guix-absent message (§16): it must still name the npm-only
-// scope and the Phase 3 OCI provisioner it lands with, while staying
-// silent about agy specifically needing it (agy never even reaches this
-// function — see TestHarnessBackendSkipsResolveBackendForArchiveSource —
-// but the message itself must be honest about who it applies to).
-func TestDefaultResolveBackendErrorMentionsArchiveSourcesDontNeedIt(t *testing.T) {
-	swapHasGuix(t, false)
-
-	_, err := defaultResolveBackend()
-	if err == nil {
-		t.Fatal("expected an error when guix is absent")
+// TestDefaultResolveBackendSelectionMatrix pins §11.2's auto backend policy
+// end to end through the real defaultResolveBackend: guix present/absent x
+// docker-or-podman present/absent x host-arch/cross-arch target -> which
+// backend gets selected. The oci case additionally confirms the pinned
+// provisioningImage constant is what actually gets wired in (via
+// backend.Select's own requireOCIImage guard: an empty image would error,
+// so a nil error here already proves a non-empty image reached Select).
+func TestDefaultResolveBackendSelectionMatrix(t *testing.T) {
+	cases := []struct {
+		name     string
+		guix     bool
+		oci      bool
+		hostArch string
+		target   pool.PlatformKey
+		want     string // backend.Backend.Name(), or "" for "no backend at all"
+	}{
+		{
+			name: "guix available, host-arch target -> guix",
+			guix: true, oci: true, hostArch: "amd64", target: pool.PlatformLinuxAMD64Glibc,
+			want: "guix",
+		},
+		{
+			name: "guix available, host-arch target, oci absent -> guix (guix doesn't need oci)",
+			guix: true, oci: false, hostArch: "amd64", target: pool.PlatformLinuxAMD64Glibc,
+			want: "guix",
+		},
+		{
+			name: "guix available but wrong arch, oci available -> oci (cross-arch)",
+			guix: true, oci: true, hostArch: "amd64", target: pool.PlatformLinuxARM64Glibc,
+			want: "oci",
+		},
+		{
+			name: "guix absent, oci available -> oci",
+			guix: false, oci: true, hostArch: "amd64", target: pool.PlatformLinuxAMD64Glibc,
+			want: "oci",
+		},
+		{
+			name: "guix absent, oci absent -> no backend at all",
+			guix: false, oci: false, hostArch: "amd64", target: pool.PlatformLinuxAMD64Glibc,
+			want: "",
+		},
+		{
+			name: "guix available but wrong arch, oci absent -> no backend at all (guix can't serve this target)",
+			guix: true, oci: false, hostArch: "amd64", target: pool.PlatformLinuxARM64Glibc,
+			want: "",
+		},
+		{
+			name: "musl target routes the same as its glibc arch sibling (deferral happens later, at realize)",
+			guix: true, oci: true, hostArch: "arm64", target: pool.PlatformLinuxARM64Musl,
+			want: "guix",
+		},
 	}
-	for _, want := range []string{"npm-sourced harnesses only", "Phase 3", "OCI provisioner"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("defaultResolveBackend error = %q, want it to contain %q", err.Error(), want)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			swapHasGuix(t, tc.guix)
+			swapOCIAvailable(t, tc.oci)
+			swapHostArch(t, tc.hostArch)
+
+			b, err := defaultResolveBackend(tc.target)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("expected an error, got backend %q", b.Name())
+				}
+				for _, want := range []string{"guix", "docker", "podman"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("no-backend error = %q, want it to mention %q", err.Error(), want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("defaultResolveBackend: %v", err)
+			}
+			if got := b.Name(); got != tc.want {
+				t.Errorf("backend = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDefaultResolveBackendNoBackendErrorNamesAllThreeOptions pins the exact
+// §16 item 5 wording this work package retires the old guix-absent-only
+// error for: the error must fire ONLY when no backend exists at all (the
+// matrix test above already covers the "guix present but wrong arch, oci
+// absent" case, which is also a no-backend-at-all outcome), name all three
+// installable options, retain the devcontainer-feature fallback guidance,
+// and drop the old "Phase 3 pending" phrasing — this work package IS Phase 3.
+func TestDefaultResolveBackendNoBackendErrorNamesAllThreeOptions(t *testing.T) {
+	swapHasGuix(t, false)
+	swapOCIAvailable(t, false)
+
+	_, err := defaultResolveBackend(pool.PlatformLinuxAMD64Glibc)
+	if err == nil {
+		t.Fatal("expected an error when neither guix nor an oci engine is available")
+	}
+	msg := err.Error()
+	for _, want := range []string{"install guix, or docker, or podman", "npm-sourced harnesses only"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("no-backend error = %q, want it to contain %q", msg, want)
 		}
+	}
+	if strings.Contains(msg, "Phase 3") {
+		t.Errorf("no-backend error still carries the retired Phase-3-pending phrasing: %q", msg)
+	}
+	if !strings.Contains(msg, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}`) {
+		t.Errorf("no-backend error dropped the devcontainer-feature fallback guidance: %q", msg)
+	}
+}
+
+// spyBackend is a minimal backend.Backend test double that records every
+// RunSpec it's asked to Run, for a cmd-level test to inspect (e.g.
+// RunSpec.Platform) without a real container engine.
+type spyBackend struct {
+	name  string
+	specs []backend.RunSpec
+}
+
+func (s *spyBackend) Name() string    { return s.name }
+func (s *spyBackend) Available() bool { return true }
+func (s *spyBackend) Run(_ context.Context, spec backend.RunSpec) error {
+	s.specs = append(s.specs, spec)
+	return nil
+}
+
+// crossArchRecordingSource wraps fakeHarnessSource's ordinary behavior but
+// makes Realize additionally invoke b.Run with a RunSpec.Platform derived
+// from key via targetArch — mirroring what the real npm Source
+// (internal/pool/source/realize.go's platformArch) actually does — so a
+// cmd-level test can observe, through the injected backend, which arch the
+// realize phase would have targeted.
+type crossArchRecordingSource struct {
+	fakeHarnessSource
+}
+
+func (s *crossArchRecordingSource) Realize(ctx context.Context, b backend.Backend, harnessName, binName string, h *pool.LockHarness, key pool.PlatformKey, cacheDir, stagingGenDir string) (*pool.Receipt, error) {
+	arch, err := targetArch(key)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.Run(ctx, backend.RunSpec{Argv: []string{"true"}, Platform: arch}); err != nil {
+		return nil, err
+	}
+	return s.fakeHarnessSource.Realize(ctx, b, harnessName, binName, h, key, cacheDir, stagingGenDir)
+}
+
+// TestHarnessSyncCrossArchThreadsTargetPlatformIntoRealize pins the wiring
+// §11.2's cross-arch case depends on: `sync --platform linux-arm64-glibc`
+// must ask deps.resolveBackend for exactly that target (never the host's
+// own platform, even though install/update always do) and the backend it
+// gets back must be the one Source.Realize actually runs its container step
+// against, with RunSpec.Platform carrying "arm64" — the same threading
+// defaultResolveBackend's cross-arch routing (tested directly above) relies
+// on to reach the oci backend in the first place.
+func TestHarnessSyncCrossArchThreadsTargetPlatformIntoRealize(t *testing.T) {
+	swapHasGuix(t, true) // claude's legacy install recipe starts with "guix"
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	binDir := t.TempDir()
+
+	// install first (ordinary fake backend, whatever the host's own
+	// platform is) so a lock entry exists for sync to realize against.
+	installDeps := testHarnessDeps(paths, binDir, src)
+	d := harness.Registry["claude"]
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), installDeps, "claude", d, ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	var gotTargets []pool.PlatformKey
+	spy := &spyBackend{name: "oci"}
+	crossSrc := &crossArchRecordingSource{fakeHarnessSource: *src}
+	crossDeps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return crossSrc, nil },
+		resolveBackend: func(target pool.PlatformKey) (backend.Backend, error) {
+			gotTargets = append(gotTargets, target)
+			return spy, nil
+		},
+	}
+
+	out, err := runHarnessCmdWithDeps(t, crossDeps, "sync", "claude", "--platform", "linux-arm64-glibc")
+	if err != nil {
+		t.Fatalf("sync --platform: %v\noutput:\n%s", err, out)
+	}
+
+	if len(gotTargets) != 1 || gotTargets[0] != pool.PlatformLinuxARM64Glibc {
+		t.Errorf("resolveBackend targets = %v, want exactly [linux-arm64-glibc] — sync must thread its "+
+			"--platform value through, never the host's own platform", gotTargets)
+	}
+	if len(spy.specs) == 0 {
+		t.Fatal("expected the injected backend's Run to have been called by Realize")
+	}
+	if got := spy.specs[0].Platform; got != "arm64" {
+		t.Errorf("RunSpec.Platform = %q, want %q", got, "arm64")
 	}
 }
 
@@ -1938,7 +2143,7 @@ func TestHarnessInstallAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.
 		poolPaths:  func() pool.PoolPaths { return paths },
 		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{}, nil },
-		resolveBackend: func() (backend.Backend, error) {
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			backendCalled = true
 			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
 			return nil, errors.New("guix not on PATH")
@@ -2054,7 +2259,7 @@ func TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T
 		poolPaths:  func() pool.PoolPaths { return paths },
 		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{}, nil },
-		resolveBackend: func() (backend.Backend, error) {
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
 			return nil, errors.New("guix not on PATH")
 		},
@@ -2094,7 +2299,7 @@ func TestHarnessInstallAgyStaysFailedWhenRealizeFailsOnNoGuixHost(t *testing.T) 
 		poolPaths:  func() pool.PoolPaths { return paths },
 		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{failRealize: true}, nil },
-		resolveBackend: func() (backend.Backend, error) {
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
 			return nil, errors.New("guix not on PATH")
 		},
@@ -2143,7 +2348,7 @@ func TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning
 		poolPaths:  func() pool.PoolPaths { return paths },
 		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{}, nil },
-		resolveBackend: func() (backend.Backend, error) {
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			t.Error("resolveBackend must not be called for agy (archive-sourced, needs no backend)")
 			return nil, errors.New("guix not on PATH")
 		},

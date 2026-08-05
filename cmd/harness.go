@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -23,6 +24,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// provisioningImage is the pinned pool-provisioning OCI image (§11.2): a
+// small image containing only resolver/build prerequisites (node+npm, tar,
+// coreutils), built by .forgejo/workflows/publish-provisioning-image.yml
+// from images/provisioning-manifest.scm and pinned by DIGEST, not just tag —
+// §11.2 makes "the provisioning image reference and digest" a lock input
+// (recipe_revision, §8/orchestrator.go's npmRecipeRevision), so an image
+// upgrade must be an explicit, auditable recipe-revision bump, never a
+// silent content change under a floating tag. The digest placeholder below
+// is substituted by the architect from the CI job log before merge; nothing
+// in this package (or its tests) depends on the literal digest value.
+const provisioningImage = "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:PENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDING"
+
 // harnessDeps bundles the harness commands' host-environment dependencies:
 // pool paths, the legacy pool bin/ directory, the artifact-acquisition
 // Source, and the resolve-phase container backend. Passed by constructor
@@ -32,10 +45,13 @@ import (
 // to run with t.Parallel(): two tests building independent commands with
 // independent fake deps never contend on shared state.
 type harnessDeps struct {
-	poolPaths      func() pool.PoolPaths
-	poolBinDir     func() (poolDir, poolBin string, err error)
-	newSource      func(d harness.Descriptor) (pool.Source, error)
-	resolveBackend func() (backend.Backend, error)
+	poolPaths  func() pool.PoolPaths
+	poolBinDir func() (poolDir, poolBin string, err error)
+	newSource  func(d harness.Descriptor) (pool.Source, error)
+	// resolveBackend picks the resolve/realize container backend for one
+	// target platform (§11.2's auto policy: guix when available AND the
+	// target's arch matches the host's, else oci) — see defaultResolveBackend.
+	resolveBackend func(target pool.PlatformKey) (backend.Backend, error)
 }
 
 // defaultHarnessDeps returns the real, production harnessDeps: the
@@ -89,36 +105,61 @@ func defaultHarnessDeps() harnessDeps {
 	}
 }
 
+// platformTarget is the target-resolution thunk harnessBackend/backendCache
+// take, rather than a plain pool.PlatformKey value: an archive-sourced
+// harness needs no backend at all (harnessBackend's own gate below), so it
+// must never pay for — or fail on — resolving a target platform it will
+// never use. HostPlatformKey can itself fail (an unsupported host
+// architecture), and that failure must only surface for a harness that
+// actually needs a backend.
+type platformTarget func() (pool.PlatformKey, error)
+
+// hostPlatformTarget is the platformTarget install/update always use:
+// resolve/realize for those two commands operate on the HOST's own platform,
+// never a caller-chosen one (orchestrator.go's UpdateHarnessLocked doc
+// comment: "platformKey is always the HOST's own platform ... for both
+// install and update; only `sync` lets a caller target a different
+// platform"). A named function, not an inline closure, so every install/
+// update call site shares the exact same value.
+func hostPlatformTarget() (pool.PlatformKey, error) { return pool.HostPlatformKey() }
+
 // harnessBackend resolves the container backend for d's resolve/realize
 // phases, gated on whether d's Source actually needs one (§6.2's phase
 // table): an npm-sourced harness does (Resolve/Realize both run inside a
 // Linux backend container), an archive-sourced harness never does (Resolve
 // and Realize are pure Go, internal/pool/source/archive.go's own doc
 // comment — "EVERY method here is pure Go, host-side, and NEVER invokes the
-// caller-supplied backend.Backend"). deps.resolveBackend is not even called
-// for an archive-sourced harness, so an off-guix/off-OCI host never fails
-// this probe for one — that is what makes `wraptool harness install agy`
-// reach refresh/resolve/fetch/realize/activate with no container runtime
-// present at all (this work package's headline capability). The returned
-// nil Backend for that case is safe: RealizeGeneration/UpdateHarnessLocked
-// only ever pass it through to Source.Resolve/Source.Realize, and Archive's
+// caller-supplied backend.Backend"). Neither deps.resolveBackend nor target
+// is even called for an archive-sourced harness, so an off-guix/off-OCI host
+// (or one with an unsupported HostPlatformKey architecture) never fails this
+// probe for one — that is what makes `wraptool harness install agy` reach
+// refresh/resolve/fetch/realize/activate with no container runtime present
+// at all (this work package's headline capability). The returned nil
+// Backend for that case is safe: RealizeGeneration/UpdateHarnessLocked only
+// ever pass it through to Source.Resolve/Source.Realize, and Archive's
 // implementations of both never dereference it.
-func harnessBackend(deps harnessDeps, d harness.Descriptor) (backend.Backend, error) {
+func harnessBackend(deps harnessDeps, d harness.Descriptor, target platformTarget) (backend.Backend, error) {
 	if d.PoolArchive {
 		return nil, nil
 	}
-	return deps.resolveBackend()
+	key, err := target()
+	if err != nil {
+		return nil, err
+	}
+	return deps.resolveBackend(key)
 }
 
 // backendCache memoizes harnessBackend's npm-sourced resolveBackend probe
 // across one multi-harness update/sync run (review round 2, nit): every
 // npm-sourced harness in a single bare `update`/`sync` needs the exact same
-// backend, so probing deps.resolveBackend fresh per harness would print the
-// same guix-absent message once per npm-sourced harness. Probing once and
-// reusing the result (success OR error) avoids the noise. Archive-sourced
-// harnesses never consult it at all (harnessBackend's own gate), so this
-// cache is only ever populated by the FIRST npm-sourced harness a loop
-// encounters — a zero value is ready to use.
+// backend (the target platform is fixed for the whole run — the host's own
+// platform for update, or one `--platform` value for sync), so probing
+// deps.resolveBackend fresh per harness would print the same no-backend
+// message once per npm-sourced harness. Probing once and reusing the result
+// (success OR error) avoids the noise. Archive-sourced harnesses never
+// consult it at all (harnessBackend's own gate), so this cache is only ever
+// populated by the FIRST npm-sourced harness a loop encounters — a zero
+// value is ready to use.
 type backendCache struct {
 	done bool
 	b    backend.Backend
@@ -131,12 +172,12 @@ type backendCache struct {
 // re-implemented here — it delegates to harnessBackend so the §6.2
 // source-gating rule (archive needs no backend at all) lives in exactly
 // one place.
-func (c *backendCache) get(deps harnessDeps, d harness.Descriptor) (backend.Backend, error) {
+func (c *backendCache) get(deps harnessDeps, d harness.Descriptor, target platformTarget) (backend.Backend, error) {
 	if d.PoolArchive {
-		return harnessBackend(deps, d)
+		return harnessBackend(deps, d, target)
 	}
 	if !c.done {
-		c.b, c.err = deps.resolveBackend()
+		c.b, c.err = harnessBackend(deps, d, target)
 		c.done = true
 	}
 	return c.b, c.err
@@ -153,18 +194,8 @@ func poolSourceKind(d harness.Descriptor) pool.SourceKind {
 	return pool.SourceNPM
 }
 
-// defaultResolveBackend picks the Linux-container backend BOTH the npm
-// resolve phase (§6.2/§8.1) AND the realize phase (§6.2/§11.4) run in — the
-// same *backend.Guix value is threaded through Source.Resolve and
-// RealizeGeneration/Source.Realize by every caller in this file. Only ever
-// called for an npm-sourced harness (harnessBackend skips it entirely for an
-// archive-sourced one, which needs no backend at all — see harnessBackend's
-// doc comment), so its error message below is npm-specific by construction,
-// not merely by wording. Phase 1 wires guix only — the same off-guix pointer
-// error `install` has always printed — OCI/--backend selection is Phase 3+
-// (design/harness/unified-harness-pool.md §16).
-//
-// The guix package set below must cover BOTH phases' needs, since one
+// guixResolveRealizePackages is the guix package set BOTH the npm resolve
+// phase (§6.2/§8.1) AND the realize phase (§6.2/§11.4) need, since one guix
 // Backend value serves both: node (npm, for Resolve's `npm install
 // --package-lock-only` and Realize's `npm cache add`/`npm ci --offline`),
 // tar and xz (Realize's node-runtime unpack: `tar -xJf`; Go stdlib has no xz
@@ -185,23 +216,90 @@ func poolSourceKind(d harness.Descriptor) pool.SourceKind {
 // bearing, not cosmetic) spawn via a shell inside the container; without a
 // real `bash` on PATH there, that spawn fails and the postinstall step never
 // runs.
-func defaultResolveBackend() (backend.Backend, error) {
-	if !hasGuix() {
-		return nil, fmt.Errorf("`wraptool harness update`/`install` resolves the exact npm version " +
-			"inside a guix container, but `guix` is not on PATH (this applies to npm-sourced harnesses " +
-			"only — an archive-sourced harness like agy resolves/realizes in pure Go and needs no " +
-			"container backend at all).\nNative (guix-pool) install for npm-sourced harnesses on a " +
-			"non-guix host lands with the Phase 3 OCI provisioner (design/harness/unified-harness-pool.md " +
-			"§16); for now, provision harnesses via the wraptool feature instead: add\n  " +
-			`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}` +
-			"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` " +
-			"shares the pool home so auth/skills persist across projects")
+var guixResolveRealizePackages = []string{"node", "tar", "xz", "coreutils", "bash"}
+
+// hostArch is this host's architecture in the "amd64"/"arm64" form
+// pool.PlatformKey's arch component and backend.RunSpec.Platform use. A
+// package-level var — the same pattern cmd/guixcontainer.go's hasGuix and
+// internal/pool/backend's own lookPath/toSlash/hostGOOS use — so a test can
+// exercise the cross-arch backend-routing decision below without depending
+// on the architecture the test binary itself happens to run on.
+var hostArch = func() string { return runtime.GOARCH }
+
+// ociAvailable reports whether an OCI engine (docker or podman) is usable on
+// this host, via a throwaway backend.NewOCI instance's own Available()
+// probe — the image reference passed to NewOCI is irrelevant to that probe
+// (backend.OCI.Available only checks for docker/podman on PATH), so
+// provisioningImage is used here purely for convenience, not because its
+// value matters. A package-level var, like hasGuix, so tests can stub
+// OCI-engine detection without a real docker/podman install.
+var ociAvailable = func() bool {
+	o, err := backend.NewOCI(provisioningImage)
+	if err != nil {
+		// provisioningImage is a non-empty package constant; NewOCI only
+		// errors on an empty image, so this is unreachable outside a
+		// wraptool bug — treated as "not available" rather than panicking.
+		return false
 	}
-	b, err := backend.Select("guix", backend.Options{GuixPackages: []string{"node", "tar", "xz", "coreutils", "bash"}})
+	return o.Available()
+}
+
+// targetArch maps target to the arch string ("amd64"/"arm64")
+// backend.RunSpec.Platform and this file's own host/target-arch comparison
+// use (§6.1: Platform carries architecture only, never libc) — the same
+// mapping internal/pool/source's own platformArch applies when it builds
+// Realize's RunSpec values; duplicated here (rather than exported from that
+// package) because backend SELECTION is cmd's own concern, and the mapping
+// itself is a two-line exhaustive switch, not shared logic. Exhaustive over
+// pool.PlatformKey, as the project's exhaustive linter requires.
+func targetArch(target pool.PlatformKey) (string, error) {
+	switch target {
+	case pool.PlatformLinuxAMD64Glibc, pool.PlatformLinuxAMD64Musl:
+		return "amd64", nil
+	case pool.PlatformLinuxARM64Glibc, pool.PlatformLinuxARM64Musl:
+		return "arm64", nil
+	default:
+		return "", fmt.Errorf("unsupported platform key %q", target)
+	}
+}
+
+// defaultResolveBackend implements §11.2's auto backend-selection policy for
+// one target platform: the guix backend when guix is on PATH AND target's
+// arch matches this host's own arch, otherwise the oci backend (docker or
+// podman, pinned to provisioningImage) — including the cross-arch case,
+// where guix is available but cannot serve the request: guix --container has
+// no cross-arch execution mode (backend/guix.go's own hostArch guard rejects
+// a mismatched RunSpec.Platform at Run time), so `sync --platform
+// linux-arm64-glibc` on an amd64 host routes to oci even though guix itself
+// is installed. Both backends serve BOTH the npm resolve phase (§6.2/§8.1)
+// and the realize phase (§6.2/§11.4) — the same Backend value is threaded
+// through Source.Resolve and RealizeGeneration/Source.Realize by every
+// caller in this file. Only ever called for an npm-sourced harness
+// (harnessBackend skips it entirely for an archive-sourced one, which needs
+// no backend at all — see harnessBackend's doc comment), so the error below
+// is npm-specific by construction, not merely by wording.
+func defaultResolveBackend(target pool.PlatformKey) (backend.Backend, error) {
+	arch, err := targetArch(target)
 	if err != nil {
 		return nil, err
 	}
-	return b, nil
+
+	if hasGuix() && arch == hostArch() {
+		return backend.Select("guix", backend.Options{GuixPackages: guixResolveRealizePackages})
+	}
+	if ociAvailable() {
+		return backend.Select("oci", backend.Options{OCIImage: provisioningImage})
+	}
+
+	return nil, fmt.Errorf("no provisioning backend available for target platform %s: guix requires "+
+		"a matching host architecture (this host is %q) and either was not found on PATH or has a "+
+		"different architecture, and neither docker nor podman were found for the oci backend; "+
+		"install guix, or docker, or podman (this applies to npm-sourced harnesses only — an "+
+		"archive-sourced harness like agy resolves/realizes in pure Go and needs no container backend "+
+		"at all).\nOn a devcontainer host, provision harnesses via the wraptool feature instead: add\n  "+
+		`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}`+
+		"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). `wraptool up` "+
+		"shares the pool home so auth/skills persist across projects", target, hostArch())
 }
 
 // newHarnessCmd builds the `harness` command tree with the real, production
@@ -592,7 +690,7 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 	if err != nil {
 		return err
 	}
-	b, err := harnessBackend(deps, d)
+	b, err := harnessBackend(deps, d, hostPlatformTarget)
 	if err != nil {
 		return err
 	}
@@ -621,6 +719,11 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 		// idempotent once manifest/lock/recipe agree, even if a newer
 		// eligible version exists.
 		Advance: false,
+		// ProvisioningImage is folded into recipe_revision regardless of
+		// which backend b actually resolved to (orchestrator.go's
+		// UpdateOptions.ProvisioningImage doc comment) — always the pinned
+		// constant, never a value derived from b.
+		ProvisioningImage: provisioningImage,
 	})
 	if err != nil {
 		// UpdateHarnessLocked covers resolve+lock+fetch (§16 Phase 2) — a
@@ -1059,7 +1162,7 @@ listed in the pool manifest.`,
 				if err != nil {
 					return err
 				}
-				b, err := bc.get(deps, d)
+				b, err := bc.get(deps, d, hostPlatformTarget)
 				if err != nil {
 					return err
 				}
@@ -1071,6 +1174,10 @@ listed in the pool manifest.`,
 					// eligible candidate, even when the existing lock
 					// already agrees with manifest+recipe.
 					Advance: true,
+					// See runHarnessInstall's matching comment: always the
+					// pinned constant, regardless of which backend b
+					// resolved to.
+					ProvisioningImage: provisioningImage,
 				})
 				if err != nil {
 					return err
@@ -1124,15 +1231,20 @@ syncs every harness currently present in the lock.`,
 			// deps.newSource/the backend probe are per-descriptor (npm vs
 			// archive), so they move inside the per-harness closure below —
 			// see newHarnessRefreshCmd/newHarnessUpdateCmd's matching
-			// comment (including bc's guix-absent-message dedup).
+			// comment (including bc's no-backend-message dedup). syncTarget
+			// always reports the already-resolved key (never the host's own
+			// platform) — this is what routes a cross-arch `sync --platform`
+			// to the oci backend (§11.2) even when guix is available but
+			// can't serve a foreign arch.
 			var bc backendCache
+			syncTarget := func() (pool.PlatformKey, error) { return key, nil }
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
 				src, err := deps.newSource(d)
 				if err != nil {
 					return err
 				}
-				b, err := bc.get(deps, d)
+				b, err := bc.get(deps, d, syncTarget)
 				if err != nil {
 					return err
 				}
