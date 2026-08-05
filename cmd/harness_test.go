@@ -2028,8 +2028,21 @@ func TestResolveBackendForFlag(t *testing.T) {
 		}
 	})
 
+	t.Run("explicit guix with guix absent errors immediately", func(t *testing.T) {
+		swapHostArch(t, "amd64")
+		swapHasGuix(t, false)
+		_, err := resolveBackendForFlag("guix", pool.PlatformLinuxAMD64Glibc, nil)
+		if err == nil {
+			t.Fatal("resolveBackendForFlag: expected an error with guix absent")
+		}
+		if !strings.Contains(err.Error(), "not found on PATH") || !strings.Contains(err.Error(), "guix") {
+			t.Errorf("error = %q, want it to name guix and PATH", err)
+		}
+	})
+
 	t.Run("explicit guix on a matching-arch target succeeds and never consults resolveBackend", func(t *testing.T) {
 		swapHostArch(t, "amd64")
+		swapHasGuix(t, true)
 		called := false
 		fake := func(pool.PlatformKey) (backend.Backend, error) {
 			called = true

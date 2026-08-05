@@ -36,7 +36,11 @@ import (
 // orchestrator.go's npmRecipeRevision), so an image upgrade must be an
 // explicit, auditable recipe-revision change, never a silent content change
 // under a floating tag. The fully-qualified docker.io reference keeps podman
-// (no unqualified-search default) working. An earlier revision built this
+// (no unqualified-search default) working. LOAD-BEARING ASSUMPTION: this
+// image sets ENTRYPOINT docker-entrypoint.sh, which passes an argv through
+// unchanged only when argv[0] is an existing command — every RunSpec this
+// package produces starts with `env` or `npm`, so that holds; an argv
+// beginning with a flag would be silently run under `node` instead. An earlier revision built this
 // image with `guix pack` from the repo's own pinned channels for
 // backend-parity; cross-building its aarch64 half needs qemu-binfmt on the
 // CI runner, which does not exist — resurrect that approach only with an
@@ -370,6 +374,13 @@ func resolveBackendForFlag(preference string, target pool.PlatformKey, resolveBa
 		if arch != hostArch() {
 			return nil, fmt.Errorf("guix cannot cross-build for %s on this %s host; the oci backend "+
 				"handles cross-platform realize — install docker or podman", target, hostArch())
+		}
+		// Probe availability here, symmetric with the oci branch below: an
+		// explicit --backend=guix on a guix-less host should fail in a
+		// microsecond with a clear message, not deep inside resolve with an
+		// opaque exec error after a network refresh.
+		if !hasGuix() {
+			return nil, fmt.Errorf("--backend=guix requested but `guix` was not found on PATH; install guix, or drop --backend to use the auto policy")
 		}
 		return backend.Select("guix", backend.Options{GuixPackages: guixResolveRealizePackages})
 	case "oci":

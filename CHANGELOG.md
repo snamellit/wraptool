@@ -23,6 +23,9 @@ non-Guix Linux — through Docker or Podman.
   hosts.
 - Distinct, accurate errors when no backend exists — including the
   guix-present-but-cross-architecture case.
+- `--backend auto|guix|oci` on `harness install`/`update`/`sync` overrides
+  backend auto-selection; an explicit choice whose tooling is absent errors
+  immediately.
 
 ### Changed
 
