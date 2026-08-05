@@ -4,7 +4,45 @@ Release tags (`wraptool-vX.Y.Z`) are the sole version source; binaries for
 each tag are published by CI with SHA-256 checksums. Notes here cover what
 changed and anything an upgrade should know.
 
-## 0.4.0 — unreleased
+## 0.5.0 — unreleased
+
+Phase 3 of the unified harness pool: the OCI provisioner. `wraptool
+harness install` now works on hosts without Guix — macOS, Windows, and
+non-Guix Linux — through Docker or Podman.
+
+### Added
+
+- A pinned provisioning image (upstream `node:24-bookworm`, pinned by its
+  multi-architecture manifest-list digest — amd64 and arm64, so Apple
+  silicon works natively) drives npm resolve/realize on non-Guix hosts.
+  The image digest is folded into every npm `recipe_revision`, so
+  upgrading the image deliberately re-resolves locks.
+- Backend auto-selection: Guix when available and the target matches the
+  host architecture, otherwise Docker/Podman. Cross-architecture
+  `harness sync --platform` routes through the OCI backend even on Guix
+  hosts.
+- Distinct, accurate errors when no backend exists — including the
+  guix-present-but-cross-architecture case.
+- `--backend auto|guix|oci` on `harness install`/`update`/`sync` overrides
+  backend auto-selection; an explicit choice whose tooling is absent errors
+  immediately.
+
+### Changed
+
+- On a Docker-only host, `harness install` for an npm harness realizes and
+  activates the pool generation, then warns (instead of failing) that the
+  host-side legacy binary was not installed — containers on such hosts get
+  their harness via the wraptool devcontainer feature.
+- Cross-architecture `sync` no longer runs the host's legacy installer as
+  a side effect.
+
+### Upgrade notes
+
+- First `install`/`update` per npm harness re-resolves its lock once (the
+  recipe now includes the provisioning-image identity) — the same one-shot
+  self-heal pattern as previous upgrades, not an error.
+
+## 0.4.0 — 2026-08-05
 
 Phase 2 wave 2 of the unified harness pool: realized generations now
 execute on the Guix runtime.
