@@ -342,3 +342,86 @@ func splitURL(t *testing.T, raw string) (basePath, cwd string) {
 	}
 	return u.Scheme + "://" + u.Host + u.Path, u.Query().Get("cwd")
 }
+
+// --- pool-source-wiring: PoolLockable / PoolPackageID (review round 2, minor) ---
+
+// TestPoolPackageID pins Descriptor.PoolPackageID's per-source dispatch:
+// PoolPackage verbatim for an npm-sourced harness, the harness's own Name
+// for an archive-sourced one.
+func TestPoolPackageID(t *testing.T) {
+	agy, ok := Registry["agy"]
+	if !ok {
+		t.Fatal("no agy descriptor")
+	}
+	if got := agy.PoolPackageID(); got != "agy" {
+		t.Errorf("agy.PoolPackageID() = %q, want %q", got, "agy")
+	}
+
+	claude, ok := Registry["claude"]
+	if !ok {
+		t.Fatal("no claude descriptor")
+	}
+	if got := claude.PoolPackageID(); got != "@anthropic-ai/claude-code" {
+		t.Errorf("claude.PoolPackageID() = %q, want %q", got, "@anthropic-ai/claude-code")
+	}
+}
+
+// TestPoolLockable pins Descriptor.PoolLockable(): true for both an
+// npm-sourced (claude) and an archive-sourced (agy) descriptor, false for a
+// harness with neither (gemini).
+func TestPoolLockable(t *testing.T) {
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"agy", true},
+		{"claude", true},
+		{"gemini", false},
+	}
+	for _, tc := range cases {
+		d, ok := Registry[tc.name]
+		if !ok {
+			t.Fatalf("no descriptor for %q", tc.name)
+		}
+		if got := d.PoolLockable(); got != tc.want {
+			t.Errorf("Registry[%q].PoolLockable() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRegistryNeverSetsBothPoolPackageAndPoolArchive is a registry-wide
+// invariant check: PoolPackage and PoolArchive are documented as mutually
+// exclusive (each Descriptor field's own doc comment) — a descriptor
+// setting both would make PoolPackageID's dispatch order silently pick one
+// over the other. Guards against a future harness's descriptor entry
+// accidentally setting both.
+func TestRegistryNeverSetsBothPoolPackageAndPoolArchive(t *testing.T) {
+	for name, d := range Registry {
+		if d.PoolPackage != "" && d.PoolArchive {
+			t.Errorf("Registry[%q] sets both PoolPackage (%q) and PoolArchive (true); they are mutually exclusive", name, d.PoolPackage)
+		}
+	}
+}
+
+// TestPoolLockableDescriptorsHaveNameEqualBin is a registry-wide invariant
+// check (wave2-integration-fixes item 6): every pool-lockable descriptor's
+// Name must equal its Bin. Two independent consumers assume this without
+// re-deriving it — cmd/harness.go's dispatcher/orchestrator calls, which key
+// the pool by the harness name (map key into Registry, e.g. "claude") but
+// pass d.Bin as the generation's executable name (RealizeGeneration's
+// binName), and cmd/guixcontainer.go's guixPoolPlanInput.Harness (also the
+// registry key), which resolveGuixPoolPlan uses to build BOTH the dispatcher
+// path (RuntimeBinDir/Harness) and the generation's own entrypoint path
+// (RuntimeGenerationsDir/<genID>/bin/Harness) — the latter must match
+// exactly what RealizeGeneration wrote under d.Bin, or the guix-plan probe
+// silently falls back to legacy on every pool-lockable harness.
+func TestPoolLockableDescriptorsHaveNameEqualBin(t *testing.T) {
+	for name, d := range Registry {
+		if !d.PoolLockable() {
+			continue
+		}
+		if d.Name != d.Bin {
+			t.Errorf("Registry[%q]: Name = %q, Bin = %q — a pool-lockable descriptor's dispatcher/guix-plan lookups assume these are equal", name, d.Name, d.Bin)
+		}
+	}
+}

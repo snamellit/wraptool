@@ -20,10 +20,48 @@ import (
 )
 
 // npmSourceName is the fixed Observations/Lock "source" identity for every
-// Phase-1 harness (design/unified-harness-pool.md §16 Phase 1 only wires npm
-// resolution, §8.1). It is not exported: callers never need to spell it, they
-// just name a package.
+// npm-sourced harness (§8.1). It is not exported: callers never need to
+// spell it, they just name a package.
 const npmSourceName = "npm"
+
+// archiveSourceName is npmSourceName's counterpart for a direct-download
+// ("archive") harness (§6.2, §8.1) — internal/pool/source's Archive
+// implementation. Same visibility reasoning as npmSourceName.
+const archiveSourceName = "archive"
+
+// SourceKind names which pool.Source acquisition style an orchestrator call
+// is driving — SourceNPM or SourceArchive (§8.1's Lock.Source values). It
+// selects the Observations/Lock namespace prefix ("<kind>/<pkg>/<version>",
+// §8.1) and the recipe_revision formula (npmRecipeRevision vs
+// archiveRecipeRevision). This package's Source interface is structural,
+// deliberately not internal/pool/source's concrete types (see that
+// interface's own doc comment below), so it cannot infer a caller's source
+// style at runtime by inspecting the Source value itself; the caller
+// (cmd/harness.go, which does know internal/harness.Descriptor) states it
+// explicitly via UpdateOptions.Source / RefreshHarness(Locked)'s and
+// StatusHarness's own kind parameter.
+type SourceKind string
+
+const (
+	SourceNPM     SourceKind = SourceKind(npmSourceName)
+	SourceArchive SourceKind = SourceKind(archiveSourceName)
+)
+
+// effective normalizes a SourceKind, treating the zero value ("") as
+// SourceNPM — UpdateOptions.Source's documented default (see its doc
+// comment): every UpdateOptions literal written before that field existed,
+// this package's own pre-existing tests among them, drove an npm Source, so
+// the zero value preserves that behavior with no edits required. Positional
+// parameters elsewhere in this package (RefreshHarnessLocked/RefreshHarness/
+// StatusHarness's own kind argument) are NOT defaulted this way — a
+// required parameter has no "unset" state to default from, so those callers
+// must always pass an explicit SourceNPM/SourceArchive.
+func (k SourceKind) effective() SourceKind {
+	if k == "" {
+		return SourceNPM
+	}
+	return k
+}
 
 // defaultNodeVersion is the pinned Node runtime every Phase-1 npm harness
 // resolves against, passed to Source.Resolve. It MUST be an exact, real,
@@ -87,6 +125,51 @@ func npmRecipeRevision(pkg string) (string, error) {
 	}
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// archiveRecipeFormatVersion is npmRecipeRevision's recipeFormatVersion
+// counterpart for an archive-sourced harness — bumped whenever this
+// package's archive realization assumptions change in a way that should
+// invalidate a previously computed recipe_revision. Deliberately a SEPARATE
+// constant from recipeFormatVersion: a recipe change to one source must not
+// invalidate the other source's already-realized generations (§8's
+// recipe_revision exists to guard exactly one source's assumptions at a
+// time).
+const archiveRecipeFormatVersion = 1
+
+// archiveRecipeRevision computes recipe_revision (§8) for one archive
+// harness — the archive-source counterpart of npmRecipeRevision. Like npm's
+// version, archive resolution/realization has no backend provisioning image
+// to fold in (internal/pool/source/archive.go's own doc comment: "EVERY
+// method here is pure Go, host-side, and NEVER invokes ... backend.Backend"),
+// so this is package identity + archiveRecipeFormatVersion only — it still
+// changes the moment either input does.
+func archiveRecipeRevision(pkg string) (string, error) {
+	data, err := json.Marshal(struct {
+		Package string `json:"package"`
+		Format  int    `json:"archive_recipe_format_version"`
+	}{Package: pkg, Format: archiveRecipeFormatVersion})
+	if err != nil {
+		return "", fmt.Errorf("marshaling archive recipe for hashing: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// recipeRevisionForSource computes recipe_revision (§8) for pkg under kind,
+// dispatching to npmRecipeRevision or archiveRecipeRevision. Exhaustive over
+// SourceKind (golangci-lint's exhaustive check, .golangci.yml): a future
+// SourceKind added without wiring its own recipe formula fails loudly here
+// instead of silently reusing another source's revision.
+func recipeRevisionForSource(kind SourceKind, pkg string) (string, error) {
+	switch kind {
+	case SourceNPM:
+		return npmRecipeRevision(pkg)
+	case SourceArchive:
+		return archiveRecipeRevision(pkg)
+	default:
+		return "", fmt.Errorf("internal error: unknown pool source kind %q", kind)
+	}
 }
 
 // Source is the local artifact-acquisition seam this package's command-level
@@ -204,8 +287,18 @@ func LockPool(ctx context.Context, paths PoolPaths) (release func(), err error) 
 type UpdateOptions struct {
 	// Harness is the manifest/lock map key, e.g. "claude".
 	Harness string
-	// Package is the source package identity, e.g. "@anthropic-ai/claude-code".
+	// Package is the source package identity, e.g. "@anthropic-ai/claude-code"
+	// for an npm-sourced harness, or the harness's own name for an
+	// archive-sourced one (internal/harness.Descriptor.PoolPackageID()).
 	Package string
+	// Source selects which pool.Source acquisition style this call is
+	// driving — SourceNPM or SourceArchive (§8.1) — determining the
+	// Observations/Lock namespace prefix and the recipe_revision formula
+	// (see SourceKind's own doc comment). The zero value is SourceNPM (see
+	// SourceKind.effective's doc comment): every UpdateOptions literal
+	// written before this field existed drove an npm Source, so leaving it
+	// unset preserves that behavior with no edits required.
+	Source SourceKind
 	// BinName is the harness's executable name inside a realized generation
 	// (internal/harness.Descriptor.Bin), passed through to
 	// RealizeGeneration/Source.Realize. cmd/harness.go is the only caller
@@ -302,13 +395,13 @@ type UpdateResult struct {
 // under its own, self-contained pool lock acquisition. See RefreshHarnessLocked
 // for the behavior; this wrapper exists for a caller that isn't already
 // composing multiple orchestrator calls under one LockPool span.
-func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, pkg string, now time.Time) ([]Candidate, error) {
+func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, kind SourceKind, pkg string, now time.Time) ([]Candidate, error) {
 	release, err := LockPool(ctx, paths)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return RefreshHarnessLocked(ctx, src, paths, pkg, now)
+	return RefreshHarnessLocked(ctx, src, paths, kind, pkg, now)
 }
 
 // RefreshHarnessLocked is RefreshHarness's body, assuming the caller already
@@ -317,24 +410,90 @@ func RefreshHarness(ctx context.Context, src Source, paths PoolPaths, pkg string
 // (first-seen stamped with now for keys observations.json has never seen
 // before — MergeObservations/Observe's write-once rule, §6.6 — so a second
 // refresh with a later now never moves an existing first_seen_at), and
-// returns the candidates annotated with the FirstSeenAt now on record (which,
-// for a version seen on a prior refresh, is that earlier timestamp, not
-// now). Refresh never touches the lock, and never calls Source.Resolve or
-// Source.Fetch.
-func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, pkg string, now time.Time) ([]Candidate, error) {
+// returns the candidates annotated with the FirstSeenAt/PublishedAt now on
+// record (which, for a version seen on a prior refresh, are those earlier
+// values, not this call's fresh ones). Refresh never touches the lock, and
+// never calls Source.Resolve or Source.Fetch.
+//
+// PublishedAt synthesis (§9/§6.6): a candidate with no real publish-history
+// timestamp — every candidate an archive Source returns
+// (internal/pool/source/archive.go's Refresh doc comment: "this channel's
+// manifest has no publish-history field ... this method deliberately does
+// NOT invent one"), and occasionally an npm one missing registry "time"
+// metadata (NPM.Refresh's own doc comment) — gets PublishedAt synthesized as
+// FirstSeenAt: first observation can only ever be at or after actual
+// publication, so it's a conservative proxy; for an archive-sourced harness
+// this makes minimum_release_age effectively evaluated against
+// first_seen_at, since no real published_at exists at all. Doing the
+// synthesis HERE means pool.Eligible/QuarantineRemaining themselves need NO
+// source-aware branch: by the time any candidate is ever visible to them, a
+// zero PublishedAt has already been replaced by a real (if conservative)
+// timestamp.
+//
+// CORRECTNESS-CRITICAL: unlike first_seen_at, published_at is NOT
+// write-once (Observe overwrites it on every merge, by design — an upstream
+// republish/reclassify must be reflected). If the synthesis above were fed
+// THIS CALL's own `now` (or, worse, the local `firstSeen` variable when that
+// itself defaulted to `now`), a repeated refresh of the same still-zero-
+// PublishedAt candidate would restamp published_at forward every time,
+// so `now - published_at` never grows and the version stays quarantined
+// forever under any nonzero minimum_release_age. The fix: synthesis must be
+// DETERMINISTIC across repeated refreshes, so it reads each candidate's own
+// EXISTING first_seen_at (loaded below, BEFORE the merge loop) — which
+// itself only ever gets set once, on first observation — and uses that
+// (never this call's `now`) for both the candidate's FirstSeenAt and the
+// synthesized PublishedAt. The correct framing is: first_seen_at is
+// write-once; published_at, when synthesized, must be DERIVED from it
+// deterministically so it does not drift with every refresh.
+func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, kind SourceKind, pkg string, now time.Time) ([]Candidate, error) {
 	candidates, err := src.Refresh(ctx, pkg)
 	if err != nil {
 		return nil, fmt.Errorf("refreshing %s: %w", pkg, err)
 	}
 
+	// Loaded BEFORE the merge loop, deliberately: the PublishedAt synthesis
+	// below must read each candidate's own ALREADY-STORED first_seen_at (if
+	// any), not this call's `now` — see this function's own doc comment for
+	// why using `now` there would make published_at drift forward on every
+	// refresh instead of staying stable.
+	existing, err := LoadObservations(paths.Observations)
+	if err != nil {
+		return nil, fmt.Errorf("loading observations: %w", err)
+	}
+
 	toMerge := make(Observations, len(candidates))
 	for _, c := range candidates {
+		key := ObservationKey(string(kind), pkg, c.Version)
+
+		// firstSeen is `now` only the FIRST time this (source, package,
+		// version) is ever observed (matching today's behavior); a version
+		// already on record keeps its own already-stored first_seen_at
+		// (§6.6 write-once) — read HERE, not left to MergeObservations'
+		// later write-once check, because this value also feeds the
+		// PublishedAt synthesis below, which must be deterministic.
 		firstSeen := c.FirstSeenAt
 		if firstSeen.IsZero() {
 			firstSeen = now
 		}
-		key := ObservationKey(npmSourceName, pkg, c.Version)
-		if err := toMerge.Observe(key, FormatTimestamp(firstSeen), FormatTimestamp(c.PublishedAt), c.Prerelease, c.Yanked); err != nil {
+		if prior, ok := existing[key]; ok {
+			if fsa, perr := ParseTimestamp(prior.FirstSeenAt); perr == nil {
+				firstSeen = fsa
+			}
+		}
+
+		// synthesized records whether THIS candidate's PublishedAt, as
+		// returned by src.Refresh, was zero — the one place that actually
+		// knows the fact, before it gets overwritten by the firstSeen proxy
+		// below. Persisted verbatim (Candidate.PublishedAtSynthesized's doc
+		// comment): re-deriving it later by comparing the stored
+		// PublishedAt/FirstSeenAt for equality would misclassify a real
+		// PublishedAt that legitimately coincides with FirstSeenAt.
+		synthesized := c.PublishedAt.IsZero()
+		publishedAt := c.PublishedAt
+		if publishedAt.IsZero() {
+			publishedAt = firstSeen
+		}
+		if err := toMerge.Observe(key, FormatTimestamp(firstSeen), FormatTimestamp(publishedAt), c.Prerelease, c.Yanked, synthesized); err != nil {
 			return nil, fmt.Errorf("recording observation for %s@%s: %w", pkg, c.Version, err)
 		}
 	}
@@ -343,18 +502,28 @@ func RefreshHarnessLocked(ctx context.Context, src Source, paths PoolPaths, pkg 
 	}
 
 	// Re-load so the returned candidates carry the true (possibly older, per
-	// the write-once rule above) first_seen_at rather than this call's now.
+	// the write-once rule above) first_seen_at, and the true (possibly
+	// synthesized, per the PublishedAt synthesis above) published_at, rather
+	// than whatever src.Refresh returned.
 	stored, err := LoadObservations(paths.Observations)
 	if err != nil {
 		return nil, fmt.Errorf("reloading observations: %w", err)
 	}
 	out := make([]Candidate, len(candidates))
 	for i, c := range candidates {
-		key := ObservationKey(npmSourceName, pkg, c.Version)
+		key := ObservationKey(string(kind), pkg, c.Version)
 		if obs, ok := stored[key]; ok {
 			if fsa, err := ParseTimestamp(obs.FirstSeenAt); err == nil {
 				c.FirstSeenAt = fsa
 			}
+			if pa, err := ParseTimestamp(obs.PublishedAt); err == nil {
+				c.PublishedAt = pa
+			}
+			// PublishedAtSynthesized (§9, wave2-integration-fixes item 1):
+			// read from the stored observation, not re-derived — see
+			// Candidate.PublishedAtSynthesized's doc comment for why
+			// re-deriving it from the timestamps alone is unsound.
+			c.PublishedAtSynthesized = obs.PublishedAtSynthesized
 		}
 		out[i] = c
 	}
@@ -461,7 +630,8 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	}
 	policy := m.EffectivePolicy(opts.Harness)
 
-	recipeRevision, err := npmRecipeRevision(opts.Package)
+	kind := opts.Source.effective()
+	recipeRevision, err := recipeRevisionForSource(kind, opts.Package)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +646,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	if err != nil {
 		return nil, fmt.Errorf("loading observations: %w", err)
 	}
-	candidates, err := candidatesForPackage(obs, opts.Package)
+	candidates, err := candidatesForPackage(obs, kind, opts.Package)
 	if err != nil {
 		return nil, err
 	}
@@ -533,7 +703,31 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	switch decision.Kind {
 	case DecisionUpToDate:
 		out := existing
-		return &UpdateResult{Harness: &out, Changed: false}, nil
+		result := &UpdateResult{Harness: &out, Changed: false}
+		// Activation repair on the up-to-date path: a pool whose generation
+		// was realized before activation existed (Phase 2 wave 1) is locked
+		// AND realized — so Decide correctly reports up-to-date — but has no
+		// pointer or dispatcher, and nothing else in this call would ever
+		// write them. §10 makes the ACTIVE receipt part of install's
+		// idempotence contract, so repair it here: activateIfNeeded no-ops
+		// when the pointer already names this generation, and a failure is
+		// non-fatal (RealizeErr) like every other realize-phase failure on
+		// the install/update path.
+		if generationRealized(digestRecorded != "", dirPresent) {
+			genID, genErr := GenerationID(opts.Harness, out.Version, platformKey, digestRecorded)
+			if genErr != nil {
+				result.RealizeErr = genErr
+				return result, nil
+			}
+			if active, ok := ActiveGeneration(paths, opts.Harness, platformKey); !ok || active != genID {
+				if aerr := activateIfNeeded(paths, opts.Harness, platformKey, genID); aerr != nil {
+					result.RealizeErr = aerr
+				} else {
+					result.Note = "activated " + genID
+				}
+			}
+		}
+		return result, nil
 	case DecisionRealize:
 		out := existing
 		result := &UpdateResult{Harness: &out, Changed: false}
@@ -609,6 +803,27 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, fmt.Errorf("resolving %s@%s: %w", opts.Package, selected.Version, err)
 	}
 	resolved.FirstSeenAt = FormatTimestamp(selected.FirstSeenAt)
+	// PublishedAt synthesis, resolve-time counterpart of RefreshHarnessLocked's
+	// own (see that function's doc comment for the full rationale): an
+	// archive Source's Resolve always returns a zero PublishedAt
+	// (internal/pool/source/archive.go's Resolve doc comment — "there is no
+	// real value to fill PublishedAt with at THIS stage either") because its
+	// release channel carries no publish-history timestamp at all; an npm
+	// Source's Resolve, by contrast, always returns a real one or fails
+	// (NPM.Resolve's own doc comment), so this is a no-op for npm in
+	// practice. (*Lock).Validate rejects a zero published_at outright
+	// (validateLockTimestamp) — without this, an archive-sourced lock entry
+	// could never be persisted at all. Parsed (not string-compared against a
+	// formatted zero value) so a malformed published_at from a Source fails
+	// loudly here instead of silently being treated as either zero or
+	// non-zero.
+	resolvedPublishedAt, err := ParseTimestamp(resolved.PublishedAt)
+	if err != nil {
+		return nil, fmt.Errorf("resolving %s@%s: published_at: %w", opts.Package, selected.Version, err)
+	}
+	if resolvedPublishedAt.IsZero() {
+		resolved.PublishedAt = resolved.FirstSeenAt
+	}
 
 	// Fetch BEFORE writing the lock: it mutates resolved in place, filling
 	// (and verifying) each artifact's pool-local sha256 cache-address field
@@ -771,6 +986,178 @@ func SyncHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths
 	return &lh, nil
 }
 
+// rollbackCandidate is one realized generation this package's rollback scan
+// found for a given (harness, platform) pair, with just enough data to
+// choose among them: which version it is, and how recently it was
+// published into runtime/generations/ (used as "most recently created" when
+// no --to version is given).
+type rollbackCandidate struct {
+	id      string
+	version string
+	modTime time.Time
+}
+
+// scanRollbackCandidates lists every generation under
+// runtime/generations/<paths.Runtime> whose OWN receipt.json names
+// (harnessName, key) — receipts are the authoritative source (§10's brief:
+// "prefer reading receipt.json, ids are <harness>-<version>-<platform-key>-
+// <digest8> but receipts are authoritative"), not a string-split of the
+// generation id, which would be ambiguous whenever a harness name or a
+// semver prerelease identifier itself contains a hyphen. A directory that
+// isn't a valid generation (unreadable or unparseable receipt) is skipped,
+// not an error — GC's own eventual cleanup, not rollback, is responsible for
+// judging orphaned/corrupt directories.
+func scanRollbackCandidates(paths PoolPaths, harnessName string, key PlatformKey) ([]rollbackCandidate, error) {
+	entries, err := os.ReadDir(runtimeGenerationsDir(paths.Runtime))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing generations: %w", err)
+	}
+
+	var out []rollbackCandidate
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		genDir := runtimeGenerationDir(paths.Runtime, entry.Name())
+		info, err := os.Stat(genDir)
+		if err != nil {
+			continue
+		}
+		r, err := readGenerationReceipt(genDir)
+		if err != nil {
+			continue
+		}
+		if r.Harness != harnessName || r.Platform != key {
+			continue
+		}
+		out = append(out, rollbackCandidate{id: entry.Name(), version: r.Version, modTime: info.ModTime()})
+	}
+	return out, nil
+}
+
+// RollbackHarness switches harnessName's active pointer for key back to a
+// previously realized generation, without any network access or lockfile
+// mutation (§10 "Switch the pointer to a retained generation without network
+// access"), under its own, self-contained pool lock acquisition. See
+// RollbackHarnessLocked for the behavior; this wrapper exists for a caller
+// that isn't already composing multiple orchestrator calls under one
+// LockPool span.
+func RollbackHarness(ctx context.Context, paths PoolPaths, harnessName string, key PlatformKey, toVersion string) (generationID string, err error) {
+	release, err := LockPool(ctx, paths)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return RollbackHarnessLocked(paths, harnessName, key, toVersion)
+}
+
+// RollbackHarnessLocked is RollbackHarness's body, assuming the caller
+// already holds the pool lock (via LockPool) — it never acquires one
+// itself. It performs no network access, calls no Backend, and never
+// touches harness-lock.json (§10: rollback "resolves NOTHING" the way sync
+// does — it only ever rewrites the active pointer, via ActivateGeneration,
+// §5.2/§13's "default rollback switches the pointer only and preserves
+// state").
+//
+// Candidate selection scans every generation already realized for
+// (harnessName, key) via scanRollbackCandidates:
+//
+//   - with toVersion non-empty: the candidate(s) whose receipt version
+//     equals toVersion exactly — version is NOT guaranteed unique to one
+//     generation (e.g. two distinct realizes of the same version, with
+//     different content, each get their own generation id), so ties are
+//     broken by the newest generation directory (ModTime), same as the
+//     no-toVersion case below. An error lists every OTHER version found (so
+//     a typo'd version is immediately correctable) when toVersion matches
+//     none of them.
+//   - with toVersion empty: the candidate with the newest generation
+//     directory (most recently created, by mtime) that is NOT the
+//     currently active generation — rollback's whole point is to switch
+//     to something else. An error names the situation when there is
+//     nothing else retained to roll back to (only the active generation
+//     itself was found, or nothing was found at all).
+//
+// Either way, the returned generationID (and the caller's printed output,
+// cmd/harness.go) names the exact chosen generation, digest8 included —
+// precise even when more than one generation shares the same version.
+//
+// On success it calls ActivateGeneration for the chosen generation (which
+// itself appends a "generation_activated" audit event), then appends a
+// SEPARATE "generation_rollback" audit event naming both the generation
+// switched away from and the one switched to.
+func RollbackHarnessLocked(paths PoolPaths, harnessName string, key PlatformKey, toVersion string) (generationID string, err error) {
+	candidates, err := scanRollbackCandidates(paths, harnessName, key)
+	if err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no realized generation found for %s/%s to roll back to", harnessName, key)
+	}
+
+	// "" when nothing is active yet for this platform — a legitimate
+	// rollback target selection still proceeds (there is simply nothing to
+	// exclude as "currently active").
+	currentID, _ := ActiveGeneration(paths, harnessName, key)
+
+	var chosen *rollbackCandidate
+	if toVersion != "" {
+		for i := range candidates {
+			c := &candidates[i]
+			if c.version != toVersion {
+				continue
+			}
+			// version is not guaranteed unique to one generation (two
+			// distinct realizes of the same version can each get their own
+			// generation id) — tie-break by the newest generation directory,
+			// same ordering as the no-toVersion case below.
+			if chosen == nil || c.modTime.After(chosen.modTime) {
+				chosen = c
+			}
+		}
+		if chosen == nil {
+			seen := map[string]bool{}
+			var versions []string
+			for _, c := range candidates {
+				if !seen[c.version] {
+					seen[c.version] = true
+					versions = append(versions, c.version)
+				}
+			}
+			sort.Strings(versions)
+			return "", fmt.Errorf("no realized generation for %s/%s at version %q; available: %s",
+				harnessName, key, toVersion, strings.Join(versions, ", "))
+		}
+	} else {
+		var best *rollbackCandidate
+		for i := range candidates {
+			c := &candidates[i]
+			if c.id == currentID {
+				continue
+			}
+			if best == nil || c.modTime.After(best.modTime) {
+				best = c
+			}
+		}
+		if best == nil {
+			return "", fmt.Errorf("no other realized generation for %s/%s to roll back to (only the currently active generation is retained)", harnessName, key)
+		}
+		chosen = best
+	}
+
+	if err := ActivateGeneration(paths, harnessName, key, chosen.id); err != nil {
+		return "", err
+	}
+	if err := AppendAudit(paths.Audit, "generation_rollback", map[string]any{
+		"harness": harnessName, "platform": string(key), "from_generation": currentID, "to_generation": chosen.id,
+	}); err != nil {
+		return "", fmt.Errorf("recording generation_rollback audit event: %w", err)
+	}
+	return chosen.id, nil
+}
+
 // ManifestHarnessNames returns the harness names currently listed in the
 // pool manifest — i.e. those with recorded developer intent — in
 // unspecified order. A missing manifest returns an empty slice, not an
@@ -835,19 +1222,51 @@ type HarnessStatus struct {
 	// generation digest for (LockHarness.Generations), sorted, in unspecified
 	// separator-free form — cmd/harness.go's `list` renders them
 	// comma-joined as the REALIZED column (§16 Phase 2). Empty when never
-	// locked or never realized for any platform. This reflects what the
-	// LOCK records, not a fresh disk check — `list` never mutates and never
-	// stats runtime/ (§6.5 "list takes no lock").
+	// locked or never realized for any platform. This one field reflects
+	// only what the LOCK records, not a disk check — unlike ActiveGenerations
+	// below, which DOES read runtime/ (pointer files, and — via
+	// GenerationVersion — a generation's own receipt.json). Either way
+	// `list` never mutates and never takes the pool lock (§6.5 "list takes
+	// no lock").
 	Realized []PlatformKey
+
+	// ActiveGenerations maps a platform key to the generation id currently
+	// active for this harness (runtime/active/<key>/<harness>.gen's content,
+	// read via ActiveGeneration/ReadPointer), for whichever of the closed
+	// PlatformKey values currently have a pointer file. A platform with no
+	// pointer yet (never activated, or racing an in-flight activation) is
+	// simply absent from the map — StatusHarness tolerates every
+	// ActiveGeneration failure silently, the same lockless-read tolerance
+	// Realized gets from a missing lock (§6.5 "list takes no lock ... must
+	// tolerate a concurrent transaction"). cmd/harness.go's `list` renders
+	// the ACTIVE column from this host platform's entry only, resolving the
+	// generation id to a human version via GenerationVersion.
+	ActiveGenerations map[PlatformKey]string
 }
 
 // StatusHarness computes one harness's list row (§10) from the pool's
 // current manifest, lock, and observations — read-only, no pool lock taken
 // (§6.5: "list takes no lock"). A missing manifest or lock file is treated
 // as empty (nothing installed yet), not an error, so `list` works before any
-// `install` has ever run.
-func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (HarnessStatus, error) {
+// `install` has ever run. kind selects the Observations namespace this
+// harness's candidates were recorded under (SourceNPM/SourceArchive, §8.1) —
+// the caller (cmd/harness.go) knows the harness's Descriptor and states it
+// explicitly; this package cannot infer it from pkg alone.
+func StatusHarness(paths PoolPaths, harnessName string, kind SourceKind, pkg string, now time.Time) (HarnessStatus, error) {
 	status := HarnessStatus{Harness: harnessName}
+
+	// Lockless by construction (§6.5): ActiveGeneration is a single
+	// best-effort ReadPointer per platform, tolerating every failure mode
+	// (never activated, an in-flight rename, a missing active/<key> dir) as
+	// "absent from the map" rather than an error.
+	for _, key := range allPlatformKeys() {
+		if id, ok := ActiveGeneration(paths, harnessName, key); ok {
+			if status.ActiveGenerations == nil {
+				status.ActiveGenerations = map[PlatformKey]string{}
+			}
+			status.ActiveGenerations[key] = id
+		}
+	}
 
 	m, err := loadManifestOrEmpty(paths.Manifest)
 	if err != nil {
@@ -874,7 +1293,7 @@ func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (Har
 	if err != nil {
 		return status, err
 	}
-	candidates, err := candidatesForPackage(obs, pkg)
+	candidates, err := candidatesForPackage(obs, kind, pkg)
 	if err != nil {
 		return status, err
 	}
@@ -925,17 +1344,20 @@ func StatusHarness(paths PoolPaths, harnessName, pkg string, now time.Time) (Har
 	return status, nil
 }
 
-// candidatesForPackage extracts every observed candidate for pkg (source
-// "npm") out of the flat Observations map, parsing each "npm/<pkg>/<version>"
-// key back into a Candidate ready for Eligible/QuarantineRemaining. Matching
-// is a literal prefix check against "npm/<pkg>/" — the trailing slash is
-// load-bearing: without it, pkg "foo" would also match a stored key for an
-// unrelated package "foo-bar" ("npm/foo-bar/1.0.0" starts with "npm/foo" but
-// not "npm/foo/"). This is a literal string-prefix check, not a path split,
-// so a scoped npm package name (which itself contains "/") is handled
-// correctly too.
-func candidatesForPackage(obs Observations, pkg string) ([]Candidate, error) {
-	prefix := npmSourceName + "/" + pkg + "/"
+// candidatesForPackage extracts every observed candidate for pkg under
+// namespace kind out of the flat Observations map, parsing each
+// "<kind>/<pkg>/<version>" key back into a Candidate ready for
+// Eligible/QuarantineRemaining. Matching is a literal prefix check against
+// "<kind>/<pkg>/" — the trailing slash is load-bearing: without it, pkg
+// "foo" would also match a stored key for an unrelated package "foo-bar"
+// ("npm/foo-bar/1.0.0" starts with "npm/foo" but not "npm/foo/"). This is a
+// literal string-prefix check, not a path split, so a scoped npm package
+// name (which itself contains "/") is handled correctly too. kind is
+// normalized via SourceKind.effective (the zero value means SourceNPM, the
+// same convention UpdateOptions.Source uses) so a caller's zero-value kind
+// can never silently mean "match nothing" instead of "npm".
+func candidatesForPackage(obs Observations, kind SourceKind, pkg string) ([]Candidate, error) {
+	prefix := string(kind.effective()) + "/" + pkg + "/"
 	var out []Candidate
 	for key, o := range obs {
 		version, ok := strings.CutPrefix(key, prefix)
@@ -956,6 +1378,11 @@ func candidatesForPackage(obs Observations, pkg string) ([]Candidate, error) {
 			FirstSeenAt: firstSeenAt,
 			Prerelease:  o.Prerelease,
 			Yanked:      o.Yanked,
+			// Read straight from the stored observation — see
+			// Candidate.PublishedAtSynthesized's doc comment for why this
+			// must be the persisted fact, not re-derived from the
+			// timestamps (§9, wave2-integration-fixes item 1).
+			PublishedAtSynthesized: o.PublishedAtSynthesized,
 		})
 	}
 	return out, nil

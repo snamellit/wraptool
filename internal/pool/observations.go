@@ -13,6 +13,18 @@ type Observation struct {
 	PublishedAt string `json:"published_at"`  // UTC RFC3339, registry-supplied
 	Prerelease  bool   `json:"prerelease"`
 	Yanked      bool   `json:"yanked"`
+	// PublishedAtSynthesized records whether PublishedAt is
+	// RefreshHarnessLocked's synthesized proxy (PublishedAt := FirstSeenAt)
+	// rather than a real upstream publish timestamp — see
+	// Candidate.PublishedAtSynthesized's doc comment (eligibility.go) for
+	// the full rationale, including why this must be persisted explicitly
+	// (not re-derived by comparing the two timestamps for equality on
+	// load, which misclassifies a real PublishedAt that legitimately
+	// coincides with FirstSeenAt, e.g. an npm candidate refreshed promptly
+	// after its own publish). Omitted from JSON when false, matching every
+	// pool manifest/observation entry written before this field existed,
+	// which is the correct default (a real, non-synthesized PublishedAt).
+	PublishedAtSynthesized bool `json:"published_at_synthesized,omitempty"`
 }
 
 // Observations is the flat "<source>/<package>/<version>" -> Observation map
@@ -29,16 +41,17 @@ func ObservationKey(source, pkg, version string) string {
 // firstSeenAt becomes its permanent first_seen_at. If key already exists,
 // the existing first_seen_at is kept regardless of the firstSeenAt argument —
 // first_seen_at is never modified by a later merge (§6.6). published_at,
-// prerelease, and yanked are always overwritten with the latest values, so a
-// release that is later yanked or reclassified is reflected on the next
-// refresh.
+// publishedAtSynthesized, prerelease, and yanked are always overwritten with
+// the latest values, so a release that is later yanked or reclassified is
+// reflected on the next refresh, and a source that starts (or stops)
+// supplying a real publish timestamp for a version is reflected too.
 //
 // firstSeenAt and publishedAt must both parse as UTC RFC3339 (§6.6); Observe
 // rejects a malformed value with an error and leaves o unchanged, rather than
 // storing it. This is write-path validation, mirroring LoadObservations'
 // read-path check, so this package can never itself produce an
 // observations.json that a later LoadObservations would reject.
-func (o Observations) Observe(key string, firstSeenAt, publishedAt string, prerelease, yanked bool) error {
+func (o Observations) Observe(key string, firstSeenAt, publishedAt string, prerelease, yanked, publishedAtSynthesized bool) error {
 	if _, err := ParseTimestamp(firstSeenAt); err != nil {
 		return fmt.Errorf("observation %q: first_seen_at: %w", key, err)
 	}
@@ -50,10 +63,11 @@ func (o Observations) Observe(key string, firstSeenAt, publishedAt string, prere
 		fsa = existing.FirstSeenAt
 	}
 	o[key] = Observation{
-		FirstSeenAt: fsa,
-		PublishedAt: publishedAt,
-		Prerelease:  prerelease,
-		Yanked:      yanked,
+		FirstSeenAt:            fsa,
+		PublishedAt:            publishedAt,
+		Prerelease:             prerelease,
+		Yanked:                 yanked,
+		PublishedAtSynthesized: publishedAtSynthesized,
 	}
 	return nil
 }
@@ -152,7 +166,7 @@ func MergeObservations(path string, obs Observations) error {
 		return err
 	}
 	for key, incoming := range obs {
-		if err := existing.Observe(key, incoming.FirstSeenAt, incoming.PublishedAt, incoming.Prerelease, incoming.Yanked); err != nil {
+		if err := existing.Observe(key, incoming.FirstSeenAt, incoming.PublishedAt, incoming.Prerelease, incoming.Yanked, incoming.PublishedAtSynthesized); err != nil {
 			return err
 		}
 	}

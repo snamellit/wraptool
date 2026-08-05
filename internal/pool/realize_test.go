@@ -176,7 +176,11 @@ func mustGenerationID(t *testing.T, harnessName, version string, key PlatformKey
 // TestRealizeGenerationPublishesNewGeneration is the happy path: a fresh
 // realize creates a txn dir, calls Source.Realize, verifies, writes
 // receipt.json, renames into runtime/generations/<generation-id>/, updates
-// the lock (both in memory and on disk), and appends the audit event.
+// the lock (both in memory and on disk), appends the audit event, and (wave
+// 2 activation layer) activates the freshly published generation: the
+// pointer file names exactly it, and the dispatcher exists and is 0o755
+// (§11.4 step 6, "…renames the tree into runtime/generations/, and
+// activates").
 func TestRealizeGenerationPublishesNewGeneration(t *testing.T) {
 	paths := testPaths(t)
 	h := baseRealizeLockHarness()
@@ -242,6 +246,24 @@ func TestRealizeGenerationPublishesNewGeneration(t *testing.T) {
 		t.Errorf("generation_realized audit event fields = %+v, want harness/version/platform/generation_id matching %s/%s/%s/%s",
 			found.Fields, realizeTestHarness, realizeTestVersion, realizeTestKey, genID)
 	}
+
+	// Activation (wave 2): the pointer file names exactly this generation,
+	// LF-terminated, and the dispatcher exists with the exec mode a project
+	// container needs.
+	ptrData, err := os.ReadFile(pointerFile(paths.Runtime, realizeTestKey, realizeTestHarness))
+	if err != nil {
+		t.Fatalf("reading pointer after realize: %v", err)
+	}
+	if string(ptrData) != genID+"\n" {
+		t.Errorf("pointer content = %q, want %q", ptrData, genID+"\n")
+	}
+	dispatcherInfo, err := os.Stat(runtimeBinFile(paths.Runtime, realizeTestHarness))
+	if err != nil {
+		t.Fatalf("stat dispatcher after realize: %v", err)
+	}
+	if dispatcherInfo.Mode().Perm() != 0o755 {
+		t.Errorf("dispatcher mode = %o, want 0o755", dispatcherInfo.Mode().Perm())
+	}
 }
 
 // TestRealizeGenerationExistingTargetRightDigestIsIdempotent covers the
@@ -269,6 +291,14 @@ func TestRealizeGenerationExistingTargetRightDigestIsIdempotent(t *testing.T) {
 	}
 	if entries := stagingEntries(t, paths); len(entries) != 0 {
 		t.Errorf("staging entries = %v, want none (no txn dir should ever be created)", entries)
+	}
+
+	// The idempotent path activates too (§11.4 step 6's "repair" clause: the
+	// pointer was never set at all here, which counts as "missing").
+	active, ok := ActiveGeneration(paths, realizeTestHarness, realizeTestKey)
+	genID := mustGenerationID(t, realizeTestHarness, realizeTestVersion, realizeTestKey, digest)
+	if !ok || active != genID {
+		t.Errorf("ActiveGeneration after idempotent realize = (%q, %v), want (%q, true)", active, ok, genID)
 	}
 }
 
@@ -316,6 +346,12 @@ func TestRealizeGenerationCrashRecoveryPublishesOverExistingIdenticalTarget(t *t
 	}
 	if entries := stagingEntries(t, paths); len(entries) != 0 {
 		t.Errorf("staging entries = %v, want none (the txn dir must be cleaned up even though its content was discarded)", entries)
+	}
+
+	genID := mustGenerationID(t, realizeTestHarness, realizeTestVersion, realizeTestKey, digest)
+	active, ok := ActiveGeneration(paths, realizeTestHarness, realizeTestKey)
+	if !ok || active != genID {
+		t.Errorf("ActiveGeneration after crash-recovery realize = (%q, %v), want (%q, true)", active, ok, genID)
 	}
 }
 

@@ -209,7 +209,7 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
 	// --- Refresh (real Source.Refresh, one registry GET) ---
-	if _, err := pool.RefreshHarness(ctx, n, paths, pkg, now); err != nil {
+	if _, err := pool.RefreshHarness(ctx, n, paths, pool.SourceNPM, pkg, now); err != nil {
 		t.Fatalf("RefreshHarness: %v", err)
 	}
 

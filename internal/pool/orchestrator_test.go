@@ -59,6 +59,13 @@ type fakeSource struct {
 	// for, closing the two-different-GenerationID-sources hole between this
 	// function's publish path and the idempotent fast path above it).
 	realizeWrongVersion bool
+	// resolveZeroPublishedAt makes Resolve return a zero-formatted
+	// PublishedAt, mirroring a real archive Source's Resolve (that
+	// channel's manifest carries no publish-history timestamp at all,
+	// source/archive.go's own doc comment) — used to exercise
+	// UpdateHarnessLocked's PublishedAt-synthesis-before-lock-persist path
+	// without depending on the real Archive implementation.
+	resolveZeroPublishedAt bool
 }
 
 func (f *fakeSource) Refresh(_ context.Context, pkg string) ([]Candidate, error) {
@@ -74,11 +81,15 @@ func (f *fakeSource) Resolve(_ context.Context, _ backend.Backend, pkg, version,
 	if f.resolveErr != nil {
 		return LockHarness{}, f.resolveErr
 	}
+	publishedAt := FormatTimestamp(fixedNow)
+	if f.resolveZeroPublishedAt {
+		publishedAt = FormatTimestamp(time.Time{})
+	}
 	return LockHarness{
 		Source:         npmSourceName,
 		Package:        pkg,
 		Version:        version,
-		PublishedAt:    FormatTimestamp(fixedNow),
+		PublishedAt:    publishedAt,
 		RecipeRevision: recipeRevision,
 	}, nil
 }
@@ -239,7 +250,7 @@ func TestRefreshHarnessStampsFirstSeenOnce(t *testing.T) {
 		pkg: {{Version: "2.1.220", PublishedAt: published}},
 	}}
 
-	first, err := RefreshHarness(ctxT(t), src, paths, pkg, fixedNow)
+	first, err := RefreshHarness(ctxT(t), src, paths, SourceNPM, pkg, fixedNow)
 	if err != nil {
 		t.Fatalf("first RefreshHarness: %v", err)
 	}
@@ -251,7 +262,7 @@ func TestRefreshHarnessStampsFirstSeenOnce(t *testing.T) {
 	}
 
 	later := fixedNow.Add(48 * time.Hour)
-	second, err := RefreshHarness(ctxT(t), src, paths, pkg, later)
+	second, err := RefreshHarness(ctxT(t), src, paths, SourceNPM, pkg, later)
 	if err != nil {
 		t.Fatalf("second RefreshHarness: %v", err)
 	}
@@ -272,8 +283,425 @@ func TestRefreshHarnessStampsFirstSeenOnce(t *testing.T) {
 func TestRefreshHarnessPropagatesSourceError(t *testing.T) {
 	paths := testPaths(t)
 	src := &fakeSource{refreshErr: errors.New("registry unreachable")}
-	if _, err := RefreshHarness(ctxT(t), src, paths, "pkg", fixedNow); err == nil {
+	if _, err := RefreshHarness(ctxT(t), src, paths, SourceNPM, "pkg", fixedNow); err == nil {
 		t.Fatal("expected an error from a failing Source.Refresh")
+	}
+}
+
+// --- PublishedAt synthesis (pool-source-wiring, §9/§6.6) ---
+
+// TestRefreshHarnessLockedSynthesizesPublishedAtBeforeObserve is a
+// regression this work package exists to close (source/archive.go's review
+// finding): a candidate with no real publish-history timestamp — the shape
+// every candidate an archive Source returns — must never reach
+// observations.json with a zero published_at. Note what IS and is NOT
+// write-once here (§6.6): first_seen_at is write-once (Observe never moves
+// it once set); published_at is NOT (Observe overwrites it on every merge,
+// by design, so an upstream republish/reclassify is reflected) — so a zero
+// published_at persisted here would not be "permanent" in the write-once
+// sense, it would simply keep getting recomputed from whatever is fed in at
+// merge time. The synthesis must therefore be deterministic (derived from
+// the write-once first_seen_at), not merely "non-zero once" — see
+// TestRefreshHarnessLockedPublishedAtSynthesisIsStableAcrossRefreshes for
+// the regression that actually matters operationally: a synthesis fed the
+// wrong input drifts published_at forward on every refresh, permanently
+// quarantining the version instead of merely being zero once. This test
+// asserts the synthesis happens BEFORE Observe (not merely somewhere before
+// this function returns) by reading observations.json's raw bytes off disk
+// and checking literally no zero timestamp appears anywhere in it.
+func TestRefreshHarnessLockedSynthesizesPublishedAtBeforeObserve(t *testing.T) {
+	paths := testPaths(t)
+	src := &fakeSource{candidates: map[string][]Candidate{
+		"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}, // zero PublishedAt, like a real archive candidate
+	}}
+
+	out, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow)
+	if err != nil {
+		t.Fatalf("RefreshHarnessLocked: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("candidates = %+v, want exactly one", out)
+	}
+	if out[0].PublishedAt.IsZero() {
+		t.Errorf("returned candidate's PublishedAt is still zero; want it synthesized from FirstSeenAt")
+	}
+	if !out[0].PublishedAt.Equal(out[0].FirstSeenAt) {
+		t.Errorf("PublishedAt = %v, want it to equal the synthesized FirstSeenAt %v", out[0].PublishedAt, out[0].FirstSeenAt)
+	}
+	if !out[0].PublishedAtSynthesized {
+		t.Error("PublishedAtSynthesized = false, want true (wave2-integration-fixes item 1: Eligible must skip minimum_release_age for this candidate)")
+	}
+
+	// Regression proof: the persisted observations.json file must contain no
+	// zero ("0001-01-01...") timestamp anywhere.
+	raw, err := os.ReadFile(paths.Observations)
+	if err != nil {
+		t.Fatalf("reading observations.json: %v", err)
+	}
+	if strings.Contains(string(raw), "0001-01-01") {
+		t.Errorf("observations.json contains a zero timestamp — pool.Eligible unconditionally treats a zero published_at as ineligible:\n%s", raw)
+	}
+
+	// Same assertion via the typed API: every stored observation's
+	// published_at must parse as non-zero.
+	stored, err := LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatalf("LoadObservations: %v", err)
+	}
+	obs, ok := stored[ObservationKey(string(SourceArchive), "agy", "1.1.10")]
+	if !ok {
+		t.Fatal("expected an observation for archive/agy/1.1.10")
+	}
+	publishedAt, err := ParseTimestamp(obs.PublishedAt)
+	if err != nil {
+		t.Fatalf("parsing stored published_at: %v", err)
+	}
+	if publishedAt.IsZero() {
+		t.Error("stored published_at is zero — the synthesis did not reach observations.json")
+	}
+}
+
+// TestRefreshHarnessLockedPreservesNonZeroPublishedAt proves the synthesis
+// is additive, not destructive: a candidate that already carries a real
+// PublishedAt (the ordinary npm case) must pass through completely
+// untouched, both in the returned Candidate and in what gets persisted.
+func TestRefreshHarnessLockedPreservesNonZeroPublishedAt(t *testing.T) {
+	paths := testPaths(t)
+	published := fixedNow.Add(-30 * 24 * time.Hour)
+	src := &fakeSource{candidates: map[string][]Candidate{
+		"@anthropic-ai/claude-code": {{Version: "2.1.220", PublishedAt: published}},
+	}}
+
+	out, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceNPM, "@anthropic-ai/claude-code", fixedNow)
+	if err != nil {
+		t.Fatalf("RefreshHarnessLocked: %v", err)
+	}
+	if len(out) != 1 || !out[0].PublishedAt.Equal(published) {
+		t.Fatalf("candidates = %+v, want PublishedAt unchanged at %v", out, published)
+	}
+	// wave2-integration-fixes item 1(c): a real (non-synthesized) npm
+	// PublishedAt must not be misidentified as synthesized — release-age
+	// stays enforced for it.
+	if out[0].PublishedAtSynthesized {
+		t.Error("PublishedAtSynthesized = true for a real npm PublishedAt, want false")
+	}
+
+	stored, err := LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatalf("LoadObservations: %v", err)
+	}
+	obs := stored[ObservationKey(npmSourceName, "@anthropic-ai/claude-code", "2.1.220")]
+	if obs.PublishedAt != FormatTimestamp(published) {
+		t.Errorf("stored published_at = %q, want %q (unchanged)", obs.PublishedAt, FormatTimestamp(published))
+	}
+}
+
+// TestRefreshHarnessLockedPublishedAtSynthesisIsStableAcrossRefreshes is
+// the BLOCKER regression this fix round exists for: the synthesis must
+// read each candidate's own EXISTING first_seen_at, not this call's own
+// `now`, or a synthesized published_at silently restamps to "now" on every
+// refresh — since published_at (unlike first_seen_at) is NOT write-once,
+// nothing else would ever catch this, and `now - published_at` would never
+// grow past ~0, permanently quarantining the version under any nonzero
+// minimum_release_age. Two refreshes of the SAME still-zero-PublishedAt
+// candidate, spaced >= the default 168h minimum_release_age apart, must
+// record byte-identical published_at.
+func TestRefreshHarnessLockedPublishedAtSynthesisIsStableAcrossRefreshes(t *testing.T) {
+	paths := testPaths(t)
+	src := &fakeSource{candidates: map[string][]Candidate{
+		"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}, // zero, like a real archive candidate
+	}}
+	key := ObservationKey(string(SourceArchive), "agy", "1.1.10")
+
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
+		t.Fatalf("first refresh (T0): %v", err)
+	}
+	first, err := LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatalf("LoadObservations after first refresh: %v", err)
+	}
+	firstPublished := first[key].PublishedAt
+	if firstPublished == "" {
+		t.Fatal("no observation recorded after the first refresh")
+	}
+
+	// 200h > the default 168h minimum_release_age — exactly the gap the
+	// drift bug would have re-zeroed the effective age for.
+	later := fixedNow.Add(200 * time.Hour)
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", later); err != nil {
+		t.Fatalf("second refresh (T0+200h): %v", err)
+	}
+	second, err := LoadObservations(paths.Observations)
+	if err != nil {
+		t.Fatalf("LoadObservations after second refresh: %v", err)
+	}
+	secondPublished := second[key].PublishedAt
+
+	if secondPublished != firstPublished {
+		t.Errorf("published_at drifted across refreshes: %q (T0) vs %q (T0+200h) — want byte-identical", firstPublished, secondPublished)
+	}
+}
+
+// TestRefreshThenUpdateSelectsArchiveVersionAfterDefaultQuarantineWindow is
+// this fix round's end-to-end proof, under the DEFAULT (unmodified) 168h
+// minimum_release_age policy: refresh at T0, refresh again at T0+200h (the
+// exact "refresh, wait, refresh again" pattern a developer running a timer
+// would produce), then update at T0+200h — the version must be SELECTED,
+// not quarantined. Before this fix round, the second refresh would have
+// restamped published_at to T0+200h itself, so update's own `now -
+// published_at` would read ~0h < 168h and the version would stay
+// quarantined forever.
+func TestRefreshThenUpdateSelectsArchiveVersionAfterDefaultQuarantineWindow(t *testing.T) {
+	paths := testPaths(t)
+	// No policy override — the default 168h minimum_release_age applies.
+	writeManifest(t, paths, `
+schema_version: 1
+harnesses:
+  agy:
+    constraint: ">=1 <2"
+`)
+	src := &fakeSource{
+		candidates:             map[string][]Candidate{"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}},
+		resolveZeroPublishedAt: true,
+	}
+
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
+		t.Fatalf("refresh at T0: %v", err)
+	}
+	later := fixedNow.Add(200 * time.Hour)
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", later); err != nil {
+		t.Fatalf("refresh at T0+200h: %v", err)
+	}
+
+	res, err := UpdateHarnessLocked(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "agy", Package: "agy", Source: SourceArchive, BinName: "agy", Now: later,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarnessLocked at T0+200h: %v", err)
+	}
+	if !res.Changed || res.Harness == nil || res.Harness.Version != "1.1.10" {
+		t.Fatalf("UpdateResult = %+v, want Changed=true Version=1.1.10 (selected, not quarantined)", res)
+	}
+}
+
+// TestRefreshThenUpdateSelectsArchiveVersionAtDayZeroUnderDefaultPolicy is
+// item 1(a)'s exact regression (wave2-integration-fixes, §9 RULING): a
+// FRESH pool, under the DEFAULT (unmodified) policy — 168h
+// minimum_release_age, 0h minimum_observation_age — refreshing and then
+// IMMEDIATELY updating a real-shaped archive candidate (zero PublishedAt
+// from Source, like the real archive Source) must select the version at
+// DAY 0, with no wait at all. Before this fix, PublishedAt synthesized as
+// FirstSeenAt == "now" made `now - published_at` == 0 < 168h, an
+// unavoidable wall no amount of waiting-before-refreshing could ever cross
+// (`wraptool harness install agy` failed for 7 days on a fresh pool, a
+// regression vs main). TestRefreshThenUpdateSelectsArchiveVersionAfter
+// DefaultQuarantineWindow (above) does not catch this: it waits 200h
+// before updating, which is >= 168h even under the OLD (unfixed) logic.
+func TestRefreshThenUpdateSelectsArchiveVersionAtDayZeroUnderDefaultPolicy(t *testing.T) {
+	paths := testPaths(t)
+	// No policy override at all — the real default (168h/0h) applies.
+	writeManifest(t, paths, `
+schema_version: 1
+harnesses:
+  agy:
+    constraint: ">=1 <2"
+`)
+	src := &fakeSource{
+		candidates:             map[string][]Candidate{"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}},
+		resolveZeroPublishedAt: true,
+	}
+
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
+		t.Fatalf("refresh at T0: %v", err)
+	}
+
+	res, err := UpdateHarnessLocked(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "agy", Package: "agy", Source: SourceArchive, BinName: "agy", Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarnessLocked at T0 (day 0): %v", err)
+	}
+	if !res.Changed || res.Harness == nil || res.Harness.Version != "1.1.10" {
+		t.Fatalf("UpdateResult = %+v, want Changed=true Version=1.1.10 (selected at day 0, not quarantined)", res)
+	}
+}
+
+// TestArchiveCandidateQuarantinedByMinimumObservationAge is item 1(b): with
+// minimum_observation_age set to 24h (minimum_release_age left at its
+// default, which item 1(a) proves is skipped for a synthesized
+// PublishedAt), a freshly refreshed archive candidate must be quarantined
+// at day 0 — with a countdown consistent with the observation age, not the
+// release age — and become eligible once 24h of observation has elapsed.
+func TestArchiveCandidateQuarantinedByMinimumObservationAge(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, `
+schema_version: 1
+policy:
+  minimum_observation_age: 24h
+harnesses:
+  agy:
+    constraint: ">=1 <2"
+`)
+	src := &fakeSource{
+		candidates:             map[string][]Candidate{"agy": {{Version: "1.1.10", PublishedAt: time.Time{}}}},
+		resolveZeroPublishedAt: true,
+	}
+
+	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
+		t.Fatalf("refresh at T0: %v", err)
+	}
+
+	// At T0: quarantined. No prior lock exists, so this is a hard error
+	// (Decide's DecisionFail path) naming the remaining wait.
+	_, err := UpdateHarnessLocked(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "agy", Package: "agy", Source: SourceArchive, BinName: "agy", Now: fixedNow,
+	})
+	if err == nil {
+		t.Fatal("expected UpdateHarnessLocked at T0 to fail: the candidate is quarantined by minimum_observation_age")
+	}
+	if !strings.Contains(err.Error(), "quarantined") {
+		t.Errorf("error = %v, want it to name the candidate as quarantined", err)
+	}
+
+	// StatusHarness's QuarantineRemaining must reflect the OBSERVATION age
+	// countdown (24h), not the release age (which is skipped entirely for a
+	// synthesized PublishedAt) — this is the "watch out" the brief calls
+	// out explicitly: list/StatusHarness must not render a release-age
+	// countdown for a synthesized candidate.
+	status, err := StatusHarness(paths, "agy", SourceArchive, "agy", fixedNow)
+	if err != nil {
+		t.Fatalf("StatusHarness at T0: %v", err)
+	}
+	if !status.QuarantineOK || status.QuarantinedVersion != "1.1.10" {
+		t.Fatalf("StatusHarness at T0 = %+v, want QuarantineOK=true QuarantinedVersion=1.1.10", status)
+	}
+	if status.QuarantineRemaining != 24*time.Hour {
+		t.Errorf("QuarantineRemaining at T0 = %v, want exactly 24h (the observation-age remainder)", status.QuarantineRemaining)
+	}
+
+	// At T0+24h: eligible.
+	later := fixedNow.Add(24 * time.Hour)
+	res, err := UpdateHarnessLocked(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "agy", Package: "agy", Source: SourceArchive, BinName: "agy", Now: later,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarnessLocked at T0+24h: %v", err)
+	}
+	if !res.Changed || res.Harness == nil || res.Harness.Version != "1.1.10" {
+		t.Fatalf("UpdateResult at T0+24h = %+v, want Changed=true Version=1.1.10 (eligible once observation age elapses)", res)
+	}
+}
+
+// TestUpdateHarnessLockedSynthesizesPublishedAtBeforeLockPersist is
+// RefreshHarnessLocked's synthesis test's counterpart at the resolve/lock
+// stage (source/archive.go's Resolve doc comment: "until that wiring lands,
+// a LockHarness this method returns cannot be persisted at all —
+// (*pool.Lock).Validate rejects a zero published_at/first_seen_at
+// outright"). fakeSource.resolveZeroPublishedAt simulates a real archive
+// Source's Resolve, which always returns a zero-formatted PublishedAt.
+func TestUpdateHarnessLockedSynthesizesPublishedAtBeforeLockPersist(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, `
+schema_version: 1
+policy:
+  minimum_release_age: 0h
+harnesses:
+  agy:
+    constraint: ">=1 <2"
+`)
+	pkg := "agy"
+	seedObservationsForSource(t, paths, SourceArchive, pkg, []Candidate{
+		{Version: "1.1.10", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+	src := &fakeSource{resolveZeroPublishedAt: true}
+
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "agy", Package: pkg, Source: SourceArchive, BinName: "agy", Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected a fresh resolve to change the lock")
+	}
+	if res.Harness.PublishedAt == "" || res.Harness.PublishedAt == FormatTimestamp(time.Time{}) {
+		t.Errorf("UpdateResult.Harness.PublishedAt = %q, want it synthesized (non-zero)", res.Harness.PublishedAt)
+	}
+	if res.Harness.PublishedAt != res.Harness.FirstSeenAt {
+		t.Errorf("PublishedAt = %q, FirstSeenAt = %q, want them equal (the synthesis sets published_at = first_seen_at)",
+			res.Harness.PublishedAt, res.Harness.FirstSeenAt)
+	}
+
+	// The persisted lock must independently validate — Lock.Validate rejects
+	// a zero published_at outright (validateLockTimestamp), so a successful
+	// UpdateHarness call here is itself proof the synthesis ran before the
+	// lock was written, not merely before this function returned.
+	lockData, err := os.ReadFile(paths.Lock)
+	if err != nil {
+		t.Fatalf("reading harness-lock.json: %v", err)
+	}
+	if _, err := UnmarshalLock(lockData); err != nil {
+		t.Fatalf("harness-lock.json failed to validate: %v", err)
+	}
+}
+
+// seedObservationsForSource is seedObservations' source-aware counterpart
+// (this file's existing seedObservations hardcodes npmSourceName) — used by
+// tests exercising an archive-sourced harness.
+func seedObservationsForSource(t *testing.T, paths PoolPaths, kind SourceKind, pkg string, candidates []Candidate) {
+	t.Helper()
+	obs := make(Observations, len(candidates))
+	for _, c := range candidates {
+		key := ObservationKey(string(kind), pkg, c.Version)
+		if err := obs.Observe(key, FormatTimestamp(c.FirstSeenAt), FormatTimestamp(c.PublishedAt), c.Prerelease, c.Yanked, c.PublishedAtSynthesized); err != nil {
+			t.Fatalf("seeding observation %s: %v", key, err)
+		}
+	}
+	if err := MergeObservations(paths.Observations, obs); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// --- recipe_revision: archive vs npm (pool-source-wiring, §8) ---
+
+// TestArchiveRecipeRevisionDistinctFromNPMAndStable proves recipe_revision
+// namespacing between sources (§8: "a recipe change to one source must not
+// invalidate the other's generations"): archiveRecipeRevision and
+// npmRecipeRevision must never collide for the same package identity, and
+// archiveRecipeRevision itself must be a pure, stable function of its input
+// (repeated calls with the same package produce byte-identical output).
+func TestArchiveRecipeRevisionDistinctFromNPMAndStable(t *testing.T) {
+	const pkg = "agy"
+
+	npmRev, err := npmRecipeRevision(pkg)
+	if err != nil {
+		t.Fatalf("npmRecipeRevision: %v", err)
+	}
+	archRev1, err := archiveRecipeRevision(pkg)
+	if err != nil {
+		t.Fatalf("archiveRecipeRevision: %v", err)
+	}
+	archRev2, err := archiveRecipeRevision(pkg)
+	if err != nil {
+		t.Fatalf("archiveRecipeRevision (2nd call): %v", err)
+	}
+
+	if archRev1 != archRev2 {
+		t.Errorf("archiveRecipeRevision(%q) is not stable: %s vs %s", pkg, archRev1, archRev2)
+	}
+	if archRev1 == npmRev {
+		t.Errorf("archiveRecipeRevision(%q) == npmRecipeRevision(%q) = %s; the two sources must never share a recipe_revision", pkg, pkg, archRev1)
+	}
+
+	// recipeRevisionForSource must dispatch to exactly the same functions.
+	if got, err := recipeRevisionForSource(SourceNPM, pkg); err != nil || got != npmRev {
+		t.Errorf("recipeRevisionForSource(SourceNPM, %q) = %q, %v, want %q, nil", pkg, got, err, npmRev)
+	}
+	if got, err := recipeRevisionForSource(SourceArchive, pkg); err != nil || got != archRev1 {
+		t.Errorf("recipeRevisionForSource(SourceArchive, %q) = %q, %v, want %q, nil", pkg, got, err, archRev1)
+	}
+	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg); err == nil {
+		t.Error("recipeRevisionForSource with an unknown SourceKind should fail closed, got nil error")
 	}
 }
 
@@ -293,7 +721,7 @@ func seedObservations(t *testing.T, paths PoolPaths, pkg string, candidates []Ca
 	obs := make(Observations, len(candidates))
 	for _, c := range candidates {
 		key := ObservationKey(npmSourceName, pkg, c.Version)
-		if err := obs.Observe(key, FormatTimestamp(c.FirstSeenAt), FormatTimestamp(c.PublishedAt), c.Prerelease, c.Yanked); err != nil {
+		if err := obs.Observe(key, FormatTimestamp(c.FirstSeenAt), FormatTimestamp(c.PublishedAt), c.Prerelease, c.Yanked, c.PublishedAtSynthesized); err != nil {
 			t.Fatalf("seeding observation %s: %v", key, err)
 		}
 	}
@@ -1363,7 +1791,7 @@ func TestStatusHarnessRendersDesiredLockedLatestEligibleQuarantined(t *testing.T
 		},
 	})
 
-	status, err := StatusHarness(paths, "claude", pkg, fixedNow)
+	status, err := StatusHarness(paths, "claude", SourceNPM, pkg, fixedNow)
 	if err != nil {
 		t.Fatalf("StatusHarness: %v", err)
 	}
@@ -1393,7 +1821,7 @@ func TestStatusHarnessRendersDesiredLockedLatestEligibleQuarantined(t *testing.T
 
 func TestStatusHarnessToleratesMissingManifestAndLock(t *testing.T) {
 	paths := testPaths(t)
-	status, err := StatusHarness(paths, "claude", "@anthropic-ai/claude-code", fixedNow)
+	status, err := StatusHarness(paths, "claude", SourceNPM, "@anthropic-ai/claude-code", fixedNow)
 	if err != nil {
 		t.Fatalf("StatusHarness on an empty pool: %v", err)
 	}
@@ -1461,7 +1889,7 @@ func TestSequentialRefreshThenUpdateDoesNotDeadlock(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		ctx := ctxT(t)
-		if _, err := RefreshHarness(ctx, src, paths, pkg, fixedNow); err != nil {
+		if _, err := RefreshHarness(ctx, src, paths, SourceNPM, pkg, fixedNow); err != nil {
 			done <- err
 			return
 		}
@@ -1503,7 +1931,7 @@ func TestLockPoolComposesRefreshAndUpdateLockedWithoutDeadlock(t *testing.T) {
 			return
 		}
 		defer release()
-		if _, err := RefreshHarnessLocked(ctx, src, paths, pkg, fixedNow); err != nil {
+		if _, err := RefreshHarnessLocked(ctx, src, paths, SourceNPM, pkg, fixedNow); err != nil {
 			done <- err
 			return
 		}
@@ -1551,5 +1979,73 @@ func TestUpdateHarnessSecondCallWithUnchangedInputsIsIdempotent(t *testing.T) {
 	}
 	if src.resolveCalls != 1 {
 		t.Errorf("resolveCalls after second (idempotent) update = %d, want still 1", src.resolveCalls)
+	}
+}
+
+// TestUpdateHarnessUpToDateRepairsMissingActivation reproduces the
+// wave-1-to-wave-2 upgrade pool found on a real developer machine: the
+// generation exists on disk and the lock records its digest (wave 1 realized
+// it), so Decide correctly returns DecisionUpToDate — but activation did not
+// exist when the generation was built, so there is no pointer and no
+// dispatcher, and before this repair nothing on the up-to-date path would
+// ever write them. §10 includes the ACTIVE receipt in install's idempotence
+// contract, so the up-to-date path must repair activation in place, without
+// calling Source.Resolve or Source.Realize.
+func TestUpdateHarnessUpToDateRepairsMissingActivation(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+	key, err := HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Wave-1-shaped pool: realized generation + lock digest, no pointer.
+	genID, digest := seedExistingGeneration(t, paths, "claude", "2.1.220", key, "#!/bin/sh\nexec true\n")
+	rr, err := npmRecipeRevision(pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := baseRealizeLockHarness()
+	h.Package = pkg
+	h.Version = "2.1.220"
+	h.RecipeRevision = rr
+	h.Generations = map[PlatformKey]string{key: digest}
+	seedRealizeLock(t, paths, h)
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if res.RealizeErr != nil {
+		t.Fatalf("RealizeErr = %v, want nil", res.RealizeErr)
+	}
+	if want := "activated " + genID; res.Note != want {
+		t.Errorf("Note = %q, want %q", res.Note, want)
+	}
+	if src.resolveCalls != 0 || src.realizeCalls != 0 {
+		t.Errorf("source calls = resolve:%d realize:%d, want 0/0 — repair must not resolve or rebuild", src.resolveCalls, src.realizeCalls)
+	}
+	if active, ok := ActiveGeneration(paths, "claude", key); !ok || active != genID {
+		t.Errorf("ActiveGeneration = %q ok=%v, want %q", active, ok, genID)
+	}
+	if fi, statErr := os.Stat(filepath.Join(paths.Runtime, "bin", "claude")); statErr != nil {
+		t.Errorf("dispatcher missing after repair: %v", statErr)
+	} else if fi.Mode().Perm() != 0o755 {
+		t.Errorf("dispatcher mode = %v, want 0755", fi.Mode().Perm())
+	}
+
+	// Second run: pointer already correct — silent no-op, no duplicate note.
+	res2, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("second UpdateHarness: %v", err)
+	}
+	if res2.Note != "" {
+		t.Errorf("second run Note = %q, want empty (no re-repair)", res2.Note)
 	}
 }

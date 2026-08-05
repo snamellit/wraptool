@@ -427,6 +427,228 @@ func TestLockValidate_RejectsLockfileMissingASummaryMapEntry(t *testing.T) {
 	}
 }
 
+// --- LockArchive (archive-source additive schema) -----------------------
+
+// sampleArchiveArtifacts returns a well-formed Artifacts map for two
+// platforms, reused by the tests below.
+func sampleArchiveArtifacts() map[PlatformKey]LockArchiveArtifact {
+	return map[PlatformKey]LockArchiveArtifact{
+		PlatformLinuxAMD64Glibc: {
+			URL:    "https://storage.googleapis.com/example/agy-amd64.tar.gz",
+			SHA512: strings.Repeat("a", 128),
+			SHA256: strings.Repeat("1", 64),
+		},
+		PlatformLinuxARM64Glibc: {
+			URL:    "https://storage.googleapis.com/example/agy-arm64.tar.gz",
+			SHA512: strings.Repeat("b", 128),
+			// SHA256 intentionally empty here — not yet Fetched.
+		},
+	}
+}
+
+// sampleLockWithArchive returns sampleLock with an additional "agy" harness
+// whose LockHarness.Archive is populated — the archive-source counterpart of
+// sampleLockWithNPMLockfile, exercising Marshal/Validate/round-trip with the
+// new field set (§8 archive-source additive schema).
+func sampleLockWithArchive() *Lock {
+	l := sampleLock()
+	l.Harnesses["agy"] = LockHarness{
+		Source:         "archive",
+		Package:        "agy",
+		Version:        "1.1.10",
+		PublishedAt:    "2026-07-29T12:00:00Z",
+		FirstSeenAt:    "2026-07-29T12:10:00Z",
+		RecipeRevision: "sha256:archive-recipe",
+		Archive:        &LockArchive{Artifacts: sampleArchiveArtifacts()},
+	}
+	return l
+}
+
+func TestLockMarshalDeterministic_WithArchive(t *testing.T) {
+	l := sampleLockWithArchive()
+
+	a, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (1): %v", err)
+	}
+	b, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (2): %v", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("Marshal is not deterministic:\n--- a ---\n%s\n--- b ---\n%s", a, b)
+	}
+
+	l2 := sampleLockWithArchive()
+	c, err := l2.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (3): %v", err)
+	}
+	if !bytes.Equal(a, c) {
+		t.Fatalf("Marshal differs across equal values:\n--- a ---\n%s\n--- c ---\n%s", a, c)
+	}
+}
+
+func TestLockMarshalUnmarshalRoundTrip_WithArchive(t *testing.T) {
+	l := sampleLockWithArchive()
+	data, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got, err := UnmarshalLock(data)
+	if err != nil {
+		t.Fatalf("UnmarshalLock: %v", err)
+	}
+	data2, err := got.Marshal()
+	if err != nil {
+		t.Fatalf("re-Marshal: %v", err)
+	}
+	if !bytes.Equal(data, data2) {
+		t.Fatalf("round-trip is not byte-stable:\n--- original ---\n%s\n--- re-marshaled ---\n%s", data, data2)
+	}
+
+	gotArchive := got.Harnesses["agy"].Archive
+	if gotArchive == nil {
+		t.Fatal("round-tripped lock has no Archive field for \"agy\"")
+	}
+	want := sampleArchiveArtifacts()
+	if len(gotArchive.Artifacts) != len(want) {
+		t.Fatalf("got %d archive artifacts, want %d", len(gotArchive.Artifacts), len(want))
+	}
+	for key, wantArtifact := range want {
+		got, ok := gotArchive.Artifacts[key]
+		if !ok {
+			t.Fatalf("missing archive artifact for platform %s", key)
+		}
+		if got != wantArtifact {
+			t.Errorf("archive artifact %s = %+v, want %+v", key, got, wantArtifact)
+		}
+	}
+}
+
+func TestLockHarnessHash_StableWithArchive(t *testing.T) {
+	h1 := sampleLockWithArchive().Harnesses["agy"]
+	h2 := sampleLockWithArchive().Harnesses["agy"]
+
+	hash1, err := h1.Hash()
+	if err != nil {
+		t.Fatalf("Hash (1): %v", err)
+	}
+	hash1Again, err := h1.Hash()
+	if err != nil {
+		t.Fatalf("Hash (1, again): %v", err)
+	}
+	if hash1 != hash1Again {
+		t.Errorf("Hash is not stable across repeated calls on the same value: %q vs %q", hash1, hash1Again)
+	}
+
+	hash2, err := h2.Hash()
+	if err != nil {
+		t.Fatalf("Hash (2): %v", err)
+	}
+	if hash1 != hash2 {
+		t.Errorf("Hash differs across two independently-built, logically-equal values: %q vs %q", hash1, hash2)
+	}
+}
+
+func TestLockValidate_ArchiveWellFormed(t *testing.T) {
+	l := sampleLockWithArchive()
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with a well-formed Archive field: %v", err)
+	}
+}
+
+func TestLockValidate_ArchiveRejectsNonHTTPSURL(t *testing.T) {
+	l := sampleLockWithArchive()
+	h := l.Harnesses["agy"]
+	artifacts := sampleArchiveArtifacts()
+	a := artifacts[PlatformLinuxAMD64Glibc]
+	a.URL = "http://storage.googleapis.com/example/agy-amd64.tar.gz"
+	artifacts[PlatformLinuxAMD64Glibc] = a
+	h.Archive = &LockArchive{Artifacts: artifacts}
+	l.Harnesses["agy"] = h
+
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of a non-https artifact URL")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error = %q, want it to mention https", err.Error())
+	}
+}
+
+func TestLockValidate_ArchiveRejectsMalformedSHA512(t *testing.T) {
+	l := sampleLockWithArchive()
+	h := l.Harnesses["agy"]
+	artifacts := sampleArchiveArtifacts()
+	a := artifacts[PlatformLinuxAMD64Glibc]
+	a.SHA512 = "not-hex-and-wrong-length"
+	artifacts[PlatformLinuxAMD64Glibc] = a
+	h.Archive = &LockArchive{Artifacts: artifacts}
+	l.Harnesses["agy"] = h
+
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of a malformed sha512")
+	}
+	if !strings.Contains(err.Error(), "sha512") {
+		t.Errorf("error = %q, want it to mention sha512", err.Error())
+	}
+}
+
+func TestLockValidate_ArchiveRejectsMalformedSHA256WhenPresent(t *testing.T) {
+	l := sampleLockWithArchive()
+	h := l.Harnesses["agy"]
+	artifacts := sampleArchiveArtifacts()
+	a := artifacts[PlatformLinuxAMD64Glibc]
+	a.SHA256 = "too-short"
+	artifacts[PlatformLinuxAMD64Glibc] = a
+	h.Archive = &LockArchive{Artifacts: artifacts}
+	l.Harnesses["agy"] = h
+
+	err := l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of a malformed (non-empty) sha256")
+	}
+	if !strings.Contains(err.Error(), "sha256") {
+		t.Errorf("error = %q, want it to mention sha256", err.Error())
+	}
+}
+
+func TestLockValidate_ArchiveAllowsEmptySHA256(t *testing.T) {
+	// sampleArchiveArtifacts already leaves linux-arm64-glibc's SHA256 empty
+	// (not yet Fetched) — Validate must accept that, not require it.
+	l := sampleLockWithArchive()
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with an empty (not-yet-fetched) archive sha256: %v", err)
+	}
+}
+
+func TestLockValidate_ArchiveRejectsUnknownPlatformKey(t *testing.T) {
+	data := []byte(`{
+		"schema_version": 1,
+		"generated_at": "2026-07-30T09:00:00Z",
+		"policy_hash": "sha256:abc",
+		"harnesses": {
+			"agy": {
+				"source": "archive",
+				"package": "agy",
+				"version": "1.1.10",
+				"published_at": "2026-07-29T12:00:00Z",
+				"first_seen_at": "2026-07-29T12:10:00Z",
+				"archive": {
+					"artifacts": {
+						"darwin-arm64": {"url": "https://example/x.tar.gz", "sha512": "` + strings.Repeat("a", 128) + `"}
+					}
+				}
+			}
+		}
+	}`)
+	if _, err := UnmarshalLock(data); err == nil {
+		t.Fatal("expected an error for an unrecognized platform key in archive artifacts, got nil")
+	}
+}
+
 func TestPolicyHashStableAndDistinguishing(t *testing.T) {
 	p1 := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0, AllowPrereleases: false}
 	p2 := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour, MinimumObservationAge: 0, AllowPrereleases: false}

@@ -19,7 +19,7 @@ func TestObservationsFirstSeenNeverMoves(t *testing.T) {
 	o := Observations{}
 	key := ObservationKey("npm", "claude", "2.1.220")
 
-	if err := o.Observe(key, "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := o.Observe(key, "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (initial): %v", err)
 	}
 	if got := o[key].FirstSeenAt; got != "2026-07-29T12:10:00Z" {
@@ -28,7 +28,7 @@ func TestObservationsFirstSeenNeverMoves(t *testing.T) {
 
 	// A later merge with an earlier claimed first-seen time must not move it
 	// backward...
-	if err := o.Observe(key, "2020-01-01T00:00:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := o.Observe(key, "2020-01-01T00:00:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (earlier claim): %v", err)
 	}
 	if got := o[key].FirstSeenAt; got != "2026-07-29T12:10:00Z" {
@@ -36,7 +36,7 @@ func TestObservationsFirstSeenNeverMoves(t *testing.T) {
 	}
 
 	// ...nor forward.
-	if err := o.Observe(key, "2030-01-01T00:00:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := o.Observe(key, "2030-01-01T00:00:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (later claim): %v", err)
 	}
 	if got := o[key].FirstSeenAt; got != "2026-07-29T12:10:00Z" {
@@ -48,7 +48,7 @@ func TestObservationsUpdatesMutableFields(t *testing.T) {
 	o := Observations{}
 	key := ObservationKey("npm", "claude", "2.1.220")
 
-	if err := o.Observe(key, "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := o.Observe(key, "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (initial): %v", err)
 	}
 	if o[key].Yanked {
@@ -60,7 +60,7 @@ func TestObservationsUpdatesMutableFields(t *testing.T) {
 	// here is a real, valid timestamp (Observe validates it even though it's
 	// discarded for an existing key) but deliberately different from the
 	// stored one, to prove it's ignored rather than adopted.
-	if err := o.Observe(key, "2099-01-01T00:00:00Z", "2026-07-29T12:00:00Z", true, true); err != nil {
+	if err := o.Observe(key, "2099-01-01T00:00:00Z", "2026-07-29T12:00:00Z", true, true, false); err != nil {
 		t.Fatalf("Observe (update): %v", err)
 	}
 	got := o[key]
@@ -81,10 +81,10 @@ func TestObservationsUpdatesMutableFields(t *testing.T) {
 func TestObserveRejectsMalformedTimestamps(t *testing.T) {
 	o := Observations{}
 
-	if err := o.Observe("k", "not-a-timestamp", "2026-07-29T12:00:00Z", false, false); err == nil {
+	if err := o.Observe("k", "not-a-timestamp", "2026-07-29T12:00:00Z", false, false, false); err == nil {
 		t.Error("expected an error for a malformed first_seen_at, got nil")
 	}
-	if err := o.Observe("k", "2026-07-29T12:10:00Z", "not-a-timestamp", false, false); err == nil {
+	if err := o.Observe("k", "2026-07-29T12:10:00Z", "not-a-timestamp", false, false, false); err == nil {
 		t.Error("expected an error for a malformed published_at, got nil")
 	}
 	if len(o) != 0 {
@@ -109,7 +109,7 @@ func TestObservationsSaveLoadRoundTrip(t *testing.T) {
 
 	o := Observations{}
 	key := ObservationKey("npm", "claude", "2.1.220")
-	if err := o.Observe(key, "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := o.Observe(key, "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 
@@ -131,7 +131,7 @@ func TestObservationsSaveIsAtomic(t *testing.T) {
 	path := filepath.Join(dir, "observations.json")
 
 	o := Observations{}
-	if err := o.Observe("k", "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := o.Observe("k", "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
 	if err := o.Save(path); err != nil {
@@ -200,7 +200,7 @@ func TestMergeObservationsPreservesUntouchedKeys(t *testing.T) {
 	path := filepath.Join(dir, "observations.json")
 
 	existing := Observations{}
-	if err := existing.Observe("npm/claude/1.0.0", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, false); err != nil {
+	if err := existing.Observe("npm/claude/1.0.0", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (seed): %v", err)
 	}
 	if err := existing.Save(path); err != nil {
@@ -208,7 +208,7 @@ func TestMergeObservationsPreservesUntouchedKeys(t *testing.T) {
 	}
 
 	partial := Observations{}
-	if err := partial.Observe("npm/claude/2.0.0", "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := partial.Observe("npm/claude/2.0.0", "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (partial): %v", err)
 	}
 	if err := MergeObservations(path, partial); err != nil {
@@ -238,7 +238,7 @@ func TestMergeObservationsPreservesFirstSeenOfKnownKey(t *testing.T) {
 	path := filepath.Join(dir, "observations.json")
 
 	existing := Observations{}
-	if err := existing.Observe("npm/claude/1.0.0", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, false); err != nil {
+	if err := existing.Observe("npm/claude/1.0.0", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (seed): %v", err)
 	}
 	if err := existing.Save(path); err != nil {
@@ -248,7 +248,7 @@ func TestMergeObservationsPreservesFirstSeenOfKnownKey(t *testing.T) {
 	partial := Observations{}
 	// A later refresh re-observes the same version; a naive implementation
 	// might claim "first seen now".
-	if err := partial.Observe("npm/claude/1.0.0", "2027-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, true); err != nil {
+	if err := partial.Observe("npm/claude/1.0.0", "2027-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, true, false); err != nil {
 		t.Fatalf("Observe (partial): %v", err)
 	}
 	if err := MergeObservations(path, partial); err != nil {
@@ -272,7 +272,7 @@ func TestMergeObservationsOnMissingFile(t *testing.T) {
 	path := filepath.Join(dir, "observations.json")
 
 	partial := Observations{}
-	if err := partial.Observe("npm/claude/1.0.0", "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false); err != nil {
+	if err := partial.Observe("npm/claude/1.0.0", "2026-07-29T12:10:00Z", "2026-07-29T12:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (partial): %v", err)
 	}
 	if err := MergeObservations(path, partial); err != nil {
@@ -298,7 +298,7 @@ func TestMergeObservationsRejectsMalformedTimestampLeavesFileUntouched(t *testin
 	path := filepath.Join(dir, "observations.json")
 
 	seed := Observations{}
-	if err := seed.Observe("npm/claude/1.0.0", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, false); err != nil {
+	if err := seed.Observe("npm/claude/1.0.0", "2026-01-01T00:00:00Z", "2025-12-31T00:00:00Z", false, false, false); err != nil {
 		t.Fatalf("Observe (seed): %v", err)
 	}
 	if err := seed.Save(path); err != nil {

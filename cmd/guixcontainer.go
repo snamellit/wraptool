@@ -111,42 +111,61 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	}
 
 	// The developer harness pool: shared across all projects so a harness is
-	// installed once, not per session. bin/ goes on PATH (mounted read-only —
-	// installs happen host-side via `wraptool harness install`); home/ is the
-	// harness HOME so its config/auth persist (writable). It is the developer's
-	// toolbox — not the project (manifest.scm) and not host credentials.
-	pool, poolBin, poolLib, poolHome, err := ensureHarnessPool()
+	// installed once, not per session. home/ is always the harness HOME so its
+	// config/auth persist (writable). Which pool subtree provides the harness
+	// binaries — the locked runtime/ tree or the legacy bin/+lib/ tree — is
+	// decided by resolveGuixPoolPlan below (design/harness/unified-harness-pool.md
+	// §12.1). It is the developer's toolbox — not the project (manifest.scm)
+	// and not host credentials.
+	poolRoot, poolBin, poolLib, poolHome, err := ensureHarnessPool()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("harness pool: %s (install harness binaries into %s)\n", pool, poolBin)
 
-	entry := "export WRAPTOOL_CONTAINER=1" +
-		// Guix defaults TERM=dumb (no colors) and the box has no terminfo DB, so
-		// normalize to a widely-assumed value; COLORTERM (forwarded below) drives
-		// truecolor detection for the harness.
-		"; export TERM=xterm-256color" +
-		// Append (not prepend) the pool bin dir so a pool binary can never shadow a
-		// toolchain binary (git/go/bash) — otherwise a poisoned pool could hijack
-		// what every project's container runs.
-		"; export PATH=$PATH:" + shellQuote(poolBin) +
-		"; export HOME=" + shellQuote(poolHome) +
-		"; cd " + shellQuote(root) + "; exec bash -l"
-	args := []string{
-		"shell", "--container", "--network",
-		"--emulate-fhs",                // FHS layout (/usr/bin/env, /lib64/ld-linux-*)
-		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
-		// Harness pool, split by trust: bin/ and lib/ are read-only (--expose) so a compromised
-		// agent in one project can't trojan the binaries/libraries other projects run; home/
-		// (auth + state) stays writable (--share) so login/config persist per session.
-		"--expose=" + poolBin + "=" + poolBin,
-		"--expose=" + poolLib + "=" + poolLib,
-		"--share=" + poolHome + "=" + poolHome,
-		"--preserve=^WRAPTOOL_",  // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
-		"--preserve=^COLORTERM$", // truecolor detection for the harness
-		"-m", manifest,
-		"--", "bash", "-lc", entry,
+	// Active-pointer lookup: HostPlatformKey errors only for an unsupported
+	// host arch, which resolveGuixPoolPlan treats the same as "no pointer"
+	// (empty pointerPath fails the read) — §12.1 point 3, never fail `up` for
+	// this. hname is already validated against harness.Registry by the
+	// harness.Write call above, so the map lookup below never misses.
+	var pointerPath string
+	if key, err := pool.HostPlatformKey(); err == nil {
+		pointerPath = pool.PointerFile(key, hname)
 	}
+	// hname was validated by the harness.Write call above, so the lookup
+	// cannot miss today — but a missing key would silently yield a zero
+	// Descriptor (non-lockable, quiet legacy plan) rather than an error,
+	// so make the dependency on that validation explicit.
+	desc, knownHarness := harness.Registry[hname]
+	if !knownHarness {
+		return fmt.Errorf("unknown harness %q resolving the pool plan (registry lookup after validation — this is a bug)", hname)
+	}
+	plan := resolveGuixPoolPlan(guixPoolPlanInput{
+		Harness:               hname,
+		PoolLockable:          desc.PoolLockable(),
+		PointerPath:           pointerPath,
+		RuntimeDir:            pool.RuntimeDir(),
+		RuntimeBinDir:         pool.RuntimeBinDir(),
+		RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
+		LegacyBin:             poolBin,
+		LegacyLib:             poolLib,
+	})
+	if plan.notice != "" {
+		fmt.Fprintln(os.Stderr, plan.notice)
+	}
+	// The legacy bin/ drop-in dir mention stays accurate in BOTH modes
+	// (wave2-integration-fixes item 3): legacy bin/+lib/ is genuinely
+	// mounted whether or not an active pointer also mounted runtime/, so
+	// telling the developer where to drop a hand-managed binary is correct
+	// either way — runtime/bin (the generated dispatcher dir, when active)
+	// is never offered as that location, only poolBin.
+	if plan.active {
+		fmt.Printf("harness pool: %s (legacy bin/ also mounted for other harnesses/hand-dropped tools: %s)\n", poolRoot, poolBin)
+	} else {
+		fmt.Printf("harness pool: %s (install harness binaries into %s)\n", poolRoot, poolBin)
+	}
+
+	entry := buildContainerEntry(root, poolHome, plan.pathDirs)
+	args := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
 	env := append(os.Environ(),
 		"WRAPTOOL_TOKEN="+token,
 		"WRAPTOOL_CWD="+root, // host path → server scopes tools to this worktree via ?cwd=
@@ -199,4 +218,178 @@ func ensureHarnessPool() (pool, bin, lib, home string, err error) {
 // shellQuote wraps s as a single-quoted POSIX shell word.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// guixPoolPlan is the harness-pool mount/PATH/notice decision for one guix
+// container invocation (design/harness/unified-harness-pool.md §12.1,
+// WIDENED by wave2-integration-fixes item 3): when an active pointer exists
+// for the host platform key and its generation is present on disk, the
+// locked runtime/ tree, read-only, is mounted ALONGSIDE (not instead of) the
+// legacy bin/+lib/ tree — mixed-state Phase 2 RULING: activating one
+// harness must not silently drop every OTHER harness's binary (or a
+// hand-dropped tool) from the container. Whenever no active pointer exists
+// at all, only the legacy bin/+lib/ tree is mounted, with a stderr
+// deprecation notice (§16 migration). home/ is not part of the plan — it
+// stays shared read-write unchanged in either mode (handled directly in
+// bringUpGuixContainer/buildGuixShellArgs). Full Phase-4 cutover drops the
+// legacy exposes/PATH entry entirely (§16 Phase 4 item 5: "gc learns to
+// remove legacy bin/+lib/"); until then this stays a superset, never a
+// replacement.
+type guixPoolPlan struct {
+	exposes []string // "--expose=host=host" args, read-only, same-path (§6.3)
+	// pathDirs are appended (never prepended) to PATH, in order. Active mode
+	// is [runtimeBinDir, legacyBin] — the freshly activated generation wins
+	// PATH resolution for THIS harness (runtime/bin listed first) while
+	// every other harness's legacy binary stays reachable right after it;
+	// legacy-only mode is [legacyBin] alone.
+	pathDirs []string
+	active   bool   // true: runtime/ tree ALSO mounted, alongside legacy bin/+lib/ (mixed-state Phase 2); false: legacy bin/+lib/ only
+	notice   string // non-empty: legacy-fallback deprecation notice for stderr (legacy-only mode)
+}
+
+// guixPoolPlanInput bundles the paths and lockability resolveGuixPoolPlan
+// needs. Named fields replace positional same-typed strings — the untested
+// call site is exactly where several interchangeable path strings transpose
+// silently (pattern: internal/pool.PoolPaths). All fields are plain
+// strings/bool so tests build one against a t.TempDir() layout, with no real
+// $XDG_DATA_HOME and no guix exec.
+type guixPoolPlanInput struct {
+	// Harness is the harness name — the dispatcher/generation entrypoint file
+	// name, and the name cited in any deprecation notice.
+	Harness string
+	// PoolLockable is true when Harness is pool-lockable
+	// (harness.Registry[Harness].PoolLockable(): an npm package or an
+	// archive source). Non-lockable harnesses (gemini/cursor/roo today)
+	// have no runtime/ path to move to, so their legacy fallback is silent —
+	// a notice promising a fix command that can't exist for them would be
+	// noise (§16).
+	PoolLockable bool
+	// PointerPath is pool.PointerFile(pool.HostPlatformKey(), Harness), or ""
+	// when the platform key itself could not be resolved (unsupported host
+	// arch) — treated identically to "no active pointer" (§12.1 point 3).
+	PointerPath string
+	// RuntimeDir is pool.RuntimeDir() — mounted read-only at the same host
+	// path when the plan is active.
+	RuntimeDir string
+	// RuntimeBinDir is pool.RuntimeBinDir(), the dispatcher directory:
+	// RuntimeBinDir/Harness (the generated dispatcher script) must exist for
+	// the pointer to be considered live.
+	RuntimeBinDir string
+	// RuntimeGenerationsDir is pool.RuntimeGenerationsDir(); the pointer's
+	// referenced generation's own RuntimeGenerationsDir/<genID>/bin/Harness
+	// must also exist (§5, §11.4) — a pointer can outlive its generation
+	// (e.g. deleted by a concurrent `gc`).
+	RuntimeGenerationsDir string
+	// LegacyBin, LegacyLib are the pre-existing pool bin/+lib/ dirs.
+	LegacyBin string
+	LegacyLib string
+}
+
+// resolveGuixPoolPlan decides guixPoolPlan for in.Harness. Pure aside from
+// the pool.ReadPointer file read and the two existence checks below, so
+// tests drive it against a t.TempDir() pool layout with no guix exec.
+func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
+	if in.PointerPath != "" {
+		if raw, err := pool.ReadPointer(in.PointerPath); err == nil {
+			// A missing file, an unreadable path (e.g. a directory), or an
+			// empty/whitespace-only generation id all count as "no active
+			// pointer" (§12.1 point 2). TrimSpace (not just ReadPointer's own
+			// single-trailing-newline trim) so "\n\n" or " " cannot activate
+			// the runtime plan.
+			if genID := strings.TrimSpace(raw); genID != "" {
+				dispatcher := filepath.Join(in.RuntimeBinDir, in.Harness)
+				genBin := filepath.Join(in.RuntimeGenerationsDir, genID, "bin", in.Harness)
+				if fileExists(dispatcher) && fileExists(genBin) {
+					return guixPoolPlan{
+						// Mixed-state Phase 2 (wave2-integration-fixes item 3,
+						// §12.1 RULING): runtime/ AND legacy bin/+lib/ are
+						// BOTH mounted — activating this harness must not
+						// drop every other harness's legacy binary (or a
+						// hand-dropped tool) from the container. See
+						// guixPoolPlan's own doc comment.
+						exposes: []string{
+							"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir,
+							"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+							"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
+						},
+						pathDirs: []string{in.RuntimeBinDir, in.LegacyBin},
+						active:   true,
+					}
+				}
+				// The pointer resolved but its generation is gone from disk
+				// (e.g. a concurrent gc) — fall back, but with a distinct
+				// notice naming what actually went wrong.
+				return legacyGuixPoolPlan(in, fmt.Sprintf(
+					"notice: active generation %s for %s is missing on disk; using legacy pool — "+
+						"run `wraptool harness sync` to rebuild", genID, in.Harness))
+			}
+		}
+	}
+	return legacyGuixPoolPlan(in, fmt.Sprintf(
+		"notice: using legacy harness pool for %s; run `wraptool harness install %s` (or `wraptool harness "+
+			"sync` if already installed) to build a locked generation (legacy path is removed in a future release)",
+		in.Harness, in.Harness))
+}
+
+// legacyGuixPoolPlan builds the legacy bin/+lib/ plan, gating notice on
+// in.PoolLockable — a harness with no pool package at all has no runtime/
+// path to move to, so it takes the legacy path silently (§16).
+func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
+	plan := guixPoolPlan{
+		exposes: []string{
+			"--expose=" + in.LegacyBin + "=" + in.LegacyBin,
+			"--expose=" + in.LegacyLib + "=" + in.LegacyLib,
+		},
+		pathDirs: []string{in.LegacyBin},
+	}
+	if in.PoolLockable {
+		plan.notice = notice
+	}
+	return plan
+}
+
+// buildContainerEntry builds the interactive shell entrypoint run inside the
+// guix container: normalizes TERM (guix defaults to TERM=dumb with no
+// terminfo DB in the container), appends (never prepends) every pathDirs
+// entry to PATH, in order, so a pool tool can never shadow a project
+// toolchain binary (git/go/bash) — otherwise a poisoned pool could hijack
+// what every project's container runs — pins HOME to the shared pool home,
+// and drops into the workspace. Pure string building, no exec, so tests can
+// pin it exactly.
+func buildContainerEntry(root, poolHome string, pathDirs []string) string {
+	quoted := make([]string, 0, len(pathDirs))
+	for _, dir := range pathDirs {
+		quoted = append(quoted, shellQuote(dir))
+	}
+	pathAppend := ""
+	if len(quoted) > 0 {
+		pathAppend = ":" + strings.Join(quoted, ":")
+	}
+	return "export WRAPTOOL_CONTAINER=1" +
+		"; export TERM=xterm-256color" +
+		"; export PATH=$PATH" + pathAppend +
+		"; export HOME=" + shellQuote(poolHome) +
+		"; cd " + shellQuote(root) + "; exec bash -l"
+}
+
+// buildGuixShellArgs assembles the `guix shell --container` argv: workspace
+// share, plan's exposes (runtime/ read-only when an active pointer was found,
+// else the legacy bin/+lib/ read-only exposes), pool home/ read-write
+// (unchanged in both modes, §12.1), env preservation, manifest, and the
+// interactive entrypoint. Pure — no exec — so tests can pin it exactly.
+func buildGuixShellArgs(root, manifest, poolHome string, plan guixPoolPlan, entry string) []string {
+	args := []string{
+		"shell", "--container", "--network",
+		"--emulate-fhs",                // FHS layout (/usr/bin/env, /lib64/ld-linux-*)
+		"--share=" + root + "=" + root, // workspace rw, host path preserved → ?cwd= matches
+	}
+	args = append(args, plan.exposes...)
+	args = append(args,
+		"--share="+poolHome+"="+poolHome, // auth + state stays writable so login/config persist per session
+		"--preserve=^WRAPTOOL_",          // forward WRAPTOOL_TOKEN / _CWD / _CONTAINER
+		"--preserve=^COLORTERM$",         // truecolor detection for the harness
+		"-m", manifest,
+		"--", "bash", "-lc", entry,
+	)
+	return args
 }
