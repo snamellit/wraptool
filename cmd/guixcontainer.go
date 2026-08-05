@@ -191,6 +191,20 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 // XDG data, one per account), not this container-internal path.
 const devcontainerPoolHome = "/home/wraptool-harness"
 
+// devcontainerPoolRuntime is the fixed in-container path the locked
+// harness-pool runtime/ tree (§5, §6.3) is bind-mounted read-only onto, when
+// `wraptool up` finds an active pointer for the selected harness
+// (design/harness/unified-harness-pool.md §12.2). Under /opt (not /home,
+// unlike devcontainerPoolHome above) because this is genuinely a
+// system-toolbox mount — read-only, shared by every harness, unrelated to any
+// user's HOME — mirroring the Guix runtime's own runtime/ mount semantics
+// (§12.1). devcontainerPoolRuntimeBin is the generated-dispatcher directory
+// appended to PATH.
+const (
+	devcontainerPoolRuntime    = "/opt/wraptool-harness/runtime"
+	devcontainerPoolRuntimeBin = devcontainerPoolRuntime + "/bin"
+)
+
 // harnessPoolDir is the developer-scoped pool of AI-harness binaries and
 // their state, shared into every container — the same root the
 // version-locked pool (internal/pool, cmd/harness.go) lives under; legacy
