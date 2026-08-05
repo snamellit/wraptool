@@ -37,7 +37,7 @@ import (
 // TestProvisioningImageIsDigestPinned, which stays skipped until the
 // placeholder is gone. This is the true, immutable constant; provisioningImage
 // below is the var seam production code actually reads.
-const defaultProvisioningImage = "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:PENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDINGPENDING"
+const defaultProvisioningImage = "forge.snamellit.com/pti/wraptool/pool-provisioning@sha256:6d1d4434fadb1bf1f16166f4dfc6227a6eb6509ac3b005cc56e3824646e4bd03"
 
 // provisioningImage is the package-level var every production call site
 // reads (backend selection, recipe_revision folding) — a var, not a plain
