@@ -70,7 +70,7 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().StringVar(&opts.shell, "shell", opts.shell, "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
 	cmd.Flags().StringVar(&opts.runtime, "runtime", opts.runtime, "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
-	cmd.Flags().StringVar(&opts.harness, "harness", opts.harness, "coding harness to wire in the container (guix runtime): "+strings.Join(harness.Names(), ", "))
+	cmd.Flags().StringVar(&opts.harness, "harness", opts.harness, "coding harness to wire in the container: "+strings.Join(harness.Names(), ", "))
 
 	return cmd
 }
@@ -112,6 +112,16 @@ func runUp(opts upOptions) error {
 		rt, err = selectRuntime(opts.runtime, root)
 		if err != nil {
 			return err
+		}
+		// Validate --harness once, here, before the server even starts —
+		// both bringUpGuixContainer and bringUpContainer need a known
+		// harness for their own pool-plan resolution, but failing this late
+		// (inside either of them) means `up` has already spawned the shared
+		// server for nothing. Both functions keep their own defensive
+		// registry lookup (a missing key there would be a bug, not a normal
+		// failure) rather than trusting this check silently.
+		if _, ok := harness.Registry[opts.harness]; !ok {
+			return fmt.Errorf("unknown harness %q (want one of: %s)", opts.harness, strings.Join(harness.Names(), ", "))
 		}
 		// Both container backends receive a writable workspace mount. Keep the
 		// active policy and admin credential outside it before starting a
@@ -554,57 +564,44 @@ func resolvePath(path string) (string, error) {
 }
 
 // --- devcontainer harness-pool runtime mount (design/harness/unified-harness-pool.md §12.2) ---
+//
+// §12.2's Phase-4 implementation ruling (design doc, amended): the
+// devcontainer CLI's `--mount` flag has no read-only field (verified against
+// the shipped CLI's argument validator) and a read-write runtime mount would
+// breach §5's trust boundary, so `up` never injects the runtime mount itself
+// — it is config-DECLARED (a verbatim `,readonly` mounts string, owned by the
+// §12.3 scaffolder and the wiring-only feature's docs) and `up` only
+// VERIFIES: live plan + declared mount → info; live plan + no declared mount
+// → an actionable notice with the exact snippet to add. Likewise PATH cannot
+// ride a CLI-supplied `--remote-env` (the CLI substitutes `${containerEnv:…}`
+// only in config-sourced values, and a CLI remote-env would OVERRIDE the
+// feature's own containerEnv PATH instead of appending to it): the
+// wiring-only feature's containerEnv is the permanent mechanism, and
+// wraptool's OWN interactive shell entry-wraps PATH for legacy-feature
+// containers that don't have it yet (mirrors buildContainerEntry's
+// PATH-append style, cmd/guixcontainer.go).
 
-// devcontainerPoolPlan is the harness-pool runtime-mount/PATH/notice decision
-// for one `devcontainer up` invocation — the devcontainer analogue of
-// cmd/guixcontainer.go's guixPoolPlan, adapted to the Phase-4 mixed state
-// (§16 migration intro: "runtimes prefer runtime/ whenever an active pointer
-// exists ... else fall back to legacy ... with a deprecation notice"). Unlike
-// the guix plan, "legacy" here is simply "no runtime mount at all" — the
-// devcontainer runtime never had a bin/+lib/ expose to keep alongside; absent
-// an active pointer, the harness binary keeps coming from the wraptool
-// Feature's per-image provisioning, unchanged (§16 Phase 4 item 5 retires
-// that path in a LATER wave, not this one).
+// devcontainerPoolPlan is the harness-pool liveness decision for one
+// `wraptool up` (devcontainer runtime) invocation — the devcontainer analogue
+// of cmd/guixcontainer.go's guixPoolPlan, computing the SAME "is there a live
+// locked generation" answer via the shared poolPlanInput, but doing nothing
+// mount/argv-related with it (see the ruling above): callers use
+// mountRuntime/runtimeDir only to decide what to VERIFY and PRINT.
 type devcontainerPoolPlan struct {
-	mountRuntime bool   // true: bind pool runtime/ read-only at devcontainerPoolRuntime, append PATH
-	runtimeDir   string // host path to mount when mountRuntime (ToSlash applied at argv-build time, §6.3)
-	notice       string // non-empty: legacy-fallback notice for stderr, gated on pool-lockability
+	mountRuntime bool   // true: the harness has a live locked generation for this platform
+	runtimeDir   string // pool.RuntimeDir() when mountRuntime — the concrete source for the verify-notice's mounts snippet
+	notice       string // non-empty: no-live-plan deprecation notice for stderr, gated on pool-lockability
 }
 
-// devcontainerPoolPlanInput bundles the paths and lockability
-// resolveDevcontainerPoolPlan needs — named fields for the same reason as
-// guixPoolPlanInput (cmd/guixcontainer.go): several interchangeable path
-// strings is exactly where an untested positional call silently transposes.
+// devcontainerPoolPlanInput is poolPlanInput (cmd/guixcontainer.go) with no
+// devcontainer-specific fields of its own today — the devcontainer runtime
+// needs nothing beyond harness identity/lockability and the active-pointer/
+// runtime-tree paths every plan needs. Still its own named type (embedding,
+// not a bare alias) so it reads symmetrically with guixPoolPlanInput and can
+// grow devcontainer-only fields later without disturbing guix's.
 type devcontainerPoolPlanInput struct {
-	// Harness is the harness name — the dispatcher/generation entrypoint file
-	// name, and the name cited in any deprecation notice.
-	Harness string
-	// PoolLockable gates the notice (§16): a harness with no runtime/ path to
-	// move to (no pool package/archive source) falls back silently — a notice
-	// promising a fix command that can't exist for it would be noise.
-	PoolLockable bool
-	// PointerPath is pool.PointerFile(<target platform key>, Harness), or ""
-	// when the platform key itself could not be resolved — treated
-	// identically to "no active pointer" (mirrors guixPoolPlanInput.PointerPath).
-	PointerPath string
-	// RuntimeDir is pool.RuntimeDir() — mounted read-only at
-	// devcontainerPoolRuntime when the plan is active.
-	RuntimeDir string
-	// RuntimeBinDir is pool.RuntimeBinDir(): RuntimeBinDir/Harness (the
-	// generated dispatcher) must exist for the pointer to be considered live.
-	RuntimeBinDir string
-	// RuntimeGenerationsDir is pool.RuntimeGenerationsDir(); the pointer's
-	// referenced generation's own RuntimeGenerationsDir/<genID>/bin/Harness
-	// must also exist — a pointer can outlive its generation (a concurrent gc).
-	RuntimeGenerationsDir string
+	poolPlanInput
 }
-
-// devcontainerPoolPathAppend is the §12.2 PATH value carried on --remote-env:
-// the existing container PATH via the Dev Container spec's
-// ${containerEnv:...} substitution, then the dispatcher directory. Append,
-// never prepend (§12.1's never-shadow rule applies here too — a pool tool
-// must not shadow whatever the image's own PATH already resolves to).
-const devcontainerPoolPathAppend = "${containerEnv:PATH}:" + devcontainerPoolRuntimeBin
 
 // resolveDevcontainerPoolPlan decides devcontainerPoolPlan for in.Harness.
 // Pure aside from the pool.ReadPointer file read and the two existence checks
@@ -623,6 +620,14 @@ const devcontainerPoolPathAppend = "${containerEnv:PATH}:" + devcontainerPoolRun
 //
 // This wave is mixed-state (§16 migration intro) and never hard-fails; it
 // only falls back to the still-supported per-image provisioned binary.
+//
+// TODO(§5.1): the target platform key's arch comes from pool.HostPlatformKey()
+// (this HOST's GOARCH), used as a practical stand-in for "the Docker daemon's
+// default platform" — correct for every local Docker Desktop/Engine setup
+// this wave supports, but not for a remote DOCKER_HOST whose daemon arch
+// differs from the client's. A future wave should probe the daemon directly
+// (`docker info`/`docker version -f '{{.Server.Arch}}'`) instead of assuming
+// they match.
 func resolveDevcontainerPoolPlan(in devcontainerPoolPlanInput) devcontainerPoolPlan {
 	if in.PointerPath != "" {
 		if raw, err := pool.ReadPointer(in.PointerPath); err == nil {
@@ -654,8 +659,8 @@ func resolveDevcontainerPoolPlan(in devcontainerPoolPlanInput) devcontainerPoolP
 		in.Harness, in.Harness))
 }
 
-// legacyDevcontainerPoolPlan builds the no-runtime-mount plan, gating notice
-// on in.PoolLockable exactly as guixcontainer.go's legacyGuixPoolPlan does.
+// legacyDevcontainerPoolPlan builds the no-live-plan result, gating notice on
+// in.PoolLockable exactly as guixcontainer.go's legacyGuixPoolPlan does.
 func legacyDevcontainerPoolPlan(in devcontainerPoolPlanInput, notice string) devcontainerPoolPlan {
 	plan := devcontainerPoolPlan{}
 	if in.PoolLockable {
@@ -665,27 +670,98 @@ func legacyDevcontainerPoolPlan(in devcontainerPoolPlanInput, notice string) dev
 }
 
 // buildDevcontainerUpArgs assembles the `devcontainer up` argv: workspace
-// folder, the pool home/ bind (skipped when the config already declares a
-// mount at devcontainerPoolHome — duplicate bind targets are a Docker error),
-// and, when plan.mountRuntime, the pool runtime/ read-only bind (likewise
-// skipped when already declared) plus the PATH remote-env append. Pure string
-// building, no exec, so tests can pin it exactly — including byte-identity
-// with the pre-runtime-mount argv when plan.mountRuntime is false and neither
-// mount is declared (this package's "pin current behavior before
-// refactoring" requirement).
-func buildDevcontainerUpArgs(root, poolHome string, homeDeclared, runtimeDeclared bool, plan devcontainerPoolPlan) []string {
+// folder, plus the pool home/ bind (skipped when the config already declares
+// a mount at devcontainerPoolHome — duplicate bind targets are a Docker
+// error). The runtime mount is NEVER injected here (§12.2's ruling above) —
+// it is config-declared, and `up` only verifies it separately. Pure string
+// building, no exec, so tests can pin it exactly, including byte-identity
+// with the pre-pool-verification argv (this package's "pin current behavior
+// before refactoring" requirement) — this shape has not actually changed
+// from what shipped before the runtime mount was ever considered.
+func buildDevcontainerUpArgs(root, poolHome string, homeDeclared bool) []string {
 	args := []string{"up", "--workspace-folder", root}
 	if !homeDeclared {
 		args = append(args, "--mount", "type=bind,source="+filepath.ToSlash(poolHome)+",target="+devcontainerPoolHome)
 	}
-	if plan.mountRuntime {
-		if !runtimeDeclared {
-			args = append(args, "--mount",
-				"type=bind,source="+filepath.ToSlash(plan.runtimeDir)+",target="+devcontainerPoolRuntime+",readonly")
-		}
-		args = append(args, "--remote-env", "PATH="+devcontainerPoolPathAppend)
-	}
 	return args
+}
+
+// devcontainerRuntimeMountDeclared reports whether devcontainer.json declares
+// a mount at devcontainerPoolRuntime, via the mounts-ARRAY-aware parse
+// (devcontainerDeclaredMountSource) rather than devcontainerDeclaresMount's
+// cheap whole-file substring check — a PATH mention, a comment, or any other
+// unrelated string containing devcontainerPoolRuntime must not suppress the
+// missing-mount notice below. devcontainerDeclaresMount (whole-file
+// substring) stays the HOME target's own declared-check unchanged: switching
+// that one too carries real regression risk (it gates whether `up` injects
+// the rw home --mount at all) for no correctness gain, since a false-positive
+// substring match there only makes `up` skip a mount it would have written
+// identically anyway (idempotent either way).
+func devcontainerRuntimeMountDeclared(root string) bool {
+	_, found := devcontainerDeclaredMountSource(root, devcontainerPoolRuntime)
+	return found
+}
+
+// devcontainerRuntimeMountSnippet is the exact `mounts` string entry §12.3's
+// scaffolder/feature docs own declaring — read-only, source = THIS host's
+// real, ToSlash'd pool runtime path (printed concretely, never
+// ${localEnv}-templated: `up` already knows the right answer for the host
+// it's running on).
+func devcontainerRuntimeMountSnippet(runtimeDir string) string {
+	return "source=" + filepath.ToSlash(runtimeDir) + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
+}
+
+// devcontainerRuntimeMissingMountNotice is the actionable stderr notice when
+// the plan is live but devcontainer.json does not yet declare the runtime
+// mount (§12.2 verify).
+func devcontainerRuntimeMissingMountNotice(hname, runtimeDir string) string {
+	return fmt.Sprintf(
+		"notice: %s is pool-locked but devcontainer.json does not declare the runtime mount; add this entry to \"mounts\":\n"+
+			"  \"%s\"\n"+
+			"(wraptool init devcontainer scaffolds this automatically for new projects)",
+		hname, devcontainerRuntimeMountSnippet(runtimeDir))
+}
+
+// devcontainerRuntimeDeclaredInfo is the stdout info line when the plan is
+// live AND devcontainer.json already declares the runtime mount — nothing to
+// fix, PATH comes from the wiring-only feature's containerEnv.
+func devcontainerRuntimeDeclaredInfo(hname string) string {
+	return fmt.Sprintf("harness pool: runtime mount declared in devcontainer.json (%s) — %s is pool-locked", devcontainerPoolRuntime, hname)
+}
+
+// devcontainerPathExportHint is the standalone `export PATH=...` command a
+// developer can paste into a legacy-feature-provisioned container's shell to
+// reach the pool dispatcher — the same append buildDevcontainerShellEntry
+// wraps wraptool's own interactive shell with.
+func devcontainerPathExportHint() string {
+	return "export PATH=$PATH:" + shellQuote(devcontainerPoolRuntimeBin)
+}
+
+// buildDevcontainerShellEntry is the shell snippet buildDevcontainerExecArgs
+// runs when the pool plan is live: append (never prepend, §12.1) the
+// dispatcher bin dir to PATH, then hand off to a real login shell. Mirrors
+// buildContainerEntry's PATH-append style (cmd/guixcontainer.go) — a bare
+// $PATH (not double-quoted) followed by a shellQuote'd directory — but
+// touches nothing else (HOME/TERM/cd): those are the image's own concern
+// (HOME via the feature's containerEnv invariant; workdir is `devcontainer
+// exec`'s own default).
+func buildDevcontainerShellEntry() string {
+	return devcontainerPathExportHint() + "; exec bash -l"
+}
+
+// buildDevcontainerExecArgs assembles wraptool's own interactive
+// `devcontainer exec` argv. When the pool plan is live, entry-wraps the shell
+// so the dispatcher directory is on PATH for THIS session even on a legacy
+// (pre-cutover) feature-provisioned container that has no containerEnv PATH
+// of its own yet — the wiring-only feature's containerEnv is the permanent
+// mechanism for every OTHER exec session (a manual terminal, an IDE), which
+// this wave does not touch.
+func buildDevcontainerExecArgs(root string, live bool) []string {
+	args := []string{"exec", "--workspace-folder", root}
+	if live {
+		return append(args, "bash", "-lc", buildDevcontainerShellEntry())
+	}
+	return append(args, "bash", "-l")
 }
 
 // --- container ---
@@ -721,48 +797,49 @@ uses the Guix container runtime instead — no dev container needed`, root)
 		return err
 	}
 
-	// Locked runtime/ mount (§12.2): mirrors cmd/guixcontainer.go's
+	// Locked runtime/ liveness (§12.2): mirrors cmd/guixcontainer.go's
 	// resolveGuixPoolPlan, gated on the SAME per-harness active pointer, but
-	// for the devcontainer TARGET platform. §5.1: the devcontainer target's
-	// arch is the Docker daemon's default platform, which the daemon shares
-	// with the host in every setup this wave supports (no remote
-	// DOCKER_HOST); pool.HostPlatformKey() (host GOARCH, glibc always) is
-	// therefore used as the practical stand-in, not a `docker info` probe.
+	// for the devcontainer TARGET platform (see resolveDevcontainerPoolPlan's
+	// own §5.1 TODO on pool.HostPlatformKey() as the arch stand-in). Whether
+	// the runtime is actually mounted is NOT decided here — see the §12.2
+	// ruling above the type declarations: `up` only verifies below.
 	var pointerPath string
 	if key, err := pool.HostPlatformKey(); err == nil {
 		pointerPath = pool.PointerFile(key, hname)
 	}
-	// Unlike the guix runtime — whose bringUpGuixContainer calls harness.Write
-	// first, which rejects an unknown --harness before reaching its own pool
-	// plan — the devcontainer runtime writes no MCP config on the host at all
-	// (that is the container-side Feature's connect.sh's job here), so hname
-	// has NOT already been validated. Reject an unknown one plainly rather
-	// than silently treating it as "not lockable".
+	// hname is validated against harness.Registry by runUp (next to
+	// selectRuntime) before either container runtime is invoked — this
+	// lookup cannot miss today, but a missing key would silently yield a
+	// zero Descriptor (non-lockable, quiet no-plan) rather than an error, so
+	// make the dependency on that validation explicit (mirrors
+	// bringUpGuixContainer's own comment).
 	desc, knownHarness := harness.Registry[hname]
 	if !knownHarness {
-		return fmt.Errorf("unknown harness %q (want one of: %s)", hname, strings.Join(harness.Names(), ", "))
+		return fmt.Errorf("unknown harness %q resolving the pool plan (validated by runUp — this is a bug)", hname)
 	}
-	plan := resolveDevcontainerPoolPlan(devcontainerPoolPlanInput{
+	plan := resolveDevcontainerPoolPlan(devcontainerPoolPlanInput{poolPlanInput: poolPlanInput{
 		Harness:               hname,
 		PoolLockable:          desc.PoolLockable(),
 		PointerPath:           pointerPath,
 		RuntimeDir:            pool.RuntimeDir(),
 		RuntimeBinDir:         pool.RuntimeBinDir(),
 		RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
-	})
+	}})
 	if plan.notice != "" {
 		fmt.Fprintln(os.Stderr, plan.notice)
 	}
 
 	fmt.Printf("bringing up dev container for %s ...\n", root)
 
-	// Defer to a config that already declares a mount at either target (e.g.
-	// one written by `wraptool init devcontainer`, or a standalone
+	// Home mount: `up`-injected exactly as before (rw is expressible via
+	// --mount, §12.2's ruling). Defer to a config that already declares it
+	// (e.g. one written by `wraptool init devcontainer`, or a standalone
 	// Reopen-in-Container setup): adding our own --mount on top would be a
-	// duplicate mount point and docker rejects it (§12.2 extends the
-	// pre-existing home-only check to both targets). Either way, warn when
-	// the declared source does not actually exist on this host — the
-	// mixed-OS case, §12.3.
+	// duplicate mount point and docker rejects it. Warn when a declared
+	// source does not actually exist on this host — the mixed-OS case, §12.3.
+	// This stays the cheap whole-file substring check (devcontainerDeclaresMount)
+	// — see devcontainerRuntimeMountDeclared's own comment for why the
+	// runtime target below needs the stricter array-aware check instead.
 	homeDeclared := devcontainerDeclaresMount(root, devcontainerPoolHome)
 	if homeDeclared {
 		fmt.Printf("harness pool: home mount declared in devcontainer.json (%s)\n", devcontainerPoolHome)
@@ -773,21 +850,22 @@ uses the Guix container runtime instead — no dev container needed`, root)
 		fmt.Printf("harness pool: sharing %s -> %s (state persists across projects)\n", poolHome, devcontainerPoolHome)
 	}
 
-	runtimeDeclared := devcontainerDeclaresMount(root, devcontainerPoolRuntime)
-	if runtimeDeclared {
-		if warn := devcontainerDeclaredMountSourceMissing(root, devcontainerPoolRuntime); warn != "" {
-			fmt.Fprintln(os.Stderr, warn)
-		}
-	}
+	// Runtime mount: VERIFY only (§12.2's ruling — `up` never injects it).
 	if plan.mountRuntime {
-		if runtimeDeclared {
-			fmt.Printf("harness pool: runtime mount declared in devcontainer.json (%s)\n", devcontainerPoolRuntime)
+		if devcontainerRuntimeMountDeclared(root) {
+			fmt.Println(devcontainerRuntimeDeclaredInfo(hname))
+			if warn := devcontainerDeclaredMountSourceMissing(root, devcontainerPoolRuntime); warn != "" {
+				fmt.Fprintln(os.Stderr, warn)
+			}
 		} else {
-			fmt.Printf("harness pool: locked runtime %s -> %s, read-only (dispatcher appended to PATH)\n", plan.runtimeDir, devcontainerPoolRuntime)
+			fmt.Fprintln(os.Stderr, devcontainerRuntimeMissingMountNotice(hname, plan.runtimeDir))
 		}
 	}
+	// No live plan: plan.notice above already covers it (lockable-gated).
+	// Proceed either way — the mixed state (§16) means a Feature-provisioned
+	// container still works via legacy per-image installation.
 
-	upArgs := buildDevcontainerUpArgs(root, poolHome, homeDeclared, runtimeDeclared, plan)
+	upArgs := buildDevcontainerUpArgs(root, poolHome, homeDeclared)
 	up := exec.Command("devcontainer", upArgs...)
 	up.Env = env
 	up.Stdout = os.Stdout
@@ -798,25 +876,16 @@ uses the Guix container runtime instead — no dev container needed`, root)
 
 	if !shell {
 		fmt.Printf("\ndev container is up. Attach with:\n  devcontainer exec --workspace-folder %s bash\n", root)
+		if plan.mountRuntime {
+			fmt.Printf("(%s's pool dispatcher needs %s on PATH — the wiring-only wraptool feature's containerEnv "+
+				"provides this automatically; on a legacy feature-provisioned container, run inside the shell: %s)\n",
+				hname, devcontainerPoolRuntimeBin, devcontainerPathExportHint())
+		}
 		return nil
 	}
 
 	fmt.Printf("\nopening a shell in the dev container (exit leaves it running; re-enter with `wraptool up`)...\n")
-	execArgs := []string{"exec", "--workspace-folder", root}
-	if plan.mountRuntime {
-		// remoteEnv does not persist across separate CLI invocations — the
-		// devcontainer CLI's own user-env probe reverts it otherwise (see
-		// features/src/wraptool/devcontainer-feature.json's containerEnv
-		// comment on HOME, the same limitation) — so every invocation WE
-		// issue must repeat it. A plain `devcontainer exec` run outside
-		// `wraptool up` (a manual terminal, an IDE) will not see the
-		// appended PATH until the Phase 4 Feature cutover bakes it into
-		// containerEnv instead (§16 item 1; features/src changes are a
-		// non-goal of this package).
-		execArgs = append(execArgs, "--remote-env", "PATH="+devcontainerPoolPathAppend)
-	}
-	execArgs = append(execArgs, "bash", "-l")
-	sh := exec.Command("devcontainer", execArgs...)
+	sh := exec.Command("devcontainer", buildDevcontainerExecArgs(root, plan.mountRuntime)...)
 	sh.Env = env
 	sh.Stdin = os.Stdin
 	sh.Stdout = os.Stdout
@@ -842,12 +911,16 @@ func hasDevcontainer(root string) bool {
 
 // devcontainerDeclaresMount reports whether the project's devcontainer.json
 // already bind-mounts something onto containerTarget. Deliberate substring
-// check, not a JSONC parse: the target path only ever appears in a user's
-// config as a mount's target (a feature's own containerEnv/HOME pin never
-// touches the user's file), so its presence is a reliable signal that
-// `wraptool up` must not add a second, duplicate mount at that target. §12.2
-// extends the original home-only check to both mount targets (home and,
-// newly, runtime).
+// check, not a JSONC parse — kept ONLY for the home target's own
+// declared-check (deciding whether `up` injects the rw home --mount): the
+// target path only ever appears in a user's config as a mount's target (a
+// feature's own containerEnv/HOME pin never touches the user's file), so a
+// false-positive substring match there just makes `up` skip a mount it would
+// have written identically anyway. The runtime target's own declared-check
+// needs the stricter mounts-array-aware devcontainerDeclaredMountSource
+// instead (via devcontainerRuntimeMountDeclared) — an unrelated PATH mention
+// or comment containing devcontainerPoolRuntime must not silently suppress
+// the missing-mount notice, which THIS cheap check cannot tell apart.
 func devcontainerDeclaresMount(root, containerTarget string) bool {
 	for _, p := range devcontainerConfigPaths(root) {
 		if data, err := os.ReadFile(p); err == nil && strings.Contains(string(data), containerTarget) {
@@ -863,11 +936,72 @@ func devcontainerDeclaresPoolMount(root string) bool {
 	return devcontainerDeclaresMount(root, devcontainerPoolHome)
 }
 
-// devcontainerMountCommentRE strips // line comments before JSON-decoding a
-// devcontainer.json (JSONC) — the same technique the scaffolder's own tests
-// use (cmd/init_devcontainer_test.go's parseJSONC): the configs this codebase
-// generates or expects never carry "//" inside a string value.
-var devcontainerMountCommentRE = regexp.MustCompile(`(?m)\s*//.*$`)
+// devcontainerTrailingCommaRE removes a JSON-illegal trailing comma before a
+// closing } or ] — JSONC/JSON5 permit them (and this repo's own hand-edited
+// .devcontainer/devcontainer.json could grow one), encoding/json does not.
+// Applied only AFTER stripJSONC's string-aware comment removal, never before,
+// so a comma that happens to appear inside a string is left alone.
+var devcontainerTrailingCommaRE = regexp.MustCompile(`,(\s*[}\]])`)
+
+// stripJSONC removes `//` line comments and `/* */` block comments from raw
+// JSONC text, tracking JSON string boundaries so a comment marker INSIDE a
+// string is left alone — a naive whole-line regex (this function's earlier
+// implementation) corrupted any string containing "//", e.g. a WRAPTOOL_URL
+// of "http://172.18.0.1:8717" (examples/devcontainer/README.md's own idiom)
+// or this repo's own documentationURL-shaped values. Also removes a single
+// trailing comma before a closing } or ] (devcontainerTrailingCommaRE) —
+// JSONC/JSON5 permit them, encoding/json does not.
+func stripJSONC(data string) string {
+	var b strings.Builder
+	b.Grow(len(data))
+	inString := false
+	i, n := 0, len(data)
+	for i < n {
+		c := data[i]
+		if inString {
+			b.WriteByte(c)
+			if c == '\\' && i+1 < n {
+				// Copy the escaped character verbatim without interpreting
+				// it, so an escaped quote (\") does not end the string.
+				b.WriteByte(data[i+1])
+				i += 2
+				continue
+			}
+			if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+		switch {
+		case c == '"':
+			inString = true
+			b.WriteByte(c)
+			i++
+		case c == '/' && i+1 < n && data[i+1] == '/':
+			for i < n && data[i] != '\n' {
+				i++
+			}
+			// Leave the newline (if any) at data[i] for the next loop
+			// iteration's default branch to copy — keeps line structure and
+			// downstream error positions intact.
+		case c == '/' && i+1 < n && data[i+1] == '*':
+			i += 2
+			for i+1 < n && (data[i] != '*' || data[i+1] != '/') {
+				i++
+			}
+			if i+1 < n {
+				i += 2 // skip past the closing "*/"
+			} else {
+				i = n // unterminated block comment: consume to EOF
+			}
+		default:
+			b.WriteByte(c)
+			i++
+		}
+	}
+	return devcontainerTrailingCommaRE.ReplaceAllString(b.String(), "$1")
+}
 
 // devcontainerLocalEnvRE matches a Dev Container ${localEnv:NAME} variable
 // substitution — the only substitution form the shipped pool-mount sources
@@ -879,9 +1013,11 @@ var devcontainerLocalEnvRE = regexp.MustCompile(`\$\{localEnv:([A-Za-z_][A-Za-z0
 // comma-separated string form "source=...,target=...,type=bind" — targeting
 // containerTarget, across the project's devcontainer config files.
 // Best-effort: an unparsable config or no matching mount yields found=false.
-// This feeds only the mixed-OS missing-source warning below, never a hard
-// failure — devcontainerDeclaresMount's cheaper substring check remains the
-// source of truth for "is a mount declared at all".
+// Feeds the mixed-OS missing-source warning (devcontainerDeclaredMountSourceMissing)
+// AND, via devcontainerRuntimeMountDeclared, the runtime target's own
+// declared-check — the home target keeps devcontainerDeclaresMount's cheaper
+// whole-file substring check for THAT purpose instead (see its own doc
+// comment for why the two targets differ).
 func devcontainerDeclaredMountSource(root, containerTarget string) (source string, found bool) {
 	for _, p := range devcontainerConfigPaths(root) {
 		data, err := os.ReadFile(p)
@@ -891,8 +1027,7 @@ func devcontainerDeclaredMountSource(root, containerTarget string) (source strin
 		var cfg struct {
 			Mounts []any `json:"mounts"`
 		}
-		stripped := devcontainerMountCommentRE.ReplaceAllString(string(data), "")
-		if err := json.Unmarshal([]byte(stripped), &cfg); err != nil {
+		if err := json.Unmarshal([]byte(stripJSONC(string(data))), &cfg); err != nil {
 			continue
 		}
 		for _, m := range cfg.Mounts {

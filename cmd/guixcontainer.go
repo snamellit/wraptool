@@ -140,14 +140,16 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		return fmt.Errorf("unknown harness %q resolving the pool plan (registry lookup after validation — this is a bug)", hname)
 	}
 	plan := resolveGuixPoolPlan(guixPoolPlanInput{
-		Harness:               hname,
-		PoolLockable:          desc.PoolLockable(),
-		PointerPath:           pointerPath,
-		RuntimeDir:            pool.RuntimeDir(),
-		RuntimeBinDir:         pool.RuntimeBinDir(),
-		RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
-		LegacyBin:             poolBin,
-		LegacyLib:             poolLib,
+		poolPlanInput: poolPlanInput{
+			Harness:               hname,
+			PoolLockable:          desc.PoolLockable(),
+			PointerPath:           pointerPath,
+			RuntimeDir:            pool.RuntimeDir(),
+			RuntimeBinDir:         pool.RuntimeBinDir(),
+			RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
+		},
+		LegacyBin: poolBin,
+		LegacyLib: poolLib,
 	})
 	if plan.notice != "" {
 		fmt.Fprintln(os.Stderr, plan.notice)
@@ -261,13 +263,21 @@ type guixPoolPlan struct {
 	notice   string // non-empty: legacy-fallback deprecation notice for stderr (legacy-only mode)
 }
 
-// guixPoolPlanInput bundles the paths and lockability resolveGuixPoolPlan
-// needs. Named fields replace positional same-typed strings — the untested
-// call site is exactly where several interchangeable path strings transpose
-// silently (pattern: internal/pool.PoolPaths). All fields are plain
-// strings/bool so tests build one against a t.TempDir() layout, with no real
-// $XDG_DATA_HOME and no guix exec.
-type guixPoolPlanInput struct {
+// poolPlanInput is the harness-pool-plan input SHARED by the guix and
+// devcontainer runtimes' own pool-plan input structs (each embeds it): the
+// harness identity/lockability plus the active-pointer/runtime-tree paths
+// both resolveGuixPoolPlan (below) and resolveDevcontainerPoolPlan
+// (cmd/up.go) need to decide "is there a live locked generation for this
+// harness on this platform" — the two runtimes' plans differ only in what
+// they DO with that answer (guix mounts runtime/ itself; devcontainer
+// verifies a config-declared mount, §12.2's Phase-4 ruling), never in how
+// liveness itself is determined, so this is one type, not two independently
+// maintained ones. Named fields replace positional same-typed strings — the
+// untested call site is exactly where several interchangeable path strings
+// transpose silently (pattern: internal/pool.PoolPaths). All fields are
+// plain strings/bool so tests build one against a t.TempDir() layout, with
+// no real $XDG_DATA_HOME and no container-runtime exec.
+type poolPlanInput struct {
 	// Harness is the harness name — the dispatcher/generation entrypoint file
 	// name, and the name cited in any deprecation notice.
 	Harness string
@@ -278,12 +288,13 @@ type guixPoolPlanInput struct {
 	// a notice promising a fix command that can't exist for them would be
 	// noise (§16).
 	PoolLockable bool
-	// PointerPath is pool.PointerFile(pool.HostPlatformKey(), Harness), or ""
-	// when the platform key itself could not be resolved (unsupported host
-	// arch) — treated identically to "no active pointer" (§12.1 point 3).
+	// PointerPath is pool.PointerFile(<target platform key>, Harness), or ""
+	// when the platform key itself could not be resolved — treated
+	// identically to "no active pointer" (§12.1 point 3).
 	PointerPath string
 	// RuntimeDir is pool.RuntimeDir() — mounted read-only at the same host
-	// path when the plan is active.
+	// path when the guix plan is active, or printed as the concrete mount
+	// source in the devcontainer verify-notice.
 	RuntimeDir string
 	// RuntimeBinDir is pool.RuntimeBinDir(), the dispatcher directory:
 	// RuntimeBinDir/Harness (the generated dispatcher script) must exist for
@@ -294,6 +305,12 @@ type guixPoolPlanInput struct {
 	// must also exist (§5, §11.4) — a pointer can outlive its generation
 	// (e.g. deleted by a concurrent `gc`).
 	RuntimeGenerationsDir string
+}
+
+// guixPoolPlanInput bundles poolPlanInput with the guix-only legacy bin/+lib/
+// paths resolveGuixPoolPlan also needs.
+type guixPoolPlanInput struct {
+	poolPlanInput
 	// LegacyBin, LegacyLib are the pre-existing pool bin/+lib/ dirs.
 	LegacyBin string
 	LegacyLib string

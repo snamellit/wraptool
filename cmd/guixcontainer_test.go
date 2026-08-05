@@ -171,13 +171,15 @@ func guixPoolPlanTestLayout(t *testing.T, harness string, poolLockable bool) (in
 	t.Helper()
 	root = t.TempDir()
 	in = guixPoolPlanInput{
-		Harness:               harness,
-		PoolLockable:          poolLockable,
-		RuntimeDir:            filepath.Join(root, "runtime"),
-		RuntimeBinDir:         filepath.Join(root, "runtime", "bin"),
-		RuntimeGenerationsDir: filepath.Join(root, "runtime", "generations"),
-		LegacyBin:             filepath.Join(root, "bin"),
-		LegacyLib:             filepath.Join(root, "lib"),
+		poolPlanInput: poolPlanInput{
+			Harness:               harness,
+			PoolLockable:          poolLockable,
+			RuntimeDir:            filepath.Join(root, "runtime"),
+			RuntimeBinDir:         filepath.Join(root, "runtime", "bin"),
+			RuntimeGenerationsDir: filepath.Join(root, "runtime", "generations"),
+		},
+		LegacyBin: filepath.Join(root, "bin"),
+		LegacyLib: filepath.Join(root, "lib"),
 	}
 	return in, root
 }
@@ -192,10 +194,14 @@ func writePointerFile(t *testing.T, root, content string) string {
 	return p
 }
 
-// writeGeneration creates the two files resolveGuixPoolPlan checks for an
-// active pointer to genID: the dispatcher (runtime/bin/<harness>) and the
-// generation's own entrypoint (runtime/generations/<genID>/bin/<harness>).
-func writeGeneration(t *testing.T, in guixPoolPlanInput, genID string, dispatcher, genBin bool) {
+// writePoolGeneration creates the two files resolveGuixPoolPlan and
+// resolveDevcontainerPoolPlan (cmd/up_test.go) both check for an active
+// pointer to genID: the dispatcher (RuntimeBinDir/<harness>) and the
+// generation's own entrypoint (RuntimeGenerationsDir/<genID>/bin/<harness>).
+// Takes the shared poolPlanInput (not either runtime-specific embedding
+// struct) so both twins' tests use one helper — the on-disk shape it writes
+// is identical either way.
+func writePoolGeneration(t *testing.T, in poolPlanInput, genID string, dispatcher, genBin bool) {
 	t.Helper()
 	if dispatcher {
 		if err := os.MkdirAll(in.RuntimeBinDir, 0o755); err != nil {
@@ -301,7 +307,7 @@ func TestResolveGuixPoolPlanNoActivePointer(t *testing.T) {
 func TestResolveGuixPoolPlanActivePointer(t *testing.T) {
 	in, root := guixPoolPlanTestLayout(t, "claude", true)
 	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
-	writeGeneration(t, in, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4", true, true)
+	writePoolGeneration(t, in.poolPlanInput, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4", true, true)
 
 	plan := resolveGuixPoolPlan(in)
 
@@ -349,7 +355,7 @@ func TestResolveGuixPoolPlanStaleGeneration(t *testing.T) {
 				t.Run(map[bool]string{true: "lockable", false: "not lockable"}[lockable], func(t *testing.T) {
 					in, root := guixPoolPlanTestLayout(t, "claude", lockable)
 					in.PointerPath = writePointerFile(t, root, genID+"\n")
-					writeGeneration(t, in, genID, tc.dispatcher, tc.genBin)
+					writePoolGeneration(t, in.poolPlanInput, genID, tc.dispatcher, tc.genBin)
 
 					plan := resolveGuixPoolPlan(in)
 
@@ -447,13 +453,15 @@ func TestBuildGuixShellArgsLegacyPoolPlan(t *testing.T) {
 	poolLib := "/pool/lib"
 
 	plan := resolveGuixPoolPlan(guixPoolPlanInput{
-		Harness:               "claude",
-		PoolLockable:          true,
-		RuntimeDir:            "/pool/runtime",
-		RuntimeBinDir:         "/pool/runtime/bin",
-		RuntimeGenerationsDir: "/pool/runtime/generations",
-		LegacyBin:             poolBin,
-		LegacyLib:             poolLib,
+		poolPlanInput: poolPlanInput{
+			Harness:               "claude",
+			PoolLockable:          true,
+			RuntimeDir:            "/pool/runtime",
+			RuntimeBinDir:         "/pool/runtime/bin",
+			RuntimeGenerationsDir: "/pool/runtime/generations",
+		},
+		LegacyBin: poolBin,
+		LegacyLib: poolLib,
 	})
 	entry := buildContainerEntry(root, poolHome, plan.pathDirs)
 	got := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
@@ -500,7 +508,7 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 	in.LegacyBin, in.LegacyLib = poolBin, poolLib // exercise distinct legacy-vs-tmp paths
 	const genID = "claude-1.2.3-linux-amd64-glibc-a1b2c3d4"
 	in.PointerPath = writePointerFile(t, tmpRoot, genID+"\n")
-	writeGeneration(t, in, genID, true, true)
+	writePoolGeneration(t, in.poolPlanInput, genID, true, true)
 
 	plan := resolveGuixPoolPlan(in)
 	if !plan.active {

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -124,10 +125,40 @@ func TestRunUpRejectsAdminTokenInsideWorkspaceWhenDisabled(t *testing.T) {
 		noServer:   true,
 		workspace:  workspace,
 		runtime:    "devcontainer",
+		harness:    "claude", // exercise the admin-token check itself, not the (now-earlier) --harness validation
 		shell:      "never",
 	})
 	if err == nil || !strings.Contains(err.Error(), "admin auth token resolves to") {
 		t.Fatalf("disabled admin token inside workspace was not rejected: %v", err)
+	}
+}
+
+// TestRunUpRejectsUnknownHarnessBeforeStartingServer pins item 6: an unknown
+// --harness fails fast, next to selectRuntime, before any of the
+// workspace/config/admin-token checks below it or the shared-server startup
+// past them — spawning the server for a request that can never bring up a
+// container would be wasted work and a confusing partial state.
+func TestRunUpRejectsUnknownHarnessBeforeStartingServer(t *testing.T) {
+	origIsInContainer := isInContainer
+	isInContainer = func() bool { return false }
+	t.Cleanup(func() { isInContainer = origIsInContainer })
+
+	workspace := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("mcp: {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runUp(upOptions{
+		configPath: configPath,
+		noServer:   true,
+		workspace:  workspace,
+		runtime:    "devcontainer",
+		harness:    "not-a-real-harness",
+		shell:      "never",
+	})
+	if err == nil || !strings.Contains(err.Error(), `unknown harness "not-a-real-harness"`) {
+		t.Fatalf("unknown --harness was not rejected up front: %v", err)
 	}
 }
 
@@ -141,39 +172,14 @@ func TestRunUpRejectsAdminTokenInsideWorkspaceWhenDisabled(t *testing.T) {
 func devcontainerPoolPlanTestLayout(t *testing.T, harnessName string, poolLockable bool) (in devcontainerPoolPlanInput, root string) {
 	t.Helper()
 	root = t.TempDir()
-	in = devcontainerPoolPlanInput{
+	in = devcontainerPoolPlanInput{poolPlanInput: poolPlanInput{
 		Harness:               harnessName,
 		PoolLockable:          poolLockable,
 		RuntimeDir:            filepath.Join(root, "runtime"),
 		RuntimeBinDir:         filepath.Join(root, "runtime", "bin"),
 		RuntimeGenerationsDir: filepath.Join(root, "runtime", "generations"),
-	}
+	}}
 	return in, root
-}
-
-// writeDevcontainerGeneration creates the two files resolveDevcontainerPoolPlan
-// checks for an active pointer to genID: the dispatcher (runtime/bin/<harness>)
-// and the generation's own entrypoint (runtime/generations/<genID>/bin/<harness>).
-// Mirrors guixcontainer_test.go's writeGeneration.
-func writeDevcontainerGeneration(t *testing.T, in devcontainerPoolPlanInput, genID string, dispatcher, genBin bool) {
-	t.Helper()
-	if dispatcher {
-		if err := os.MkdirAll(in.RuntimeBinDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(in.RuntimeBinDir, in.Harness), []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if genBin {
-		dir := filepath.Join(in.RuntimeGenerationsDir, genID, "bin")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, in.Harness), []byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 // TestResolveDevcontainerPoolPlanNoActivePointer covers every "no active
@@ -240,7 +246,7 @@ func TestResolveDevcontainerPoolPlanNoActivePointer(t *testing.T) {
 func TestResolveDevcontainerPoolPlanActivePointer(t *testing.T) {
 	in, root := devcontainerPoolPlanTestLayout(t, "claude", true)
 	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-arm64-glibc-a1b2c3d4\n")
-	writeDevcontainerGeneration(t, in, "claude-1.2.3-linux-arm64-glibc-a1b2c3d4", true, true)
+	writePoolGeneration(t, in.poolPlanInput, "claude-1.2.3-linux-arm64-glibc-a1b2c3d4", true, true)
 
 	plan := resolveDevcontainerPoolPlan(in)
 
@@ -278,7 +284,7 @@ func TestResolveDevcontainerPoolPlanStaleGeneration(t *testing.T) {
 				t.Run(map[bool]string{true: "lockable", false: "not lockable"}[lockable], func(t *testing.T) {
 					in, root := devcontainerPoolPlanTestLayout(t, "claude", lockable)
 					in.PointerPath = writePointerFile(t, root, genID+"\n")
-					writeDevcontainerGeneration(t, in, genID, tc.dispatcher, tc.genBin)
+					writePoolGeneration(t, in.poolPlanInput, genID, tc.dispatcher, tc.genBin)
 
 					plan := resolveDevcontainerPoolPlan(in)
 
@@ -330,120 +336,64 @@ func TestResolveDevcontainerPoolPlanNoticeIsSingleLine(t *testing.T) {
 	})
 }
 
-// TestBuildDevcontainerUpArgsLegacyPoolPlan pins today's exact pre-runtime-mount
-// `devcontainer up` argv byte-for-byte — no active pointer, no declared mounts —
-// so the refactor that introduced buildDevcontainerUpArgs cannot silently
-// change the common-case invocation. Mirrors
-// TestBuildGuixShellArgsLegacyPoolPlan's "byte-identical" intent.
+// TestBuildDevcontainerUpArgsLegacyPoolPlan pins today's exact `devcontainer
+// up` argv byte-for-byte — home bind only, no runtime mount and no
+// --remote-env EVER (§12.2's Phase-4 ruling: the runtime mount is
+// config-declared, not `up`-injected, full stop — there is no "active
+// pointer" argv shape to grow into). Mirrors TestBuildGuixShellArgsLegacyPoolPlan's
+// "byte-identical" intent, and this exact shape must survive unchanged
+// regardless of plan liveness (buildDevcontainerUpArgs doesn't even take a
+// plan anymore).
 func TestBuildDevcontainerUpArgsLegacyPoolPlan(t *testing.T) {
 	root := "/work/proj"
 	poolHome := "/pool/home"
 
-	got := buildDevcontainerUpArgs(root, poolHome, false, false, devcontainerPoolPlan{})
+	got := buildDevcontainerUpArgs(root, poolHome, false)
 
 	want := []string{
 		"up", "--workspace-folder", root,
 		"--mount", "type=bind,source=" + poolHome + ",target=" + devcontainerPoolHome,
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("legacy devcontainer up args =\n%#v\nwant\n%#v", got, want)
+		t.Fatalf("devcontainer up args =\n%#v\nwant\n%#v", got, want)
 	}
 }
 
-// TestBuildDevcontainerUpArgsActivePointerPlan asserts the §12.2 active-pointer
-// shape: home bind (unchanged), runtime bind read-only at devcontainerPoolRuntime,
-// and a --remote-env PATH append using the fixed dispatcher bin dir.
-func TestBuildDevcontainerUpArgsActivePointerPlan(t *testing.T) {
+// TestBuildDevcontainerUpArgsHomeDeclared asserts the only other shape: a
+// config that already declares the home mount suppresses `up`'s own --mount,
+// with nothing else in the argv (still no runtime mount, still no --remote-env).
+func TestBuildDevcontainerUpArgsHomeDeclared(t *testing.T) {
 	root := "/work/proj"
 	poolHome := "/pool/home"
-	plan := devcontainerPoolPlan{mountRuntime: true, runtimeDir: "/pool/runtime"}
 
-	got := buildDevcontainerUpArgs(root, poolHome, false, false, plan)
+	got := buildDevcontainerUpArgs(root, poolHome, true)
 
-	want := []string{
-		"up", "--workspace-folder", root,
-		"--mount", "type=bind,source=" + poolHome + ",target=" + devcontainerPoolHome,
-		"--mount", "type=bind,source=/pool/runtime,target=" + devcontainerPoolRuntime + ",readonly",
-		"--remote-env", "PATH=" + devcontainerPoolPathAppend,
-	}
+	want := []string{"up", "--workspace-folder", root}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("active-pointer devcontainer up args =\n%#v\nwant\n%#v", got, want)
-	}
-	if !strings.HasSuffix(devcontainerPoolPathAppend, devcontainerPoolRuntimeBin) ||
-		!strings.HasPrefix(devcontainerPoolPathAppend, "${containerEnv:PATH}:") {
-		t.Fatalf("devcontainerPoolPathAppend = %q, want existing PATH APPENDED with the dispatcher dir (never prepended)", devcontainerPoolPathAppend)
+		t.Fatalf("devcontainer up args =\n%#v\nwant\n%#v", got, want)
 	}
 }
 
-// TestBuildDevcontainerUpArgsSkipsDeclaredMounts covers item 3: a
-// devcontainer.json already declaring a mount at either target independently
-// suppresses only that target's --mount, never the other's, and never the
-// PATH remote-env (which is orthogonal to who wrote the mount).
-func TestBuildDevcontainerUpArgsSkipsDeclaredMounts(t *testing.T) {
-	root := "/work/proj"
-	poolHome := "/pool/home"
-	plan := devcontainerPoolPlan{mountRuntime: true, runtimeDir: "/pool/runtime"}
-
-	t.Run("home declared", func(t *testing.T) {
-		got := buildDevcontainerUpArgs(root, poolHome, true, false, plan)
-		want := []string{
-			"up", "--workspace-folder", root,
-			"--mount", "type=bind,source=/pool/runtime,target=" + devcontainerPoolRuntime + ",readonly",
-			"--remote-env", "PATH=" + devcontainerPoolPathAppend,
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("args =\n%#v\nwant\n%#v", got, want)
-		}
-	})
-
-	t.Run("runtime declared", func(t *testing.T) {
-		got := buildDevcontainerUpArgs(root, poolHome, false, true, plan)
-		want := []string{
-			"up", "--workspace-folder", root,
-			"--mount", "type=bind,source=" + poolHome + ",target=" + devcontainerPoolHome,
-			"--remote-env", "PATH=" + devcontainerPoolPathAppend,
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("args =\n%#v\nwant\n%#v", got, want)
-		}
-	})
-
-	t.Run("both declared", func(t *testing.T) {
-		got := buildDevcontainerUpArgs(root, poolHome, true, true, plan)
-		want := []string{
-			"up", "--workspace-folder", root,
-			"--remote-env", "PATH=" + devcontainerPoolPathAppend,
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("args =\n%#v\nwant\n%#v", got, want)
-		}
-	})
-}
-
-// TestBuildDevcontainerUpArgsToSlash pins §6.3: both mount sources are routed
-// through filepath.ToSlash before being embedded in the --mount string. The
-// expected value is computed via filepath.ToSlash of the SAME raw,
-// Windows-shaped input rather than hardcoded forward slashes, so the
+// TestBuildDevcontainerUpArgsToSlash pins §6.3: the home mount source is
+// routed through filepath.ToSlash before being embedded in the --mount
+// string. The expected value is computed via filepath.ToSlash of the SAME
+// raw, Windows-shaped input rather than hardcoded forward slashes, so the
 // assertion holds on every GOOS: on an actual Windows host (where
 // filepath.Separator is '\\') this pins genuine backslash→forward-slash
 // conversion — Docker Desktop expects forward slashes even for a Windows
 // drive-letter source; on POSIX hosts filepath.ToSlash is a documented no-op,
-// so here it only pins that buildDevcontainerUpArgs routes both sources
-// through it (real cross-OS conversion is exercised by Go's own stdlib tests,
-// not reproducible here without a GOOS=windows build).
+// so here it only pins that buildDevcontainerUpArgs routes the source
+// through it (real cross-OS conversion is exercised by Go's own stdlib
+// tests, not reproducible here without a GOOS=windows build).
 func TestBuildDevcontainerUpArgsToSlash(t *testing.T) {
 	root := "/work/proj"
 	rawHome := `C:\Users\dev\AppData\Local\wraptool\harness-pool\home`
-	rawRuntime := `C:\Users\dev\AppData\Local\wraptool\harness-pool\runtime`
-	plan := devcontainerPoolPlan{mountRuntime: true, runtimeDir: rawRuntime}
 
-	got := buildDevcontainerUpArgs(root, rawHome, false, false, plan)
+	got := buildDevcontainerUpArgs(root, rawHome, false)
 
 	want := []string{
 		"up", "--workspace-folder", root,
 		"--mount", "type=bind,source=" + filepath.ToSlash(rawHome) + ",target=" + devcontainerPoolHome,
-		"--mount", "type=bind,source=" + filepath.ToSlash(rawRuntime) + ",target=" + devcontainerPoolRuntime + ",readonly",
-		"--remote-env", "PATH=" + devcontainerPoolPathAppend,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("windows-shaped devcontainer up args =\n%#v\nwant\n%#v", got, want)
@@ -457,9 +407,11 @@ func TestBuildDevcontainerUpArgsToSlash(t *testing.T) {
 	}
 }
 
-// TestDevcontainerDeclaresMountBothTargets extends
-// TestDevcontainerDeclaresPoolMount to the generic devcontainerDeclaresMount
-// helper: each target is detected independently.
+// TestDevcontainerDeclaresMountBothTargets pins devcontainerDeclaresMount's
+// generic (whole-file substring) behavior for both targets — still real
+// behavior worth pinning even though production code only calls it for the
+// HOME target now (devcontainerRuntimeMountDeclared, mounts-array-aware,
+// covers the runtime target instead — see TestDevcontainerRuntimeMountDeclared).
 func TestDevcontainerDeclaresMountBothTargets(t *testing.T) {
 	write := func(t *testing.T, body string) string {
 		t.Helper()
@@ -502,23 +454,175 @@ func TestDevcontainerDeclaresMountBothTargets(t *testing.T) {
 	})
 }
 
+// devcontainerWriteConfig is the shared "write a .devcontainer/devcontainer.json
+// with this body under a fresh t.TempDir()" test helper — used by every test
+// below that exercises the mounts-array/JSONC machinery.
+func devcontainerWriteConfig(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	dc := filepath.Join(dir, ".devcontainer")
+	if err := os.MkdirAll(dc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dc, "devcontainer.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestDevcontainerRuntimeMountDeclared covers item 4: the runtime target's
+// own declared-check must be mounts-ARRAY-aware, not a whole-file substring —
+// a PATH mention or comment containing devcontainerPoolRuntime elsewhere in
+// the file must NOT be mistaken for a declared mount (the false positive the
+// review flagged against the original whole-file substring approach).
+func TestDevcontainerRuntimeMountDeclared(t *testing.T) {
+	t.Run("declared via object-form mounts entry", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, `{"mounts":[{"source":"/pool/runtime","target":"`+devcontainerPoolRuntime+`","type":"bind","readonly":true}]}`)
+		if !devcontainerRuntimeMountDeclared(dir) {
+			t.Error("object-form runtime mount not detected")
+		}
+	})
+
+	t.Run("declared via string-form mounts entry", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, `{"mounts":["source=/pool/runtime,target=`+devcontainerPoolRuntime+`,type=bind,readonly"]}`)
+		if !devcontainerRuntimeMountDeclared(dir) {
+			t.Error("string-form runtime mount not detected")
+		}
+	})
+
+	t.Run("PATH mention outside mounts is NOT a declared mount", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, `{"remoteEnv":{"SOME_VAR":"`+devcontainerPoolRuntimeBin+`:$PATH"},"mounts":["source=/x,target=`+devcontainerPoolHome+`,type=bind"]}`)
+		if devcontainerRuntimeMountDeclared(dir) {
+			t.Error("a PATH mention outside the mounts array must not count as a declared runtime mount")
+		}
+	})
+
+	t.Run("comment mentioning the runtime path is NOT a declared mount", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, "{\n  // don't forget to mount "+devcontainerPoolRuntime+" someday\n  \"mounts\":[]\n}\n")
+		if devcontainerRuntimeMountDeclared(dir) {
+			t.Error("a comment mentioning the runtime path must not count as a declared runtime mount")
+		}
+	})
+
+	t.Run("no mounts array at all", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`)
+		if devcontainerRuntimeMountDeclared(dir) {
+			t.Error("no mounts array → not declared")
+		}
+	})
+}
+
+// TestDevcontainerRuntimeMountSnippet pins the exact §12.3 mounts-array
+// string entry `up` tells the developer to add: read-only, bind, target
+// devcontainerPoolRuntime, and source = the CONCRETE ToSlash'd host path
+// (never a ${localEnv}/${containerEnv} template — up already knows the
+// right answer for the host it's running on).
+func TestDevcontainerRuntimeMountSnippet(t *testing.T) {
+	rawRuntime := `C:\Users\dev\AppData\Local\wraptool\harness-pool\runtime`
+	got := devcontainerRuntimeMountSnippet(rawRuntime)
+	// filepath.ToSlash(rawRuntime), not a hardcoded forward-slash literal, so
+	// the assertion holds on every GOOS — see TestBuildDevcontainerUpArgsToSlash's
+	// own comment for why (filepath.ToSlash is a documented no-op on POSIX).
+	want := "source=" + filepath.ToSlash(rawRuntime) + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
+	if got != want {
+		t.Fatalf("snippet = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "${") {
+		t.Fatalf("snippet = %q, must not be templated — a concrete host path only", got)
+	}
+	if runtime.GOOS == "windows" && strings.Contains(got, `\`) {
+		t.Fatalf("snippet = %q, must not contain a backslash after ToSlash", got)
+	}
+}
+
+// TestDevcontainerRuntimeMissingMountNotice asserts the actionable notice
+// names the harness, contains the exact mounts snippet (with ,readonly and
+// this host's real path), and points at `wraptool init devcontainer` for
+// fresh projects.
+func TestDevcontainerRuntimeMissingMountNotice(t *testing.T) {
+	notice := devcontainerRuntimeMissingMountNotice("claude", "/pool/runtime")
+	if !strings.Contains(notice, "claude") {
+		t.Errorf("notice = %q, want it to name the harness", notice)
+	}
+	if !strings.Contains(notice, ",readonly") {
+		t.Errorf("notice = %q, want the ,readonly mounts snippet", notice)
+	}
+	if !strings.Contains(notice, "source=/pool/runtime") {
+		t.Errorf("notice = %q, want the concrete host runtime path", notice)
+	}
+	if !strings.Contains(notice, "wraptool init devcontainer") {
+		t.Errorf("notice = %q, want a pointer to the scaffolder for fresh projects", notice)
+	}
+}
+
+// TestDevcontainerRuntimeDeclaredInfo is a light sanity pin: the info line
+// names the harness and the runtime target, distinguishing it from the
+// notice (no mounts snippet, no stderr — bringUpContainer prints this one to
+// stdout).
+func TestDevcontainerRuntimeDeclaredInfo(t *testing.T) {
+	info := devcontainerRuntimeDeclaredInfo("claude")
+	if !strings.Contains(info, "claude") || !strings.Contains(info, devcontainerPoolRuntime) {
+		t.Fatalf("info = %q, want it to name the harness and the runtime target", info)
+	}
+}
+
+// TestBuildDevcontainerShellEntry pins the exact §12.2-ruling entry-wrap
+// string wraptool's own interactive shell uses when the pool plan is live:
+// a bare (unquoted) $PATH, appended (never prepended) with the shellQuote'd
+// dispatcher bin dir, handing off to a real login shell — mirrors
+// buildContainerEntry's own PATH-append convention (cmd/guixcontainer.go).
+func TestBuildDevcontainerShellEntry(t *testing.T) {
+	got := buildDevcontainerShellEntry()
+	want := "export PATH=$PATH:" + shellQuote(devcontainerPoolRuntimeBin) + "; exec bash -l"
+	if got != want {
+		t.Fatalf("entry = %q, want %q", got, want)
+	}
+	// Append-not-prepend, pinned the same way TestBuildContainerEntryAppendsPathDir
+	// pins it for the guix twin.
+	if !strings.HasPrefix(got, "export PATH=$PATH:") {
+		t.Fatalf("entry = %q, must append after $PATH, never prepend", got)
+	}
+}
+
+// TestBuildDevcontainerExecArgs asserts the exec argv shape: a dead plan gets
+// a plain login shell (identical to the pre-pool-verification behavior); a
+// live plan entry-wraps it via bash -lc with the exact quoted export line.
+func TestBuildDevcontainerExecArgs(t *testing.T) {
+	root := "/work/proj"
+
+	t.Run("no live plan", func(t *testing.T) {
+		got := buildDevcontainerExecArgs(root, false)
+		want := []string{"exec", "--workspace-folder", root, "bash", "-l"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("exec args =\n%#v\nwant\n%#v", got, want)
+		}
+	})
+
+	t.Run("live plan", func(t *testing.T) {
+		got := buildDevcontainerExecArgs(root, true)
+		want := []string{"exec", "--workspace-folder", root, "bash", "-lc", buildDevcontainerShellEntry()}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("exec args =\n%#v\nwant\n%#v", got, want)
+		}
+	})
+}
+
+// TestDevcontainerPathExportHint pins the standalone export line printed in
+// the attach-hint for a legacy-feature-provisioned container.
+func TestDevcontainerPathExportHint(t *testing.T) {
+	got := devcontainerPathExportHint()
+	want := "export PATH=$PATH:" + shellQuote(devcontainerPoolRuntimeBin)
+	if got != want {
+		t.Fatalf("hint = %q, want %q", got, want)
+	}
+}
+
 // TestDevcontainerDeclaredMountSourceMissing covers the §12.3 mixed-OS warning:
 // a declared mount whose source does not exist on THIS host warns, one that
 // does exist is silent, and a substitution form other than ${localEnv:...} is
 // never guessed at.
 func TestDevcontainerDeclaredMountSourceMissing(t *testing.T) {
-	writeConfig := func(t *testing.T, body string) string {
-		t.Helper()
-		dir := t.TempDir()
-		dc := filepath.Join(dir, ".devcontainer")
-		if err := os.MkdirAll(dc, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(dc, "devcontainer.json"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		return dir
-	}
+	writeConfig := devcontainerWriteConfig
 
 	t.Run("object-form mount - literal source missing", func(t *testing.T) {
 		dir := writeConfig(t, `{"mounts":[{"source":"/definitely/does/not/exist","target":"`+devcontainerPoolRuntime+`","type":"bind"}]}`)
@@ -567,4 +671,104 @@ func TestDevcontainerDeclaredMountSourceMissing(t *testing.T) {
 			t.Fatalf("warn = %q, want none (no mount declared)", warn)
 		}
 	})
+}
+
+// --- JSONC robustness (item 5): stripJSONC must not corrupt a "//" inside a
+// JSON string, must strip /* */ block comments, and must tolerate a trailing
+// comma before a closing } or ] ---
+
+// TestStripJSONCPreservesURLsInsideStrings pins the bug the naive whole-line
+// "// to EOL" regex had: a value containing "//" (a URL, this repo's own
+// idiom — examples/devcontainer/README.md's WRAPTOOL_URL) must survive
+// intact, not get truncated at the "//".
+func TestStripJSONCPreservesURLsInsideStrings(t *testing.T) {
+	in := `{
+  // a real line comment, safely removed
+  "containerEnv": { "WRAPTOOL_URL": "http://172.18.0.1:8717" },
+  "documentationURL": "https://forge.snamellit.com/pti/wraptool"
+}`
+	out := stripJSONC(in)
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("stripJSONC output is not valid JSON: %v\nstripped:\n%s", err, out)
+	}
+	env, _ := cfg["containerEnv"].(map[string]any)
+	if env["WRAPTOOL_URL"] != "http://172.18.0.1:8717" {
+		t.Fatalf("WRAPTOOL_URL = %v, want the URL intact (not truncated at //)", env["WRAPTOOL_URL"])
+	}
+	if cfg["documentationURL"] != "https://forge.snamellit.com/pti/wraptool" {
+		t.Fatalf("documentationURL = %v, want it intact", cfg["documentationURL"])
+	}
+}
+
+// TestStripJSONCRemovesBlockComments covers a /* */ comment, including one
+// that spans what would otherwise look like a line comment inside it.
+func TestStripJSONCRemovesBlockComments(t *testing.T) {
+	in := `{
+  /* block comment
+     mentioning // not a real comment marker here */
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu"
+}`
+	out := stripJSONC(in)
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("stripJSONC output is not valid JSON: %v\nstripped:\n%s", err, out)
+	}
+	if cfg["image"] != "mcr.microsoft.com/devcontainers/base:ubuntu" {
+		t.Fatalf("image = %v, want it intact", cfg["image"])
+	}
+}
+
+// TestStripJSONCRemovesTrailingComma covers a JSONC/JSON5-style trailing
+// comma before a closing } or ], which encoding/json rejects outright.
+func TestStripJSONCRemovesTrailingComma(t *testing.T) {
+	in := `{
+  "mounts": [
+    "source=/a,target=/b,type=bind",
+  ],
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+}`
+	out := stripJSONC(in)
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("stripJSONC output is not valid JSON: %v\nstripped:\n%s", err, out)
+	}
+	mounts, _ := cfg["mounts"].([]any)
+	if len(mounts) != 1 {
+		t.Fatalf("mounts = %v, want exactly one entry", cfg["mounts"])
+	}
+}
+
+// TestStripJSONCOnRealRepoDevcontainerConfig feeds this repo's own
+// .devcontainer/devcontainer.json (comments, tab indentation, a real mounts
+// array) through stripJSONC + json.Unmarshal end to end, and confirms
+// devcontainerDeclaredMountSource correctly finds its home mount and does
+// NOT find a runtime mount (this fixture predates the runtime-mount
+// scaffolding) — the regression-protection fixture item 5 asked for.
+func TestStripJSONCOnRealRepoDevcontainerConfig(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", ".devcontainer", "devcontainer.json"))
+	if err != nil {
+		t.Skipf("repo .devcontainer/devcontainer.json not found: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(stripJSONC(string(data))), &cfg); err != nil {
+		t.Fatalf("this repo's own devcontainer.json failed to parse after stripJSONC: %v", err)
+	}
+	if _, ok := cfg["mounts"]; !ok {
+		t.Fatal("expected a mounts array in the repo's own devcontainer.json")
+	}
+
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(dir, ".devcontainer"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".devcontainer", "devcontainer.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if src, found := devcontainerDeclaredMountSource(dir, devcontainerPoolHome); !found || src == "" {
+		t.Errorf("expected the repo's own config to declare a home mount; found=%v src=%q", found, src)
+	}
+	if devcontainerRuntimeMountDeclared(dir) {
+		t.Error("the repo's own devcontainer.json does not yet declare a runtime mount")
+	}
 }
