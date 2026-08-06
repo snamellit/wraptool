@@ -52,6 +52,13 @@ non-Guix Linux — through Docker or Podman.
   resolves to this wiring-only major — pin `:1` for the new behavior or `:0`
   to keep the old per-image provisioning behavior; existing configs already
   pinned to `:0` are unaffected.
+- `wraptool init devcontainer` scaffolds the `:1` wiring-only feature and both
+  pool mounts (`home/` read-write, `runtime/` read-only, the latter as the
+  verbatim `,readonly` string form the devcontainer CLI actually enforces). It
+  no longer auto-adds the `node` feature for npm harnesses (the pool runtime
+  bundles its own) or scaffolds a `provision`/`version` option for any
+  harness, including `gemini`. This repo's own `.devcontainer/devcontainer.json`
+  and `examples/devcontainer/` move to the same shape.
 
 ### Upgrade notes
 
