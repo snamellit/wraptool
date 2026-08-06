@@ -602,14 +602,18 @@ func TestDevcontainerRuntimeMountSnippet(t *testing.T) {
 }
 
 // TestDevcontainerRuntimeMountSnippetExoticPath covers item 2: a pool
-// runtime path containing a quote or backslash cannot be embedded verbatim
-// in the illustrative (human-pasted) mounts snippet without corrupting it as
-// JSON — the function must refuse and name the escaping problem instead of
-// emitting broken JSON.
+// runtime path containing a comma, quote, or backslash cannot be embedded
+// verbatim in the illustrative (human-pasted) mounts snippet without
+// corrupting it — a comma misparses as the mount string's own CSV field
+// separator, a quote or backslash needs escaping this snippet doesn't do —
+// the function must refuse and name the escaping problem instead of emitting
+// a corrupt mount string. This guard mirrors
+// cmd/init_devcontainer.go's poolRuntimeMountSourceUnsafeChars.
 func TestDevcontainerRuntimeMountSnippetExoticPath(t *testing.T) {
 	for _, exotic := range []string{
 		`/pool/weird"quote/runtime`,
 		`/pool/weird\backslash/runtime`,
+		`/pool/weird,comma/runtime`,
 	} {
 		t.Run(exotic, func(t *testing.T) {
 			got := devcontainerRuntimeMountSnippet(exotic)
