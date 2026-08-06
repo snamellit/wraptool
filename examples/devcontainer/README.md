@@ -69,42 +69,50 @@ Docker/Podman flows in [`docs/isolated-environments.md`](../../docs/isolated-env
 
 ## Sharing the harness across projects (the developer toolbox)
 
-The harness *binary* is cheap to install per container, but its **state** — auth
-token, skills, extensions, MCP config — is a per-developer toolbox you don't want
-to rebuild in every project. The `wraptool` feature (`provision: true`) installs the
-binary at build time and pins the container's `HOME` to `/home/wraptool-harness`;
-bind-mount your host pool onto that path so the state persists across every project.
+The harness *binary* and its **state** — auth token, skills, extensions, MCP
+config — both live in one per-developer toolbox: the shared **harness pool**
+(`$XDG_DATA_HOME/wraptool/harness-pool/`). The `wraptool` feature (wiring-only,
+major `:1` — see `design/harness/unified-harness-pool.md` §12.3) pins the
+container's `HOME` to `/home/wraptool-harness` and writes the MCP wiring, but
+installs no harness binary itself: bind-mount the pool's `home/` (read-write)
+and `runtime/` (read-only) onto the container to get both state and binary.
 
-When `wraptool up` drives the devcontainer it adds the mount for you. For a
-standalone "Reopen in Container" (no `wraptool` process), declare it yourself:
+When `wraptool up` drives the devcontainer it adds/verifies the mounts for you
+(the binary must already be pool-locked — run `wraptool harness install <name>`
+on the host once). For a standalone "Reopen in Container" (no `wraptool`
+process), declare both mounts yourself:
 
 ```jsonc
 // .devcontainer/devcontainer.json
 {
   "features": {
-    // claude/opencode/pi install via npm, so pull a node runtime too:
-    "ghcr.io/devcontainers/features/node:1": {},
-    // One feature, one harness choice. provision (install the binary) and
-    // connect (write the MCP wiring) both default true; flip either off for
-    // BYO-binary or wire-it-yourself setups.
-    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
+    // One feature, one harness choice — wiring only. The binary comes from
+    // the runtime mount below, not this feature.
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
   },
-  // Share the host harness-state pool (login/skills once, every project):
   "mounts": [
-    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+    // home/ — auth/skills/config, read-write, persists across every project.
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    // runtime/ — the version-locked harness binaries, read-only. MUST stay
+    // string form: the devcontainer CLI's object-form mounts have no
+    // read-only field at all and silently come up read-write regardless of
+    // any "readonly" key.
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
   ]
 }
 ```
 
-The mount source is your host pool (`$XDG_DATA_HOME/wraptool/harness-pool/home`).
-The `~/.local/share/...` above is the **Linux** location; match your OS or the
-bind fails on a source that does not exist. Use forward slashes under
-`${localEnv:HOME}` on every OS (backslashes are invalid in a JSON string): on
-**macOS** `${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home`,
-on **Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home`.
-`wraptool init devcontainer` and `wraptool up` emit/mount the correct path for
-your platform automatically; only a hand-written mount needs this adjustment. Only `home/` (state) is shared — the binary lives
-in the image, isolated per project. This mirrors the Guix runtime's split; see
+Both mount sources point at your host pool
+(`$XDG_DATA_HOME/wraptool/harness-pool/{home,runtime}`). The `~/.local/share/...`
+above is the **Linux** location; match your OS or the bind fails on a source
+that does not exist. Use forward slashes under `${localEnv:HOME}` on every OS
+(backslashes are invalid in a JSON string): on **macOS**
+`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`;
+on **Windows** the pool root is `%LOCALAPPDATA%\wraptool`, not under `%HOME%`,
+so `${localEnv:HOME}` does not apply — use the literal host path instead.
+`wraptool init devcontainer` and `wraptool up` emit/mount the correct paths for
+your platform automatically; only a hand-written mount needs this adjustment.
+This mirrors the Guix runtime's split; see
 [`design/harness/harness-descriptor.md`](../../design/harness/harness-descriptor.md) §7 for the
 trust model (shared writable `home/` is an accepted residual-risk channel; never
 mount host `$HOME` or credentials).

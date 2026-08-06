@@ -314,15 +314,20 @@ socat TCP-LISTEN:8717,fork,reuseaddr \
 
 ## Option 4: VS Code Dev Container
 
-The recommended path uses the merged **`wraptool` Dev Container feature**
-(`forge.snamellit.com/pti/wraptool/wraptool`), which does two jobs off a single
-`harness` choice: **provision** installs the harness binary into the image, and
-**connect** writes the MCP client config wiring it to the host wraptool. Scaffold
-a config and bring it up:
+The recommended path uses the **wiring-only `wraptool` Dev Container feature**
+(`forge.snamellit.com/pti/wraptool/wraptool:1`), keyed on a single `harness`
+choice: it writes the MCP client config wiring the container to the host
+wraptool, and pins `HOME`/`PATH`, but installs **no harness binary** — that
+comes from the shared harness pool's `runtime/` tree, built once per developer
+on the host and mounted read-only into the container. Install the harness,
+scaffold a config, and bring it up:
 
 ```bash
+# Host: build/lock the harness once into the shared pool.
+wraptool harness install claude
+
 # In your project root: generate .devcontainer/devcontainer.json
-wraptool init devcontainer --harness claude --lang go,node
+wraptool init devcontainer --harness claude --lang go
 
 # Host: start wraptool on a container-reachable address (see note below) and
 # export the token so it reaches the container out of the image layers.
@@ -336,8 +341,8 @@ wraptool up            # (off Guix this runs `devcontainer up` for you)
 `wraptool init devcontainer` emits a starting-point `devcontainer.json` from the
 `base:ubuntu` + language-features model: the language features you list, the
 `wraptool` feature with your harness, and the `WRAPTOOL_CWD` / `WRAPTOOL_TOKEN`
-env plus the shared-pool mount prefilled (npm harnesses like claude auto-pull the
-`node` feature). It writes a fresh file and refuses to clobber an existing one
+env plus both shared-pool mounts (`home/` read-write, `runtime/` read-only)
+prefilled. It writes a fresh file and refuses to clobber an existing one
 (pass `--force`).
 
 At container-create the feature's `connect.sh` writes `.mcp.json` pointing at
@@ -348,22 +353,23 @@ via `remoteEnv`), and `WRAPTOOL_CWD=${localWorkspaceFolder}` selects this
 worktree as the host CWD. Configure `mcp.allowed_cwd_roots` if the client must be
 prevented from selecting a different host path.
 
-### Shared harness pool and toggles
+### Shared harness pool
 
-The feature pins the harness's `HOME` to `/home/wraptool-harness` and mounts the
-host **harness pool** (`$XDG_DATA_HOME/wraptool/harness-pool/home`, e.g.
-`~/.local/share/wraptool/harness-pool/home`) onto it, so the harness's auth,
-skills, and config persist **across every project** — you log in and install
-skills once, not per container. `wraptool up` bind-mounts this pool for you; a
-standalone "Reopen in Container" declares the same mount (the scaffolder prefills
-it).
+The feature pins the harness's `HOME` to `/home/wraptool-harness` and mounts
+the host **harness pool**'s `home/` (`$XDG_DATA_HOME/wraptool/harness-pool/home`,
+e.g. `~/.local/share/wraptool/harness-pool/home`) onto it, read-write, so the
+harness's auth, skills, and config persist **across every project** — you log
+in and install skills once, not per container. The pool's `runtime/` — the
+version-locked harness binary — is mounted read-only onto
+`/opt/wraptool-harness/runtime`; its `bin/` is appended to `PATH` by the
+feature's `containerEnv`. `wraptool up` bind-mounts `home/` for you and
+verifies the `runtime/` mount is correctly declared (it can't inject a
+read-only mount itself — the devcontainer CLI's `--mount` flag has no
+read-only field); a standalone "Reopen in Container" declares both mounts
+itself (the scaffolder prefills them).
 
-Two independent toggles on the feature (both default `true`):
-
-- `"provision": false` — bring your own harness binary (baked into your base
-  image); the shared-pool HOME and connect wiring still apply.
-- `"connect": false` — wire the MCP config yourself (e.g. host-side
-  `wraptool init`); provisioning still installs the binary.
+`"connect": false` on the feature wires the MCP config yourself (e.g. host-side
+`wraptool init`) instead of at container-create.
 
 See [Dev containers for AI harnesses](devcontainers.qmd) for the full feature
 reference (every option, the base-image-plus-features rationale, and the

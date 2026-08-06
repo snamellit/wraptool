@@ -191,32 +191,39 @@ the descriptor deliberately carries no fetch logic.
 
 ### 7a. Provisioning on a devcontainer host (no guix)
 
-The pool as described (`bin/` read-only mount + `home/` writable mount) is the
-**guix runtime**. A devcontainer host has no guix to run the FHS-emulated pool
-installers, and the pool `bin/` is never mounted into a devcontainer. So the two
-axes get **different mechanisms** there, chosen to be devcontainer-native:
+> **Superseded.** This section described the pre-cutover split — per-image
+> npm/script install via the feature's `provision` toggle — as implemented
+> through Phase 3. [`unified-harness-pool.md`](unified-harness-pool.md) §12.3
+> replaced it: the devcontainer runtime now shares the **same** version-locked
+> pool `runtime/` tree as the guix runtime (§7 above), mounted read-only, and
+> the `wraptool` feature (major `:1`) is wiring-only — no `provision` option,
+> no per-image install. The table and prose below are kept for history; treat
+> "Binary: `wraptool` feature, `provision: true`" and the `provision: false`/
+> `connect: false` toggle pair as **retired**. The current, implemented axes
+> are:
 
 | Axis | Guix runtime | Devcontainer runtime |
 |---|---|---|
-| Binary | shared pool `bin/`, mounted read-only | **`wraptool` feature, `provision: true`** — installed per image at build time (`npm i -g` / the harness's own script). npm runs in-image where node lives, so the guix FHS/detect-libc workaround never applies. |
+| Binary | shared pool `runtime/`, mounted read-only, PATH-appended | **same shared pool `runtime/`**, bind-mounted read-only onto `/opt/wraptool-harness/runtime`; the feature's `containerEnv` appends its `bin/` to `PATH`. Built once per developer via `wraptool harness install <name>`, never per image. |
 | State  | shared pool `home/`, mounted writable | **same shared pool `home/`**, bind-mounted onto the feature's fixed `HOME` (`/home/wraptool-harness` — user-space, not system `/opt`). Login/skills/config persist across every project — the toolbox value. |
 | Wiring | host-side `harness.Write` into the shared workspace | **`wraptool` feature, `connect: true`** — `connect.sh` writes the MCP client config at postCreate (auto-detects the host gateway). |
 
-**One feature, two toggles.** Wiring and provisioning are orthogonal but serve the
-same population (container-CLI harnesses) and are almost always used together with
-the *same* harness, so they live in one `wraptool` feature keyed on a single
-`harness` option (no cross-feature drift), with independent `provision`/`connect`
-booleans (default true) — `provision: false` for a BYO binary, `connect: false` to
-wire it yourself. The shared-pool `HOME` is a feature invariant (via `containerEnv`,
-not a toggle: features can't conditionalize `containerEnv` on an option, and
-`containerEnv` is the layer that survives `devcontainer exec`). The deprecated
-`wraptool-connect` feature (wiring only) stays published for existing configs.
+The old per-image-provisioning feature major (`:0`, with `provision`/`version`
+options) remains published for existing configs but is deprecated; new setups
+pin `:1`. See `unified-harness-pool.md` §12.2 (the `wraptool up` verify-not-
+inject ruling for the read-only runtime mount) and §12.3 (the scaffolder /
+standalone-editor contract) for the current mechanics, including the mixed-OS
+mount-source limits.
 
-`wraptool up` (devcontainer path) adds the `home/` bind mount on `devcontainer
-up`; standalone "Reopen in Container" declares the same mount + feature in
-`devcontainer.json` (see `examples/devcontainer`). Two devcontainer-specific
-requirements, both verified end-to-end against `mcr.microsoft.com/devcontainers/base:debian`
-+ the node feature:
+**Historical detail (implemented through Phase 3, kept for context):** the pool
+as originally described (`bin/` read-only mount + `home/` writable mount) was
+guix-only; a devcontainer host had no guix to run the FHS-emulated pool
+installers, so the harness binary was installed per-image via the feature's
+`provision: true` (`npm i -g` / the harness's own script) instead. Wiring and
+provisioning lived in one feature keyed on a single `harness` option (no
+cross-feature drift) with independent `provision`/`connect` booleans (default
+true). Two devcontainer-specific requirements from that era are still load-
+bearing today (the shared-pool `HOME` mechanism is unchanged):
 
 - **`HOME` must be set via `containerEnv`, not `remoteEnv`.** `devcontainer exec`
   runs a login-shell user-env probe that reverts `remoteEnv.HOME` to the base
@@ -224,19 +231,13 @@ requirements, both verified end-to-end against `mcr.microsoft.com/devcontainers/
   `containerEnv` bakes `HOME` into the image env, which the probe and every exec
   inherit — confirmed `HOME=/home/wraptool-harness` in both `devcontainer exec`
   and raw `docker exec printenv`.
-- **`installsAfter: [node]`.** Without it the feature can install before the node
-  feature, so `npm` is absent and the node guard aborts the build.
+- Ownership: the container user (`vscode`, uid 1000) matches a typical host dev
+  account (uid 1000), so writes to the bind-mounted host pool succeed. On a uid
+  mismatch the harness can't write shared state — a future refinement if usage
+  surfaces it.
 
-Ownership: the container user (`vscode`, uid 1000) matches a typical host dev
-account (uid 1000), so writes to the bind-mounted host pool succeed. On a uid
-mismatch the harness can't write shared state — a future refinement if usage
-surfaces it.
-
-Trust model is unchanged:
-`home/` stays the shared writable residual-risk channel (§7); the binary is now
-**per-image** (isolation *stronger* than the read-only bin mount — no shared bin
-surface at all). Per-image binaries can drift in version while sharing one
-`home/` state; pin the version in the feature option for determinism.
+The `installsAfter: [node]` requirement from the provisioning era no longer
+applies: the wiring-only feature installs nothing and has no npm dependency.
 
 ### 7b. Proposed isolation revision
 
@@ -244,10 +245,9 @@ surface at all). Per-image binaries can drift in version while sharing one
 state, while this section continues to document implemented behavior. Proposed
 invariants are:
 
-- Guix shared harness executables/libraries mounted read-only and selected by
-  absolute path, or before any writable PATH entry;
-- Dev Container harness binaries kept per-image rather than shared between
-  projects;
+- Guix and Dev Container shared harness executables mounted read-only and
+  selected by absolute path, or before any writable PATH entry (implemented:
+  both runtimes now share the one version-locked `runtime/` tree, §7a above);
 - operator-curated skills/extensions shared read-only;
 - per-worktree writable HOME/config/state using copy-on-write semantics;
 - no project write propagates into the shared seed or another project;
@@ -257,9 +257,10 @@ The shared service-authentication mechanism is unresolved. Do not switch the
 whole HOME mount to read-only until login and token-refresh behavior has a
 defined replacement.
 
-`wraptool harness install` (guix pool populate) is intentionally **not** extended
-to the devcontainer world — off guix it errors and points at the feature, since
-the feature *is* the devcontainer delivery path.
+`wraptool harness install` now works on a devcontainer host too (it populates
+the same pool the guix runtime uses — `unified-harness-pool.md` §11.2's OCI
+backend serves hosts without guix); only the *mounting* of `runtime/` into a
+devcontainer stays config-declared rather than injected (§12.2's ruling).
 
 **The isolation boundary is the host source, not the container path.** The pool
 lives at `paths.DataDir()/harness-pool/home` — XDG data (`~/.local/share/...`),
