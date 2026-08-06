@@ -1607,10 +1607,10 @@ a later ` + "`wraptool up`" + ` does not silently recreate them. This is
 NEVER automatic and never combined with any "force" flag: it is only safe
 once every harness you use shows ACTIVE in ` + "`wraptool harness list`" + `
 on EVERY machine sharing this pool, and every devcontainer using this pool
-is on feature major :1 (wiring-only) or has a wraptool-up-injected runtime
-mount — a container or machine still depending on the legacy bin/+lib/ tree
-breaks the moment it is gone. --legacy is refused (an error, not a warning,
-and nothing at all is removed — not even the ordinary generation/cache/
+is on feature major :1 (wiring-only) or declares the runtime mount in its
+devcontainer.json — a container or machine still depending on the legacy
+bin/+lib/ tree breaks the moment it is gone. --legacy is refused (an error,
+not a warning, and nothing at all is removed — not even the ordinary generation/cache/
 staging cleanup above) when any pool-lockable harness this pool's
 manifest.yaml names has no genuinely realized, on-disk active generation for
 this host's own platform; the error names every such harness and the fix
@@ -1652,7 +1652,7 @@ again, since a legacy install needs them.`,
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be removed without deleting anything")
 	cmd.Flags().BoolVar(&legacy, "legacy", false, "also remove the pool's legacy bin/+lib/ trees entirely; "+
 		"safe only once every harness you use is ACTIVE (`wraptool harness list`) on every machine sharing this "+
-		"pool and every devcontainer is on feature :1 or a wraptool-up-injected runtime mount; refused otherwise")
+		"pool and every devcontainer is on feature :1 or declares the runtime mount in its devcontainer.json; refused otherwise")
 	return cmd
 }
 
