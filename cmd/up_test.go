@@ -138,14 +138,22 @@ func TestRunUpRejectsAdminTokenInsideWorkspaceWhenDisabled(t *testing.T) {
 // workspace/config/admin-token checks below it or the shared-server startup
 // past them — spawning the server for a request that can never bring up a
 // container would be wasted work and a confusing partial state.
-func TestRunUpRejectsUnknownHarnessBeforeStartingServer(t *testing.T) {
+// TestRunUpRejectsUnknownHarnessBeforeAdminTokenCheck pins item 6: --harness
+// validation happens in runUp itself, immediately next to selectRuntime —
+// BEFORE the admin-token-outside-workspace check a few lines later in the
+// same `!opts.noContainer` block (TestRunUpRejectsAdminTokenInsideWorkspaceWhenDisabled).
+// Proven by triggering BOTH failure conditions in one call: only the
+// unknown-harness error can surface if that ordering holds; if harness
+// validation instead ran later (e.g. deep inside bringUpContainer, as
+// before this wave), the earlier admin-token check would fail first.
+func TestRunUpRejectsUnknownHarnessBeforeAdminTokenCheck(t *testing.T) {
 	origIsInContainer := isInContainer
 	isInContainer = func() bool { return false }
 	t.Cleanup(func() { isInContainer = origIsInContainer })
 
 	workspace := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte("mcp: {}\n"), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte("admin:\n  auth_token_file: "+filepath.Join(workspace, "admin-token")+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -158,7 +166,10 @@ func TestRunUpRejectsUnknownHarnessBeforeStartingServer(t *testing.T) {
 		shell:      "never",
 	})
 	if err == nil || !strings.Contains(err.Error(), `unknown harness "not-a-real-harness"`) {
-		t.Fatalf("unknown --harness was not rejected up front: %v", err)
+		t.Fatalf("unknown --harness was not rejected before the admin-token check: %v", err)
+	}
+	if strings.Contains(err.Error(), "admin auth token resolves to") {
+		t.Fatalf("admin-token check ran before harness validation: %v", err)
 	}
 }
 
@@ -410,8 +421,9 @@ func TestBuildDevcontainerUpArgsToSlash(t *testing.T) {
 // TestDevcontainerDeclaresMountBothTargets pins devcontainerDeclaresMount's
 // generic (whole-file substring) behavior for both targets — still real
 // behavior worth pinning even though production code only calls it for the
-// HOME target now (devcontainerRuntimeMountDeclared, mounts-array-aware,
-// covers the runtime target instead — see TestDevcontainerRuntimeMountDeclared).
+// HOME target now (devcontainerClassifyMount, mounts-array-aware and
+// read-only-classifying, covers the runtime target instead — see
+// TestDevcontainerClassifyMountAbsent/ReadOnly/ReadWrite).
 func TestDevcontainerDeclaresMountBothTargets(t *testing.T) {
 	write := func(t *testing.T, body string) string {
 		t.Helper()
@@ -475,41 +487,96 @@ func devcontainerWriteConfig(t *testing.T, body string) string {
 // a PATH mention or comment containing devcontainerPoolRuntime elsewhere in
 // the file must NOT be mistaken for a declared mount (the false positive the
 // review flagged against the original whole-file substring approach).
-func TestDevcontainerRuntimeMountDeclared(t *testing.T) {
-	t.Run("declared via object-form mounts entry", func(t *testing.T) {
-		dir := devcontainerWriteConfig(t, `{"mounts":[{"source":"/pool/runtime","target":"`+devcontainerPoolRuntime+`","type":"bind","readonly":true}]}`)
-		if !devcontainerRuntimeMountDeclared(dir) {
-			t.Error("object-form runtime mount not detected")
-		}
-	})
-
-	t.Run("declared via string-form mounts entry", func(t *testing.T) {
-		dir := devcontainerWriteConfig(t, `{"mounts":["source=/pool/runtime,target=`+devcontainerPoolRuntime+`,type=bind,readonly"]}`)
-		if !devcontainerRuntimeMountDeclared(dir) {
-			t.Error("string-form runtime mount not detected")
-		}
-	})
-
-	t.Run("PATH mention outside mounts is NOT a declared mount", func(t *testing.T) {
+// TestDevcontainerClassifyMountAbsent covers the "nothing at the target"
+// class (item 1c): a PATH mention or a comment naming the target must not be
+// mistaken for a declared mount — the false positive the review flagged
+// against the original whole-file substring approach.
+func TestDevcontainerClassifyMountAbsent(t *testing.T) {
+	t.Run("PATH mention outside mounts", func(t *testing.T) {
 		dir := devcontainerWriteConfig(t, `{"remoteEnv":{"SOME_VAR":"`+devcontainerPoolRuntimeBin+`:$PATH"},"mounts":["source=/x,target=`+devcontainerPoolHome+`,type=bind"]}`)
-		if devcontainerRuntimeMountDeclared(dir) {
-			t.Error("a PATH mention outside the mounts array must not count as a declared runtime mount")
+		if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountAbsent {
+			t.Errorf("classify = %v, want devcontainerMountAbsent (a PATH mention outside the mounts array is not a declared mount)", got)
 		}
 	})
 
-	t.Run("comment mentioning the runtime path is NOT a declared mount", func(t *testing.T) {
+	t.Run("comment mentioning the runtime path", func(t *testing.T) {
 		dir := devcontainerWriteConfig(t, "{\n  // don't forget to mount "+devcontainerPoolRuntime+" someday\n  \"mounts\":[]\n}\n")
-		if devcontainerRuntimeMountDeclared(dir) {
-			t.Error("a comment mentioning the runtime path must not count as a declared runtime mount")
+		if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountAbsent {
+			t.Errorf("classify = %v, want devcontainerMountAbsent (a comment mentioning the path is not a declared mount)", got)
 		}
 	})
 
 	t.Run("no mounts array at all", func(t *testing.T) {
 		dir := devcontainerWriteConfig(t, `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`)
-		if devcontainerRuntimeMountDeclared(dir) {
-			t.Error("no mounts array → not declared")
+		if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountAbsent {
+			t.Errorf("classify = %v, want devcontainerMountAbsent", got)
 		}
 	})
+}
+
+// TestDevcontainerClassifyMountReadOnly covers the ONLY shape item 1a
+// recognizes as properly read-only: a string-form, type=bind entry carrying
+// a bare `readonly` or `ro` token.
+func TestDevcontainerClassifyMountReadOnly(t *testing.T) {
+	t.Run("readonly token", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, `{"mounts":["source=/pool/runtime,target=`+devcontainerPoolRuntime+`,type=bind,readonly"]}`)
+		if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountReadOnly {
+			t.Errorf("classify = %v, want devcontainerMountReadOnly", got)
+		}
+	})
+
+	t.Run("ro token", func(t *testing.T) {
+		dir := devcontainerWriteConfig(t, `{"mounts":["source=/pool/runtime,target=`+devcontainerPoolRuntime+`,type=bind,ro"]}`)
+		if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountReadOnly {
+			t.Errorf("classify = %v, want devcontainerMountReadOnly", got)
+		}
+	})
+}
+
+// TestDevcontainerClassifyMountReadWrite is the security-critical class
+// (item 1b): every shape that LOOKS like it might be read-only but is NOT
+// actually enforced as such by the devcontainer CLI.
+//
+// The object-form-with-"readonly":true case is the sharpest one: the review
+// caught this test asserting the OPPOSITE (devcontainerRuntimeMountDeclared
+// treating it as a fine, fully-declared mount) — the devcontainer CLI's
+// object-mount schema has no read-only field at all, so that key is
+// silently dropped and the mount comes up read-write regardless of the
+// JSON's own claim. This is the inverted assertion the review demanded.
+func TestDevcontainerClassifyMountReadWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			"object-form WITH readonly:true (CLI drops it — this is the dangerous case)",
+			`{"mounts":[{"source":"/pool/runtime","target":"` + devcontainerPoolRuntime + `","type":"bind","readonly":true}]}`,
+		},
+		{
+			"object-form without readonly at all",
+			`{"mounts":[{"source":"/pool/runtime","target":"` + devcontainerPoolRuntime + `","type":"bind"}]}`,
+		},
+		{
+			"string-form WITHOUT a readonly/ro token",
+			`{"mounts":["source=/pool/runtime,target=` + devcontainerPoolRuntime + `,type=bind"]}`,
+		},
+		{
+			"string-form, type=volume (non-bind, even with a readonly token)",
+			`{"mounts":["source=poolvol,target=` + devcontainerPoolRuntime + `,type=volume,readonly"]}`,
+		},
+		{
+			"object-form, type=volume",
+			`{"mounts":[{"source":"poolvol","target":"` + devcontainerPoolRuntime + `","type":"volume"}]}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := devcontainerWriteConfig(t, tc.body)
+			if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountReadWrite {
+				t.Errorf("classify = %v, want devcontainerMountReadWrite (this shape is NOT enforced read-only by the devcontainer CLI)", got)
+			}
+		})
+	}
 }
 
 // TestDevcontainerRuntimeMountSnippet pins the exact §12.3 mounts-array
@@ -518,20 +585,62 @@ func TestDevcontainerRuntimeMountDeclared(t *testing.T) {
 // (never a ${localEnv}/${containerEnv} template — up already knows the
 // right answer for the host it's running on).
 func TestDevcontainerRuntimeMountSnippet(t *testing.T) {
-	rawRuntime := `C:\Users\dev\AppData\Local\wraptool\harness-pool\runtime`
+	// A plain POSIX-shaped path here, deliberately — the ToSlash conversion
+	// itself is pinned by TestBuildDevcontainerUpArgsToSlash, and a raw
+	// backslash surviving ToSlash's documented POSIX no-op would otherwise
+	// trip THIS function's own exotic-path guard (TestDevcontainerRuntimeMountSnippetExoticPath),
+	// which is a different, deliberately separate behavior.
+	rawRuntime := "/home/dev/.local/share/wraptool/harness-pool/runtime"
 	got := devcontainerRuntimeMountSnippet(rawRuntime)
-	// filepath.ToSlash(rawRuntime), not a hardcoded forward-slash literal, so
-	// the assertion holds on every GOOS — see TestBuildDevcontainerUpArgsToSlash's
-	// own comment for why (filepath.ToSlash is a documented no-op on POSIX).
-	want := "source=" + filepath.ToSlash(rawRuntime) + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
+	want := "source=" + rawRuntime + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
 	if got != want {
 		t.Fatalf("snippet = %q, want %q", got, want)
 	}
 	if strings.Contains(got, "${") {
 		t.Fatalf("snippet = %q, must not be templated — a concrete host path only", got)
 	}
-	if runtime.GOOS == "windows" && strings.Contains(got, `\`) {
-		t.Fatalf("snippet = %q, must not contain a backslash after ToSlash", got)
+}
+
+// TestDevcontainerRuntimeMountSnippetExoticPath covers item 2: a pool
+// runtime path containing a quote or backslash cannot be embedded verbatim
+// in the illustrative (human-pasted) mounts snippet without corrupting it as
+// JSON — the function must refuse and name the escaping problem instead of
+// emitting broken JSON.
+func TestDevcontainerRuntimeMountSnippetExoticPath(t *testing.T) {
+	for _, exotic := range []string{
+		`/pool/weird"quote/runtime`,
+		`/pool/weird\backslash/runtime`,
+	} {
+		t.Run(exotic, func(t *testing.T) {
+			got := devcontainerRuntimeMountSnippet(exotic)
+			if strings.Contains(got, "source="+exotic) {
+				t.Fatalf("snippet = %q, must not embed the exotic path verbatim (would corrupt the illustrative JSON)", got)
+			}
+			if !strings.Contains(got, "manual") && !strings.Contains(got, "escap") {
+				t.Fatalf("snippet = %q, want a warning that the path needs manual escaping", got)
+			}
+		})
+	}
+}
+
+// TestDevcontainerRuntimeNotReadOnlyNotice covers item 1's distinct,
+// unmissable security notice for a declared-but-not-read-only runtime
+// mount: it must be visibly different from the plain missing-mount notice
+// (a "SECURITY" marker), name the harness, and still offer the correct
+// read-only string-form snippet to fix it with.
+func TestDevcontainerRuntimeNotReadOnlyNotice(t *testing.T) {
+	notice := devcontainerRuntimeNotReadOnlyNotice("claude", "/pool/runtime")
+	if !strings.Contains(notice, "SECURITY") {
+		t.Errorf("notice = %q, want an unmissable SECURITY marker", notice)
+	}
+	if !strings.Contains(notice, "claude") {
+		t.Errorf("notice = %q, want it to name the harness", notice)
+	}
+	if !strings.Contains(notice, ",readonly") || !strings.Contains(notice, "source=/pool/runtime") {
+		t.Errorf("notice = %q, want the correct read-only string-form snippet", notice)
+	}
+	if notice == devcontainerRuntimeMissingMountNotice("claude", "/pool/runtime") {
+		t.Error("the not-read-only notice must be distinct from the missing-mount notice")
 	}
 }
 
@@ -587,6 +696,9 @@ func TestBuildDevcontainerShellEntry(t *testing.T) {
 // TestBuildDevcontainerExecArgs asserts the exec argv shape: a dead plan gets
 // a plain login shell (identical to the pre-pool-verification behavior); a
 // live plan entry-wraps it via bash -lc with the exact quoted export line.
+// This test only checks the ARGV SHAPE (that the entry string, whatever it
+// is, lands as the "-lc" argument) — TestBuildDevcontainerShellEntry is the
+// one that pins the entry string's own exact literal content/quoting.
 func TestBuildDevcontainerExecArgs(t *testing.T) {
 	root := "/work/proj"
 
@@ -768,7 +880,7 @@ func TestStripJSONCOnRealRepoDevcontainerConfig(t *testing.T) {
 	if src, found := devcontainerDeclaredMountSource(dir, devcontainerPoolHome); !found || src == "" {
 		t.Errorf("expected the repo's own config to declare a home mount; found=%v src=%q", found, src)
 	}
-	if devcontainerRuntimeMountDeclared(dir) {
-		t.Error("the repo's own devcontainer.json does not yet declare a runtime mount")
+	if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountAbsent {
+		t.Errorf("classify = %v, want devcontainerMountAbsent (the repo's own devcontainer.json does not yet declare a runtime mount)", got)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -686,34 +687,114 @@ func buildDevcontainerUpArgs(root, poolHome string, homeDeclared bool) []string 
 	return args
 }
 
-// devcontainerRuntimeMountDeclared reports whether devcontainer.json declares
-// a mount at devcontainerPoolRuntime, via the mounts-ARRAY-aware parse
-// (devcontainerDeclaredMountSource) rather than devcontainerDeclaresMount's
-// cheap whole-file substring check — a PATH mention, a comment, or any other
-// unrelated string containing devcontainerPoolRuntime must not suppress the
-// missing-mount notice below. devcontainerDeclaresMount (whole-file
-// substring) stays the HOME target's own declared-check unchanged: switching
-// that one too carries real regression risk (it gates whether `up` injects
-// the rw home --mount at all) for no correctness gain, since a false-positive
-// substring match there only makes `up` skip a mount it would have written
-// identically anyway (idempotent either way).
-func devcontainerRuntimeMountDeclared(root string) bool {
-	_, found := devcontainerDeclaredMountSource(root, devcontainerPoolRuntime)
-	return found
+// devcontainerMountReadOnlyState classifies what a devcontainer.json
+// mounts-array entry at some container target ACTUALLY achieves, for the
+// specific §5-critical question "is this genuinely read-only". This is a
+// typed-const enum (the PlatformKey convention, design/policy/flag-constraint-type-single-source.md):
+// a switch over it must name every member (exhaustive lint).
+//
+// The devcontainer CLI accepts mounts-array entries in two shapes:
+//   - a Docker-style comma-separated STRING ("source=...,target=...,type=bind,readonly"),
+//     parsed by Docker's own CSV mount syntax, where a bare `readonly`/`ro`
+//     token IS honored;
+//   - an OBJECT ({"source":...,"target":...,"type":...}), whose schema has
+//     NO read-only field at all — a "readonly": true (or any other spelling)
+//     key is silently dropped by the CLI, and the mount comes up read-write
+//     regardless of what the JSON says.
+//
+// A read-write mount of the locked runtime/ tree into an untrusted project
+// container breaches §5's trust boundary: an agent in that ONE project could
+// rewrite the dispatcher scripts every OTHER project's container executes.
+type devcontainerMountReadOnlyState int
+
+const (
+	// devcontainerMountAbsent: no mounts-array entry targets the container
+	// path at all.
+	devcontainerMountAbsent devcontainerMountReadOnlyState = iota
+	// devcontainerMountReadOnly: a STRING-form, type=bind entry carrying a
+	// bare `readonly` or `ro` token — the only shape the CLI actually
+	// enforces as read-only.
+	devcontainerMountReadOnly
+	// devcontainerMountReadWrite: declared, but NOT provably read-only —
+	// object-form (readonly is silently dropped by the CLI regardless of
+	// what the JSON says), a string-form entry missing the readonly/ro
+	// token, or any non-bind mount type (volume, tmpfs) at the target.
+	devcontainerMountReadWrite
+)
+
+// devcontainerClassifyMount finds the mounts-array entry (object or string
+// form) targeting containerTarget, across the project's devcontainer config
+// files, and classifies it per devcontainerMountReadOnlyState — see that
+// type's own doc comment for why object-form and non-bind entries can never
+// be trusted as read-only regardless of their content. Mounts-ARRAY-aware
+// (reuses stripJSONC + the same parse devcontainerDeclaredMountSource uses),
+// not devcontainerDeclaresMount's cheap whole-file substring check — a PATH
+// mention, a comment, or any other unrelated string containing
+// containerTarget must not be mistaken for a declared mount at all.
+// devcontainerDeclaresMount (whole-file substring) stays the HOME target's
+// own declared-check unchanged: switching that one too carries real
+// regression risk (it only gates whether `up` injects an rw --mount that is
+// safe to inject unconditionally) for no correctness gain.
+func devcontainerClassifyMount(root, containerTarget string) devcontainerMountReadOnlyState {
+	for _, p := range devcontainerConfigPaths(root) {
+		data, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		var cfg struct {
+			Mounts []any `json:"mounts"`
+		}
+		if err := json.Unmarshal([]byte(stripJSONC(string(data))), &cfg); err != nil {
+			continue
+		}
+		for _, m := range cfg.Mounts {
+			switch v := m.(type) {
+			case string:
+				fields, flags := devcontainerParseMountString(v)
+				if fields["target"] != containerTarget {
+					continue
+				}
+				if fields["type"] == "bind" && (flags["readonly"] || flags["ro"]) {
+					return devcontainerMountReadOnly
+				}
+				return devcontainerMountReadWrite
+			case map[string]any:
+				if t, _ := v["target"].(string); t == containerTarget {
+					// Object-form: the CLI's schema has no read-only field at
+					// all, so this is ALWAYS read-write no matter what extra
+					// keys the JSON carries (a "readonly": true here would
+					// look reassuring and do nothing).
+					return devcontainerMountReadWrite
+				}
+			}
+		}
+	}
+	return devcontainerMountAbsent
 }
 
 // devcontainerRuntimeMountSnippet is the exact `mounts` string entry §12.3's
 // scaffolder/feature docs own declaring — read-only, source = THIS host's
 // real, ToSlash'd pool runtime path (printed concretely, never
 // ${localEnv}-templated: `up` already knows the right answer for the host
-// it's running on).
+// it's running on). A source containing '"' or '\' cannot be embedded
+// verbatim in this illustrative, human-pasted (not machine-written) snippet
+// without corrupting it as JSON — refuse to print a broken one and name the
+// exact escaping problem instead (via strconv.Quote, which shows the
+// developer the correctly escaped form). This should be vanishingly rare: it
+// needs a pool root path containing a literal quote or backslash on a POSIX
+// host — a Windows path's backslashes are already ToSlash'd away above.
 func devcontainerRuntimeMountSnippet(runtimeDir string) string {
-	return "source=" + filepath.ToSlash(runtimeDir) + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
+	src := filepath.ToSlash(runtimeDir)
+	if strings.ContainsAny(src, `"\`) {
+		return fmt.Sprintf("<cannot render a mounts snippet: pool runtime path %s needs manual JSON escaping — "+
+			"add it to \"mounts\" by hand>", strconv.Quote(src))
+	}
+	return "source=" + src + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
 }
 
 // devcontainerRuntimeMissingMountNotice is the actionable stderr notice when
 // the plan is live but devcontainer.json does not yet declare the runtime
-// mount (§12.2 verify).
+// mount at all (§12.2 verify).
 func devcontainerRuntimeMissingMountNotice(hname, runtimeDir string) string {
 	return fmt.Sprintf(
 		"notice: %s is pool-locked but devcontainer.json does not declare the runtime mount; add this entry to \"mounts\":\n"+
@@ -722,11 +803,32 @@ func devcontainerRuntimeMissingMountNotice(hname, runtimeDir string) string {
 		hname, devcontainerRuntimeMountSnippet(runtimeDir))
 }
 
+// devcontainerRuntimeNotReadOnlyNotice is the UNMISSABLE §5 security notice
+// when devcontainer.json declares a mount at the runtime target that the
+// devcontainer CLI will NOT actually honor as read-only — an object-form
+// entry (readonly silently dropped), a string-form entry missing the
+// readonly/ro token, or a non-bind mount type. A read-write mount of the
+// locked runtime/ tree into this untrusted project container would let its
+// agent rewrite the dispatcher scripts every OTHER project's container
+// executes (§5). Printed to stderr, never silent, but never a hard failure
+// either (mixed-state, §16) — it prints the exact read-only string-form
+// snippet to replace the unsafe declaration with.
+func devcontainerRuntimeNotReadOnlyNotice(hname, runtimeDir string) string {
+	return fmt.Sprintf(
+		"SECURITY: devcontainer.json declares a mount at %s that the devcontainer CLI will NOT enforce as "+
+			"read-only (object-form mounts and non-bind types cannot express read-only through that CLI) — "+
+			"the locked harness pool would be writable from inside the %s project container. Replace it with "+
+			"this read-only string-form entry in \"mounts\":\n"+
+			"  \"%s\"\n",
+		devcontainerPoolRuntime, hname, devcontainerRuntimeMountSnippet(runtimeDir))
+}
+
 // devcontainerRuntimeDeclaredInfo is the stdout info line when the plan is
-// live AND devcontainer.json already declares the runtime mount — nothing to
-// fix, PATH comes from the wiring-only feature's containerEnv.
+// live AND devcontainer.json already declares a genuinely read-only runtime
+// mount — nothing to fix, PATH comes from the wiring-only feature's
+// containerEnv.
 func devcontainerRuntimeDeclaredInfo(hname string) string {
-	return fmt.Sprintf("harness pool: runtime mount declared in devcontainer.json (%s) — %s is pool-locked", devcontainerPoolRuntime, hname)
+	return fmt.Sprintf("harness pool: runtime mount declared read-only in devcontainer.json (%s) — %s is pool-locked", devcontainerPoolRuntime, hname)
 }
 
 // devcontainerPathExportHint is the standalone `export PATH=...` command a
@@ -745,6 +847,17 @@ func devcontainerPathExportHint() string {
 // touches nothing else (HOME/TERM/cd): those are the image's own concern
 // (HOME via the feature's containerEnv invariant; workdir is `devcontainer
 // exec`'s own default).
+//
+// Accepted residual: the trailing `exec bash -l` is ITSELF a second login
+// shell, which re-sources /etc/profile (and /etc/profile.d/*) on top of the
+// PATH this snippet just exported. That is harmless on any profile written
+// as `PATH="$PATH:..."` (append-preserving), but a bare `PATH=...`
+// assignment (a stock Debian base image's /etc/profile without
+// `bash-completion`/`common-utils` pulling in a more careful one) discards
+// whatever this entry appended and starts the interactive shell without the
+// dispatcher on PATH after all — the exact same class of limitation the
+// wiring-only feature's containerEnv PATH mechanism has (a later shell
+// init can still clobber an appended value); not fixed in this wave.
 func buildDevcontainerShellEntry() string {
 	return devcontainerPathExportHint() + "; exec bash -l"
 }
@@ -838,8 +951,9 @@ uses the Guix container runtime instead — no dev container needed`, root)
 	// duplicate mount point and docker rejects it. Warn when a declared
 	// source does not actually exist on this host — the mixed-OS case, §12.3.
 	// This stays the cheap whole-file substring check (devcontainerDeclaresMount)
-	// — see devcontainerRuntimeMountDeclared's own comment for why the
-	// runtime target below needs the stricter array-aware check instead.
+	// — see devcontainerClassifyMount's own comment for why the runtime
+	// target below needs the stricter array-aware, read-only-classifying
+	// check instead.
 	homeDeclared := devcontainerDeclaresMount(root, devcontainerPoolHome)
 	if homeDeclared {
 		fmt.Printf("harness pool: home mount declared in devcontainer.json (%s)\n", devcontainerPoolHome)
@@ -851,13 +965,20 @@ uses the Guix container runtime instead — no dev container needed`, root)
 	}
 
 	// Runtime mount: VERIFY only (§12.2's ruling — `up` never injects it).
+	// Exhaustive over devcontainerMountReadOnlyState (exhaustive lint).
 	if plan.mountRuntime {
-		if devcontainerRuntimeMountDeclared(root) {
+		switch devcontainerClassifyMount(root, devcontainerPoolRuntime) {
+		case devcontainerMountReadOnly:
 			fmt.Println(devcontainerRuntimeDeclaredInfo(hname))
 			if warn := devcontainerDeclaredMountSourceMissing(root, devcontainerPoolRuntime); warn != "" {
 				fmt.Fprintln(os.Stderr, warn)
 			}
-		} else {
+		case devcontainerMountReadWrite:
+			// Loud and unmissable: this is a §5 trust-boundary violation,
+			// not a cosmetic notice, but this wave still proceeds (mixed
+			// state, §16) rather than hard-failing `up`.
+			fmt.Fprintln(os.Stderr, devcontainerRuntimeNotReadOnlyNotice(hname, plan.runtimeDir))
+		case devcontainerMountAbsent:
 			fmt.Fprintln(os.Stderr, devcontainerRuntimeMissingMountNotice(hname, plan.runtimeDir))
 		}
 	}
@@ -917,10 +1038,10 @@ func hasDevcontainer(root string) bool {
 // feature's own containerEnv/HOME pin never touches the user's file), so a
 // false-positive substring match there just makes `up` skip a mount it would
 // have written identically anyway. The runtime target's own declared-check
-// needs the stricter mounts-array-aware devcontainerDeclaredMountSource
-// instead (via devcontainerRuntimeMountDeclared) — an unrelated PATH mention
-// or comment containing devcontainerPoolRuntime must not silently suppress
-// the missing-mount notice, which THIS cheap check cannot tell apart.
+// needs the stricter mounts-array-aware devcontainerClassifyMount instead —
+// an unrelated PATH mention or comment containing devcontainerPoolRuntime
+// must not silently suppress the missing-mount notice, which THIS cheap
+// check cannot tell apart.
 func devcontainerDeclaresMount(root, containerTarget string) bool {
 	for _, p := range devcontainerConfigPaths(root) {
 		if data, err := os.ReadFile(p); err == nil && strings.Contains(string(data), containerTarget) {
@@ -939,8 +1060,20 @@ func devcontainerDeclaresPoolMount(root string) bool {
 // devcontainerTrailingCommaRE removes a JSON-illegal trailing comma before a
 // closing } or ] — JSONC/JSON5 permit them (and this repo's own hand-edited
 // .devcontainer/devcontainer.json could grow one), encoding/json does not.
-// Applied only AFTER stripJSONC's string-aware comment removal, never before,
-// so a comma that happens to appear inside a string is left alone.
+//
+// Unlike stripJSONC's own comment removal, this regex is STRING-UNAWARE: it
+// runs on stripJSONC's output, which still contains every original JSON
+// string verbatim, and it will happily match ",]" or ",}" occurring INSIDE
+// a string value too (e.g. a mount source path that happened to end in
+// exactly that sequence). Accepted residual risk, not a fixed bug: this
+// package only ever calls it before json.Unmarshal, whose failure on a
+// corrupted string is caught by every caller (devcontainerDeclaredMountSource,
+// devcontainerClassifyMount) and treated as found=false / devcontainerMountAbsent
+// — the conservative, safe-by-construction failure mode (§12.2's "print the
+// missing-mount notice" path), never a false "this is a properly declared
+// read-only mount". A fully string-aware trailing-comma removal would need
+// the same character-by-character scan as stripJSONC itself; not worth it
+// for a residual that can only ever fail closed.
 var devcontainerTrailingCommaRE = regexp.MustCompile(`,(\s*[}\]])`)
 
 // stripJSONC removes `//` line comments and `/* */` block comments from raw
@@ -1013,11 +1146,13 @@ var devcontainerLocalEnvRE = regexp.MustCompile(`\$\{localEnv:([A-Za-z_][A-Za-z0
 // comma-separated string form "source=...,target=...,type=bind" — targeting
 // containerTarget, across the project's devcontainer config files.
 // Best-effort: an unparsable config or no matching mount yields found=false.
-// Feeds the mixed-OS missing-source warning (devcontainerDeclaredMountSourceMissing)
-// AND, via devcontainerRuntimeMountDeclared, the runtime target's own
-// declared-check — the home target keeps devcontainerDeclaresMount's cheaper
-// whole-file substring check for THAT purpose instead (see its own doc
-// comment for why the two targets differ).
+// Feeds the mixed-OS missing-source warning (devcontainerDeclaredMountSourceMissing).
+// The runtime target's own declared/read-only classification is
+// devcontainerClassifyMount (which parses the mounts array itself, sharing
+// the same stripJSONC + json.Unmarshal step, rather than calling this
+// source-only helper) — the home target keeps devcontainerDeclaresMount's
+// cheaper whole-file substring check for ITS declared-check instead (see its
+// own doc comment for why the two targets differ).
 func devcontainerDeclaredMountSource(root, containerTarget string) (source string, found bool) {
 	for _, p := range devcontainerConfigPaths(root) {
 		data, err := os.ReadFile(p)
@@ -1033,7 +1168,7 @@ func devcontainerDeclaredMountSource(root, containerTarget string) (source strin
 		for _, m := range cfg.Mounts {
 			switch v := m.(type) {
 			case string:
-				if fields := devcontainerParseMountString(v); fields["target"] == containerTarget {
+				if fields, _ := devcontainerParseMountString(v); fields["target"] == containerTarget {
 					return fields["source"], true
 				}
 			case map[string]any:
@@ -1048,15 +1183,26 @@ func devcontainerDeclaredMountSource(root, containerTarget string) (source strin
 }
 
 // devcontainerParseMountString parses Docker's comma-separated mount string
-// form ("source=...,target=...,type=bind") into a key/value map.
-func devcontainerParseMountString(s string) map[string]string {
-	out := map[string]string{}
+// form ("source=...,target=...,type=bind,readonly") into a key=value field
+// map AND a set of bare boolean flag tokens. Docker's own --mount/mounts
+// syntax expresses read-only as a bare `readonly` (or `ro`) token with no
+// "=" — the ORIGINAL implementation split only on "=" and silently dropped
+// any such token, which made a read-only declaration undetectable.
+func devcontainerParseMountString(s string) (fields map[string]string, flags map[string]bool) {
+	fields = map[string]string{}
+	flags = map[string]bool{}
 	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
 		if k, v, ok := strings.Cut(part, "="); ok {
-			out[strings.TrimSpace(k)] = strings.TrimSpace(v)
+			fields[strings.TrimSpace(k)] = strings.TrimSpace(v)
+		} else {
+			flags[part] = true
 		}
 	}
-	return out
+	return fields, flags
 }
 
 // devcontainerDeclaredMountSourceMissing returns a stderr notice when the
