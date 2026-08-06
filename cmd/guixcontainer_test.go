@@ -886,3 +886,63 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 		t.Fatalf("home/ share missing or altered: %v", got)
 	}
 }
+
+// TestGuixPoolStatusMessage pins the printed harness-pool status line for the
+// four cases guixPoolStatusMessage distinguishes — in particular, the
+// active-with-no-legacy case must attribute the missing legacy trees
+// correctly: `gc --legacy` (which always removes both directories together)
+// when both are genuinely gone, but a neutral, gc-uninvolved message naming
+// both expected paths when only one survives (classifyLegacyPool's own doc
+// comment — that state can never be gc --legacy's doing).
+func TestGuixPoolStatusMessage(t *testing.T) {
+	const poolRoot, poolBin, poolLib = "/pool", "/pool/bin", "/pool/lib"
+
+	tests := []struct {
+		name        string
+		plan        guixPoolPlan
+		legacyState legacyPoolState
+		want        []string // substrings that must all be present
+		mustNot     []string // substrings that must be absent
+	}{
+		{
+			name:        "active with legacy present",
+			plan:        guixPoolPlan{active: true, pathDirs: []string{"/pool/runtime/bin", poolBin}},
+			legacyState: legacyBothPresent,
+			want:        []string{poolRoot, "legacy bin/ also mounted", poolBin},
+		},
+		{
+			name:        "active, legacy both absent (genuine gc --legacy)",
+			plan:        guixPoolPlan{active: true, pathDirs: []string{"/pool/runtime/bin"}},
+			legacyState: legacyBothAbsent,
+			want:        []string{poolRoot, "runtime/ only", "gc --legacy"},
+		},
+		{
+			name:        "active, legacy half-gone (not gc --legacy's doing)",
+			plan:        guixPoolPlan{active: true, pathDirs: []string{"/pool/runtime/bin"}},
+			legacyState: legacyHalfGone,
+			want:        []string{poolRoot, "runtime/ only", "incomplete", poolBin, poolLib},
+			mustNot:     []string{"gc --legacy"},
+		},
+		{
+			name:        "legacy-only (no active pointer)",
+			plan:        guixPoolPlan{active: false, pathDirs: []string{poolBin}},
+			legacyState: legacyBothPresent,
+			want:        []string{poolRoot, "install harness binaries into", poolBin},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := guixPoolStatusMessage(poolRoot, poolBin, poolLib, tt.plan, tt.legacyState)
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("message = %q, want it to contain %q", got, want)
+				}
+			}
+			for _, mustNot := range tt.mustNot {
+				if strings.Contains(got, mustNot) {
+					t.Errorf("message = %q, must NOT contain %q (misattributes the cause)", got, mustNot)
+				}
+			}
+		})
+	}
+}
