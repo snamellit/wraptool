@@ -1759,6 +1759,146 @@ func TestHarnessGCDryRunRemovesNothing(t *testing.T) {
 	}
 }
 
+// gcTestLegacyBinLib builds real, populated legacy bin/+lib/ directories
+// under a fresh t.TempDir()-rooted pool root (the shape ensureHarnessPool
+// produces), for `gc --legacy` command-level tests.
+func gcTestLegacyBinLib(t *testing.T) (poolDir, poolBin, poolLib string) {
+	t.Helper()
+	poolDir = t.TempDir()
+	poolBin = filepath.Join(poolDir, "bin")
+	poolLib = filepath.Join(poolDir, "lib")
+	if err := os.MkdirAll(poolBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(poolLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(poolBin, "claude"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return poolDir, poolBin, poolLib
+}
+
+// TestHarnessGCLegacyRemovesLegacyDirs wires `gc --legacy` end to end
+// through the real cobra command: a manifest-declared, pool-lockable
+// harness with an active generation for the host's own platform passes the
+// refusal check, so the legacy bin/+lib/ trees are removed and the report
+// says so (§16 Phase 4 item 5).
+func TestHarnessGCLegacyRemovesLegacyDirs(t *testing.T) {
+	t.Parallel()
+	paths := testHarnessPaths(t)
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
+	}
+	poolDir, poolBin, poolLib := gcTestLegacyBinLib(t)
+
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	genID := seedOrphanGeneration(t, paths, "claude", "2.1.220", hostKey, "claude-bin")
+	if err := pool.ActivateGeneration(paths, "claude", hostKey, genID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil },
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy")
+	if err != nil {
+		t.Fatalf("gc --legacy: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "removed the legacy bin/+lib/ trees") {
+		t.Errorf("expected the report to mention legacy removal, got:\n%s", out)
+	}
+	for _, dir := range []string{poolBin, poolLib} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed, stat err = %v", dir, err)
+		}
+	}
+}
+
+// TestHarnessGCLegacyDryRunReportsWithoutRemoving mirrors the non-legacy
+// dry-run test above for --legacy specifically: "would remove", nothing
+// actually gone.
+func TestHarnessGCLegacyDryRunReportsWithoutRemoving(t *testing.T) {
+	t.Parallel()
+	paths := testHarnessPaths(t)
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
+	}
+	poolDir, poolBin, poolLib := gcTestLegacyBinLib(t)
+
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	genID := seedOrphanGeneration(t, paths, "claude", "2.1.220", hostKey, "claude-bin")
+	if err := pool.ActivateGeneration(paths, "claude", hostKey, genID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil },
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy", "--dry-run")
+	if err != nil {
+		t.Fatalf("gc --legacy --dry-run: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "would remove the legacy bin/+lib/ trees") {
+		t.Errorf("expected the report to say 'would remove' the legacy trees, got:\n%s", out)
+	}
+	for _, dir := range []string{poolBin, poolLib} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("dry run must not remove %s: %v", dir, err)
+		}
+	}
+}
+
+// TestHarnessGCLegacyRefusedNamesUnrealizedHarness pins the RULING: a
+// manifest-declared, pool-lockable harness with NO active generation for
+// this host's platform refuses the whole `gc --legacy` call (an error, not
+// a warning), naming the harness and the fix — and removes nothing at all,
+// including the legacy trees the command was asked to remove.
+func TestHarnessGCLegacyRefusedNamesUnrealizedHarness(t *testing.T) {
+	t.Parallel()
+	paths := testHarnessPaths(t)
+	if _, err := pool.HostPlatformKey(); err != nil {
+		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
+	}
+	poolDir, poolBin, poolLib := gcTestLegacyBinLib(t)
+
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// claude is declared but never activated for any platform.
+
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil },
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy")
+	if err == nil {
+		t.Fatalf("expected gc --legacy to be refused, output:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "claude") {
+		t.Errorf("error = %q, want it to name the unrealized harness", err)
+	}
+	if !strings.Contains(err.Error(), "wraptool harness install claude") {
+		t.Errorf("error = %q, want it to name the fix command", err)
+	}
+	for _, dir := range []string{poolBin, poolLib} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("a refused --legacy must not remove %s: %v", dir, err)
+		}
+	}
+}
+
 // --- pool-source-wiring: source selection per descriptor (§11.3) ---
 
 // TestDefaultHarnessDepsSelectsSourcePerDescriptor pins defaultHarnessDeps'

@@ -1549,7 +1549,7 @@ Re-run rollback afterward if you still need the older generation active.`,
 // --- gc ---
 
 func newHarnessGCCmd(deps harnessDeps) *cobra.Command {
-	var dryRun bool
+	var dryRun, legacy bool
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Remove unreferenced generations and cached artifacts",
@@ -1566,10 +1566,43 @@ view).
 A container started before this ran may still hold a generation gc has
 since removed (its bind mount was resolved at container-start time, not
 live). If a harness misbehaves right after a gc, restart the container
-(wraptool up) to pick up gc's retained set.`,
+(wraptool up) to pick up gc's retained set.
+
+--legacy additionally removes the pool's legacy bin/+lib/ trees entirely
+(§16 Phase 4 item 5) — the pre-generations install location every harness
+used before this pool learned to lock and realize. This is NEVER automatic
+and never combined with any "force" flag: it is only safe once every
+harness you use shows ACTIVE in ` + "`wraptool harness list`" + ` on EVERY
+machine sharing this pool, and every devcontainer using this pool is on
+feature major :1 (wiring-only) or has a wraptool-up-injected runtime mount —
+a container or machine still depending on the legacy bin/+lib/ tree breaks
+the moment it is gone. --legacy is refused (an error, not a warning, and
+nothing at all is removed — not even the ordinary generation/cache/staging
+cleanup above) when any pool-lockable harness this pool's manifest.yaml
+names has no active generation for this host's own platform; the error
+names every such harness and the fix (wraptool harness install <name>).`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := pool.GCPool(context.Background(), deps.poolPaths(), dryRun)
+			opts := pool.GCOptions{DryRun: dryRun}
+			if legacy {
+				hostKey, err := pool.HostPlatformKey()
+				if err != nil {
+					return err
+				}
+				poolDir, poolBin, err := deps.poolBinDir()
+				if err != nil {
+					return err
+				}
+				opts.Legacy = true
+				opts.LegacyBin = poolBin
+				opts.LegacyLib = filepath.Join(poolDir, "lib")
+				opts.HostPlatformKey = hostKey
+				opts.IsPoolLockable = func(name string) bool {
+					d, ok := harness.Registry[name]
+					return ok && d.PoolLockable()
+				}
+			}
+			report, err := pool.GCPool(context.Background(), deps.poolPaths(), opts)
 			if err != nil {
 				return err
 			}
@@ -1578,12 +1611,17 @@ live). If a harness misbehaves right after a gc, restart the container
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be removed without deleting anything")
+	cmd.Flags().BoolVar(&legacy, "legacy", false, "also remove the pool's legacy bin/+lib/ trees entirely; "+
+		"safe only once every harness you use is ACTIVE (`wraptool harness list`) on every machine sharing this "+
+		"pool and every devcontainer is on feature :1 or a wraptool-up-injected runtime mount; refused otherwise")
 	return cmd
 }
 
 // printGCReport reports one GCReport to cmd.OutOrStdout(), phrasing both
 // removal and freed space as a future ("would remove" / "would free") for a
-// dry run and as a completed action otherwise.
+// dry run and as a completed action otherwise. report.LegacyRemoved (§16
+// Phase 4 item 5) gets its own line, using the same removed/would-remove
+// verb, so a dry run reads as consistently hypothetical throughout.
 func printGCReport(cmd *cobra.Command, report pool.GCReport) {
 	verb, freeVerb := "removed", "freed"
 	if report.DryRun {
@@ -1592,6 +1630,9 @@ func printGCReport(cmd *cobra.Command, report pool.GCReport) {
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %d generation(s) (%d retained), %d cache object(s) (%d retained), %d staging directory(ies); %s %d bytes\n",
 		verb, report.RemovedGenerations, report.RetainedGenerations, report.RemovedCacheObjects, report.RetainedCacheObjects,
 		report.RemovedStagingDirs, freeVerb, report.FreedBytes)
+	if report.LegacyRemoved {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s the legacy bin/+lib/ trees\n", verb)
+	}
 }
 
 // --- policy set ---
