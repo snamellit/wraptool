@@ -201,14 +201,15 @@ func testPaths(t *testing.T) PoolPaths {
 	t.Helper()
 	dir := t.TempDir()
 	return PoolPaths{
-		Manifest:     filepath.Join(dir, "manifest.yaml"),
-		Lock:         filepath.Join(dir, "harness-lock.json"),
-		Observations: filepath.Join(dir, "observations.json"),
-		Audit:        filepath.Join(dir, "audit.jsonl"),
-		AdvisoryLock: filepath.Join(dir, "lock"),
-		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
-		Staging:      filepath.Join(dir, "staging"),
-		Runtime:      filepath.Join(dir, "runtime"),
+		Manifest:            filepath.Join(dir, "manifest.yaml"),
+		Lock:                filepath.Join(dir, "harness-lock.json"),
+		Observations:        filepath.Join(dir, "observations.json"),
+		Audit:               filepath.Join(dir, "audit.jsonl"),
+		AdvisoryLock:        filepath.Join(dir, "lock"),
+		Cache:               filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
+		Staging:             filepath.Join(dir, "staging"),
+		Runtime:             filepath.Join(dir, "runtime"),
+		LegacyRemovedMarker: filepath.Join(dir, "legacy-removed"),
 	}
 }
 

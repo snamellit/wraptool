@@ -271,6 +271,11 @@ type PoolPaths struct {
 	// and Staging, so tests operate under a t.TempDir() root instead of the
 	// developer's real pool (production wiring passes pool.RuntimeDir()).
 	Runtime string
+	// LegacyRemovedMarker is pool.LegacyRemovedMarkerFile() (production) or
+	// a t.TempDir()-rooted equivalent (tests) — see that function's own doc
+	// comment. Only GCOptions.Legacy's removal step (gc.go) writes it; every
+	// other caller leaves this the zero value.
+	LegacyRemovedMarker string
 }
 
 // LockPool acquires the pool's single exclusive advisory lock (§6.5) for
