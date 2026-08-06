@@ -2014,8 +2014,14 @@ func TestDefaultResolveBackendNoBackendErrorNamesAllThreeOptions(t *testing.T) {
 	if strings.Contains(msg, "Phase 3") {
 		t.Errorf("no-backend error still carries the retired Phase-3-pending phrasing: %q", msg)
 	}
-	if !strings.Contains(msg, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}`) {
-		t.Errorf("no-backend error dropped the devcontainer-feature fallback guidance: %q", msg)
+	if strings.Contains(msg, "wraptool/wraptool:0") {
+		t.Errorf("no-backend error still points at the retired :0 devcontainer-feature snippet: %q", msg)
+	}
+	if !strings.Contains(msg, "`wraptool harness install <name>` provisions the binary") {
+		t.Errorf("no-backend error dropped the modern harness-install guidance: %q", msg)
+	}
+	if !strings.Contains(msg, "major :1") || !strings.Contains(msg, "does not install harnesses") {
+		t.Errorf("no-backend error dropped the wiring-only-feature clarification: %q", msg)
 	}
 }
 
@@ -2693,8 +2699,11 @@ func TestHarnessInstallClaudeOnDockerOnlyHostDowngradesGuixAbsentToWarning(t *te
 	if !strings.Contains(out, "host-side legacy install was skipped") {
 		t.Errorf("expected the downgraded warning to say the host-side legacy binary was not installed, got:\n%s", out)
 	}
-	if !strings.Contains(out, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "claude"}`) {
-		t.Errorf("expected the devcontainer-feature guidance to be retained, got:\n%s", out)
+	if strings.Contains(out, "wraptool/wraptool:0") {
+		t.Errorf("warning still points at the retired :0 devcontainer-feature snippet, got:\n%s", out)
+	}
+	if !strings.Contains(out, "wraptool harness install claude") || !strings.Contains(out, "major :1") {
+		t.Errorf("expected the modern harness-install + wiring-only-feature guidance, got:\n%s", out)
 	}
 
 	// Pool state must be fully populated: refresh/resolve/fetch/realize/
@@ -2892,8 +2901,11 @@ func TestHarnessInstallAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.
 	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
 		t.Errorf("expected the downgraded warning text, got:\n%s", out)
 	}
-	if !strings.Contains(out, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "agy"}`) {
-		t.Errorf("expected the devcontainer-feature guidance to be retained, got:\n%s", out)
+	if strings.Contains(out, "wraptool/wraptool:0") {
+		t.Errorf("warning still points at the retired :0 devcontainer-feature snippet, got:\n%s", out)
+	}
+	if !strings.Contains(out, "wraptool harness install agy") || !strings.Contains(out, "major :1") {
+		t.Errorf("expected the modern harness-install + wiring-only-feature guidance, got:\n%s", out)
 	}
 
 	// Pool state must be fully populated: refresh/resolve/fetch/realize/
@@ -2998,8 +3010,11 @@ func TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T
 	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
 		t.Errorf("expected the downgraded warning text, got:\n%s", out)
 	}
-	if !strings.Contains(out, `"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "agy"}`) {
-		t.Errorf("expected the devcontainer-feature guidance to be retained, got:\n%s", out)
+	if strings.Contains(out, "wraptool/wraptool:0") {
+		t.Errorf("warning still points at the retired :0 devcontainer-feature snippet, got:\n%s", out)
+	}
+	if !strings.Contains(out, "wraptool harness install agy") || !strings.Contains(out, "major :1") {
+		t.Errorf("expected the modern harness-install + wiring-only-feature guidance, got:\n%s", out)
 	}
 
 	hostKey, err := pool.HostPlatformKey()

@@ -4,8 +4,10 @@
 # functional over MCP/SSE. Exits non-zero on the first failure so it is usable
 # in CI.
 #
-#   WRAPTOOL_URL    host wraptool base URL (default http://host.docker.internal:8717)
-#   WRAPTOOL_TOKEN  bearer token, if wraptool has auth_token_file set
+#   WRAPTOOL_URL      host wraptool base URL (default http://host.docker.internal:8717)
+#   WRAPTOOL_TOKEN    bearer token, if wraptool has auth_token_file set
+#   WRAPTOOL_HARNESS  harness to check for the pool runtime mount (default claude);
+#                      only used by the best-effort check in step 6
 #
 # Mirrors ../../test-container.sh (the Guix test) but targets the docker bridge
 # and sends auth.
@@ -92,6 +94,22 @@ if echo "$NAMES" | grep -q "git_status"; then
   if echo "$RESULT" | grep -q '"result"'; then ok "git_status returned a result"; else bad "git_status call failed: $RESULT"; fi
 else
   echo "  SKIP: git_status not in whitelist"
+fi
+
+echo
+echo "6. Harness pool runtime mount (optional — this fixture predates the wraptool"
+echo "   feature and does not declare the pool mounts by default; see README.md):"
+HARNESS="${WRAPTOOL_HARNESS:-claude}"
+WANT_RUNTIME_BIN="/opt/wraptool-harness/runtime/bin/$HARNESS"
+if command -v "$HARNESS" >/dev/null 2>&1; then
+  RESOLVED="$(command -v "$HARNESS")"
+  if [ "$RESOLVED" = "$WANT_RUNTIME_BIN" ]; then
+    ok "$HARNESS resolves to the pool runtime mount ($WANT_RUNTIME_BIN)"
+  else
+    echo "  SKIP: $HARNESS resolves to $RESOLVED, not $WANT_RUNTIME_BIN (pool runtime not mounted here)"
+  fi
+else
+  echo "  SKIP: $HARNESS not on PATH (add the wraptool feature + pool mounts to exercise this)"
 fi
 
 echo

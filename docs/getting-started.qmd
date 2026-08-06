@@ -344,10 +344,12 @@ wraptool server stop
 ### Wiring the container: the `wraptool` feature
 
 The container side is handled by the single **wraptool** dev container feature,
-published to the Forgejo OCI registry. Keyed on one `harness` choice, it does
-**both** jobs via toggles that default to `true`: `provision` installs the
-harness binary into the image, and `connect` writes the MCP client config that
-points it at the host wraptool. It layers onto any base image.
+published to the Forgejo OCI registry. It is **wiring only** (major `:1`): it
+writes the MCP client config that points the container at the host wraptool
+and pins `HOME`/`PATH`, but it installs no harness binary — that comes from
+the shared harness pool's `runtime/` tree, built once per developer with
+`wraptool harness install <name>` on the host and mounted **read-only** into
+every project container. It layers onto any base image.
 
 Rather than hand-write the `.devcontainer/devcontainer.json`, scaffold it:
 
@@ -357,9 +359,8 @@ wraptool init devcontainer --harness claude --lang go,java
 
 That writes the committed config from the `base:ubuntu` + language-features model:
 the languages you list, the `wraptool` feature with your harness, the `WRAPTOOL_*`
-env, and the shared-pool mount — all prefilled. npm harnesses
-(claude/opencode/pi) auto-pull the `node` feature so the build won't fail for lack
-of `npm`. It writes a fresh file and **refuses to clobber** an existing one (pass
+env, and both shared-pool mounts (`home/` read-write, `runtime/` read-only) — all
+prefilled. It writes a fresh file and **refuses to clobber** an existing one (pass
 `--force`); edit the result freely. The emitted config looks like:
 
 ```jsonc
@@ -367,35 +368,45 @@ of `npm`. It writes a fresh file and **refuses to clobber** an existing one (pas
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
     "ghcr.io/devcontainers/features/go:1": {},
-    "ghcr.io/devcontainers/features/node:1": {}, // for the npm harness
-    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
+    // Wiring only — no binary installed here.
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
   },
   // Host workspace path (so the server scopes tools to this worktree).
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   // Token is a secret → remoteEnv keeps it out of image layers.
   "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
-  // Share the host harness-state pool (login/skills once, every project).
-  // Object form so a source path with a space (macOS ~/Library/Application
-  // Support) is never mis-split by the mount-string parser.
+  // Share the host harness pool. runtime/ MUST be the string form ending in
+  // ",readonly": string form is CSV-parsed by the devcontainer CLI (so an
+  // interior space, e.g. macOS's own ~/Library/Application Support, survives
+  // intact) and it is the ONLY form the CLI honors a read-only flag on —
+  // object-form mounts have no read-only field at all in its schema and
+  // silently come up read-write regardless of any "readonly" key. home/ is
+  // read-write either way, so it stays object form purely for readability.
   "mounts": [
-    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" }
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
   ]
 }
 ```
 
-`init devcontainer` writes the mount source for your **host OS** — the
+`init devcontainer` writes both mount sources for your **host OS** — the
 `.local/share` above is the Linux form; on macOS it is
-`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home`, on
-Windows `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home` (forward
-slashes on every OS). It matches where `wraptool up` creates the pool, so the
-bind never targets a missing directory.
+`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`,
+on Windows `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}`.
+`${localEnv:HOME}` works on all three OSes — `%LOCALAPPDATA%` is itself
+`%USERPROFILE%\AppData\Local`, just a different relative path than the Linux/macOS
+defaults. The Windows-specific step is setting `HOME` at all (only `USERPROFILE`
+is set by default there) — see [Windows](platform-windows.qmd). This matches
+where `wraptool up` creates the pool, so the bind never targets a missing
+directory. Install the harness once, on the host, before opening the container:
+`wraptool harness install claude`.
 
 At container create the feature writes the MCP client config pointing at the host
 wraptool, auto-detecting the host as the container's default-route gateway — so
 it works across docker networks and worktrees with no `host.docker.internal` or
-`--add-host`. See [Dev Containers](devcontainers.qmd) for every option. The older
-`wraptool-connect` feature (wiring only) is **deprecated** but stays published for
-existing configs.
+`--add-host`. See [Dev Containers](devcontainers.qmd) for every option, including
+the deprecated `:0` per-image-provisioning major and the older `wraptool-connect`
+feature (wiring only) — both remain published for existing configs.
 
 ::: {.callout-important}
 For container use the server must listen where the container can reach it — bind

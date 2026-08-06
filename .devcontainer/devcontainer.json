@@ -3,20 +3,17 @@
 
     // A Go-capable client box for coding on wraptool from inside a container.
     // NOTE: this repo's own build env is Guix (.envrc → `use guix`); this dev
-    // container is a client dogfood of the merged wraptool feature + `wraptool
+    // container is a client dogfood of the wiring-only wraptool feature + `wraptool
     // up`, not a replacement for the Guix flow. Credentials stay on the host and
     // are reached through the wrapped MCP tools.
     "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
 
     "features": {
-        // npm harnesses need Node at feature-install and runtime.
-        "ghcr.io/devcontainers/features/node:1": {},
-
-        // Provision a pinned Claude Code and wire it to host wraptool. `:0`
-        // tracks compatible feature updates; `version` pins harness software.
-        "forge.snamellit.com/pti/wraptool/wraptool:0": {
-            "harness": "claude",
-            "version": "2.1.220"
+        // Wire Claude Code to host wraptool. Wiring only (§12.3, :1 major): the
+        // binary is NOT installed here — it comes from the host harness-pool
+        // runtime/ mount below (`wraptool harness install claude` on the host).
+        "forge.snamellit.com/pti/wraptool/wraptool:1": {
+            "harness": "claude"
         }
     },
 
@@ -31,14 +28,19 @@
         "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}"
     },
 
-    // Shared developer toolbox state: harness auth, skills, and config survive
-    // container rebuilds and are reused across projects. Binary stays pinned in
-    // the image so this writable cross-project mount cannot poison executables.
+    // Shared developer toolbox (design/harness/unified-harness-pool.md §12.3):
+    // home/ (auth/skills/config) is read-write so it persists across every
+    // project; runtime/ (the version-locked harness binaries) is read-only — a
+    // cross-project trust domain this container must never write. The runtime
+    // entry MUST stay the string form: the devcontainer CLI's object-form
+    // mounts have no read-only field at all and silently come up read-write
+    // regardless of any "readonly" key.
     "mounts": [
         {
             "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home",
             "target": "/home/wraptool-harness",
             "type": "bind"
-        }
+        },
+        "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
     ]
 }

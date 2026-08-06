@@ -1,11 +1,11 @@
 # wraptool-connect (Dev Container Feature) — DEPRECATED
 
-> **Deprecated: use the [`wraptool`](../wraptool) feature instead.** It merges
-> wiring (this feature) and harness *provisioning* under one `harness` choice,
-> so the harness name can't drift between two features. For wiring-only (this
-> feature's exact behaviour) set `"wraptool": { "connect": true, "provision": false }`.
-> This feature stays published and functional for existing configs, but new
-> setups should adopt `wraptool`.
+> **Deprecated: use the [`wraptool`](../wraptool) feature (major `:1`) instead.**
+> It is wiring-only too — same as this feature, keyed on the same `harness`
+> choice — so there's no reason to keep two features apart; the harness binary
+> comes from the host's shared harness-pool `runtime/` mount either way, never
+> from either feature. This feature stays published and functional for
+> existing configs, but new setups should adopt `wraptool:1`.
 
 Wires a dev container to a **host-side wraptool** MCP server, so an AI coding
 client inside the container uses credential-isolated CLI tools (git, gcloud,

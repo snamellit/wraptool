@@ -854,9 +854,11 @@ func TestStripJSONCRemovesTrailingComma(t *testing.T) {
 // TestStripJSONCOnRealRepoDevcontainerConfig feeds this repo's own
 // .devcontainer/devcontainer.json (comments, tab indentation, a real mounts
 // array) through stripJSONC + json.Unmarshal end to end, and confirms
-// devcontainerDeclaredMountSource correctly finds its home mount and does
-// NOT find a runtime mount (this fixture predates the runtime-mount
-// scaffolding) — the regression-protection fixture item 5 asked for.
+// devcontainerDeclaredMountSource correctly finds its home mount and
+// devcontainerClassifyMount reads its runtime mount as genuinely read-only —
+// the §16 Phase 4 item 4 cutover (design/harness/unified-harness-pool.md
+// §12.3) migrated this fixture from the legacy per-image feature (home mount
+// only) to the wiring-only feature declaring both pool mounts.
 func TestStripJSONCOnRealRepoDevcontainerConfig(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", ".devcontainer", "devcontainer.json"))
 	if err != nil {
@@ -880,7 +882,7 @@ func TestStripJSONCOnRealRepoDevcontainerConfig(t *testing.T) {
 	if src, found := devcontainerDeclaredMountSource(dir, devcontainerPoolHome); !found || src == "" {
 		t.Errorf("expected the repo's own config to declare a home mount; found=%v src=%q", found, src)
 	}
-	if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountAbsent {
-		t.Errorf("classify = %v, want devcontainerMountAbsent (the repo's own devcontainer.json does not yet declare a runtime mount)", got)
+	if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountReadOnly {
+		t.Errorf("classify = %v, want devcontainerMountReadOnly (the repo's own devcontainer.json declares the runtime mount as a string ending in ,readonly)", got)
 	}
 }

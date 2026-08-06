@@ -308,9 +308,9 @@ go build -o wraptool .
 - One command → isolated container,
   harness installed + wired.
 - Or drop the single `wraptool` Dev
-  Container feature into a project
-  (harness option + provision /
-  connect toggles).
+  Container feature (wiring-only) into
+  a project + `harness install` on
+  the host.
 - GPLv3 · Go 1.26+
 - Docs: this site · Issues: forgejo
 :::
