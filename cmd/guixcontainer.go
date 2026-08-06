@@ -231,18 +231,79 @@ const (
 func harnessPoolDir() string { return pool.Root() }
 
 // ensureHarnessPool creates and returns the pool root plus its bin/ (PATH),
-// lib/ (node_modules), and home/ (harness HOME) subdirectories.
-func ensureHarnessPool() (pool, bin, lib, home string, err error) {
-	pool = harnessPoolDir()
-	bin = filepath.Join(pool, "bin")
-	lib = filepath.Join(pool, "lib")
-	home = filepath.Join(pool, "home")
-	for _, d := range []string{bin, lib, home} {
+// lib/ (node_modules), and home/ (harness HOME) subdirectories. home/ and
+// runtime/ are ALWAYS created; bin/ and lib/ are created ONLY when the pool
+// has no legacy-removed marker (pool.LegacyRemovedMarkerFileAt — written by
+// `wraptool harness gc --legacy`, §16 Phase 4 item 5): once a pool has been
+// deliberately gc'd, silently recreating empty bin/+lib/ on the very next
+// call — every prior version of this function did exactly that,
+// unconditionally — would resurrect the pool `gc --legacy` just removed.
+// The legacy marker gates ONLY bin/+lib/ — home/ (auth/config/skills, never
+// touched by gc --legacy) and runtime/ are unrelated to that mechanism
+// entirely and are always created.
+//
+// runtime/ (bare directory only — not bin/ or any generation subdirs, which
+// RealizeGeneration/ActivateGeneration create themselves under the pool
+// lock) matters even to a caller that never runs a guix container itself:
+// scaffolded devcontainer configs (`wraptool init devcontainer`) declare a
+// bind mount whose SOURCE is this same host path; if it doesn't exist yet,
+// rootful Docker creates it on the first `devcontainer up`, root-owned —
+// and every later `wraptool harness install` then fails EACCES creating
+// runtime/generations/ underneath it. Ensuring it here, developer-owned,
+// before any container engine can beat wraptool to creating it, is what
+// prevents that.
+//
+// The named return value is `poolRoot`, not the more obvious `pool`,
+// specifically so `pool.` still refers to the imported package inside this
+// function body — every other accessor in this file keeps the shorter name
+// where no such collision exists.
+func ensureHarnessPool() (poolRoot, bin, lib, home string, err error) {
+	poolRoot = harnessPoolDir()
+	bin = filepath.Join(poolRoot, "bin")
+	lib = filepath.Join(poolRoot, "lib")
+	home = filepath.Join(poolRoot, "home")
+	runtimeDir := filepath.Join(poolRoot, "runtime")
+	for _, d := range []string{home, runtimeDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return "", "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
 		}
 	}
-	return pool, bin, lib, home, nil
+	if !legacyPoolRemoved(poolRoot) {
+		for _, d := range []string{bin, lib} {
+			if err := os.MkdirAll(d, 0o755); err != nil {
+				return "", "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
+			}
+		}
+	}
+	return poolRoot, bin, lib, home, nil
+}
+
+// legacyPoolRemoved reports whether root's legacy-removed marker exists —
+// i.e. whether `wraptool harness gc --legacy` has run against this pool
+// since its bin/+lib/ were last (re)created. Only an existence check: an
+// unreadable-but-present marker (e.g. a directory in its place) still
+// counts as "removed" here — ensureHarnessPool has no reason to care about
+// the marker's CONTENT, only its presence.
+func legacyPoolRemoved(root string) bool {
+	_, err := os.Stat(pool.LegacyRemovedMarkerFileAt(root))
+	return err == nil
+}
+
+// unmarkLegacyRemoved removes poolRoot's legacy-removed marker, if any —
+// called only from an explicit install action (legacyInstall/
+// legacyInstallVersionLocked): reinstalling a harness's legacy binary is a
+// deliberate developer act that un-gc's the WHOLE pool, so the NEXT
+// ensureHarnessPool call (any later `wraptool up`/`list`, or this same
+// install's own npm/curl installer — whose --prefix/-D flags create their
+// own bin/+lib/ regardless of whether ensureHarnessPool itself does, so
+// this call does not need to MkdirAll anything to make the install work)
+// resumes treating the pool as not gc'd. A missing marker is not an error —
+// every legacy install goes through this unconditionally, gc'd pool or not.
+func unmarkLegacyRemoved(poolRoot string) error {
+	if err := os.Remove(pool.LegacyRemovedMarkerFileAt(poolRoot)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing legacy-removed marker: %w", err)
+	}
+	return nil
 }
 
 // shellQuote wraps s as a single-quoted POSIX shell word.
@@ -347,23 +408,50 @@ type guixPoolPlanInput struct {
 	LegacyLib string
 }
 
-// legacyPoolPresent reports whether in's legacy bin/+lib/ trees are BOTH
-// still present on disk. Checked as an AND, not independently per
-// directory: `wraptool harness gc --legacy` removes both under the pool's
-// single exclusive lock (§6.5), so a lone survivor can only be crash debris
-// from an interrupted removal — treating that as "gone" (rather than
-// exposing just the surviving half) is the safe read either way, and it is
-// what keeps this check a simple two-directory existence probe instead of a
-// partial-mount decision this package has no way to reason about further.
-func legacyPoolPresent(in guixPoolPlanInput) bool {
-	return fileExists(in.LegacyBin) && fileExists(in.LegacyLib)
+// legacyPoolState classifies in's legacy bin/+lib/ existence on disk —
+// three-way, not a bool, because "exactly one of the two exists" (legacyHalfGone)
+// gets a DIFFERENT error message than "both gone" (legacyBothAbsent, the
+// normal `gc --legacy` outcome): a lone survivor can only be manual
+// tampering (`gc --legacy` removes both together under the pool's single
+// exclusive lock, §6.5 — it can never leave exactly one behind), and the
+// error should say so and name BOTH expected paths, instead of falsely
+// claiming `gc --legacy` as the cause.
+type legacyPoolState int
+
+const (
+	legacyBothPresent legacyPoolState = iota
+	legacyBothAbsent
+	legacyHalfGone
+)
+
+// classifyLegacyPool computes in's legacyPoolState. The "both present" and
+// "both absent" branches are each a strict AND/NOR of the two existence
+// checks — never an OR — specifically so a half-gone pair (one exists, one
+// doesn't) can NEVER be misclassified as "present": mutating either && to ||
+// here would make classifyLegacyPool report legacyBothPresent for a
+// half-gone pool, which resolveGuixPoolPlan would then treat as safe to
+// --expose in full — including the directory that does NOT exist, which
+// `guix shell --container` fails on outright. See
+// TestResolveGuixPoolPlanHalfGoneNoPointerRefusesNotExposes for the pinning
+// test.
+func classifyLegacyPool(in guixPoolPlanInput) legacyPoolState {
+	binOK, libOK := fileExists(in.LegacyBin), fileExists(in.LegacyLib)
+	switch {
+	case binOK && libOK:
+		return legacyBothPresent
+	case !binOK && !libOK:
+		return legacyBothAbsent
+	default:
+		return legacyHalfGone
+	}
 }
 
 // resolveGuixPoolPlan decides guixPoolPlan for in.Harness. Pure aside from
 // the pool.ReadPointer file read and the existence checks below, so tests
 // drive it against a t.TempDir() pool layout with no guix exec.
 func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
-	legacyPresent := legacyPoolPresent(in)
+	legacyState := classifyLegacyPool(in)
+	legacyPresent := legacyState == legacyBothPresent
 
 	if in.PointerPath != "" {
 		if raw, err := pool.ReadPointer(in.PointerPath); err == nil {
@@ -378,11 +466,14 @@ func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
 				if fileExists(dispatcher) && fileExists(genBin) {
 					// Mixed-state Phase 2 (wave2-integration-fixes item 3,
 					// §12.1 RULING): runtime/ AND legacy bin/+lib/ are BOTH
-					// mounted whenever legacy is still present — activating
-					// this harness must not drop every other harness's
-					// legacy binary (or a hand-dropped tool) from the
-					// container. See guixPoolPlan's own doc comment for the
-					// §16 Phase 4 item 5 legacy-gone case, handled below.
+					// mounted whenever legacy is still (fully) present —
+					// activating this harness must not drop every other
+					// harness's legacy binary (or a hand-dropped tool) from
+					// the container. See guixPoolPlan's own doc comment for
+					// the §16 Phase 4 item 5 legacy-gone case, handled
+					// below — a half-gone pair degrades to runtime/-only
+					// exactly like a fully-gone one: never --expose only the
+					// surviving half.
 					exposes := []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir}
 					pathDirs := []string{in.RuntimeBinDir}
 					if legacyPresent {
@@ -397,39 +488,63 @@ func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
 				// The pointer resolved but its generation is gone from disk
 				// (e.g. a concurrent gc) — fall back, but with a distinct
 				// notice naming what actually went wrong.
-				return legacyOrErrorGuixPoolPlan(in, legacyPresent, fmt.Sprintf(
+				return legacyOrErrorGuixPoolPlan(in, legacyState, fmt.Sprintf(
 					"notice: active generation %s for %s is missing on disk; using legacy pool — "+
 						"run `wraptool harness sync` to rebuild", genID, in.Harness))
 			}
 		}
 	}
-	return legacyOrErrorGuixPoolPlan(in, legacyPresent, fmt.Sprintf(
+	return legacyOrErrorGuixPoolPlan(in, legacyState, fmt.Sprintf(
 		"notice: using legacy harness pool for %s; run `wraptool harness install %s` (or `wraptool harness "+
 			"sync` if already installed) to build a locked generation (legacy path is removed in a future release)",
 		in.Harness, in.Harness))
 }
 
-// legacyOrErrorGuixPoolPlan builds the legacy-fallback plan when legacyPresent,
-// else the §16 Phase 4 item 5 actionable-error plan: there is no active
-// pointer/generation for in.Harness AND legacy bin/+lib/ are gone too
-// (`wraptool harness gc --legacy` already ran), so nothing on this host can
-// serve Harness's binary at all. Naming the exact cause and fix here is
-// what keeps this an actionable `up` error instead of an opaque failure
-// from `guix shell --container --expose` on a nonexistent host path.
-func legacyOrErrorGuixPoolPlan(in guixPoolPlanInput, legacyPresent bool, notice string) guixPoolPlan {
-	if legacyPresent {
+// legacyOrErrorGuixPoolPlan builds the legacy-fallback plan when legacyState
+// is legacyBothPresent, else the §16 Phase 4 item 5 actionable-error plan:
+// there is no active pointer/generation for in.Harness AND legacy bin/+lib/
+// aren't both usable either, so nothing on this host can serve Harness's
+// binary at all. The error states the TRUE cause and names the ACTUAL
+// paths, distinguishing the two ways legacy can be unusable:
+//
+//   - legacyBothAbsent: the normal `gc --legacy` outcome — the error says so
+//     explicitly, and offers the real fixes: `wraptool harness install
+//     <name>` to reinstall (which un-gc's the pool, so the developer isn't
+//     left wondering why bin/+lib/ came back), or switch to a pool-locked
+//     harness.
+//   - legacyHalfGone: NOT `gc --legacy` (which never leaves exactly one
+//     directory behind) — manual tampering or a partial/interrupted
+//     external operation. The error says so and names BOTH expected paths
+//     (review round 2 finding: naming only the missing one leaves the
+//     developer guessing what the OTHER expected path even is).
+func legacyOrErrorGuixPoolPlan(in guixPoolPlanInput, legacyState legacyPoolState, notice string) guixPoolPlan {
+	switch legacyState {
+	case legacyBothPresent:
 		return legacyGuixPoolPlan(in, notice)
-	}
-	if in.PoolLockable {
+	case legacyHalfGone:
 		return guixPoolPlan{err: fmt.Errorf(
-			"harness pool has no active generation for %q and its legacy bin/+lib/ have been removed "+
-				"(wraptool harness gc --legacy); run `wraptool harness install %s` (or `wraptool harness sync`) "+
-				"before entering a guix container", in.Harness, in.Harness)}
+			"harness pool's legacy trees are in an inconsistent state — expected BOTH %s and %s, but only one "+
+				"exists (this is not what `wraptool harness gc --legacy` does, which always removes both "+
+				"together; looks like manual tampering) — restore the missing directory, or run "+
+				"`wraptool harness install %s` to rebuild a clean legacy install, before entering a guix container",
+			in.LegacyBin, in.LegacyLib, in.Harness)}
+	case legacyBothAbsent:
+		if in.PoolLockable {
+			return guixPoolPlan{err: fmt.Errorf(
+				"the legacy pool trees (%s, %s) were removed by `wraptool harness gc --legacy`, and %q has no "+
+					"active generation for this host; run `wraptool harness install %s` to reinstall (this "+
+					"un-gc's the legacy pool) or `wraptool harness sync`, or switch to a pool-locked harness, "+
+					"before entering a guix container",
+				in.LegacyBin, in.LegacyLib, in.Harness, in.Harness)}
+		}
+		return guixPoolPlan{err: fmt.Errorf(
+			"the legacy pool trees (%s, %s) were removed by `wraptool harness gc --legacy`, and %q has no "+
+				"pool-lockable runtime/ path to fall back to — install its binary into %s manually (this "+
+				"recreates the legacy pool), or choose a pool-lockable --harness",
+			in.LegacyBin, in.LegacyLib, in.Harness, in.LegacyBin)}
+	default:
+		return guixPoolPlan{err: fmt.Errorf("internal error: unknown legacyPoolState %d resolving the pool plan for %q", legacyState, in.Harness)}
 	}
-	return guixPoolPlan{err: fmt.Errorf(
-		"harness pool's legacy bin/+lib/ have been removed (wraptool harness gc --legacy) and %q has no "+
-			"pool-lockable runtime/ path — install its binary into the pool bin/ directory manually, or choose "+
-			"a pool-lockable --harness", in.Harness)}
 }
 
 // legacyGuixPoolPlan builds the legacy bin/+lib/ plan, gating notice on

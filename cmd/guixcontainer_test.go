@@ -6,6 +6,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/adrg/xdg"
+
+	"github.com/pti/wraptool/internal/pool"
 )
 
 func TestSelectRuntime(t *testing.T) {
@@ -52,6 +56,87 @@ func TestSelectRuntime(t *testing.T) {
 				t.Fatalf("runtime = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+// withFakePoolRoot redirects pool.Root() (via $XDG_DATA_HOME + xdg.Reload())
+// to a fresh t.TempDir() for the duration of one test, restoring the real
+// value on cleanup. xdg.DataHome is a process-wide package var, not a
+// per-call parameter, so a test using this must NOT run t.Parallel() with
+// anything that itself resolves pool.Root() mid-swap — every other test in
+// this file avoids the real pool.Root() entirely (guixPoolPlanTestLayout's
+// own doc comment) specifically to sidestep this; the two ensureHarnessPool
+// tests below are the sole, deliberate exception, and stay serial.
+func withFakePoolRoot(t *testing.T) (root string) {
+	t.Helper()
+	root = t.TempDir()
+	t.Setenv("XDG_DATA_HOME", root)
+	xdg.Reload()
+	t.Cleanup(xdg.Reload)
+	return root
+}
+
+// TestEnsureHarnessPoolAlwaysCreatesRuntimeDir is this round's sibling
+// review finding: a scaffolded devcontainer config binds a host mount whose
+// SOURCE is the pool's runtime/ directory; if ensureHarnessPool never
+// creates it, rootful Docker creates it root-owned on the first
+// `devcontainer up`, and every later `wraptool harness install` then fails
+// EACCES writing runtime/generations/ underneath it. runtime/ must exist,
+// developer-owned, the moment ensureHarnessPool first runs against a fresh
+// pool — regardless of the legacy-removed marker (see the sibling test
+// below), which gates ONLY bin/+lib/.
+func TestEnsureHarnessPoolAlwaysCreatesRuntimeDir(t *testing.T) {
+	withFakePoolRoot(t)
+
+	poolRoot, bin, lib, home, err := ensureHarnessPool()
+	if err != nil {
+		t.Fatalf("ensureHarnessPool: %v", err)
+	}
+	runtimeDir := filepath.Join(poolRoot, "runtime")
+	info, err := os.Stat(runtimeDir)
+	if err != nil {
+		t.Fatalf("expected runtime/ to exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("runtime/ exists but is not a directory")
+	}
+	// "developer-owned": os.MkdirAll creates it under the test process's own
+	// uid — proven simply by having created it via this call at all, with
+	// no separate privilege escalation in play; a portable check that makes
+	// no root/non-root environment assumption.
+	for _, d := range []string{bin, lib, home} {
+		if _, err := os.Stat(d); err != nil {
+			t.Errorf("expected %s to exist: %v", d, err)
+		}
+	}
+}
+
+// TestEnsureHarnessPoolMarkerGatesOnlyBinLib confirms the legacy-removed
+// marker (§16 Phase 4 item 5) gates bin/+lib/ ONLY: with the marker
+// present, ensureHarnessPool must still create home/ and runtime/ — the
+// runtime/ requirement (TestEnsureHarnessPoolAlwaysCreatesRuntimeDir) is
+// unrelated to whether the pool has been gc'd.
+func TestEnsureHarnessPoolMarkerGatesOnlyBinLib(t *testing.T) {
+	withFakePoolRoot(t)
+
+	poolRoot := harnessPoolDir()
+	if err := pool.WriteFileAtomic(pool.LegacyRemovedMarkerFileAt(poolRoot), []byte("2026-01-01T00:00:00Z\nremoved by `wraptool harness gc --legacy`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, bin, lib, home, err := ensureHarnessPool()
+	if err != nil {
+		t.Fatalf("ensureHarnessPool: %v", err)
+	}
+	for _, d := range []string{bin, lib} {
+		if _, statErr := os.Stat(d); !os.IsNotExist(statErr) {
+			t.Errorf("expected %s to NOT be created (legacy-removed marker present), stat err = %v", d, statErr)
+		}
+	}
+	for _, d := range []string{home, filepath.Join(poolRoot, "runtime")} {
+		if _, statErr := os.Stat(d); statErr != nil {
+			t.Errorf("expected %s to still be created despite the marker: %v", d, statErr)
+		}
 	}
 }
 
@@ -474,14 +559,84 @@ func TestResolveGuixPoolPlanLegacyGoneNoPointer(t *testing.T) {
 			if !strings.Contains(plan.err.Error(), "claude") {
 				t.Errorf("err = %q, want it to name the harness", plan.err)
 			}
+			if !strings.Contains(plan.err.Error(), "gc --legacy") {
+				t.Errorf("err = %q, want it to state the TRUE cause (removed by `gc --legacy`)", plan.err)
+			}
+			if !strings.Contains(plan.err.Error(), in.LegacyBin) || !strings.Contains(plan.err.Error(), in.LegacyLib) {
+				t.Errorf("err = %q, want it to name both actual legacy paths", plan.err)
+			}
 			if lockable {
 				if !strings.Contains(plan.err.Error(), "wraptool harness install claude") {
 					t.Errorf("err = %q, want the fix command for a pool-lockable harness", plan.err)
+				}
+				if !strings.Contains(plan.err.Error(), "un-gc") {
+					t.Errorf("err = %q, want it to explain that reinstalling un-gc's the pool", plan.err)
 				}
 			} else if strings.Contains(plan.err.Error(), "wraptool harness install") {
 				t.Errorf("err = %q, want no install-fix command for a non-pool-lockable harness (no such path exists)", plan.err)
 			}
 		})
+	}
+}
+
+// TestResolveGuixPoolPlanHalfGoneNoPointerRefusesNotExposes is review round
+// 2's mutation pin (finding 7): classifyLegacyPool's "both present" check
+// MUST be an AND, not an OR — a half-gone pair (bin exists, lib doesn't)
+// with no active pointer must still produce an actionable error, never a
+// plan that --exposes the missing directory. Mutating either && in
+// classifyLegacyPool to || would make this test fail (the half-gone pair
+// would be misclassified as legacyBothPresent, producing a plan.err == nil
+// legacy-fallback plan that names the nonexistent lib dir in its exposes).
+// The error must also name BOTH expected paths and describe this as
+// inconsistent/tampering, distinct from the "removed by gc --legacy"
+// wording TestResolveGuixPoolPlanLegacyGoneNoPointer pins.
+func TestResolveGuixPoolPlanHalfGoneNoPointerRefusesNotExposes(t *testing.T) {
+	in, _ := guixPoolPlanTestLayout(t, "claude", true)
+	if err := os.RemoveAll(in.LegacyLib); err != nil {
+		t.Fatal(err) // bin/ survives, lib/ doesn't — half-gone.
+	}
+	// No pointer at all.
+
+	plan := resolveGuixPoolPlan(in)
+
+	if plan.err == nil {
+		t.Fatal("plan.err = nil, want an actionable error for a half-gone legacy pair")
+	}
+	if len(plan.exposes) != 0 {
+		t.Errorf("exposes = %v, want none — must never --expose only the surviving half", plan.exposes)
+	}
+	if !strings.Contains(plan.err.Error(), in.LegacyBin) || !strings.Contains(plan.err.Error(), in.LegacyLib) {
+		t.Errorf("err = %q, want it to name BOTH expected paths", plan.err)
+	}
+	if strings.Contains(plan.err.Error(), "removed by") {
+		t.Errorf("err = %q, want it to NOT claim `gc --legacy` as the cause (half-gone is not what gc --legacy produces)", plan.err)
+	}
+}
+
+// TestResolveGuixPoolPlanHalfGoneActivePointerDropsLegacyEntirely proves the
+// active-mode side of the same half-gone classification: activating a
+// harness must never --expose only the surviving half of a half-gone
+// legacy pair either — it degrades to runtime/-only, exactly like a fully-
+// gone pair, with no error (an active generation needs no legacy fallback).
+func TestResolveGuixPoolPlanHalfGoneActivePointerDropsLegacyEntirely(t *testing.T) {
+	in, root := guixPoolPlanTestLayout(t, "claude", true)
+	if err := os.RemoveAll(in.LegacyBin); err != nil {
+		t.Fatal(err) // lib/ survives, bin/ doesn't — half-gone.
+	}
+	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
+	writePoolGeneration(t, in.poolPlanInput, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4", true, true)
+
+	plan := resolveGuixPoolPlan(in)
+
+	if plan.err != nil {
+		t.Fatalf("plan.err = %v, want nil (an active generation needs no legacy fallback at all)", plan.err)
+	}
+	if !plan.active {
+		t.Fatal("plan.active = false, want true")
+	}
+	wantExposes := []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir}
+	if !reflect.DeepEqual(plan.exposes, wantExposes) {
+		t.Errorf("exposes = %v, want %v (runtime/ only — must never expose only the surviving half)", plan.exposes, wantExposes)
 	}
 }
 
@@ -509,6 +664,12 @@ func TestResolveGuixPoolPlanLegacyGoneStaleGeneration(t *testing.T) {
 	}
 	if !strings.Contains(plan.err.Error(), "wraptool harness install claude") {
 		t.Errorf("err = %q, want the fix command", plan.err)
+	}
+	if !strings.Contains(plan.err.Error(), "gc --legacy") {
+		t.Errorf("err = %q, want it to state the TRUE cause (removed by `gc --legacy`)", plan.err)
+	}
+	if !strings.Contains(plan.err.Error(), in.LegacyBin) || !strings.Contains(plan.err.Error(), in.LegacyLib) {
+		t.Errorf("err = %q, want it to name both actual legacy paths", plan.err)
 	}
 }
 
