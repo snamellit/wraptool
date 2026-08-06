@@ -164,9 +164,14 @@ func TestValidateAdminTokenOutsideWorkspace(t *testing.T) {
 // --- guix runtime/ mount (design/harness/unified-harness-pool.md §12.1) ---
 
 // guixPoolPlanTestLayout builds a t.TempDir()-rooted pool layout (runtime/
-// dir + bin/ + generations/, legacy bin/ + lib/) and returns a
-// guixPoolPlanInput seeded from it, so tests can flip pointer content and
-// file presence without touching a real $XDG_DATA_HOME or exec'ing guix.
+// dir + bin/ + generations/, legacy bin/ + lib/ both actually created on
+// disk — legacyPoolPresent's fileExists check needs them to be real
+// directories, not just path strings, so every test built from this helper
+// starts in the "legacy present" state unless it removes them itself, e.g.
+// os.RemoveAll(in.LegacyBin)/os.RemoveAll(in.LegacyLib), §16 Phase 4 item 5)
+// and returns a guixPoolPlanInput seeded from it, so tests can flip pointer
+// content and file presence without touching a real $XDG_DATA_HOME or
+// exec'ing guix.
 func guixPoolPlanTestLayout(t *testing.T, harness string, poolLockable bool) (in guixPoolPlanInput, root string) {
 	t.Helper()
 	root = t.TempDir()
@@ -180,6 +185,12 @@ func guixPoolPlanTestLayout(t *testing.T, harness string, poolLockable bool) (in
 		},
 		LegacyBin: filepath.Join(root, "bin"),
 		LegacyLib: filepath.Join(root, "lib"),
+	}
+	if err := os.MkdirAll(in.LegacyBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(in.LegacyLib, 0o755); err != nil {
+		t.Fatal(err)
 	}
 	return in, root
 }
@@ -392,6 +403,115 @@ func TestResolveGuixPoolPlanStaleGeneration(t *testing.T) {
 	}
 }
 
+// --- §16 Phase 4 item 5 interplay: legacy bin/+lib/ already gc'd away ---
+
+// TestResolveGuixPoolPlanLegacyGoneWithActivePointer covers "legacy-gone +
+// pointer-present": an active pointer/generation exists, but
+// `wraptool harness gc --legacy` has since removed the legacy trees. The
+// plan must still work — runtime/-only, no legacy expose/pathDir, no error —
+// rather than including an --expose of a host path that no longer exists.
+func TestResolveGuixPoolPlanLegacyGoneWithActivePointer(t *testing.T) {
+	in, root := guixPoolPlanTestLayout(t, "claude", true)
+	if err := os.RemoveAll(in.LegacyBin); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(in.LegacyLib); err != nil {
+		t.Fatal(err)
+	}
+	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
+	writePoolGeneration(t, in.poolPlanInput, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4", true, true)
+
+	plan := resolveGuixPoolPlan(in)
+
+	if plan.err != nil {
+		t.Fatalf("plan.err = %v, want nil (an active generation needs no legacy fallback at all)", plan.err)
+	}
+	if !plan.active {
+		t.Fatalf("plan.active = false, want true")
+	}
+	wantExposes := []string{"--expose=" + in.RuntimeDir + "=" + in.RuntimeDir}
+	if !reflect.DeepEqual(plan.exposes, wantExposes) {
+		t.Errorf("exposes = %v, want %v (runtime/ only — legacy is gone)", plan.exposes, wantExposes)
+	}
+	if !reflect.DeepEqual(plan.pathDirs, []string{in.RuntimeBinDir}) {
+		t.Errorf("pathDirs = %v, want %v", plan.pathDirs, []string{in.RuntimeBinDir})
+	}
+	for _, e := range plan.exposes {
+		if strings.Contains(e, in.LegacyBin) || strings.Contains(e, in.LegacyLib) {
+			t.Errorf("exposes must not name a removed legacy dir: %v", plan.exposes)
+		}
+	}
+}
+
+// TestResolveGuixPoolPlanLegacyGoneNoPointer covers "legacy-gone + NO
+// pointer": nothing at all can serve Harness's binary (no active
+// generation, and legacy bin/+lib/ are gone too) — the plan must surface an
+// actionable error instead of a plan that would fail deep inside
+// `guix shell --container --expose` on a nonexistent host path.
+func TestResolveGuixPoolPlanLegacyGoneNoPointer(t *testing.T) {
+	for _, lockable := range []bool{true, false} {
+		t.Run(map[bool]string{true: "lockable", false: "not lockable"}[lockable], func(t *testing.T) {
+			in, _ := guixPoolPlanTestLayout(t, "claude", lockable)
+			if err := os.RemoveAll(in.LegacyBin); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(in.LegacyLib); err != nil {
+				t.Fatal(err)
+			}
+			// No pointer at all (in.PointerPath left "").
+
+			plan := resolveGuixPoolPlan(in)
+
+			if plan.err == nil {
+				t.Fatal("plan.err = nil, want an actionable error (nothing can serve this harness's binary)")
+			}
+			if plan.active {
+				t.Errorf("plan.active = true, want false")
+			}
+			if len(plan.exposes) != 0 || len(plan.pathDirs) != 0 {
+				t.Errorf("plan = %+v, want every other field zero alongside a non-nil err", plan)
+			}
+			if !strings.Contains(plan.err.Error(), "claude") {
+				t.Errorf("err = %q, want it to name the harness", plan.err)
+			}
+			if lockable {
+				if !strings.Contains(plan.err.Error(), "wraptool harness install claude") {
+					t.Errorf("err = %q, want the fix command for a pool-lockable harness", plan.err)
+				}
+			} else if strings.Contains(plan.err.Error(), "wraptool harness install") {
+				t.Errorf("err = %q, want no install-fix command for a non-pool-lockable harness (no such path exists)", plan.err)
+			}
+		})
+	}
+}
+
+// TestResolveGuixPoolPlanLegacyGoneStaleGeneration covers the third
+// legacy-gone permutation: a pointer resolves to a generation id, but the
+// generation itself is missing from disk (as in
+// TestResolveGuixPoolPlanStaleGeneration) AND legacy bin/+lib/ are also
+// gone — same actionable-error outcome as the no-pointer case, since a
+// stale pointer is "no active generation" either way.
+func TestResolveGuixPoolPlanLegacyGoneStaleGeneration(t *testing.T) {
+	in, root := guixPoolPlanTestLayout(t, "claude", true)
+	if err := os.RemoveAll(in.LegacyBin); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(in.LegacyLib); err != nil {
+		t.Fatal(err)
+	}
+	in.PointerPath = writePointerFile(t, root, "claude-1.2.3-linux-amd64-glibc-a1b2c3d4\n")
+	// Neither dispatcher nor generation-bin written: the generation is gone.
+
+	plan := resolveGuixPoolPlan(in)
+
+	if plan.err == nil {
+		t.Fatal("plan.err = nil, want an actionable error")
+	}
+	if !strings.Contains(plan.err.Error(), "wraptool harness install claude") {
+		t.Errorf("err = %q, want the fix command", plan.err)
+	}
+}
+
 // TestResolveGuixPoolPlanNoticeIsSingleLine pins each notice as one line
 // containing exactly one occurrence of the notice marker — the actual
 // "printed once, not per mount" behavior lives in bringUpGuixContainer, which
@@ -449,8 +569,15 @@ func TestBuildGuixShellArgsLegacyPoolPlan(t *testing.T) {
 	root := "/work/proj"
 	manifest := "/work/proj/manifest.scm"
 	poolHome := "/pool/home"
-	poolBin := "/pool/bin"
-	poolLib := "/pool/lib"
+	legacyRoot := t.TempDir() // legacyPoolPresent needs real, existing dirs
+	poolBin := filepath.Join(legacyRoot, "bin")
+	poolLib := filepath.Join(legacyRoot, "lib")
+	if err := os.MkdirAll(poolBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(poolLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	plan := resolveGuixPoolPlan(guixPoolPlanInput{
 		poolPlanInput: poolPlanInput{
@@ -501,8 +628,15 @@ func TestBuildGuixShellArgsActivePointerPlan(t *testing.T) {
 	root := "/work/proj"
 	manifest := "/work/proj/manifest.scm"
 	poolHome := "/pool/home"
-	poolBin := "/pool/bin"
-	poolLib := "/pool/lib"
+	legacyRoot := t.TempDir() // legacyPoolPresent needs real, existing dirs
+	poolBin := filepath.Join(legacyRoot, "bin")
+	poolLib := filepath.Join(legacyRoot, "lib")
+	if err := os.MkdirAll(poolBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(poolLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	in, tmpRoot := guixPoolPlanTestLayout(t, "claude", true)
 	in.LegacyBin, in.LegacyLib = poolBin, poolLib // exercise distinct legacy-vs-tmp paths
