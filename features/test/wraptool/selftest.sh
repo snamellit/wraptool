@@ -3,13 +3,15 @@
 # design/harness/unified-harness-pool.md §12.2/§12.3) — runs without the
 # devcontainer CLI, docker, or a real network. Covers:
 #   devcontainer-feature.json: valid JSON, no provision/version options
-#                              (structural, via jq — not formatting-sensitive
-#                              grep), containerEnv.PATH appends the pool
-#                              runtime bin, and never uses the devcontainer-CLI
-#                              ${containerEnv:...} substitution form (a
-#                              Feature's containerEnv is a literal Dockerfile
-#                              ENV — that form isn't valid there and breaks
-#                              every consumer's image build)
+#                              (structural, via node -e — not formatting-
+#                              sensitive grep; node, not jq, because the
+#                              publish runner already has it for free — it's
+#                              how @devcontainers/cli itself runs), containerEnv.PATH
+#                              appends the pool runtime bin, and never uses the
+#                              devcontainer-CLI ${containerEnv:...} substitution
+#                              form (a Feature's containerEnv is a literal
+#                              Dockerfile ENV — that form isn't valid there and
+#                              breaks every consumer's image build)
 #   install.sh: HOME prep, connect.sh staging — and that it never shells out to
 #               npm/curl (this major installs no harness binary)
 #   connect.sh: the "$WT_HARNESS resolves on PATH" postCreate check — it always
@@ -34,21 +36,28 @@ fail() { echo "  FAIL: $1" >&2; FAIL=$((FAIL + 1)); }
 have() { grep -qF "$1" "$2" || fail "expected '$1' in $2"; }
 absent() { grep -qF "$1" "$2" && fail "did not expect '$1' in $2" || true; }
 
-if ! command -v jq >/dev/null 2>&1; then
-  echo "wraptool selftest: jq is required" >&2
+if ! command -v node >/dev/null 2>&1; then
+  echo "wraptool selftest: node is required" >&2
   exit 1
 fi
 
 echo "0. devcontainer-feature.json: structural, wiring-only contract"
-if jq . "$FEATURE_JSON" >"$WORK/feature.json" 2>"$WORK/jqerr"; then
+if node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' \
+     "$FEATURE_JSON" >"$WORK/nodeerr" 2>&1; then
   pass "valid JSON"
 else
-  fail "devcontainer-feature.json is not valid JSON: $(cat "$WORK/jqerr")"
+  fail "devcontainer-feature.json is not valid JSON: $(cat "$WORK/nodeerr")"
 fi
-GOT_KEYS=$(jq -c '.options | keys' "$FEATURE_JSON" 2>/dev/null || echo "<jq error>")
+GOT_KEYS=$(node -e '
+    var f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(JSON.stringify(Object.keys(f.options).sort()));
+  ' "$FEATURE_JSON" 2>/dev/null || echo "<node error>")
 WANT_KEYS='["connect","harness","port","url"]'
 [ "$GOT_KEYS" = "$WANT_KEYS" ] || fail "options keys are $GOT_KEYS, want $WANT_KEYS (no provision/version)"
-PATH_VAL=$(jq -r '.containerEnv.PATH' "$FEATURE_JSON" 2>/dev/null || echo "<jq error>")
+PATH_VAL=$(node -e '
+    var f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(f.containerEnv.PATH);
+  ' "$FEATURE_JSON" 2>/dev/null || echo "<node error>")
 case "$PATH_VAL" in
   *:/opt/wraptool-harness/runtime/bin) ;;
   *) fail "containerEnv.PATH '$PATH_VAL' does not end with :/opt/wraptool-harness/runtime/bin (append)" ;;
