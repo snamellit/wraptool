@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/pti/wraptool/internal/pool"
 )
 
 // parseJSONC strips // line comments and parses the result, asserting the
@@ -50,7 +52,7 @@ func hasFeature(keys []string, substr string) bool {
 }
 
 func TestInitDevcontainer(t *testing.T) {
-	t.Run("npm harness auto-adds node and is valid JSONC", func(t *testing.T) {
+	t.Run("npm harness no longer auto-adds node; valid JSONC", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
 		if err := runInitDevcontainer("claude", []string{"go"}, "ubuntu", out, "", false); err != nil {
 			t.Fatalf("scaffold: %v", err)
@@ -60,15 +62,32 @@ func TestInitDevcontainer(t *testing.T) {
 		if !hasFeature(keys, "features/go:") {
 			t.Errorf("missing go feature; got %v", keys)
 		}
-		if !hasFeature(keys, "features/node:") {
-			t.Errorf("npm harness must auto-add node; got %v", keys)
+		if hasFeature(keys, "features/node:") {
+			t.Errorf("node must not be auto-added any more (pool runtime bundles its own); got %v", keys)
 		}
-		wt, ok := m["features"].(map[string]any)["forge.snamellit.com/pti/wraptool/wraptool:0"].(map[string]any)
+		wt, ok := m["features"].(map[string]any)["forge.snamellit.com/pti/wraptool/wraptool:1"].(map[string]any)
 		if !ok || wt["harness"] != "claude" {
 			t.Errorf("wraptool feature missing or wrong harness; got %v", m["features"])
 		}
+		if len(wt) != 1 {
+			t.Errorf("wraptool feature must carry only 'harness' (no provision/version); got %v", wt)
+		}
 		if m["image"] != "mcr.microsoft.com/devcontainers/base:ubuntu" {
 			t.Errorf("base image = %v", m["image"])
+		}
+	})
+
+	t.Run("feature ref is the wiring-only major (:1)", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
+		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
+			t.Fatalf("scaffold: %v", err)
+		}
+		keys := featureKeys(t, parseJSONC(t, out))
+		if !hasFeature(keys, "wraptool/wraptool:1") {
+			t.Errorf("expected the :1 wiring-only feature ref; got %v", keys)
+		}
+		if hasFeature(keys, "wraptool/wraptool:0") {
+			t.Errorf("must not scaffold the legacy :0 provisioning major; got %v", keys)
 		}
 	})
 
@@ -82,48 +101,107 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 	})
 
-	t.Run("gemini scaffolds provision:false", func(t *testing.T) {
-		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
-		if err := runInitDevcontainer("gemini", nil, "ubuntu", out, "", false); err != nil {
-			t.Fatalf("scaffold: %v", err)
-		}
-		wt := parseJSONC(t, out)["features"].(map[string]any)["forge.snamellit.com/pti/wraptool/wraptool:0"].(map[string]any)
-		if wt["provision"] != false {
-			t.Errorf("gemini must scaffold provision:false; got %v", wt)
+	t.Run("no harness version or provision option scaffolded", func(t *testing.T) {
+		// §16 Phase 4 item 2: the project version option and any provision
+		// toggle are gone from the wiring-only feature schema, and the
+		// scaffolder must not emit them for any harness, including gemini
+		// (which used to get an explicit "provision": false).
+		for _, h := range []string{"claude", "opencode", "pi", "agy", "gemini"} {
+			out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
+			if err := runInitDevcontainer(h, nil, "ubuntu", out, "", false); err != nil {
+				t.Fatalf("scaffold %s: %v", h, err)
+			}
+			wt, ok := parseJSONC(t, out)["features"].(map[string]any)["forge.snamellit.com/pti/wraptool/wraptool:1"].(map[string]any)
+			if !ok {
+				t.Fatalf("%s: wraptool feature missing", h)
+			}
+			if _, has := wt["provision"]; has {
+				t.Errorf("%s: scaffold must not emit a provision option; got %v", h, wt)
+			}
+			if _, has := wt["version"]; has {
+				t.Errorf("%s: scaffold must not emit a version option; got %v", h, wt)
+			}
 		}
 	})
 
-	t.Run("pool mount source tracks the platform data dir", func(t *testing.T) {
-		// The bind source must match where ensureHarnessPool actually creates the
-		// pool (paths.DataDir()), not a hardcoded ~/.local/share — which only holds
-		// on Linux and breaks the mount on macOS (~/Library/Application Support).
+	t.Run("no --harness-version flag (removed provisioning option)", func(t *testing.T) {
+		cmd := newInitDevcontainerCmd()
+		cmd.SetArgs([]string{"--harness-version", "1.0.0"})
+		if err := cmd.Execute(); err == nil {
+			t.Error("--harness-version must not exist; the wiring-only feature has no project version option")
+		}
+	})
+
+	t.Run("both pool mounts emitted with correct ro/rw and ${localEnv:HOME} rewrite", func(t *testing.T) {
+		// The bind sources must match where the pool actually lives
+		// (paths.DataDir() via internal/pool), not a hardcoded ~/.local/share
+		// — which only holds on Linux and breaks the mount on macOS
+		// (~/Library/Application Support).
 		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
 		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
 			t.Fatalf("scaffold: %v", err)
 		}
 		mounts, ok := parseJSONC(t, out)["mounts"].([]any)
-		if !ok || len(mounts) != 1 {
-			t.Fatalf("expected one mount; got %v", parseJSONC(t, out)["mounts"])
+		if !ok || len(mounts) != 2 {
+			t.Fatalf("expected two mounts (home + runtime); got %v", parseJSONC(t, out)["mounts"])
 		}
-		m, ok := mounts[0].(map[string]any)
+
+		// Entry 0: home, object form, read-write (no readonly field expressible
+		// in object form anyway, but the point is it must not claim readonly).
+		home, ok := mounts[0].(map[string]any)
 		if !ok {
-			t.Fatalf("mount must be object form {source,target,type}; got %T %v", mounts[0], mounts[0])
+			t.Fatalf("home mount must be object form {source,target,type}; got %T %v", mounts[0], mounts[0])
 		}
-		if m["source"] != poolHomeMountSource() {
-			t.Errorf("mount source = %v, want %q", m["source"], poolHomeMountSource())
+		if home["source"] != poolHomeMountSource() {
+			t.Errorf("home mount source = %v, want %q", home["source"], poolHomeMountSource())
 		}
-		if m["target"] != devcontainerPoolHome || m["type"] != "bind" {
-			t.Errorf("mount target/type = %v/%v, want %q/bind", m["target"], m["type"], devcontainerPoolHome)
+		if home["target"] != devcontainerPoolHome || home["type"] != "bind" {
+			t.Errorf("home mount target/type = %v/%v, want %q/bind", home["target"], home["type"], devcontainerPoolHome)
 		}
-		// On any host whose data dir is under $HOME, the source must use the
+
+		// Entry 1: runtime, MUST be the verbatim string form ending in
+		// ",readonly" — object-form mounts silently drop read-only enforcement
+		// (design/harness/unified-harness-pool.md §12.2's CLI-source-proven
+		// ruling; see cmd/up.go's devcontainerClassifyMount).
+		runtimeEntry, ok := mounts[1].(string)
+		if !ok {
+			t.Fatalf("runtime mount must be STRING form (object form can't express read-only); got %T %v", mounts[1], mounts[1])
+		}
+		if !strings.HasSuffix(runtimeEntry, ",readonly") {
+			t.Errorf("runtime mount must end in ,readonly; got %q", runtimeEntry)
+		}
+		if !strings.Contains(runtimeEntry, "target="+devcontainerPoolRuntime) {
+			t.Errorf("runtime mount target wrong; got %q, want target=%s", runtimeEntry, devcontainerPoolRuntime)
+		}
+		if !strings.Contains(runtimeEntry, "type=bind") {
+			t.Errorf("runtime mount must be type=bind; got %q", runtimeEntry)
+		}
+		wantSrc, _ := poolMountSourceOf(pool.RuntimeDir())
+		if !strings.Contains(runtimeEntry, "source="+wantSrc+",") {
+			t.Errorf("runtime mount source wrong; got %q, want source=%s", runtimeEntry, wantSrc)
+		}
+
+		// End-to-end proof of the CRITICAL FORM RULING: `up`'s own
+		// devcontainerClassifyMount (cmd/up.go) must read this scaffolded
+		// entry back as genuinely read-only, not merely "looks right" by
+		// string inspection above.
+		root := filepath.Dir(filepath.Dir(out)) // .../.devcontainer/devcontainer.json -> project root
+		if got := devcontainerClassifyMount(root, devcontainerPoolRuntime); got != devcontainerMountReadOnly {
+			t.Errorf("devcontainerClassifyMount(scaffolded runtime mount) = %v, want devcontainerMountReadOnly", got)
+		}
+
+		// On any host whose data dir is under $HOME, both sources must use the
 		// client-expanded ${localEnv:HOME}, never a baked-in absolute home path.
 		// ToSlash the home side too: src is forward-slashed, so a Windows
 		// C:\Users\... home would never substring-match without it. Skip home=="/"
 		// (minimal containers): every path contains "/".
-		if home, err := os.UserHomeDir(); err == nil && home != "/" {
-			home = filepath.ToSlash(home)
-			if src, _ := m["source"].(string); strings.Contains(src, home) {
-				t.Errorf("mount source leaks absolute home %q: %q", home, src)
+		if hostHome, err := os.UserHomeDir(); err == nil && hostHome != "/" {
+			hostHome = filepath.ToSlash(hostHome)
+			if src, _ := home["source"].(string); strings.Contains(src, hostHome) {
+				t.Errorf("home mount source leaks absolute home %q: %q", hostHome, src)
+			}
+			if strings.Contains(runtimeEntry, hostHome) {
+				t.Errorf("runtime mount source leaks absolute home %q: %q", hostHome, runtimeEntry)
 			}
 		}
 	})
