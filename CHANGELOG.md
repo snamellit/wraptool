@@ -26,6 +26,16 @@ non-Guix Linux — through Docker or Podman.
 - `--backend auto|guix|oci` on `harness install`/`update`/`sync` overrides
   backend auto-selection; an explicit choice whose tooling is absent errors
   immediately.
+- `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
+  legacy `bin/`+`lib/` trees entirely, once they are no longer needed.
+  Explicit opt-in only — never automatic, and there is no `--force` escape
+  hatch. Refused (an error, and nothing at all is removed — not even the
+  ordinary generation/cache/staging cleanup) when any pool-lockable harness
+  named in `manifest.yaml` has no active generation for this host's own
+  platform; the error names every such harness and the fix
+  (`wraptool harness install <name>`). `--dry-run` reports what `--legacy`
+  would remove without touching anything. `GCReport` gains `LegacyRemoved`;
+  the `gc` audit event gains a `legacy_removed` field.
 
 ### Changed
 
@@ -37,6 +47,12 @@ non-Guix Linux — through Docker or Podman.
   never provisions a binary itself, on any host.
 - Cross-architecture `sync` no longer runs the host's legacy installer as
   a side effect.
+- The Guix container runtime tolerates a pool whose legacy `bin/`+`lib/`
+  have already been removed via `gc --legacy`: an active generation mounts
+  `runtime/` alone (the legacy expose is dropped, not attempted against a
+  now-missing host path), and a harness with neither an active generation
+  nor legacy `bin/`+`lib/` fails `wraptool up` with an actionable error
+  (naming the fix) instead of an opaque `guix shell --expose` failure.
 - **Breaking (Dev Container feature):** published a new `wraptool` feature
   major, `1.0.0` (§12.2/§12.3 of the unified harness pool design). It removes
   the `provision` and `version` options entirely — the harness binary is no
