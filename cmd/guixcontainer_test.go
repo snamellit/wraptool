@@ -67,13 +67,53 @@ func TestSelectRuntime(t *testing.T) {
 // this file avoids the real pool.Root() entirely (guixPoolPlanTestLayout's
 // own doc comment) specifically to sidestep this; the two ensureHarnessPool
 // tests below are the sole, deliberate exception, and stay serial.
+//
+// Deliberately os.Setenv/os.Unsetenv, not t.Setenv — mirrors
+// cmd/server_test.go's withIsolatedRuntime shape. t.Setenv registers its
+// OWN env-restoring cleanup at call time; a SEPARATE t.Cleanup(xdg.Reload)
+// registered after it would then run BEFORE that restore (t.Cleanup is
+// LIFO), reloading xdg against the still-swapped env and leaving
+// xdg.DataHome pointed at this test's (about to be deleted) temp dir for
+// the rest of the process. One cleanup that restores the env and THEN
+// reloads, in that order, is the only ordering that actually restores
+// global state.
 func withFakePoolRoot(t *testing.T) (root string) {
 	t.Helper()
 	root = t.TempDir()
-	t.Setenv("XDG_DATA_HOME", root)
+	old, had := os.LookupEnv("XDG_DATA_HOME")
+	if err := os.Setenv("XDG_DATA_HOME", root); err != nil {
+		t.Fatal(err)
+	}
 	xdg.Reload()
-	t.Cleanup(xdg.Reload)
+	t.Cleanup(func() {
+		if had {
+			os.Setenv("XDG_DATA_HOME", old)
+		} else {
+			os.Unsetenv("XDG_DATA_HOME")
+		}
+		xdg.Reload()
+	})
 	return root
+}
+
+// TestWithFakePoolRootRestoresGlobalStateOnCleanup is the leak probe for
+// withFakePoolRoot's own cleanup-ordering fix: pool.Root() (backed by the
+// process-wide xdg.DataHome) must be back to its pre-swap value once a test
+// using the helper has finished, not left pointing at that test's (by then
+// possibly already-deleted) temp dir.
+func TestWithFakePoolRootRestoresGlobalStateOnCleanup(t *testing.T) {
+	before := pool.Root()
+
+	t.Run("inner", func(t *testing.T) {
+		fake := withFakePoolRoot(t)
+		if got := pool.Root(); !strings.HasPrefix(got, fake) {
+			t.Fatalf("pool.Root() = %q inside the swap, want it under %q", got, fake)
+		}
+	})
+
+	if got := pool.Root(); got != before {
+		t.Errorf("pool.Root() after the helper's scope = %q, want the original %q (leaked global xdg.DataHome state)", got, before)
+	}
 }
 
 // TestEnsureHarnessPoolAlwaysCreatesRuntimeDir is this round's sibling
