@@ -27,15 +27,25 @@ non-Guix Linux — through Docker or Podman.
   backend auto-selection; an explicit choice whose tooling is absent errors
   immediately.
 - `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
-  legacy `bin/`+`lib/` trees entirely, once they are no longer needed.
-  Explicit opt-in only — never automatic, and there is no `--force` escape
-  hatch. Refused (an error, and nothing at all is removed — not even the
-  ordinary generation/cache/staging cleanup) when any pool-lockable harness
-  named in `manifest.yaml` has no active generation for this host's own
-  platform; the error names every such harness and the fix
-  (`wraptool harness install <name>`). `--dry-run` reports what `--legacy`
-  would remove without touching anything. `GCReport` gains `LegacyRemoved`;
-  the `gc` audit event gains a `legacy_removed` field.
+  legacy `bin/`+`lib/` trees entirely, once they are no longer needed, and
+  writes a marker recording that — so a later `wraptool up`/`list` no
+  longer silently recreates them (`ensureHarnessPool` now checks it before
+  creating `bin/`+`lib/`; `home/` and the new always-created `runtime/`
+  directory, below, are unaffected by the marker either way). An explicit
+  `wraptool harness install <name>` (or `update`) removes the marker again,
+  deliberately un-gc'ing the pool. Explicit opt-in only — never automatic,
+  and there is no `--force` escape hatch. Refused (an error, and nothing at
+  all is removed — not even the ordinary generation/cache/staging cleanup)
+  when any pool-lockable harness named in `manifest.yaml` has no genuinely
+  realized, on-disk active generation for this host's own platform (a
+  dangling pointer whose generation is gone from disk does not count as
+  active); the error names every such harness, the fix
+  (`wraptool harness install <name>`), and the `manifest.yaml` escape hatch
+  for a harness no longer used. `--dry-run` reports what `--legacy` would
+  remove without touching anything. `GCReport` gains `LegacyRemoved`
+  (true only when at least one tree actually existed to remove); the `gc`
+  audit event gains a `legacy_removed` field, recorded even if the legacy
+  step itself later fails, so real deletions are never left unaudited.
 
 ### Changed
 
@@ -51,8 +61,17 @@ non-Guix Linux — through Docker or Podman.
   have already been removed via `gc --legacy`: an active generation mounts
   `runtime/` alone (the legacy expose is dropped, not attempted against a
   now-missing host path), and a harness with neither an active generation
-  nor legacy `bin/`+`lib/` fails `wraptool up` with an actionable error
-  (naming the fix) instead of an opaque `guix shell --expose` failure.
+  nor legacy `bin/`+`lib/` fails `wraptool up` with an actionable error —
+  naming the actual paths and the real fix — instead of an opaque
+  `guix shell --expose` failure. A pool with only ONE of the two legacy
+  directories present (never `gc --legacy`'s own doing — it always removes
+  both together) is treated as unusable rather than partially mounted, with
+  a distinct error calling out the inconsistency and naming both expected
+  paths.
+- `ensureHarnessPool` now always creates the pool's `runtime/` directory (not
+  just `bin/`+`lib/`+`home/`): a scaffolded devcontainer config's pool mount
+  source needs to exist, developer-owned, before any container engine gets
+  a chance to create it root-owned on first use.
 - **Breaking (Dev Container feature):** published a new `wraptool` feature
   major, `1.0.0` (§12.2/§12.3 of the unified harness pool design). It removes
   the `provision` and `version` options entirely — the harness binary is no
