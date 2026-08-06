@@ -70,7 +70,17 @@ var provisioningImage = defaultProvisioningImage
 type harnessDeps struct {
 	poolPaths  func() pool.PoolPaths
 	poolBinDir func() (poolDir, poolBin string, err error)
-	newSource  func(d harness.Descriptor) (pool.Source, error)
+	// poolLegacyDirs is a PURE, non-creating path accessor for the pool's
+	// legacy bin/+lib/ directories — deliberately NOT poolBinDir, which is
+	// ensureHarnessPool-backed and (as of §16 Phase 4 item 5) has the side
+	// effect of recreating those directories unless the legacy-removed
+	// marker is present. `gc`'s own command wiring (newHarnessGCCmd) must
+	// never resurrect a gc'd pool merely by reading its own legacy paths —
+	// see this field's own review finding (minor 5) — so it uses this
+	// accessor instead of poolBinDir. Every other caller that actually
+	// wants an install-ready, created bin/ directory keeps using poolBinDir.
+	poolLegacyDirs func() (bin, lib string)
+	newSource      func(d harness.Descriptor) (pool.Source, error)
 	// resolveBackend picks the resolve/realize container backend for one
 	// target platform (§11.2's auto policy: guix when available AND the
 	// target's arch matches the host's, else oci) — see defaultResolveBackend.
@@ -100,9 +110,10 @@ func defaultHarnessDeps() harnessDeps {
 				// pool.CacheDir() is the cache/ parent, one level too
 				// shallow; Source.Fetch would silently treat every object
 				// as a permanent cache miss.
-				Cache:   pool.CacheSHA256Dir(),
-				Staging: pool.StagingDir(),
-				Runtime: pool.RuntimeDir(),
+				Cache:               pool.CacheSHA256Dir(),
+				Staging:             pool.StagingDir(),
+				Runtime:             pool.RuntimeDir(),
+				LegacyRemovedMarker: pool.LegacyRemovedMarkerFile(),
 			}
 		},
 		// poolBinDir returns the legacy pool root and bin/ directory (where
@@ -111,6 +122,14 @@ func defaultHarnessDeps() harnessDeps {
 		poolBinDir: func() (string, string, error) {
 			poolDir, poolBin, _, _, err := ensureHarnessPool()
 			return poolDir, poolBin, err
+		},
+		// poolLegacyDirs returns the SAME two directories poolBinDir/
+		// ensureHarnessPool would, as plain path strings, WITHOUT
+		// ensureHarnessPool's side effects (MkdirAll, marker-gated or
+		// otherwise) — see this field's own doc comment on harnessDeps.
+		poolLegacyDirs: func() (string, string) {
+			root := harnessPoolDir()
+			return filepath.Join(root, "bin"), filepath.Join(root, "lib")
 		},
 		// newSource constructs the harness pool's artifact-acquisition Source
 		// for d (design/harness/unified-harness-pool.md §11.3, pool.Source):
@@ -1115,7 +1134,7 @@ func legacyInstall(cmd *cobra.Command, deps harnessDeps, name string, d harness.
 		return err
 	}
 	if len(d.Install) == 0 {
-		return fmt.Errorf("no automated installer for %q; install it into %s yourself, "+
+		return fmt.Errorf("no automated installer for %q; create %s and install it there yourself, "+
 			"then `wraptool up --harness %s`", name, poolBin, name)
 	}
 
@@ -1129,6 +1148,15 @@ func legacyInstall(cmd *cobra.Command, deps harnessDeps, name string, d harness.
 	fmt.Fprintf(cmd.OutOrStdout(), "installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
 	if err := runInstallArgv(argv); err != nil {
 		return fmt.Errorf("installing %s: %w", name, err)
+	}
+	// An explicit, SUCCESSFUL install un-gc's the pool (§16 Phase 4 item
+	// 5): see unmarkLegacyRemoved's own doc comment. Deliberately AFTER
+	// runInstallArgv succeeds, not before — a failed or no-op install (no
+	// recipe, guix absent, or the installer itself erroring) must leave a
+	// previously gc'd pool's legacy-removed marker untouched; only a
+	// genuinely successful install earns the un-gc.
+	if err := unmarkLegacyRemoved(poolDir); err != nil {
+		return err
 	}
 
 	if bin := filepath.Join(poolBin, d.Bin); fileExists(bin) {
@@ -1151,7 +1179,7 @@ func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name strin
 		return err
 	}
 	if len(d.Install) == 0 {
-		return fmt.Errorf("no automated installer for %q; install version %s into %s yourself", name, version, poolBin)
+		return fmt.Errorf("no automated installer for %q; create %s and install version %s there yourself", name, poolBin, version)
 	}
 
 	// pinInstallVersion only applies to an npm-style recipe (npmInstall's
@@ -1188,6 +1216,13 @@ func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name strin
 	}
 	if err := runInstallArgv(argv); err != nil {
 		return fmt.Errorf("installing %s@%s: %w", name, version, err)
+	}
+	// An explicit, SUCCESSFUL install/update un-gc's the pool (§16 Phase 4
+	// item 5): see unmarkLegacyRemoved's own doc comment. Deliberately
+	// AFTER runInstallArgv succeeds — see legacyInstall's matching comment
+	// for why a failed or no-op install must leave the marker untouched.
+	if err := unmarkLegacyRemoved(poolDir); err != nil {
+		return err
 	}
 
 	if bin := filepath.Join(poolBin, d.Bin); fileExists(bin) {
@@ -1546,7 +1581,7 @@ Re-run rollback afterward if you still need the older generation active.`,
 // --- gc ---
 
 func newHarnessGCCmd(deps harnessDeps) *cobra.Command {
-	var dryRun bool
+	var dryRun, legacy bool
 	cmd := &cobra.Command{
 		Use:   "gc",
 		Short: "Remove unreferenced generations and cached artifacts",
@@ -1563,10 +1598,50 @@ view).
 A container started before this ran may still hold a generation gc has
 since removed (its bind mount was resolved at container-start time, not
 live). If a harness misbehaves right after a gc, restart the container
-(wraptool up) to pick up gc's retained set.`,
+(wraptool up) to pick up gc's retained set.
+
+--legacy additionally removes the pool's legacy bin/+lib/ trees entirely
+(§16 Phase 4 item 5) — the pre-generations install location every harness
+used before this pool learned to lock and realize — and writes a marker so
+a later ` + "`wraptool up`" + ` does not silently recreate them. This is
+NEVER automatic and never combined with any "force" flag: it is only safe
+once every harness you use shows ACTIVE in ` + "`wraptool harness list`" + `
+on EVERY machine sharing this pool, and every devcontainer using this pool
+is on feature major :1 (wiring-only) or has a wraptool-up-injected runtime
+mount — a container or machine still depending on the legacy bin/+lib/ tree
+breaks the moment it is gone. --legacy is refused (an error, not a warning,
+and nothing at all is removed — not even the ordinary generation/cache/
+staging cleanup above) when any pool-lockable harness this pool's
+manifest.yaml names has no genuinely realized, on-disk active generation for
+this host's own platform; the error names every such harness and the fix
+(wraptool harness install <name> — which also un-does a prior --legacy for
+that harness's pool). ` + "`wraptool harness install <name>`" + ` (or
+` + "`update`" + `) always un-gc's the WHOLE pool, recreating bin/+lib/
+again, since a legacy install needs them.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := pool.GCPool(context.Background(), deps.poolPaths(), dryRun)
+			opts := pool.GCOptions{DryRun: dryRun}
+			if legacy {
+				hostKey, err := pool.HostPlatformKey()
+				if err != nil {
+					return err
+				}
+				// poolLegacyDirs, NOT poolBinDir: gc's own path resolution
+				// must never have the side effect of recreating a
+				// previously gc'd pool's legacy directories (harnessDeps.
+				// poolLegacyDirs's own doc comment).
+				poolBin, poolLib := deps.poolLegacyDirs()
+				opts.Legacy = true
+				opts.LegacyBin = poolBin
+				opts.LegacyLib = poolLib
+				opts.HostPlatformKey = hostKey
+				opts.Now = time.Now()
+				opts.IsPoolLockable = func(name string) bool {
+					d, ok := harness.Registry[name]
+					return ok && d.PoolLockable()
+				}
+			}
+			report, err := pool.GCPool(context.Background(), deps.poolPaths(), opts)
 			if err != nil {
 				return err
 			}
@@ -1575,12 +1650,17 @@ live). If a harness misbehaves right after a gc, restart the container
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be removed without deleting anything")
+	cmd.Flags().BoolVar(&legacy, "legacy", false, "also remove the pool's legacy bin/+lib/ trees entirely; "+
+		"safe only once every harness you use is ACTIVE (`wraptool harness list`) on every machine sharing this "+
+		"pool and every devcontainer is on feature :1 or a wraptool-up-injected runtime mount; refused otherwise")
 	return cmd
 }
 
 // printGCReport reports one GCReport to cmd.OutOrStdout(), phrasing both
 // removal and freed space as a future ("would remove" / "would free") for a
-// dry run and as a completed action otherwise.
+// dry run and as a completed action otherwise. report.LegacyRemoved (§16
+// Phase 4 item 5) gets its own line, using the same removed/would-remove
+// verb, so a dry run reads as consistently hypothetical throughout.
 func printGCReport(cmd *cobra.Command, report pool.GCReport) {
 	verb, freeVerb := "removed", "freed"
 	if report.DryRun {
@@ -1589,6 +1669,9 @@ func printGCReport(cmd *cobra.Command, report pool.GCReport) {
 	fmt.Fprintf(cmd.OutOrStdout(), "%s %d generation(s) (%d retained), %d cache object(s) (%d retained), %d staging directory(ies); %s %d bytes\n",
 		verb, report.RemovedGenerations, report.RetainedGenerations, report.RemovedCacheObjects, report.RetainedCacheObjects,
 		report.RemovedStagingDirs, freeVerb, report.FreedBytes)
+	if report.LegacyRemoved {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s the legacy bin/+lib/ trees\n", verb)
+	}
 }
 
 // --- policy set ---

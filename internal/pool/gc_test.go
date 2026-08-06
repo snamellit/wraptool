@@ -63,7 +63,7 @@ func TestGCRetainsGenerationReferencedByLockButNotActive(t *testing.T) {
 	// these three is removed in the same run.
 	spareIDs := seedGCSpareGenerations(t, paths, gcTestHarness, gcTestKey, 3)
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestGCRetainsActiveGenerationNotInLock(t *testing.T) {
 	// No lock at all: the lock doesn't even mention this harness/generation
 	// (e.g. after a manual lock edit) — the pointer alone must retain it.
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestGCRetainsTwoMostRecentSparesRemovesOlder(t *testing.T) {
 	ids := seedGCSpareGenerations(t, paths, gcTestHarness, gcTestKey, 3) // ids[0] oldest .. ids[2] newest
 	// None activated, none recorded in any lock.
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestGCRetainsSupersededVersionAsSpareEnablingRollback(t *testing.T) {
 		t.Fatalf("active generation = (%q, %v), want v2 (%q) active after update", active, ok, gen2)
 	}
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestGCLockRetentionMatchesByReceiptNotReconstructedID(t *testing.T) {
 	// — their retention must come entirely from rule (b): each is the
 	// OLDEST in its own group, so rule (c)'s top-2 cannot cover it.
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestGCErrorsLoudlyOnUnreadablePointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := GCPoolLocked(paths, false); err == nil {
+	if _, err := GCPoolLocked(paths, GCOptions{}); err == nil {
 		t.Fatal("expected gc to fail loudly on an unreadable pointer file")
 	} else if !strings.Contains(err.Error(), ptrPath) {
 		t.Errorf("error = %q, want it to name the pointer path %q", err.Error(), ptrPath)
@@ -376,7 +376,7 @@ func TestGCCacheObjectRetentionAndDryRun(t *testing.T) {
 	})
 
 	// Dry run: nothing removed, but the report still reflects what WOULD go.
-	dryReport, err := GCPoolLocked(paths, true)
+	dryReport, err := GCPoolLocked(paths, GCOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("dry-run GCPoolLocked: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestGCCacheObjectRetentionAndDryRun(t *testing.T) {
 		}
 	}
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestGCRuntimeArtifactCacheDigestIsRetained(t *testing.T) {
 		},
 	})
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -470,7 +470,7 @@ func TestGCArchiveArtifactCacheDigestIsRetained(t *testing.T) {
 		},
 	})
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestGCRemovesAllStagingTxnDirsUnderLock(t *testing.T) {
 		}
 	}
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -520,7 +520,7 @@ func TestGCDryRunTakesLockButRemovesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := GCPoolLocked(paths, true)
+	report, err := GCPoolLocked(paths, GCOptions{DryRun: true})
 	if err != nil {
 		t.Fatalf("GCPoolLocked (dry run): %v", err)
 	}
@@ -552,7 +552,7 @@ func TestGCAppendsAuditEventWithReportedCounts(t *testing.T) {
 	paths := testPaths(t)
 	seedActivateGeneration(t, paths, gcTestHarness, "1.0.0", gcTestKey, "orphan")
 
-	report, err := GCPoolLocked(paths, false)
+	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
 		t.Fatalf("GCPoolLocked: %v", err)
 	}
@@ -576,6 +576,441 @@ func TestGCAppendsAuditEventWithReportedCounts(t *testing.T) {
 	if int64(found.Fields["freed_bytes"].(float64)) != report.FreedBytes {
 		t.Errorf("audit freed_bytes = %v, want %d", found.Fields["freed_bytes"], report.FreedBytes)
 	}
+	if got, ok := found.Fields["legacy_removed"].(bool); !ok || got {
+		t.Errorf("audit legacy_removed = %v, want false (GCOptions.Legacy was not set)", found.Fields["legacy_removed"])
+	}
+}
+
+// --- GCOptions.Legacy (§16 Phase 4 item 5: "gc learns to remove legacy bin/+lib/") ---
+
+// gcTestLegacyDirs builds two real, populated legacy bin/+lib/ directories
+// under a fresh t.TempDir(), returning their paths — used as GCOptions.
+// LegacyBin/LegacyLib. Populated (not empty) so a removal test can also
+// assert FreedBytes > 0.
+func gcTestLegacyDirs(t *testing.T) (bin, lib string) {
+	t.Helper()
+	root := t.TempDir()
+	bin, lib = filepath.Join(root, "bin"), filepath.Join(root, "lib")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lib, "node_modules-marker"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return bin, lib
+}
+
+// alwaysLockable is a GCOptions.IsPoolLockable that treats every manifest
+// entry as pool-lockable — the tests below only ever declare harnesses they
+// mean to be checked.
+func alwaysLockable(string) bool { return true }
+
+// legacyOpts builds a passing GCOptions.Legacy request against bin/lib,
+// filling every required field (review round 2: Now and paths.
+// LegacyRemovedMarker joined LegacyBin/LegacyLib/IsPoolLockable/
+// HostPlatformKey as caller-bug-guarded fields) so each test below states
+// only what it deliberately varies.
+func legacyOpts(bin, lib string) GCOptions {
+	return GCOptions{
+		Legacy: true, LegacyBin: bin, LegacyLib: lib,
+		IsPoolLockable: alwaysLockable, HostPlatformKey: gcTestKey, Now: fixedNow,
+	}
+}
+
+// readLegacyMarker reads paths.LegacyRemovedMarker, failing the test if it
+// is missing or unreadable — used by tests asserting the marker WAS written.
+func readLegacyMarker(t *testing.T, paths PoolPaths) string {
+	t.Helper()
+	data, err := os.ReadFile(paths.LegacyRemovedMarker)
+	if err != nil {
+		t.Fatalf("reading legacy-removed marker: %v", err)
+	}
+	return string(data)
+}
+
+// TestGCLegacyDryRunReportsWithoutRemoving pins --dry-run's contract for the
+// legacy step: LegacyRemoved is still reported true (this call WOULD have
+// removed it) and FreedBytes reflects the real size, but neither directory
+// — nor the legacy-removed marker itself — is actually touched.
+func TestGCLegacyDryRunReportsWithoutRemoving(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+
+	opts := legacyOpts(bin, lib)
+	opts.DryRun = true
+	report, err := GCPoolLocked(paths, opts)
+	if err != nil {
+		t.Fatalf("GCPoolLocked (dry-run --legacy): %v", err)
+	}
+	if !report.LegacyRemoved {
+		t.Error("LegacyRemoved = false, want true (dry run still reports what WOULD happen)")
+	}
+	if report.FreedBytes <= 0 {
+		t.Errorf("FreedBytes = %d, want > 0", report.FreedBytes)
+	}
+	for _, dir := range []string{bin, lib} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("dry run must not remove %s: %v", dir, err)
+		}
+	}
+	if _, err := os.Stat(paths.LegacyRemovedMarker); !os.IsNotExist(err) {
+		t.Errorf("dry run must not write the legacy-removed marker, stat err = %v", err)
+	}
+}
+
+// TestGCLegacyRemovesBinAndLib is the real (non-dry-run) counterpart: both
+// trees are gone afterward, FreedBytes accounts for what was removed, the
+// audit event's legacy_removed field is true, and the legacy-removed marker
+// is written with an RFC3339 timestamp line plus one explanatory line.
+func TestGCLegacyRemovesBinAndLib(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+
+	report, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err != nil {
+		t.Fatalf("GCPoolLocked (--legacy): %v", err)
+	}
+	if !report.LegacyRemoved {
+		t.Error("LegacyRemoved = false, want true")
+	}
+	if report.FreedBytes <= 0 {
+		t.Errorf("FreedBytes = %d, want > 0", report.FreedBytes)
+	}
+	for _, dir := range []string{bin, lib} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed, stat err = %v", dir, err)
+		}
+	}
+
+	marker := readLegacyMarker(t, paths)
+	lines := strings.SplitN(marker, "\n", 2)
+	if _, err := time.Parse(time.RFC3339, lines[0]); err != nil {
+		t.Errorf("marker first line = %q, want an RFC3339 timestamp: %v", lines[0], err)
+	}
+	if !strings.Contains(marker, "gc --legacy") {
+		t.Errorf("marker = %q, want an explanatory line naming `gc --legacy`", marker)
+	}
+
+	events := auditEvents(t, paths)
+	var found *AuditEvent
+	for i := range events {
+		if events[i].Type == "gc" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("no gc audit event, got: %+v", events)
+	}
+	if got, ok := found.Fields["legacy_removed"].(bool); !ok || !got {
+		t.Errorf("audit legacy_removed = %v, want true", found.Fields["legacy_removed"])
+	}
+}
+
+// TestGCLegacyAlreadyAbsentIsNotAnError covers idempotency: a second
+// `gc --legacy` (or one running after some other process already removed
+// the trees) finds nothing there and still succeeds — LegacyRemoved is
+// FALSE (nothing was actually removed THIS run, review round 2: the report
+// must reflect reality, not merely that --legacy was requested) and
+// FreedBytes contributes 0, but the marker is still (re)written so the
+// pool's "legacy removed" state holds regardless.
+func TestGCLegacyAlreadyAbsentIsNotAnError(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	root := t.TempDir()
+	bin, lib := filepath.Join(root, "bin"), filepath.Join(root, "lib") // never created
+
+	report, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err != nil {
+		t.Fatalf("GCPoolLocked (--legacy, already absent): %v", err)
+	}
+	if report.LegacyRemoved {
+		t.Error("LegacyRemoved = true, want false (neither tree existed — nothing was actually removed)")
+	}
+	if report.FreedBytes != 0 {
+		t.Errorf("FreedBytes = %d, want 0 (nothing was there to measure)", report.FreedBytes)
+	}
+	readLegacyMarker(t, paths) // fails the test if absent
+}
+
+// TestGCLegacyRefusedWhenLockableHarnessUnrealized pins the RULING (this
+// work package's brief): --legacy is refused, and NOTHING is removed at
+// all — not even the ordinary non-legacy generation/cache/staging cleanup —
+// when a pool-lockable harness the manifest names has no active generation
+// for HostPlatformKey. The error names the unrealized harness and the fix,
+// and points at the manifest.yaml escape hatch for a harness no longer used.
+func TestGCLegacyRefusedWhenLockableHarnessUnrealized(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  claude: {}\n")
+	// "claude" is declared in the manifest but never activated for
+	// gcTestKey — no pointer at all.
+
+	// A spare generation that a normal (non-refused) gc run WOULD remove —
+	// proves the refusal aborts the WHOLE call, not just the legacy step.
+	spareIDs := seedGCSpareGenerations(t, paths, gcTestHarness, gcTestKey, 3)
+
+	_, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err == nil {
+		t.Fatal("expected --legacy to be refused")
+	}
+	if !strings.Contains(err.Error(), "claude") {
+		t.Errorf("error = %q, want it to name the unrealized harness %q", err.Error(), "claude")
+	}
+	if !strings.Contains(err.Error(), "wraptool harness install claude") {
+		t.Errorf("error = %q, want it to name the fix command", err.Error())
+	}
+	if !strings.Contains(err.Error(), "manifest.yaml") {
+		t.Errorf("error = %q, want it to mention the manifest.yaml escape hatch for a harness no longer used", err.Error())
+	}
+	for _, dir := range []string{bin, lib} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Errorf("a refused --legacy must not remove %s: %v", dir, err)
+		}
+	}
+	if _, err := os.Stat(paths.LegacyRemovedMarker); !os.IsNotExist(err) {
+		t.Errorf("a refused --legacy must not write the legacy-removed marker, stat err = %v", err)
+	}
+	if _, err := os.Stat(runtimeGenerationDir(paths.Runtime, spareIDs[0])); err != nil {
+		t.Errorf("a refused --legacy must not run the ordinary gc cleanup either (spare %s should survive): %v", spareIDs[0], err)
+	}
+}
+
+// TestGCLegacyRefusalNamesEveryUnrealizedHarnessSorted covers TWO unrealized
+// pool-lockable harnesses at once: the error must name BOTH, sorted
+// (alphabetical: "agy-clone" before "claude" — chosen so this doesn't
+// depend on map-iteration order matching alphabetical order by accident).
+func TestGCLegacyRefusalNamesEveryUnrealizedHarnessSorted(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  claude: {}\n  agy-clone: {}\n")
+	// Neither "claude" nor "agy-clone" is activated for gcTestKey.
+
+	_, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err == nil {
+		t.Fatal("expected --legacy to be refused")
+	}
+	agyIdx := strings.Index(err.Error(), "agy-clone")
+	claudeIdx := strings.Index(err.Error(), "claude")
+	if agyIdx < 0 || claudeIdx < 0 {
+		t.Fatalf("error = %q, want it to name both unrealized harnesses", err.Error())
+	}
+	if agyIdx > claudeIdx {
+		t.Errorf("error = %q, want harnesses named in sorted order (agy-clone before claude)", err.Error())
+	}
+	if !strings.Contains(err.Error(), "wraptool harness install agy-clone") ||
+		!strings.Contains(err.Error(), "wraptool harness install claude") {
+		t.Errorf("error = %q, want a fix command for EACH unrealized harness", err.Error())
+	}
+}
+
+// TestGCLegacyRefusalRejectsDanglingPointer is review round 2's generation-
+// on-disk-proof requirement: a pointer that RESOLVES to a generation id is
+// not enough — if that generation's own directory/receipt is gone (e.g. an
+// earlier or concurrent gc removed it, leaving the pointer dangling), the
+// refusal check must still fire, exactly as if nothing were active at all.
+func TestGCLegacyRefusalRejectsDanglingPointer(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  "+gcTestHarness+": {}\n")
+
+	genID := seedActivateGeneration(t, paths, gcTestHarness, "2.1.220", gcTestKey, "dangling")
+	if err := ActivateGeneration(paths, gcTestHarness, gcTestKey, genID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+	// Simulate a concurrent/earlier gc removing the generation the pointer
+	// still names — pool.ActiveGeneration alone would still report ok=true
+	// here (it only reads the pointer's own content).
+	if err := os.RemoveAll(runtimeGenerationDir(paths.Runtime, genID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ActiveGeneration(paths, gcTestHarness, gcTestKey); !ok {
+		t.Fatal("setup bug: ActiveGeneration should still report ok=true for the dangling pointer")
+	}
+
+	_, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err == nil {
+		t.Fatal("expected --legacy to be refused for a dangling pointer (generation missing on disk)")
+	}
+	if !strings.Contains(err.Error(), gcTestHarness) {
+		t.Errorf("error = %q, want it to name %q", err.Error(), gcTestHarness)
+	}
+}
+
+// TestGCLegacyIgnoresNonPoolLockableManifestEntries proves a legacy-only
+// (non-pool-lockable) harness in the manifest never blocks --legacy: it has
+// no runtime/ path to ever be "active" on, so the refusal check must skip
+// it, not treat it as permanently unrealized.
+func TestGCLegacyIgnoresNonPoolLockableManifestEntries(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  gemini: {}\n")
+
+	opts := legacyOpts(bin, lib)
+	opts.IsPoolLockable = func(string) bool { return false }
+	report, err := GCPoolLocked(paths, opts)
+	if err != nil {
+		t.Fatalf("GCPoolLocked (--legacy, non-lockable manifest entry): %v", err)
+	}
+	if !report.LegacyRemoved {
+		t.Error("LegacyRemoved = false, want true")
+	}
+}
+
+// TestGCLegacyMissingManifestPassesTrivially covers a from-scratch pool
+// (manifest.yaml never written) — nothing to check, so --legacy proceeds.
+func TestGCLegacyMissingManifestPassesTrivially(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	// paths.Manifest deliberately left unwritten.
+
+	report, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err != nil {
+		t.Fatalf("GCPoolLocked (--legacy, no manifest): %v", err)
+	}
+	if !report.LegacyRemoved {
+		t.Error("LegacyRemoved = false, want true")
+	}
+}
+
+// TestGCLegacyPassesWhenHarnessIsActive proves the happy path: a
+// pool-lockable harness the manifest names DOES have an active, on-disk
+// generation for HostPlatformKey, so --legacy proceeds and removes the
+// legacy trees.
+func TestGCLegacyPassesWhenHarnessIsActive(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  "+gcTestHarness+": {}\n")
+	genID := seedActivateGeneration(t, paths, gcTestHarness, "2.1.220", gcTestKey, "active-for-legacy-check")
+	if err := ActivateGeneration(paths, gcTestHarness, gcTestKey, genID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	report, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err != nil {
+		t.Fatalf("GCPoolLocked (--legacy, harness active): %v", err)
+	}
+	if !report.LegacyRemoved {
+		t.Error("LegacyRemoved = false, want true")
+	}
+	for _, dir := range []string{bin, lib} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed, stat err = %v", dir, err)
+		}
+	}
+}
+
+// TestGCLegacyAuditRecordsPartialProgressOnLegacyFailure is review round 2's
+// audit-resilience requirement: gcLegacy can fail AFTER it has already
+// deleted real state (both legacy dirs removed, then the marker write
+// itself fails) — those deletions must still be recorded in the "gc" audit
+// event, not lost just because the overall call returns an error. The
+// marker write is made to fail by pointing paths.LegacyRemovedMarker at an
+// existing directory (os.Rename onto a directory fails), a filesystem-level
+// failure with no mock required.
+func TestGCLegacyAuditRecordsPartialProgressOnLegacyFailure(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	if err := os.MkdirAll(paths.LegacyRemovedMarker, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := GCPoolLocked(paths, legacyOpts(bin, lib))
+	if err == nil {
+		t.Fatal("expected an error (marker write onto an existing directory must fail)")
+	}
+	if !report.LegacyRemoved {
+		t.Error("LegacyRemoved = false, want true (both dirs were genuinely removed before the marker write failed)")
+	}
+	for _, dir := range []string{bin, lib} {
+		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+			t.Errorf("expected %s to have been removed despite the later marker-write failure: %v", dir, statErr)
+		}
+	}
+
+	events := auditEvents(t, paths)
+	var found *AuditEvent
+	for i := range events {
+		if events[i].Type == "gc" {
+			found = &events[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected the gc audit event to still be recorded despite gcLegacy's error, got: %+v", events)
+	}
+	if got, ok := found.Fields["legacy_removed"].(bool); !ok || !got {
+		t.Errorf("audit legacy_removed = %v, want true (the removal itself succeeded)", found.Fields["legacy_removed"])
+	}
+}
+
+// TestGCLegacyRequiresIsPoolLockable, TestGCLegacyRequiresHostPlatformKey,
+// TestGCLegacyRequiresLegacyBinAndLib, and TestGCLegacyRequiresNow pin the
+// caller-bug guards: Legacy true with a missing required field fails loudly
+// (an internal error) instead of silently skipping the safety check or
+// crashing on a zero-value marker timestamp.
+func TestGCLegacyRequiresIsPoolLockable(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	opts := legacyOpts(bin, lib)
+	opts.IsPoolLockable = nil
+	if _, err := GCPoolLocked(paths, opts); err == nil {
+		t.Fatal("expected an error when GCOptions.Legacy is true but IsPoolLockable is nil")
+	}
+}
+
+func TestGCLegacyRequiresHostPlatformKey(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	opts := legacyOpts(bin, lib)
+	opts.HostPlatformKey = ""
+	if _, err := GCPoolLocked(paths, opts); err == nil {
+		t.Fatal("expected an error when GCOptions.Legacy is true but HostPlatformKey is empty")
+	}
+}
+
+func TestGCLegacyRequiresLegacyBinAndLib(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+
+	optsNoBin := legacyOpts(bin, lib)
+	optsNoBin.LegacyBin = ""
+	if _, err := GCPoolLocked(paths, optsNoBin); err == nil {
+		t.Fatal("expected an error when GCOptions.Legacy is true but LegacyBin is empty")
+	}
+
+	optsNoLib := legacyOpts(bin, lib)
+	optsNoLib.LegacyLib = ""
+	if _, err := GCPoolLocked(paths, optsNoLib); err == nil {
+		t.Fatal("expected an error when GCOptions.Legacy is true but LegacyLib is empty")
+	}
+}
+
+func TestGCLegacyRequiresNow(t *testing.T) {
+	t.Parallel()
+	paths := testPaths(t)
+	bin, lib := gcTestLegacyDirs(t)
+	opts := legacyOpts(bin, lib)
+	opts.Now = time.Time{}
+	if _, err := GCPoolLocked(paths, opts); err == nil {
+		t.Fatal("expected an error when GCOptions.Legacy is true but Now is the zero value")
+	}
 }
 
 func TestGCPoolAcquiresLock(t *testing.T) {
@@ -588,7 +1023,7 @@ func TestGCPoolAcquiresLock(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
-	if _, err := GCPool(ctx, paths, false); err == nil {
+	if _, err := GCPool(ctx, paths, GCOptions{}); err == nil {
 		t.Fatal("expected GCPool to fail acquiring an already-held pool lock")
 	}
 	lock.Release()
