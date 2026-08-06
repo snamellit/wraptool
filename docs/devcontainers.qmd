@@ -144,15 +144,18 @@ developer with `wraptool harness install <name>` on the host, then mounted
 
 ::: {.callout-important}
 The `~/.local/share/...` mount sources are the **Linux** pool location. Match
-them to your OS or the bind mount fails on a non-existent source. Use forward
-slashes under `${localEnv:HOME}` on every OS (backslashes are invalid in a JSON
-string): **macOS**
-`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`.
-**Windows** differs in shape, not just prefix — the pool root is
-`%LOCALAPPDATA%\wraptool`, not under `%HOME%`, so `${localEnv:HOME}` does not
-apply there; use the literal host path instead. `wraptool init devcontainer`
-and `wraptool up` write/mount the platform-correct paths for you; only a
-hand-written `devcontainer.json` needs this adjustment.
+them to your OS or the bind mount fails on a non-existent source. `${localEnv:HOME}`
+works on all three OSes — the pool root always lives under the user's home
+directory, just at a different relative path per OS. Use forward slashes under
+`${localEnv:HOME}` on every OS (backslashes are invalid in a JSON string):
+**macOS** `${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`,
+**Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}`
+(`%LOCALAPPDATA%` is itself `%USERPROFILE%\AppData\Local`). The Windows-specific
+caveat isn't the mount source, it's that `HOME` isn't set by default there (only
+`USERPROFILE`) — see [Windows](platform-windows.qmd) for the one-time `setx HOME
+%USERPROFILE%` fix. `wraptool init devcontainer` and `wraptool up` write/mount
+the platform-correct paths for you; only a hand-written `devcontainer.json`
+needs this adjustment.
 
 The **runtime mount must stay the string form** shown above, ending in
 `,readonly`. The devcontainer CLI's object-form mounts (`{"source":...,

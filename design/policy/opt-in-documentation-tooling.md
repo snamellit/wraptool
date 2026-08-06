@@ -110,7 +110,7 @@ The generated default remains documentation-free:
 ```jsonc
 {
   "features": {
-    "forge.snamellit.com/pti/wraptool/wraptool:0": {
+    "forge.snamellit.com/pti/wraptool/wraptool:1": {
       "harness": "claude"
     }
   }
@@ -122,7 +122,7 @@ A documentation-enabled configuration adds an independent Quarto feature:
 ```jsonc
 {
   "features": {
-    "forge.snamellit.com/pti/wraptool/wraptool:0": {
+    "forge.snamellit.com/pti/wraptool/wraptool:1": {
       "harness": "claude"
     },
     "<trusted-registry>/<namespace>/quarto:1": {

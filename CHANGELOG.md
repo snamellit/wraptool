@@ -54,11 +54,15 @@ non-Guix Linux — through Docker or Podman.
   pinned to `:0` are unaffected.
 - `wraptool init devcontainer` scaffolds the `:1` wiring-only feature and both
   pool mounts (`home/` read-write, `runtime/` read-only, the latter as the
-  verbatim `,readonly` string form the devcontainer CLI actually enforces). It
-  no longer auto-adds the `node` feature for npm harnesses (the pool runtime
-  bundles its own) or scaffolds a `provision`/`version` option for any
-  harness, including `gemini`. This repo's own `.devcontainer/devcontainer.json`
-  and `examples/devcontainer/` move to the same shape.
+  verbatim `,readonly` string form the devcontainer CLI actually enforces — it
+  refuses to scaffold a runtime mount whose source path would corrupt that
+  form, e.g. one containing a comma). It no longer auto-adds the `node`
+  feature for npm harnesses (the pool runtime bundles its own) or scaffolds a
+  `provision`/`version` option for any harness. `gemini` (not pool-lockable)
+  gets accurate next-steps — bake its binary into the image yourself — instead
+  of a dead-end `harness install gemini` suggestion. This repo's own
+  `.devcontainer/devcontainer.json` and `examples/devcontainer/` move to the
+  same shape.
 
 ### Upgrade notes
 

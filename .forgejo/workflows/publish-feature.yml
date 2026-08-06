@@ -2,10 +2,11 @@ name: Publish dev container feature
 
 # Publishes the wraptool Dev Container Features under features/src/ to the Forgejo
 # OCI registry as forge.snamellit.com/pti/wraptool/<feature-id>: `wraptool` (the
-# merged provision+connect feature) and `wraptool-connect` (deprecated, kept for
-# existing configs). `devcontainer features publish ./features/src` handles every
-# feature in the dir; each is tagged from the `version` in its own
-# devcontainer-feature.json (:X, :X.Y, :X.Y.Z, :latest).
+# wiring-only feature, major :1 — the harness binary comes from the host's
+# shared harness-pool runtime/ mount, not this feature) and `wraptool-connect`
+# (deprecated, kept for existing configs). `devcontainer features publish
+# ./features/src` handles every feature in the dir; each is tagged from the
+# `version` in its own devcontainer-feature.json (:X, :X.Y, :X.Y.Z, :latest).
 #
 # Application release tags republish the current feature versions:
 #   ./release-version patch

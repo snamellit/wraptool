@@ -105,13 +105,16 @@ process), declare both mounts yourself:
 Both mount sources point at your host pool
 (`$XDG_DATA_HOME/wraptool/harness-pool/{home,runtime}`). The `~/.local/share/...`
 above is the **Linux** location; match your OS or the bind fails on a source
-that does not exist. Use forward slashes under `${localEnv:HOME}` on every OS
-(backslashes are invalid in a JSON string): on **macOS**
-`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`;
-on **Windows** the pool root is `%LOCALAPPDATA%\wraptool`, not under `%HOME%`,
-so `${localEnv:HOME}` does not apply — use the literal host path instead.
-`wraptool init devcontainer` and `wraptool up` emit/mount the correct paths for
-your platform automatically; only a hand-written mount needs this adjustment.
+that does not exist. `${localEnv:HOME}` works on **every** OS — the pool root
+always lives under the user's home directory. Use forward slashes under
+`${localEnv:HOME}` on every OS (backslashes are invalid in a JSON string): on
+**macOS** `${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`;
+on **Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}`
+(`%LOCALAPPDATA%` is itself `%USERPROFILE%\AppData\Local`) — the Windows-specific
+step is setting `HOME` at all, since only `USERPROFILE` is set by default there
+(`setx HOME %USERPROFILE%`, see `docs/platform-windows.qmd`). `wraptool init
+devcontainer` and `wraptool up` emit/mount the correct paths for your platform
+automatically; only a hand-written mount needs this adjustment.
 This mirrors the Guix runtime's split; see
 [`design/harness/harness-descriptor.md`](../../design/harness/harness-descriptor.md) §7 for the
 trust model (shared writable `home/` is an accepted residual-risk channel; never

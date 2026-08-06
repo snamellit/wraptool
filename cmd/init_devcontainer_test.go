@@ -2,14 +2,41 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/adrg/xdg"
 	"github.com/pti/wraptool/internal/pool"
 )
+
+// captureStdout redirects os.Stdout for the duration of fn and returns
+// everything written to it — used to assert on runInitDevcontainer's printed
+// next-steps, which aren't otherwise observable (they go straight to
+// os.Stdout, not a cobra OutOrStdout writer).
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
 
 // parseJSONC strips // line comments and parses the result, asserting the
 // scaffolded config is valid JWCC (JSON-with-comments). Safe here because the
@@ -91,16 +118,6 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 	})
 
-	t.Run("non-npm harness does not add node", func(t *testing.T) {
-		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
-		if err := runInitDevcontainer("agy", nil, "ubuntu", out, "", false); err != nil {
-			t.Fatalf("scaffold: %v", err)
-		}
-		if keys := featureKeys(t, parseJSONC(t, out)); hasFeature(keys, "features/node:") {
-			t.Errorf("agy is not an npm harness; node should not be added; got %v", keys)
-		}
-	})
-
 	t.Run("no harness version or provision option scaffolded", func(t *testing.T) {
 		// §16 Phase 4 item 2: the project version option and any provision
 		// toggle are gone from the wiring-only feature schema, and the
@@ -121,14 +138,6 @@ func TestInitDevcontainer(t *testing.T) {
 			if _, has := wt["version"]; has {
 				t.Errorf("%s: scaffold must not emit a version option; got %v", h, wt)
 			}
-		}
-	})
-
-	t.Run("no --harness-version flag (removed provisioning option)", func(t *testing.T) {
-		cmd := newInitDevcontainerCmd()
-		cmd.SetArgs([]string{"--harness-version", "1.0.0"})
-		if err := cmd.Execute(); err == nil {
-			t.Error("--harness-version must not exist; the wiring-only feature has no project version option")
 		}
 	})
 
@@ -206,6 +215,91 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 	})
 
+	t.Run("data dir outside $HOME renders an absolute source and the mixed-OS caveat comment", func(t *testing.T) {
+		// Force poolMountSourceOf's homeRelative==false branch deterministically:
+		// os.UserHomeDir() reads $HOME live (no caching), and xdg.DataHome is a
+		// plain package var (no test seam of its own in internal/paths), so both
+		// are safe to override for the duration of this test.
+		t.Setenv("HOME", filepath.Join(t.TempDir(), "fake-home"))
+		origDataHome := xdg.DataHome
+		outsideHome := filepath.Join(t.TempDir(), "elsewhere", "xdg-data")
+		xdg.DataHome = outsideHome
+		t.Cleanup(func() { xdg.DataHome = origDataHome })
+
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatalf("UserHomeDir: %v", err)
+		}
+		if rel, relErr := filepath.Rel(home, pool.HomeDir()); relErr == nil && !strings.HasPrefix(rel, "..") {
+			t.Fatalf("test setup broken: pool.HomeDir() %q is still under fake HOME %q", pool.HomeDir(), home)
+		}
+
+		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
+		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
+			t.Fatalf("scaffold: %v", err)
+		}
+
+		raw, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), "NOTE: this host's harness-pool data dir is not under $HOME") {
+			t.Errorf("expected the mixed-OS caveat comment when the data dir is outside $HOME; got:\n%s", raw)
+		}
+
+		mounts, ok := parseJSONC(t, out)["mounts"].([]any)
+		if !ok || len(mounts) != 2 {
+			t.Fatalf("expected two mounts; got %v", parseJSONC(t, out)["mounts"])
+		}
+		wantHomeSrc := filepath.ToSlash(pool.HomeDir())
+		homeMount := mounts[0].(map[string]any)
+		if homeMount["source"] != wantHomeSrc {
+			t.Errorf("home mount source = %v, want literal absolute path %q", homeMount["source"], wantHomeSrc)
+		}
+		if strings.Contains(homeMount["source"].(string), "${localEnv:HOME}") {
+			t.Errorf("home mount source must not use ${localEnv:HOME} when the data dir is outside $HOME: %v", homeMount["source"])
+		}
+		runtimeEntry := mounts[1].(string)
+		wantRuntimeSrc := filepath.ToSlash(pool.RuntimeDir())
+		if !strings.Contains(runtimeEntry, "source="+wantRuntimeSrc+",") {
+			t.Errorf("runtime mount source = %q, want literal absolute path %q", runtimeEntry, wantRuntimeSrc)
+		}
+		if strings.Contains(runtimeEntry, "${localEnv:HOME}") {
+			t.Errorf("runtime mount source must not use ${localEnv:HOME} when the data dir is outside $HOME: %q", runtimeEntry)
+		}
+	})
+
+	t.Run("gemini next-steps and comment point at baking in the binary, not a dead-end install", func(t *testing.T) {
+		// gemini has no PoolPackage/PoolArchive (harness.Registry) — it is not
+		// pool-lockable, so `wraptool harness install gemini` is a dead end, and
+		// "install it by hand inside the container" is equally wrong: with
+		// connect:true (this scaffold's default) connect.sh hard-fails postCreate
+		// before a hand-install could ever happen.
+		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
+		stdout := captureStdout(t, func() {
+			if err := runInitDevcontainer("gemini", nil, "ubuntu", out, "", false); err != nil {
+				t.Fatalf("scaffold: %v", err)
+			}
+		})
+		if strings.Contains(stdout, "harness install gemini") {
+			t.Errorf("gemini is not pool-lockable; must not suggest `wraptool harness install gemini`; got:\n%s", stdout)
+		}
+		if !strings.Contains(stdout, "not pool-lockable") {
+			t.Errorf("expected the printed next-steps to say gemini is not pool-lockable; got:\n%s", stdout)
+		}
+
+		raw, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "install it by hand inside the container") {
+			t.Errorf("comment must not suggest a hand-install inside the container (postCreate hard-fails first); got:\n%s", raw)
+		}
+		if !strings.Contains(string(raw), "not pool-lockable") {
+			t.Errorf("expected the generated comment to say gemini is not pool-lockable; got:\n%s", raw)
+		}
+	})
+
 	t.Run("overwrite guard", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
 		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
@@ -228,4 +322,74 @@ func TestInitDevcontainer(t *testing.T) {
 			t.Error("unknown language must be rejected")
 		}
 	})
+
+	t.Run("a comma in the pool runtime path refuses the scaffold end to end", func(t *testing.T) {
+		// A comma in the runtime source would be misread as a CSV field
+		// separator by the devcontainer CLI's own mount-string parser,
+		// silently corrupting the ONLY read-only-capable mount form (§12.3).
+		// Force it via the same xdg.DataHome seam the branch-coverage test
+		// above uses, proving the refusal end to end through
+		// runInitDevcontainer/renderDevcontainer, not just the isolated helper.
+		origDataHome := xdg.DataHome
+		xdg.DataHome = filepath.Join(t.TempDir(), "xdg,data")
+		t.Cleanup(func() { xdg.DataHome = origDataHome })
+
+		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
+		err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false)
+		if err == nil {
+			t.Fatal("expected an error; a comma in the pool path would corrupt the runtime mount's CSV string form")
+		}
+		if !strings.Contains(err.Error(), "XDG_DATA_HOME") {
+			t.Errorf("error should suggest relocating XDG_DATA_HOME, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), pool.RuntimeDir()) {
+			t.Errorf("error should name the offending path %q, got: %v", pool.RuntimeDir(), err)
+		}
+		if _, statErr := os.Stat(out); statErr == nil {
+			t.Error("must not write a corrupted devcontainer.json on this failure")
+		}
+	})
+}
+
+// TestPoolRuntimeMountString mutation-checks the exact guard: every one of
+// the three unsafe characters (comma, quote, backslash) individually trips
+// it, a source with none of them builds successfully, and the happy path's
+// output is the exact expected CSV string (so a mutant that always errors,
+// or one that never does, both fail this table).
+func TestPoolRuntimeMountString(t *testing.T) {
+	safe := "/home/dev/.local/share/wraptool/harness-pool/runtime"
+	got, err := poolRuntimeMountString(safe)
+	if err != nil {
+		t.Fatalf("safe path must not error: %v", err)
+	}
+	want := "source=" + safe + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
+	if got != want {
+		t.Errorf("poolRuntimeMountString(%q) = %q, want %q", safe, got, want)
+	}
+
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"comma", "/home/dev/xdg,data/wraptool/harness-pool/runtime"},
+		{"quote", `/home/dev/xdg"data/wraptool/harness-pool/runtime`},
+		{"backslash", `/home/dev/xdg\data/wraptool/harness-pool/runtime`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := poolRuntimeMountString(tc.src)
+			if err == nil {
+				t.Fatalf("expected an error for a source containing a %s", tc.name)
+			}
+			// The error message renders the offending path via %q (Go/JSON
+			// escaping), so compare against the quoted form, not the raw string
+			// — a literal quote or backslash in src would never substring-match
+			// its own escaped rendering otherwise.
+			if wantQuoted := fmt.Sprintf("%q", tc.src); !strings.Contains(err.Error(), wantQuoted) {
+				t.Errorf("error should name the offending path %s, got: %v", wantQuoted, err)
+			}
+			if !strings.Contains(err.Error(), "XDG_DATA_HOME") {
+				t.Errorf("error should suggest relocating XDG_DATA_HOME, got: %v", err)
+			}
+		})
+	}
 }

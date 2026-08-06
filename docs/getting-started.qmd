@@ -375,11 +375,13 @@ prefilled. It writes a fresh file and **refuses to clobber** an existing one (pa
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   // Token is a secret → remoteEnv keeps it out of image layers.
   "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
-  // Share the host harness pool. home/ is object form (read-write, so a source
-  // path with a space — macOS's own ~/Library/Application Support — is never
-  // mis-split by the mount-string parser). runtime/ MUST be the string form
-  // ending in ",readonly": object-form mounts have no read-only field at all
-  // in the devcontainer CLI's schema and silently come up read-write.
+  // Share the host harness pool. runtime/ MUST be the string form ending in
+  // ",readonly": string form is CSV-parsed by the devcontainer CLI (so an
+  // interior space, e.g. macOS's own ~/Library/Application Support, survives
+  // intact) and it is the ONLY form the CLI honors a read-only flag on —
+  // object-form mounts have no read-only field at all in its schema and
+  // silently come up read-write regardless of any "readonly" key. home/ is
+  // read-write either way, so it stays object form purely for readability.
   "mounts": [
     { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
     "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
@@ -389,12 +391,15 @@ prefilled. It writes a fresh file and **refuses to clobber** an existing one (pa
 
 `init devcontainer` writes both mount sources for your **host OS** — the
 `.local/share` above is the Linux form; on macOS it is
-`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`.
-Windows differs in shape, not just prefix — the pool root is
-`%LOCALAPPDATA%\wraptool`, not under `%HOME%`, so `${localEnv:HOME}` does not
-apply there. It matches where `wraptool up` creates the pool, so the bind never
-targets a missing directory. Install the harness once, on the host, before
-opening the container: `wraptool harness install claude`.
+`${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`,
+on Windows `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}`.
+`${localEnv:HOME}` works on all three OSes — `%LOCALAPPDATA%` is itself
+`%USERPROFILE%\AppData\Local`, just a different relative path than the Linux/macOS
+defaults. The Windows-specific step is setting `HOME` at all (only `USERPROFILE`
+is set by default there) — see [Windows](platform-windows.qmd). This matches
+where `wraptool up` creates the pool, so the bind never targets a missing
+directory. Install the harness once, on the host, before opening the container:
+`wraptool harness install claude`.
 
 At container create the feature writes the MCP client config pointing at the host
 wraptool, auto-detecting the host as the container's default-route gateway — so

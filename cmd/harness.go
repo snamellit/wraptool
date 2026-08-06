@@ -359,10 +359,9 @@ func defaultResolveBackend(target pool.PlatformKey) (backend.Backend, error) {
 		"  - install guix (host architecture is %q; guix serves matching-arch targets only)\n"+
 		"  - install docker or podman (the oci backend, works for any target architecture)\n"+
 		"Only npm-sourced harnesses need a backend; archive-sourced ones (agy) build in pure Go.\n"+
-		"On a devcontainer host, provision harnesses via the wraptool feature instead: add\n"+
-		`  "forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": "<name>"}`+"\n"+
-		"to your .devcontainer/devcontainer.json (see examples/devcontainer); `wraptool up` "+
-		"shares the pool home so auth/skills persist across projects", target, hostArch())
+		"Once one of these is installed, `wraptool harness install <name>` provisions the binary\n"+
+		"for every container automatically — the wraptool devcontainer feature (major :1) only\n"+
+		"wires the MCP connection inside the container, it does not install harnesses", target, hostArch())
 }
 
 // backendFlagUsage is install/update/sync's shared --backend flag help text.
@@ -1231,11 +1230,9 @@ var errGuixAbsent = errors.New("`guix` is not on PATH")
 // Off guix — a devcontainer host — the pool isn't the delivery path at all.
 func offGuixInstallError(name string) error {
 	return fmt.Errorf("`wraptool harness install` provisions the guix-container pool, but %w.\n"+
-		"On a devcontainer host, provision %q via the "+
-		"wraptool feature instead: add\n  "+
-		`"forge.snamellit.com/pti/wraptool/wraptool:0": {"harness": %q}`+
-		"\nto your .devcontainer/devcontainer.json (see examples/devcontainer). "+
-		"`wraptool up` shares the pool home so auth/skills persist across projects", errGuixAbsent, name, name)
+		"Install docker or podman instead — `wraptool harness install %s` then works via the oci\n"+
+		"backend (§11.2) on any host. The wraptool devcontainer feature (major :1) only wires the\n"+
+		"MCP connection inside the container; it does not install harnesses", errGuixAbsent, name)
 }
 
 // --- refresh ---
