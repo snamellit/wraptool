@@ -1134,13 +1134,8 @@ func legacyInstall(cmd *cobra.Command, deps harnessDeps, name string, d harness.
 	if err != nil {
 		return err
 	}
-	// An explicit install un-gc's the pool (§16 Phase 4 item 5): see
-	// unmarkLegacyRemoved's own doc comment.
-	if err := unmarkLegacyRemoved(poolDir); err != nil {
-		return err
-	}
 	if len(d.Install) == 0 {
-		return fmt.Errorf("no automated installer for %q; install it into %s yourself, "+
+		return fmt.Errorf("no automated installer for %q; create %s and install it there yourself, "+
 			"then `wraptool up --harness %s`", name, poolBin, name)
 	}
 
@@ -1154,6 +1149,15 @@ func legacyInstall(cmd *cobra.Command, deps harnessDeps, name string, d harness.
 	fmt.Fprintf(cmd.OutOrStdout(), "installing %s into %s ...\n  %s\n", name, poolBin, strings.Join(argv, " "))
 	if err := runInstallArgv(argv); err != nil {
 		return fmt.Errorf("installing %s: %w", name, err)
+	}
+	// An explicit, SUCCESSFUL install un-gc's the pool (§16 Phase 4 item
+	// 5): see unmarkLegacyRemoved's own doc comment. Deliberately AFTER
+	// runInstallArgv succeeds, not before — a failed or no-op install (no
+	// recipe, guix absent, or the installer itself erroring) must leave a
+	// previously gc'd pool's legacy-removed marker untouched; only a
+	// genuinely successful install earns the un-gc.
+	if err := unmarkLegacyRemoved(poolDir); err != nil {
+		return err
 	}
 
 	if bin := filepath.Join(poolBin, d.Bin); fileExists(bin) {
@@ -1175,13 +1179,8 @@ func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name strin
 	if err != nil {
 		return err
 	}
-	// An explicit install/update un-gc's the pool (§16 Phase 4 item 5): see
-	// unmarkLegacyRemoved's own doc comment.
-	if err := unmarkLegacyRemoved(poolDir); err != nil {
-		return err
-	}
 	if len(d.Install) == 0 {
-		return fmt.Errorf("no automated installer for %q; install version %s into %s yourself", name, version, poolBin)
+		return fmt.Errorf("no automated installer for %q; create %s and install version %s there yourself", name, poolBin, version)
 	}
 
 	// pinInstallVersion only applies to an npm-style recipe (npmInstall's
@@ -1218,6 +1217,13 @@ func legacyInstallVersionLocked(cmd *cobra.Command, deps harnessDeps, name strin
 	}
 	if err := runInstallArgv(argv); err != nil {
 		return fmt.Errorf("installing %s@%s: %w", name, version, err)
+	}
+	// An explicit, SUCCESSFUL install/update un-gc's the pool (§16 Phase 4
+	// item 5): see unmarkLegacyRemoved's own doc comment. Deliberately
+	// AFTER runInstallArgv succeeds — see legacyInstall's matching comment
+	// for why a failed or no-op install must leave the marker untouched.
+	if err := unmarkLegacyRemoved(poolDir); err != nil {
+		return err
 	}
 
 	if bin := filepath.Join(poolBin, d.Bin); fileExists(bin) {

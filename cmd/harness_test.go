@@ -1959,6 +1959,112 @@ func TestHarnessGCLegacyRefusedRunLeavesAlreadyGCdPoolUntouched(t *testing.T) {
 	}
 }
 
+// --- un-gc on install (§16 Phase 4 item 5): unmarkLegacyRemoved must run
+// only on the SUCCESS path of the legacy install ---
+
+// seedLegacyRemovedMarker writes a legacy-removed marker at poolDir, as
+// `wraptool harness gc --legacy` would leave one — used to prove
+// legacyInstall/legacyInstallVersionLocked only remove it after a
+// genuinely successful install.
+func seedLegacyRemovedMarker(t *testing.T, poolDir string) {
+	t.Helper()
+	marker := pool.LegacyRemovedMarkerFileAt(poolDir)
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("2026-01-01T00:00:00Z\nremoved by `wraptool harness gc --legacy`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLegacyInstallUnmarksOnlyAfterSuccess pins the review round 3 fix:
+// a failed or no-op legacy install must never un-gc a previously gc'd pool
+// — only a genuinely successful runInstallArgv call may remove the marker.
+// Reviewer-verified mutation: deleting the unmarkLegacyRemoved call from
+// legacyInstall entirely passes the pre-existing suite; the "successful
+// install" case below is what catches that.
+func TestLegacyInstallUnmarksOnlyAfterSuccess(t *testing.T) {
+	cases := []struct {
+		name          string
+		install       []string
+		runInstallErr error
+		wantErr       bool
+		wantUnmarked  bool
+	}{
+		{"successful install unmarks", []string{"fake-installer", "{prefix}"}, nil, false, true},
+		{"failed install leaves marker", []string{"fake-installer", "{prefix}"}, fmt.Errorf("boom"), true, false},
+		{"no recipe leaves marker", nil, nil, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			poolDir := t.TempDir()
+			poolBin := filepath.Join(poolDir, "bin")
+			seedLegacyRemovedMarker(t, poolDir)
+			swapRunInstallArgv(t, func([]string) error { return tc.runInstallErr })
+
+			deps := harnessDeps{poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil }}
+			d := harness.Descriptor{Name: "fake", Bin: "fake", Install: tc.install}
+
+			err := legacyInstall(bareHarnessCmd(), deps, "fake", d)
+			if tc.wantErr && err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			_, statErr := os.Stat(pool.LegacyRemovedMarkerFileAt(poolDir))
+			unmarked := os.IsNotExist(statErr)
+			if unmarked != tc.wantUnmarked {
+				t.Errorf("marker unmarked = %v, want %v (stat err = %v)", unmarked, tc.wantUnmarked, statErr)
+			}
+		})
+	}
+}
+
+// TestLegacyInstallVersionLockedUnmarksOnlyAfterSuccess mirrors
+// TestLegacyInstallUnmarksOnlyAfterSuccess for legacyInstallVersionLocked —
+// the same bug existed in both call sites (reviewer-verified: deleting
+// EITHER unmark call alone still passed the pre-existing suite).
+func TestLegacyInstallVersionLockedUnmarksOnlyAfterSuccess(t *testing.T) {
+	cases := []struct {
+		name          string
+		install       []string
+		runInstallErr error
+		wantErr       bool
+		wantUnmarked  bool
+	}{
+		{"successful install unmarks", []string{"fake-installer", "{prefix}"}, nil, false, true},
+		{"failed install leaves marker", []string{"fake-installer", "{prefix}"}, fmt.Errorf("boom"), true, false},
+		{"no recipe leaves marker", nil, nil, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			poolDir := t.TempDir()
+			poolBin := filepath.Join(poolDir, "bin")
+			seedLegacyRemovedMarker(t, poolDir)
+			swapRunInstallArgv(t, func([]string) error { return tc.runInstallErr })
+
+			deps := harnessDeps{poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil }}
+			d := harness.Descriptor{Name: "fake", Bin: "fake", Install: tc.install} // PoolPackage="" — recipe runs unpinned, verbatim
+
+			err := legacyInstallVersionLocked(bareHarnessCmd(), deps, "fake", d, "1.2.3")
+			if tc.wantErr && err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			_, statErr := os.Stat(pool.LegacyRemovedMarkerFileAt(poolDir))
+			unmarked := os.IsNotExist(statErr)
+			if unmarked != tc.wantUnmarked {
+				t.Errorf("marker unmarked = %v, want %v (stat err = %v)", unmarked, tc.wantUnmarked, statErr)
+			}
+		})
+	}
+}
+
 // --- pool-source-wiring: source selection per descriptor (§11.3) ---
 
 // TestDefaultHarnessDepsSelectsSourcePerDescriptor pins defaultHarnessDeps'
