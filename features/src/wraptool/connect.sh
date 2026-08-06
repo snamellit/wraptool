@@ -51,7 +51,7 @@ if ! command -v "$WT_HARNESS" >/dev/null 2>&1; then
   echo "wraptool: $LEVEL '$WT_HARNESS' not found on PATH." >&2
   echo "  The harness binary comes from the host pool, not this feature." >&2
   echo "  Run 'wraptool harness install $WT_HARNESS' on the host, then reopen." >&2
-  echo "  Standalone devcontainer up (no wraptool up): declare the runtime mount yourself — see this feature's description." >&2
+  echo "  Declare the pool runtime mount in devcontainer.json (see the feature description; 'wraptool init devcontainer' scaffolds it, and 'wraptool up' prints the exact entry when missing)." >&2
   if [ "$WT_CONNECT" = true ]; then
     exit 1
   fi
