@@ -234,10 +234,19 @@ func renderDevcontainer(name, image string, langs []string, harnessName string, 
 	b.WriteString("\n  // Share the host harness-state pool so the harness's auth/skills/config persist\n")
 	b.WriteString("  // across every project (the developer toolbox, mounted read-write).\n")
 	b.WriteString("  \"mounts\": [\n")
-	// Object form (not the "source=…,target=…" string) so a source path containing
-	// a space — macOS ~/Library/Application Support — can't be mis-split by the
-	// mount-string parser. target reuses devcontainerPoolHome, the single source of
-	// the in-container HOME path.
+	// Object form here, but NOT because the "source=…,target=…" string form
+	// would mis-split on a space — it wouldn't: the devcontainer CLI parses
+	// that string as a Docker-style CSV mount spec, and an interior space in
+	// a field (macOS's own ~/Library/Application Support) survives intact.
+	// This mount is read-write, so object form is just the more readable
+	// shape here. String form is not merely "also safe", though — it is
+	// REQUIRED whenever a mount must be read-only: the devcontainer CLI's
+	// object-form mount schema has no read-only field at all, so a
+	// hypothetical "readonly": true key on an object-form entry is silently
+	// dropped and the mount comes up read-write regardless (see
+	// cmd/up.go's devcontainerMountReadOnlyState, which exists precisely
+	// because of this). target reuses devcontainerPoolHome, the single
+	// source of the in-container HOME path.
 	fmt.Fprintf(&b, "    { \"source\": %q, \"target\": %q, \"type\": \"bind\" }\n", poolHomeMountSource(), devcontainerPoolHome)
 	b.WriteString("  ]\n")
 	b.WriteString("}\n")
