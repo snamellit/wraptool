@@ -5,10 +5,13 @@
 #
 # Checks that the selected harness resolves on PATH (§12.2/§12.3: the binary
 # now comes from the host pool's runtime/ mount, not this feature) before doing
-# anything else, UNCONDITIONALLY — regardless of WT_CONNECT, since a missing
-# binary means the feature's remaining purpose (wiring a harness that will
-# never run) cannot be satisfied either way. Self-skips the MCP-config write
-# when connect is disabled (WT_CONNECT != true), so the feature's static
+# anything else. The check always RUNS, regardless of WT_CONNECT, but its
+# SEVERITY follows intent: with connect enabled (the default) a missing binary
+# hard-fails postCreate — wiring a harness that will never run is pointless.
+# With connect explicitly disabled, the same message is a WARNING (exit 0):
+# the user took manual control, and a container staged before running
+# `wraptool harness install` must not be treated as broken. Self-skips the
+# MCP-config write when connect is disabled, so the feature's static
 # postCreateCommand is harmless when only the pool binary was wanted.
 #
 # Inputs (env, set by the feature / wraptool up / the user):
@@ -33,15 +36,25 @@ SHARE="${WT_SHARE_DIR:-/usr/local/share/wraptool}"
 : "${WT_URL:=}"
 ROUTE_FILE="${WT_ROUTE_FILE:-/proc/net/route}"
 
-# Fail postCreate loudly if the selected harness isn't on PATH — unconditional,
-# not gated by WT_CONNECT (§12.3): the pool mount is this feature's remaining
-# reason to exist, so a missing binary is always an error, not a silent no-op.
+# Check the harness resolves on PATH — always, not gated by WT_CONNECT (§12.3):
+# the pool mount is this feature's remaining reason to exist. Severity depends
+# on intent: connect enabled -> ERROR and hard fail; connect disabled -> the
+# user explicitly took manual control, so it's a WARNING and postCreate still
+# succeeds (a container staged ahead of `wraptool harness install` is not
+# broken).
 if ! command -v "$WT_HARNESS" >/dev/null 2>&1; then
-  echo "wraptool: ERROR '$WT_HARNESS' not found on PATH." >&2
+  if [ "$WT_CONNECT" = true ]; then
+    LEVEL="ERROR"
+  else
+    LEVEL="WARNING"
+  fi
+  echo "wraptool: $LEVEL '$WT_HARNESS' not found on PATH." >&2
   echo "  The harness binary comes from the host pool, not this feature." >&2
   echo "  Run 'wraptool harness install $WT_HARNESS' on the host, then reopen." >&2
   echo "  Standalone devcontainer up (no wraptool up): declare the runtime mount yourself — see this feature's description." >&2
-  exit 1
+  if [ "$WT_CONNECT" = true ]; then
+    exit 1
+  fi
 fi
 
 # Self-skip when connect is disabled — wiring is the user's job in that mode.

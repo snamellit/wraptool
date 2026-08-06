@@ -12,9 +12,11 @@
 #                              every consumer's image build)
 #   install.sh: HOME prep, connect.sh staging — and that it never shells out to
 #               npm/curl (this major installs no harness binary)
-#   connect.sh: the unconditional "$WT_HARNESS resolves on PATH" postCreate
-#               check (runs regardless of WT_CONNECT, §12.3), the WT_CONNECT
-#               self-skip, and the wiring output (gateway/token/cwd)
+#   connect.sh: the "$WT_HARNESS resolves on PATH" postCreate check — it always
+#               RUNS (regardless of WT_CONNECT, §12.3) but its SEVERITY follows
+#               intent (connect enabled -> hard fail, connect disabled -> warn
+#               and continue) — the WT_CONNECT self-skip, and the wiring output
+#               (gateway/token/cwd)
 # Exit non-zero on failure.
 set -eu
 
@@ -83,16 +85,28 @@ EOF
 chmod +x "$HSTUB/claude"
 PRESENTPATH="$HSTUB:$STUBPATH"
 
-# A deliberately harness-free PATH for the "absent" connect.sh scenarios below
-# — the REAL $PATH cannot be trusted to lack "claude" (this test may itself be
-# running under a claude-code harness), so it is excluded entirely. connect.sh's
-# "$WT_HARNESS on PATH" check is the very first thing it does (only shell
-# builtins before it), so the only external binary env(1) needs to exec is `sh`
-# itself; symlink just that one in, same trick as the old node-absent guard test.
+# A curated PATH for the "absent" connect.sh scenarios below: everything
+# connect.sh's full wiring path needs (sh, cut, sed, mkdir, dirname) EXCEPT a
+# "claude" (or any other harness) binary. The REAL $PATH cannot be trusted to
+# lack "claude" (this test may itself be running under a claude-code harness),
+# so it is excluded entirely; symlinking specific tool names in, rather than
+# falling back to $PATH, guarantees the harness stays absent regardless of
+# what the real PATH contains. It is deliberately rich enough (not just `sh`)
+# that a broken severity gate can't hide behind an unrelated "coreutil not
+# found" crash: if the postCreate check wrongly lets an absent-harness run
+# continue, the rest of connect.sh can run all the way through and actually
+# succeed — which is exactly the false negative the mutation check below must
+# catch as a real exit 0, not an accidental failure for the wrong reason.
 ABSENTBIN="$WORK/absentbin"
 mkdir -p "$ABSENTBIN"
-ln -s "$(command -v sh)" "$ABSENTBIN/sh"
+for c in sh cut sed mkdir dirname; do
+  ln -s "$(command -v "$c")" "$ABSENTBIN/$c"
+done
 ABSENTPATH="$ABSENTBIN"
+ABSENTROUTE="$WORK/absentroute"
+printf '%s\n' \
+  'Iface	Destination	Gateway	Flags	RefCnt	Use	Metric	Mask	MTU	Window	IRTT' \
+  'eth0	00000000	010012AC	0003	0	0	0	00000000	0	0	0' > "$ABSENTROUTE"
 
 # install <harness> [extra env...] — run install.sh with per-run pool/share/home.
 install_run() {
@@ -124,29 +138,34 @@ R=$(install_run claude CONNECT=false) || fail "connect=false exited non-zero"
 have "WT_CONNECT='false'" "$R/share/options.env"
 pass "connect=false recorded"
 
-echo "3. connect.sh: harness absent + connect=true -> fails, names harness install"
+echo "3. connect.sh: harness absent + connect=true -> ERROR, exit non-zero, names harness install"
 OUT3="$WORK/mcp3.json"
-if env -i WT_SHARE_DIR="$WORK/none3" WT_CONNECT=true WT_HARNESS=claude \
+if env -i WT_ROUTE_FILE="$ABSENTROUTE" WT_SHARE_DIR="$WORK/none3" WT_CONNECT=true WT_HARNESS=claude \
      WT_CONFIG_OUT="$OUT3" PATH="$ABSENTPATH" HOME="$WORK" PWD="$WORK" \
      sh "$CONNECT" >"$WORK/c3" 2>&1; then
-  fail "connect.sh should have failed with claude absent from PATH"
+  fail "connect.sh should have failed with claude absent from PATH and connect=true"
 else
+  have "ERROR" "$WORK/c3"
+  absent "WARNING" "$WORK/c3"
   have "not found on PATH" "$WORK/c3"
   have "wraptool harness install claude" "$WORK/c3"
   [ -f "$OUT3" ] && fail "connect.sh wrote a config despite the harness being absent"
 fi
-pass "absent-harness guard (connect enabled)"
+pass "absent-harness guard (connect enabled) hard-fails"
 
-echo "4. connect.sh: harness absent + connect=false -> STILL fails (check is unconditional)"
-if env -i WT_SHARE_DIR="$WORK/none4" WT_CONNECT=false WT_HARNESS=claude \
+echo "4. connect.sh: harness absent + connect=false -> the check still RUNS, but only WARNS (exit 0)"
+if env -i WT_ROUTE_FILE="$ABSENTROUTE" WT_SHARE_DIR="$WORK/none4" WT_CONNECT=false WT_HARNESS=claude \
      PATH="$ABSENTPATH" HOME="$WORK" PWD="$WORK" \
      sh "$CONNECT" >"$WORK/c4" 2>&1; then
-  fail "connect.sh should have failed with claude absent from PATH even when connect=false"
-else
+  have "WARNING" "$WORK/c4"
+  absent "ERROR" "$WORK/c4"
   have "not found on PATH" "$WORK/c4"
-  absent "connect disabled" "$WORK/c4"
+  have "wraptool harness install claude" "$WORK/c4"
+  have "connect disabled" "$WORK/c4"
+else
+  fail "connect.sh should exit 0 with connect=false, even with the harness absent (warn, not fail)"
 fi
-pass "absent-harness guard is not bypassed by connect=false"
+pass "absent-harness check is not skipped by connect=false, but downgrades to a warning"
 
 echo "5. connect.sh: harness present + connect=false -> self-skip succeeds"
 OUT5="$WORK/mcp5.json"
