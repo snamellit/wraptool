@@ -44,9 +44,11 @@ non-Guix Linux — through Docker or Podman.
   the host's shared harness pool `runtime/` tree, mounted read-only by
   `wraptool up` (or declared manually for a plain `devcontainer up`); `PATH`
   gains the mount's `bin/` via `containerEnv` (appended, never prepended).
-  `connect.sh` now also fails postCreate loudly if the selected harness
-  isn't resolvable on `PATH`, naming `wraptool harness install <name>` as the
-  fix. Consequence: `forge.snamellit.com/pti/wraptool/wraptool:latest` now
+  `connect.sh` now also checks that the selected harness resolves on `PATH`,
+  naming `wraptool harness install <name>` as the fix: with `connect: true`
+  (the default) a missing binary hard-fails postCreate; with `connect: false`
+  the same message is a warning only, so a container staged ahead of running
+  `harness install` isn't treated as broken. Consequence: `forge.snamellit.com/pti/wraptool/wraptool:latest` now
   resolves to this wiring-only major — pin `:1` for the new behavior or `:0`
   to keep the old per-image provisioning behavior; existing configs already
   pinned to `:0` are unaffected.
