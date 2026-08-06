@@ -169,14 +169,15 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 	t.Helper()
 	dir := t.TempDir()
 	return pool.PoolPaths{
-		Manifest:     filepath.Join(dir, "manifest.yaml"),
-		Lock:         filepath.Join(dir, "harness-lock.json"),
-		Observations: filepath.Join(dir, "observations.json"),
-		Audit:        filepath.Join(dir, "audit.jsonl"),
-		AdvisoryLock: filepath.Join(dir, "lock"),
-		Cache:        filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
-		Staging:      filepath.Join(dir, "staging"),
-		Runtime:      filepath.Join(dir, "runtime"),
+		Manifest:            filepath.Join(dir, "manifest.yaml"),
+		Lock:                filepath.Join(dir, "harness-lock.json"),
+		Observations:        filepath.Join(dir, "observations.json"),
+		Audit:               filepath.Join(dir, "audit.jsonl"),
+		AdvisoryLock:        filepath.Join(dir, "lock"),
+		Cache:               filepath.Join(dir, "cache", "sha256"), // mirrors pool.CacheSHA256Dir()
+		Staging:             filepath.Join(dir, "staging"),
+		Runtime:             filepath.Join(dir, "runtime"),
+		LegacyRemovedMarker: filepath.Join(dir, "legacy-removed"),
 	}
 }
 
@@ -1779,6 +1780,22 @@ func gcTestLegacyBinLib(t *testing.T) (poolDir, poolBin, poolLib string) {
 	return poolDir, poolBin, poolLib
 }
 
+// gcTestLegacyHarnessDeps builds a harnessDeps for `gc --legacy` cmd-level
+// tests: poolPaths returns paths (LegacyRemovedMarker included, via
+// testHarnessPaths), and poolLegacyDirs — NOT poolBinDir, review round 2's
+// minor 5 finding — returns poolBin/poolLib as plain, non-creating path
+// accessors, exactly mirroring newHarnessGCCmd's own production wiring
+// (defaultHarnessDeps.poolLegacyDirs). poolBinDir is intentionally left
+// unset here: a test asserting gc's cmd wiring never touches the
+// ensureHarnessPool-backed accessor would otherwise pass vacuously if that
+// field were still faked out identically.
+func gcTestLegacyHarnessDeps(paths pool.PoolPaths, poolBin, poolLib string) harnessDeps {
+	return harnessDeps{
+		poolPaths:      func() pool.PoolPaths { return paths },
+		poolLegacyDirs: func() (string, string) { return poolBin, poolLib },
+	}
+}
+
 // TestHarnessGCLegacyRemovesLegacyDirs wires `gc --legacy` end to end
 // through the real cobra command: a manifest-declared, pool-lockable
 // harness with an active generation for the host's own platform passes the
@@ -1791,7 +1808,7 @@ func TestHarnessGCLegacyRemovesLegacyDirs(t *testing.T) {
 	if err != nil {
 		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
 	}
-	poolDir, poolBin, poolLib := gcTestLegacyBinLib(t)
+	_, poolBin, poolLib := gcTestLegacyBinLib(t)
 
 	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1801,10 +1818,7 @@ func TestHarnessGCLegacyRemovesLegacyDirs(t *testing.T) {
 		t.Fatalf("ActivateGeneration: %v", err)
 	}
 
-	deps := harnessDeps{
-		poolPaths:  func() pool.PoolPaths { return paths },
-		poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil },
-	}
+	deps := gcTestLegacyHarnessDeps(paths, poolBin, poolLib)
 
 	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy")
 	if err != nil {
@@ -1818,6 +1832,9 @@ func TestHarnessGCLegacyRemovesLegacyDirs(t *testing.T) {
 			t.Errorf("expected %s to be removed, stat err = %v", dir, err)
 		}
 	}
+	if _, err := os.Stat(paths.LegacyRemovedMarker); err != nil {
+		t.Errorf("expected the legacy-removed marker to be written: %v", err)
+	}
 }
 
 // TestHarnessGCLegacyDryRunReportsWithoutRemoving mirrors the non-legacy
@@ -1830,7 +1847,7 @@ func TestHarnessGCLegacyDryRunReportsWithoutRemoving(t *testing.T) {
 	if err != nil {
 		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
 	}
-	poolDir, poolBin, poolLib := gcTestLegacyBinLib(t)
+	_, poolBin, poolLib := gcTestLegacyBinLib(t)
 
 	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -1840,10 +1857,7 @@ func TestHarnessGCLegacyDryRunReportsWithoutRemoving(t *testing.T) {
 		t.Fatalf("ActivateGeneration: %v", err)
 	}
 
-	deps := harnessDeps{
-		poolPaths:  func() pool.PoolPaths { return paths },
-		poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil },
-	}
+	deps := gcTestLegacyHarnessDeps(paths, poolBin, poolLib)
 
 	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy", "--dry-run")
 	if err != nil {
@@ -1870,17 +1884,14 @@ func TestHarnessGCLegacyRefusedNamesUnrealizedHarness(t *testing.T) {
 	if _, err := pool.HostPlatformKey(); err != nil {
 		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
 	}
-	poolDir, poolBin, poolLib := gcTestLegacyBinLib(t)
+	_, poolBin, poolLib := gcTestLegacyBinLib(t)
 
 	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// claude is declared but never activated for any platform.
 
-	deps := harnessDeps{
-		poolPaths:  func() pool.PoolPaths { return paths },
-		poolBinDir: func() (string, string, error) { return poolDir, poolBin, nil },
-	}
+	deps := gcTestLegacyHarnessDeps(paths, poolBin, poolLib)
 
 	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy")
 	if err == nil {
@@ -1896,6 +1907,55 @@ func TestHarnessGCLegacyRefusedNamesUnrealizedHarness(t *testing.T) {
 		if _, err := os.Stat(dir); err != nil {
 			t.Errorf("a refused --legacy must not remove %s: %v", dir, err)
 		}
+	}
+}
+
+// TestHarnessGCLegacyRefusedRunLeavesAlreadyGCdPoolUntouched is review round
+// 2's minor 5: gc's cmd wiring (newHarnessGCCmd) must never resurrect an
+// already-gc'd pool merely by reading its own legacy paths, REGARDLESS of
+// whether this particular --legacy attempt is refused. Simulates a pool
+// already gc'd (marker present, bin/+lib/ absent — as gcLegacy itself would
+// leave it) with a SEPARATE, unrelated harness now unrealized (so this
+// --legacy attempt is refused); the marker and the dirs' absence must both
+// survive the refused attempt exactly as they were.
+func TestHarnessGCLegacyRefusedRunLeavesAlreadyGCdPoolUntouched(t *testing.T) {
+	t.Parallel()
+	paths := testHarnessPaths(t)
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Skipf("HostPlatformKey unsupported on this test host: %v", err)
+	}
+	root := t.TempDir()
+	poolBin, poolLib := filepath.Join(root, "bin"), filepath.Join(root, "lib") // never created — already gc'd
+	if err := os.WriteFile(paths.LegacyRemovedMarker, []byte("2026-01-01T00:00:00Z\nremoved by `wraptool harness gc --legacy`\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n  opencode: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// claude is realized/active; opencode is not — this run must be refused.
+	genID := seedOrphanGeneration(t, paths, "claude", "2.1.220", hostKey, "claude-bin")
+	if err := pool.ActivateGeneration(paths, "claude", hostKey, genID); err != nil {
+		t.Fatalf("ActivateGeneration: %v", err)
+	}
+
+	deps := gcTestLegacyHarnessDeps(paths, poolBin, poolLib)
+
+	out, err := runHarnessCmdWithDeps(t, deps, "gc", "--legacy")
+	if err == nil {
+		t.Fatalf("expected gc --legacy to be refused (opencode unrealized), output:\n%s", out)
+	}
+	if !strings.Contains(err.Error(), "opencode") {
+		t.Errorf("error = %q, want it to name opencode", err)
+	}
+	for _, dir := range []string{poolBin, poolLib} {
+		if _, statErr := os.Stat(dir); !os.IsNotExist(statErr) {
+			t.Errorf("a refused --legacy run must not have created %s (pool was already gc'd): %v", dir, statErr)
+		}
+	}
+	if _, statErr := os.Stat(paths.LegacyRemovedMarker); statErr != nil {
+		t.Errorf("legacy-removed marker must survive a refused run: %v", statErr)
 	}
 }
 
