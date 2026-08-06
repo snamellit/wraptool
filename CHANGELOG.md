@@ -32,15 +32,38 @@ non-Guix Linux — through Docker or Podman.
 - On a Docker-only host, `harness install` for an npm harness realizes and
   activates the pool generation, then warns (instead of failing) that the
   host-side legacy binary was not installed — containers on such hosts get
-  their harness via the wraptool devcontainer feature.
+  their harness via the wraptool devcontainer feature's `:0` (legacy,
+  per-image provisioning) major; the new `:1` wiring-only major (below)
+  never provisions a binary itself, on any host.
 - Cross-architecture `sync` no longer runs the host's legacy installer as
   a side effect.
+- **Breaking (Dev Container feature):** published a new `wraptool` feature
+  major, `1.0.0` (§12.2/§12.3 of the unified harness pool design). It removes
+  the `provision` and `version` options entirely — the harness binary is no
+  longer installed by the feature at image build time. Instead it comes from
+  the host's shared harness pool `runtime/` tree, mounted read-only by
+  `wraptool up` (or declared manually for a plain `devcontainer up`); `PATH`
+  gains the mount's `bin/` via `containerEnv` (appended, never prepended).
+  `connect.sh` now also checks that the selected harness resolves on `PATH`,
+  naming `wraptool harness install <name>` as the fix: with `connect: true`
+  (the default) a missing binary hard-fails postCreate; with `connect: false`
+  the same message is a warning only, so a container staged ahead of running
+  `harness install` isn't treated as broken. Consequence: `forge.snamellit.com/pti/wraptool/wraptool:latest` now
+  resolves to this wiring-only major — pin `:1` for the new behavior or `:0`
+  to keep the old per-image provisioning behavior; existing configs already
+  pinned to `:0` are unaffected.
 
 ### Upgrade notes
 
 - First `install`/`update` per npm harness re-resolves its lock once (the
   recipe now includes the provisioning-image identity) — the same one-shot
   self-heal pattern as previous upgrades, not an error.
+- Dev Container feature consumers: if your `devcontainer.json` references
+  `forge.snamellit.com/pti/wraptool/wraptool:latest` (or an unpinned major),
+  it now resolves to the wiring-only `1.0.0` major and stops installing the
+  harness binary at image build. Pin `:0` explicitly to keep the old
+  provisioning behavior, or switch to `wraptool harness install <name>` +
+  `wraptool up`'s pool mount (the supported path going forward).
 
 ## 0.4.0 — 2026-08-05
 
