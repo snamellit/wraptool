@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,68 @@ type GCReport struct {
 	RetainedCacheObjects int
 	RemovedStagingDirs   int
 	FreedBytes           int64
+
+	// LegacyRemoved is true iff GCOptions.Legacy was set and the refusal
+	// check (gcRefuseLegacyIfUnrealized) passed — i.e. this call's legacy
+	// bin/+lib/ step actually ran (§16 Phase 4 item 5). It is true on a dry
+	// run too ("would remove", like every other Removed* field), and true
+	// even when the legacy trees were already absent (removal is
+	// idempotent — nothing to do is still a successful legacy pass, not a
+	// no-op that leaves the caller unsure whether --legacy engaged at all).
+	// False whenever GCOptions.Legacy was false; a true Legacy request that
+	// fails the refusal check never reaches a GCReport at all (GCPoolLocked
+	// returns an error instead, before doing any work).
+	LegacyRemoved bool
+}
+
+// GCOptions configures one GCPool/GCPoolLocked call (§10, §16 Phase 4 item
+// 5). The zero value (DryRun false, Legacy false) is a normal, mutating,
+// legacy-untouched gc — every pre-existing caller before this work package
+// (a bare `dryRun bool` parameter) is expressed as GCOptions{DryRun: dryRun}.
+type GCOptions struct {
+	// DryRun measures and reports what a real run would do without mutating
+	// anything — see GCPool's own doc comment for why dry-run still takes
+	// the pool lock.
+	DryRun bool
+	// Legacy additionally removes the pool's legacy bin/+lib/ trees IN
+	// THEIR ENTIRETY (§16 Phase 4 item 5) — unlike generations/cache, which
+	// are individually retained-or-removed by reference, the legacy trees
+	// are deprecated wholesale: once safe to drop, every file in them goes.
+	// RULING (this work package's brief): never automatic — a developer
+	// whose containers still run the old devcontainer feature major, or a
+	// guix host still relying on the mixed-state fallback
+	// (cmd/guixcontainer.go, §12.1), depends on legacy bin/+lib/ staying
+	// present, so this is opt-in only, one flag, no "--force" escape hatch.
+	// Refused (error, before any removal work at all — see
+	// gcRefuseLegacyIfUnrealized) when the manifest names a pool-lockable
+	// harness with no active generation for HostPlatformKey.
+	Legacy bool
+	// LegacyBin, LegacyLib are the pool's legacy bin/+lib/ directories
+	// (cmd/guixcontainer.go's ensureHarnessPool) — required when Legacy is
+	// true, unused otherwise. This package never derives them itself: it
+	// has no opinion on the legacy layout beyond "two directories the
+	// caller names," keeping that layout decision in cmd, where
+	// ensureHarnessPool already owns it.
+	LegacyBin string
+	LegacyLib string
+	// IsPoolLockable classifies a manifest-declared harness name as
+	// pool-lockable (internal/harness.Descriptor.PoolLockable()) or not.
+	// Required when Legacy is true, unused otherwise — this package never
+	// imports internal/harness (see this file's own package doc comment),
+	// so the caller (cmd/harness.go) supplies the classification. A
+	// harness the manifest names that this rejects is skipped by the
+	// refusal check entirely: a legacy-only harness has no runtime/ path to
+	// ever be "active" on, so requiring one would make --legacy
+	// permanently unusable for any pool with even one such harness
+	// declared.
+	IsPoolLockable func(name string) bool
+	// HostPlatformKey is the platform the refusal check's "has an active
+	// generation" test runs against — normally pool.HostPlatformKey()'s
+	// result, threaded through explicitly (like this package's Now/WorkDir
+	// conventions elsewhere) rather than called internally, so a test can
+	// pin an arbitrary key with no dependency on the actual host
+	// architecture. Required when Legacy is true, unused otherwise.
+	HostPlatformKey PlatformKey
 }
 
 // GCPool removes unreferenced generations, unreferenced cache objects, and
@@ -32,18 +95,18 @@ type GCReport struct {
 // §15), under its own, self-contained pool lock acquisition. See
 // GCPoolLocked for the retention rules; this wrapper exists for a caller
 // that isn't already composing multiple orchestrator calls under one
-// LockPool span. dryRun still acquires the lock — this work package's brief
-// calls that out as a deliberate exception (no such wording appears in the
-// design doc's own §10 gc entry, which doesn't mention --dry-run at all):
-// dry-run wants a consistent view of what a real run would do, not a peek
-// at a pool a concurrent mutation could be mid-changing.
-func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error) {
+// LockPool span. opts.DryRun still acquires the lock — this work package's
+// brief calls that out as a deliberate exception (no such wording appears in
+// the design doc's own §10 gc entry, which doesn't mention --dry-run at
+// all): dry-run wants a consistent view of what a real run would do, not a
+// peek at a pool a concurrent mutation could be mid-changing.
+func GCPool(ctx context.Context, paths PoolPaths, opts GCOptions) (GCReport, error) {
 	release, err := LockPool(ctx, paths)
 	if err != nil {
 		return GCReport{}, err
 	}
 	defer release()
-	return GCPoolLocked(paths, dryRun)
+	return GCPoolLocked(paths, opts)
 }
 
 // GCPoolLocked is GCPool's body, assuming the caller already holds the pool
@@ -93,7 +156,10 @@ func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error)
 //     necessarily debris from an interrupted prior run, never a directory
 //     someone else currently owns (§15).
 //
-// Legacy bin/+lib/ is never touched (Phase 4, §16).
+// Legacy bin/+lib/ is untouched by the rules above, regardless of opts.Legacy
+// (§16 Phase 4 item 5) — GCOptions.Legacy is a wholly separate, wholesale
+// removal step (gcLegacy), not an extra retention rule folded into the
+// generation/cache scan.
 //
 // An existing-but-unreadable/corrupt POINTER file is a hard error naming the
 // pointer's path (not a skip): GC holds the exclusive pool lock, so this can
@@ -117,14 +183,36 @@ func GCPool(ctx context.Context, paths PoolPaths, dryRun bool) (GCReport, error)
 // already-running container's mount table. If a harness misbehaves
 // immediately after a gc, restart the container (`wraptool up`) so it
 // re-resolves the mount against gc's retained set.
-func GCPoolLocked(paths PoolPaths, dryRun bool) (GCReport, error) {
-	report := GCReport{DryRun: dryRun}
+//
+// opts.Legacy (§16 Phase 4 item 5): checked FIRST, before any of the
+// generation/cache/staging work above runs at all — gcRefuseLegacyIfUnrealized
+// either returns nil (safe to proceed, and the rest of this call including
+// legacy removal itself all still happen) or an error (nothing in this call
+// touches the pool at all, not even the ordinary non-legacy cleanup — a
+// refused `--legacy` invocation is a pure no-op, not a partial one). Once
+// past that guard, legacy removal (gcLegacy) runs LAST, after the ordinary
+// generation/cache/staging steps, and is folded into the same one "gc" audit
+// event via the legacy_removed field.
+func GCPoolLocked(paths PoolPaths, opts GCOptions) (GCReport, error) {
+	if opts.Legacy {
+		if opts.IsPoolLockable == nil {
+			return GCReport{}, fmt.Errorf("internal error: GCOptions.Legacy requires IsPoolLockable")
+		}
+		if opts.HostPlatformKey == "" {
+			return GCReport{}, fmt.Errorf("internal error: GCOptions.Legacy requires HostPlatformKey")
+		}
+		if err := gcRefuseLegacyIfUnrealized(paths, opts.HostPlatformKey, opts.IsPoolLockable); err != nil {
+			return GCReport{}, err
+		}
+	}
+
+	report := GCReport{DryRun: opts.DryRun}
 
 	retainedGenerations, err := retainedGenerationIDs(paths)
 	if err != nil {
 		return GCReport{}, err
 	}
-	if err := gcGenerations(paths, retainedGenerations, dryRun, &report); err != nil {
+	if err := gcGenerations(paths, retainedGenerations, opts.DryRun, &report); err != nil {
 		return GCReport{}, err
 	}
 
@@ -132,25 +220,126 @@ func GCPoolLocked(paths PoolPaths, dryRun bool) (GCReport, error) {
 	if err != nil {
 		return GCReport{}, err
 	}
-	if err := gcCache(paths, retainedCache, dryRun, &report); err != nil {
+	if err := gcCache(paths, retainedCache, opts.DryRun, &report); err != nil {
 		return GCReport{}, err
 	}
 
-	if err := gcStaging(paths, dryRun, &report); err != nil {
+	if err := gcStaging(paths, opts.DryRun, &report); err != nil {
 		return GCReport{}, err
 	}
 
-	if !dryRun {
+	if opts.Legacy {
+		if err := gcLegacy(opts, &report); err != nil {
+			return GCReport{}, err
+		}
+	}
+
+	if !opts.DryRun {
 		if err := AppendAudit(paths.Audit, "gc", map[string]any{
 			"removed_generations":   report.RemovedGenerations,
 			"removed_cache_objects": report.RemovedCacheObjects,
 			"freed_bytes":           report.FreedBytes,
+			"legacy_removed":        report.LegacyRemoved,
 		}); err != nil {
 			return GCReport{}, fmt.Errorf("recording gc audit event: %w", err)
 		}
 	}
 
 	return report, nil
+}
+
+// gcRefuseLegacyIfUnrealized implements GCOptions.Legacy's RULING (this work
+// package's brief): --legacy is refused — an error, never a warning — when
+// the manifest at paths.Manifest names ANY pool-lockable harness (per
+// isPoolLockable; see GCOptions.IsPoolLockable's own doc comment) with no
+// active generation for key on THIS pool (pool.ActiveGeneration: a readable,
+// non-empty pointer — the same cheap check `harness list`'s ACTIVE column
+// and warnInsteadOfFailForRealizedGeneration, cmd/harness.go, already treat
+// as authoritative). This is the strongest cheap proxy available for "every
+// machine sharing this pool has actually cut over": it cannot see another
+// machine's pool at all, but a name failing THIS pool's own check is
+// conclusive proof legacy removal is unsafe here.
+//
+// A missing manifest.yaml (never bootstrapped — no harness intent recorded
+// at all) has nothing to check and passes trivially; refusing --legacy on a
+// from-scratch pool with zero declared harnesses would make the flag
+// permanently unusable there.
+//
+// The error names EVERY unrealized harness (not just the first found) and
+// the fix for each (`wraptool harness install <name>`), sorted for
+// deterministic output, so one --legacy attempt surfaces the whole
+// remaining checklist rather than a discover-one-at-a-time loop.
+func gcRefuseLegacyIfUnrealized(paths PoolPaths, key PlatformKey, isPoolLockable func(name string) bool) error {
+	m, err := loadManifestOrEmpty(paths.Manifest)
+	if err != nil {
+		return err
+	}
+
+	names := make([]string, 0, len(m.Harnesses))
+	for name := range m.Harnesses {
+		if !isPoolLockable(name) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var unrealized []string
+	for _, name := range names {
+		if _, ok := ActiveGeneration(paths, name, key); !ok {
+			unrealized = append(unrealized, name)
+		}
+	}
+	if len(unrealized) == 0 {
+		return nil
+	}
+
+	fixes := make([]string, len(unrealized))
+	for i, name := range unrealized {
+		fixes[i] = fmt.Sprintf("wraptool harness install %s", name)
+	}
+	return fmt.Errorf("refusing --legacy: %s has no active generation for %s on this pool; "+
+		"every harness must show ACTIVE in `wraptool harness list` on every machine sharing this pool "+
+		"before legacy removal is safe — run: %s",
+		strings.Join(unrealized, ", "), key, strings.Join(fixes, "; "))
+}
+
+// loadManifestOrEmpty (orchestrator.go) already gives a missing manifest.yaml
+// the same "not bootstrapped yet" tolerance loadLockOrEmpty gives a missing
+// lock — reused here as-is, since a pool `gc --legacy` may run before
+// `install`/`policy set` ever wrote one.
+
+// gcLegacy implements GCOptions.Legacy's removal step, called only after
+// gcRefuseLegacyIfUnrealized has already passed: wholesale-removes the
+// pool's ENTIRE legacy bin/+lib/ trees (never selectively pruned, unlike
+// generations/cache — see GCOptions.Legacy's own doc comment). Either
+// directory already being absent contributes 0 bytes and is not an error —
+// legacy removal is idempotent, since a repeat `gc --legacy` (or one run
+// after a prior call already removed them) has nothing left to do.
+// report.LegacyRemoved is set unconditionally once this returns without
+// error, dry run or not (mirroring every other Removed* field's "what a
+// real run would/did do" convention).
+func gcLegacy(opts GCOptions, report *GCReport) error {
+	for _, dir := range []string{opts.LegacyBin, opts.LegacyLib} {
+		if _, err := os.Stat(dir); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("checking legacy dir %s: %w", dir, err)
+		}
+		size, err := dirSize(dir)
+		if err != nil {
+			return fmt.Errorf("measuring legacy dir %s: %w", dir, err)
+		}
+		report.FreedBytes += size
+		if !opts.DryRun {
+			if err := os.RemoveAll(dir); err != nil {
+				return fmt.Errorf("removing legacy dir %s: %w", dir, err)
+			}
+		}
+	}
+	report.LegacyRemoved = true
+	return nil
 }
 
 // gcGenerationRecord is one generation directory's identity as read from its
