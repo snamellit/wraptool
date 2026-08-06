@@ -776,18 +776,23 @@ func devcontainerClassifyMount(root, containerTarget string) devcontainerMountRe
 // scaffolder/feature docs own declaring — read-only, source = THIS host's
 // real, ToSlash'd pool runtime path (printed concretely, never
 // ${localEnv}-templated: `up` already knows the right answer for the host
-// it's running on). A source containing '"' or '\' cannot be embedded
+// it's running on). A source containing ',', '"', or '\' cannot be embedded
 // verbatim in this illustrative, human-pasted (not machine-written) snippet
-// without corrupting it as JSON — refuse to print a broken one and name the
-// exact escaping problem instead (via strconv.Quote, which shows the
-// developer the correctly escaped form). This should be vanishingly rare: it
-// needs a pool root path containing a literal quote or backslash on a POSIX
-// host — a Windows path's backslashes are already ToSlash'd away above.
+// without corrupting it — a comma would misparse as the mount string's own
+// CSV field separator, and a quote or backslash needs JSON escaping this
+// snippet doesn't do — so refuse to print a broken one and name the exact
+// escaping problem instead (via strconv.Quote, which shows the developer the
+// correctly escaped form). Mirrors cmd/init_devcontainer.go's
+// poolRuntimeMountSourceUnsafeChars, which guards the same string form when
+// it's written straight into a machine-generated devcontainer.json instead of
+// printed for a human to paste. This should be vanishingly rare: it needs a
+// pool root path containing one of these characters on a POSIX host — a
+// Windows path's backslashes are already ToSlash'd away above.
 func devcontainerRuntimeMountSnippet(runtimeDir string) string {
 	src := filepath.ToSlash(runtimeDir)
-	if strings.ContainsAny(src, `"\`) {
-		return fmt.Sprintf("<cannot render a mounts snippet: pool runtime path %s needs manual JSON escaping — "+
-			"add it to \"mounts\" by hand>", strconv.Quote(src))
+	if strings.ContainsAny(src, `,"\`) {
+		return fmt.Sprintf("<cannot render a mounts snippet: pool runtime path %s needs manual escaping (contains "+
+			"a comma, quote, or backslash) — add it to \"mounts\" by hand>", strconv.Quote(src))
 	}
 	return "source=" + src + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly"
 }
@@ -847,6 +852,15 @@ func devcontainerPathExportHint() string {
 // touches nothing else (HOME/TERM/cd): those are the image's own concern
 // (HOME via the feature's containerEnv invariant; workdir is `devcontainer
 // exec`'s own default).
+//
+// Accepted duplication: this entry-wrap runs unconditionally whenever the
+// pool plan is live, so on a wiring-only (:1) feature container — whose
+// containerEnv already puts the dispatcher dir on PATH — the same directory
+// ends up on PATH twice. Harmless (a duplicate PATH entry resolves the same
+// binary either way) and deliberate: this wave doesn't special-case the
+// feature major here, so the single code path also covers the legacy
+// (pre-cutover) feature-provisioned container that has no containerEnv PATH
+// entry of its own yet (see buildDevcontainerExecArgs's own comment).
 //
 // Accepted residual: the trailing `exec bash -l` is ITSELF a second login
 // shell, which re-sources /etc/profile (and /etc/profile.d/*) on top of the

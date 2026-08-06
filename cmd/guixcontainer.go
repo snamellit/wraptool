@@ -162,23 +162,8 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	if plan.notice != "" {
 		fmt.Fprintln(os.Stderr, plan.notice)
 	}
-	// The legacy bin/ drop-in dir mention stays accurate whenever legacy is
-	// actually part of the plan (wave2-integration-fixes item 3): legacy
-	// bin/+lib/ is genuinely mounted whether or not an active pointer also
-	// mounted runtime/, so telling the developer where to drop a
-	// hand-managed binary is correct either way — runtime/bin (the
-	// generated dispatcher dir, when active) is never offered as that
-	// location, only poolBin. Once legacy has been gc'd away, active mode
-	// mounts runtime/ alone (len(plan.pathDirs) == 1) — say so instead of
-	// naming a bin/ directory that is no longer mounted into the container.
-	switch {
-	case plan.active && len(plan.pathDirs) > 1:
-		fmt.Printf("harness pool: %s (legacy bin/ also mounted for other harnesses/hand-dropped tools: %s)\n", poolRoot, poolBin)
-	case plan.active:
-		fmt.Printf("harness pool: %s (runtime/ only — legacy bin/+lib/ have been removed via `wraptool harness gc --legacy`)\n", poolRoot)
-	default:
-		fmt.Printf("harness pool: %s (install harness binaries into %s)\n", poolRoot, poolBin)
-	}
+	legacyState := classifyLegacyPool(guixPoolPlanInput{LegacyBin: poolBin, LegacyLib: poolLib})
+	fmt.Println(guixPoolStatusMessage(poolRoot, poolBin, poolLib, plan, legacyState))
 
 	entry := buildContainerEntry(root, poolHome, plan.pathDirs)
 	args := buildGuixShellArgs(root, manifest, poolHome, plan, entry)
@@ -193,6 +178,38 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 	cmd.Env = env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+// guixPoolStatusMessage is the single informational line `wraptool up
+// --runtime=guix` prints naming which pool subtree(s) are actually mounted
+// into the container. Pure (no I/O) so it's tested directly rather than only
+// through bringUpGuixContainer's own exec-heavy path.
+//
+// The legacy bin/ drop-in dir mention stays accurate whenever legacy is
+// actually part of the plan (wave2-integration-fixes item 3): legacy
+// bin/+lib/ is genuinely mounted whether or not an active pointer also
+// mounted runtime/, so telling the developer where to drop a hand-managed
+// binary is correct either way — runtime/bin (the generated dispatcher dir,
+// when active) is never offered as that location, only poolBin. Once legacy
+// is not part of the plan, active mode mounts runtime/ alone
+// (len(plan.pathDirs) == 1) — say so instead of naming a bin/ directory that
+// is no longer mounted into the container. That "legacy is gone" state has
+// two distinct causes (classifyLegacyPool's own doc comment), and only one
+// of them is actually attributable to `gc --legacy` (which always removes
+// both legacy dirs together): a genuinely half-gone pair is manual
+// tampering, not a gc, so blaming gc there would be misleading — that branch
+// instead names both expected paths with neutral wording.
+func guixPoolStatusMessage(poolRoot, poolBin, poolLib string, plan guixPoolPlan, legacyState legacyPoolState) string {
+	switch {
+	case plan.active && len(plan.pathDirs) > 1:
+		return fmt.Sprintf("harness pool: %s (legacy bin/ also mounted for other harnesses/hand-dropped tools: %s)", poolRoot, poolBin)
+	case plan.active && legacyState == legacyHalfGone:
+		return fmt.Sprintf("harness pool: %s (runtime/ only — legacy pool trees are incomplete: expected both %s and %s)", poolRoot, poolBin, poolLib)
+	case plan.active:
+		return fmt.Sprintf("harness pool: %s (runtime/ only — legacy bin/+lib/ have been removed via `wraptool harness gc --legacy`)", poolRoot)
+	default:
+		return fmt.Sprintf("harness pool: %s (install harness binaries into %s)", poolRoot, poolBin)
+	}
 }
 
 // devcontainerPoolHome is the fixed in-container path the wraptool feature pins

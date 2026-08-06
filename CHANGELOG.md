@@ -76,9 +76,12 @@ non-Guix Linux — through Docker or Podman.
   major, `1.0.0` (§12.2/§12.3 of the unified harness pool design). It removes
   the `provision` and `version` options entirely — the harness binary is no
   longer installed by the feature at image build time. Instead it comes from
-  the host's shared harness pool `runtime/` tree, mounted read-only by
-  `wraptool up` (or declared manually for a plain `devcontainer up`); `PATH`
-  gains the mount's `bin/` via `containerEnv` (appended, never prepended).
+  the host's shared harness pool `runtime/` tree, which must be DECLARED as a
+  read-only mount in `devcontainer.json` — the devcontainer CLI's `--mount`
+  flag has no read-only field at all, so `wraptool up` cannot inject this
+  mount itself and only verifies it (`wraptool init devcontainer` scaffolds
+  the declaration for new projects; see the `up` entry below); `PATH` gains
+  the mount's `bin/` via `containerEnv` (appended, never prepended).
   `connect.sh` now also checks that the selected harness resolves on `PATH`,
   naming `wraptool harness install <name>` as the fix: with `connect: true`
   (the default) a missing binary hard-fails postCreate; with `connect: false`
@@ -98,6 +101,21 @@ non-Guix Linux — through Docker or Podman.
   of a dead-end `harness install gemini` suggestion. This repo's own
   `.devcontainer/devcontainer.json` and `examples/devcontainer/` move to the
   same shape.
+- `wraptool up --runtime=devcontainer` verifies the pool runtime mount instead
+  of injecting it (§12.2): a pool-locked harness with the mount already
+  declared read-only prints an info line; a declared mount that the
+  devcontainer CLI will NOT actually enforce as read-only (object-form
+  entries, or a string-form entry missing `readonly`/`ro`) gets an unmissable
+  SECURITY notice, since a writable pool `runtime/` would let this project's
+  container rewrite every other project's dispatcher scripts; a missing
+  declaration prints the exact `mounts` string entry to add. The home mount
+  stays `up`-injected as before, and a declared-but-host-missing source (the
+  mixed-OS team case) warns for both mounts rather than failing. `up`'s own
+  interactive shell entry-wraps `PATH` with the pool `runtime/bin` dir for
+  legacy-feature containers that don't yet have it from `containerEnv`.
+  `--harness` is now validated against the descriptor registry before the
+  shared server is started, not after, so an unknown harness fails fast
+  instead of leaving a server spawned for nothing.
 
 ### Upgrade notes
 
