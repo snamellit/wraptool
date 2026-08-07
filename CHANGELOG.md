@@ -56,6 +56,14 @@ non-Guix Linux — through Docker or Podman.
   `--allow-young` bypass audit events and `harness list`'s quarantine
   countdown, also Phase 1) and that upstream signature/transparency
   adapters (Phase 5 item 4) remain deliberately unimplemented.
+- `wraptool up` prints a one-line stderr notice when the running binary was
+  built from a different commit than the wraptool source checkout it's
+  launched in (`go.mod`'s module line is exactly `module
+  github.com/pti/wraptool`), comparing `buildinfo`'s stamped VCS revision
+  against `git rev-parse HEAD`. Silent for a release build, any other
+  project, or whenever git can't answer — never blocks `up`. Catches the
+  "built a fix, forgot to reinstall, harness keeps exercising yesterday's
+  code" self-hosted-development trap.
 
 ### Changed
 

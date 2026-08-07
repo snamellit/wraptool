@@ -1269,6 +1269,10 @@ const wraptoolModuleLine = "module github.com/pti/wraptool"
 
 // isWraptoolModuleRoot reports whether root/go.mod declares wraptool's own
 // module. Pure filesystem read; a missing/unreadable go.mod is simply "no".
+// The match is deliberately exact (the whole trimmed line, nothing appended
+// or prepended): a module line carrying a trailing comment, or one that only
+// contains the import path as a substring (a fork, a vanity-suffixed
+// module), reads as "not wraptool" rather than risk a false positive.
 func isWraptoolModuleRoot(root string) bool {
 	b, err := os.ReadFile(filepath.Join(root, "go.mod"))
 	if err != nil {

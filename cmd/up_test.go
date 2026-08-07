@@ -911,6 +911,7 @@ func TestStaleBinaryNotice(t *testing.T) {
 	sameSHA := func() (string, error) { return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil }
 	diffSHA := func() (string, error) { return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", nil }
 	errSHA := func() (string, error) { return "", errors.New("git not answerable") }
+	emptySHA := func() (string, error) { return "", nil } // no error, but nothing to compare
 
 	const buildRev = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
@@ -926,7 +927,8 @@ func TestStaleBinaryNotice(t *testing.T) {
 		{"not a wraptool checkout: different module", otherRoot, buildRev, diffSHA, false},
 		{"not a wraptool checkout: no go.mod at all", noModRoot, buildRev, diffSHA, false},
 		{"no revision: release build with unstamped VCS info", wraptoolRoot, "", diffSHA, false},
-		{"git not answerable", wraptoolRoot, buildRev, errSHA, false},
+		{"git not answerable: error return", wraptoolRoot, buildRev, errSHA, false},
+		{"git not answerable: empty sha, no error", wraptoolRoot, buildRev, emptySHA, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -952,12 +954,13 @@ func TestStaleBinaryNotice(t *testing.T) {
 // vanity-suffixed module) must not match.
 func TestIsWraptoolModuleRoot(t *testing.T) {
 	cases := map[string]bool{
-		"module github.com/pti/wraptool\n":            true,
-		"module github.com/pti/wraptool\n\ngo 1.23\n": true,
-		"module github.com/pti/wraptool/v2\n":         false,
-		"module github.com/example/wraptool\n":        false,
-		"// module github.com/pti/wraptool\n":         false,
-		"":                                            false,
+		"module github.com/pti/wraptool\n":                     true,
+		"module github.com/pti/wraptool\n\ngo 1.23\n":          true,
+		"module github.com/pti/wraptool/v2\n":                  false,
+		"module github.com/example/wraptool\n":                 false,
+		"// module github.com/pti/wraptool\n":                  false,
+		"module github.com/pti/wraptool // trailing comment\n": false,
+		"": false,
 	}
 	for content, want := range cases {
 		dir := t.TempDir()

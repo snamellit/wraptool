@@ -8,7 +8,8 @@ own source is now retired (sunset), kept here only as the historical record of
 the problem this descriptor solved.
 Scope: unify "how to point coding-harness *X* at the wraptool MCP server" into
 one registry shared by `wraptool init`, `wraptool up` (both the guix and
-devcontainer runtimes), and — eventually — the `wraptool-connect` feature.
+devcontainer runtimes), and — at the time this was written — the
+(since-sunset) `wraptool-connect` feature.
 Today that logic exists three times, diverging; adding a harness (opencode, pi,
 agy, …) means reimplementing it in each. This makes adding a harness a
 one-descriptor change. **MCP wiring only** — harness *binary provisioning*
