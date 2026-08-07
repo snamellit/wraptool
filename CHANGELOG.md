@@ -35,7 +35,9 @@ non-Guix Linux — through Docker or Podman.
   keyed by integrity) never populates. Realize now seeds that URL index
   itself, from the same lock's already-verified (resolved URL, integrity)
   pairs, before running `npm ci --offline` — no network access, no change
-  to what gets trusted. This was a known limitation as of 0.4.0.
+  to what gets trusted. Pool realization of a shrinkwrapped harness was not
+  possible before this release (0.4.0 surfaced it as an opaque npm
+  `ENOTCACHED` failure, falling back to the legacy install).
 - `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
   legacy `bin/`+`lib/` trees entirely, once they are no longer needed, and
   writes a marker recording that — so a later `wraptool up`/`list` no
@@ -70,8 +72,12 @@ non-Guix Linux — through Docker or Podman.
   built from a different commit than the wraptool source checkout it's
   launched in (`go.mod`'s module line is exactly `module
   github.com/pti/wraptool`), comparing `buildinfo`'s stamped VCS revision
-  against `git rev-parse HEAD`. Silent for a release build, any other
-  project, or whenever git can't answer — never blocks `up`. Catches the
+  against `git rev-parse HEAD`. Silent for a binary with no stamped VCS
+  revision, in any other project, or whenever git can't answer — never
+  blocks `up`. A tagged release binary does carry a stamped revision, so
+  running it inside a wraptool checkout that has moved past the tag prints
+  the notice too — that reader is developing wraptool, and the hint is
+  deliberate. Catches the
   "built a fix, forgot to reinstall, harness keeps exercising yesterday's
   code" self-hosted-development trap.
 
