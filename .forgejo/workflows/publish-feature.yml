@@ -9,7 +9,12 @@ name: Publish dev container feature
 #
 # The older `wraptool-connect` feature's source was retired (folded into the
 # merged `wraptool` feature); its already-published registry artifacts (:0,
-# 0.1.x) keep working — nothing here republishes them.
+# 0.1.x) keep working — nothing here republishes them. features/src/wraptool-connect/
+# now holds only a README.md tombstone (no devcontainer-feature.json, so the
+# published artifacts' documentationURL — a directory link — has somewhere to
+# land instead of 404ing): `devcontainer features publish` warns and skips
+# any features/src/ subdirectory missing devcontainer-feature.json rather
+# than erroring, so the tombstone is inert to this workflow.
 #
 # Application release tags republish the current feature versions:
 #   ./release-version patch
@@ -31,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Fail fast if a feature is broken (also checks the vendored copy match).
+      # Fail fast if a feature is broken.
       - name: Test features
         run: |
           sh features/test/wraptool/selftest.sh
