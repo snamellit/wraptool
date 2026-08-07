@@ -3,6 +3,7 @@ package pool
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -427,16 +428,18 @@ func TestLockValidate_RejectsLockfileMissingASummaryMapEntry(t *testing.T) {
 	}
 }
 
-// TestLockValidate_RejectsRawEntryMissingIntegrity covers the
-// npm-raw-lockfile-backfill regression guard: a raw "packages" entry that
-// carries a resolved URL but no integrity must be rejected at lock-Validate
-// time, naming the entry — this is what turns the pi-coding-agent ENOTCACHED
-// failure (realize-side `npm ci --offline` cannot match its offline cache by
-// integrity) into a validation error at lock time instead of an opaque
-// realize failure. The entry is otherwise well-formed (present in the
-// summary map too), so this exercises the NEW check specifically, not the
-// existing summary/raw consistency check above.
-func TestLockValidate_RejectsRawEntryMissingIntegrity(t *testing.T) {
+// TestLockValidate_ToleratesRawEntryMissingIntegrity is the field-wedge
+// lesson (npm-raw-lockfile-backfill rework): Validate — and therefore
+// UnmarshalLock, the path `wraptool harness update` itself uses to LOAD the
+// lock it needs to replace — must NOT reject a raw "packages" entry with a
+// resolved URL but no integrity. A pre-fix binary can persist exactly this
+// shape (@earendil-works/pi-tui's workspace-sibling entries); rejecting it
+// on load would wedge that pool permanently, since the "re-run wraptool
+// harness update" advice would be circular (update can't load the lock to
+// act on it). See RawComplete for the load-tolerant flag this shape trips
+// instead, and TestUpdateHarnessLocked_SelfHealsIncompleteRawLockfile
+// (orchestrator_test.go) for the self-heal this enables.
+func TestLockValidate_ToleratesRawEntryMissingIntegrity(t *testing.T) {
 	l := sampleLock()
 	h := l.Harnesses["claude"]
 	lockfile, err := json.Marshal(map[string]any{
@@ -453,75 +456,93 @@ func TestLockValidate_RejectsRawEntryMissingIntegrity(t *testing.T) {
 	h.NPMLock.Lockfile = lockfile
 	l.Harnesses["claude"] = h
 
-	err = l.Validate()
-	if err == nil {
-		t.Fatal("Validate: got nil error, want rejection of a raw entry with a resolved URL but no integrity")
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with a raw entry missing integrity: %v (lock LOADING must tolerate this old shape)", err)
 	}
-	if !strings.Contains(err.Error(), "node_modules/foo") {
-		t.Errorf("error = %q, want it to name node_modules/foo", err.Error())
+
+	data, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
 	}
-	if !strings.Contains(err.Error(), "has no integrity") {
-		t.Errorf("error = %q, want it to contain \"has no integrity\"", err.Error())
-	}
-	if !strings.Contains(err.Error(), "re-run wraptool harness update") {
-		t.Errorf("error = %q, want it to name the fix command", err.Error())
+	if _, err := UnmarshalLock(data); err != nil {
+		t.Fatalf("UnmarshalLock: %v (loading a pre-fix lock must not fail)", err)
 	}
 }
 
-// TestLockValidate_AllowsRawLinkEntryWithoutIntegrity covers the "link"
+// --- NPMLock.RawComplete --------------------------------------------------
+
+// npmRawLockfileJSON builds a minimal raw package-lock.json for
+// RawComplete's tests: one well-formed entry (resolved+integrity) plus
+// whatever extra "packages" entries the caller supplies as a raw JSON
+// fragment.
+func npmRawLockfileJSON(t *testing.T, extraPackagesJSON string) json.RawMessage {
+	t.Helper()
+	data := []byte(fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"dependencies": {}},
+    "node_modules/well-formed": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/well-formed.tgz", "integrity": "sha512-xyz"}
+    %s
+  }
+}`, extraPackagesJSON))
+	var probe any
+	if err := json.Unmarshal(data, &probe); err != nil {
+		t.Fatalf("npmRawLockfileJSON: invalid JSON fixture: %v\n%s", err, data)
+	}
+	return data
+}
+
+func TestNPMLockRawComplete_NilOrEmptyIsComplete(t *testing.T) {
+	var nilLock *NPMLock
+	if !nilLock.RawComplete() {
+		t.Error("RawComplete() on a nil *NPMLock = false, want true (nothing to heal)")
+	}
+	empty := &NPMLock{}
+	if !empty.RawComplete() {
+		t.Error("RawComplete() with an empty Lockfile = false, want true")
+	}
+}
+
+func TestNPMLockRawComplete_WellFormedIsComplete(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, "")}
+	if !n.RawComplete() {
+		t.Error("RawComplete() on a fully-integrity'd lockfile = false, want true")
+	}
+}
+
+// TestNPMLockRawComplete_MissingIntegrityIsIncomplete is the exact
+// pi-coding-agent shape: a resolved entry with no integrity.
+func TestNPMLockRawComplete_MissingIntegrityIsIncomplete(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, `,
+    "node_modules/well-formed/node_modules/pi-sibling": {"version": "2.0.0", "resolved": "https://registry.npmjs.org/pi-sibling.tgz"}`)}
+	if n.RawComplete() {
+		t.Error("RawComplete() with a resolved-but-no-integrity entry = true, want false")
+	}
+}
+
+// TestNPMLockRawComplete_AllowsLinkEntryWithoutIntegrity covers the "link"
 // exclusion: a workspace-symlink raw entry legitimately has neither resolved
-// nor integrity (or a resolved workspace-relative path with no integrity —
-// npm marks these "link": true), and must not trip the new check.
-func TestLockValidate_AllowsRawLinkEntryWithoutIntegrity(t *testing.T) {
-	l := sampleLock()
-	h := l.Harnesses["claude"]
-	lockfile, err := json.Marshal(map[string]any{
-		"lockfileVersion": 3,
-		"packages": map[string]any{
-			"":                          map[string]any{"dependencies": map[string]string{}},
-			"node_modules/foo":          map[string]any{"version": "1.0.0", "resolved": "https://registry.npmjs.org/foo.tgz", "integrity": "sha512-xyz"},
-			"node_modules/bar":          map[string]any{"version": "2.0.0"},
-			"node_modules/workspace-ws": map[string]any{"resolved": "../workspace-ws", "link": true},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshaling fixture lockfile: %v", err)
-	}
-	h.NPMLock.Lockfile = lockfile
-	l.Harnesses["claude"] = h
-
-	if err := l.Validate(); err != nil {
-		t.Fatalf("Validate() with a link entry lacking integrity: %v (link entries must be exempt)", err)
+// nor integrity, and must not trip RawComplete.
+func TestNPMLockRawComplete_AllowsLinkEntryWithoutIntegrity(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, `,
+    "node_modules/workspace-ws": {"resolved": "../workspace-ws", "link": true}`)}
+	if !n.RawComplete() {
+		t.Error("RawComplete() with a link entry lacking integrity = false, want true (link entries must be exempt)")
 	}
 }
 
-// TestLockValidate_AllowsRawBundledEntryWithoutResolvedOrIntegrity covers the
-// bundled-dependency exclusion: npm marks a package bundled into its parent's
-// tarball with "inBundle": true and no "resolved" (there is nothing to
-// separately fetch — it ships inside the parent). The new check already
-// exempts this shape because it only fires when "resolved" is non-empty, but
-// this pins that behavior explicitly rather than leaving it as an unproven
-// side effect of the resolved=="" check.
-func TestLockValidate_AllowsRawBundledEntryWithoutResolvedOrIntegrity(t *testing.T) {
-	l := sampleLock()
-	h := l.Harnesses["claude"]
-	lockfile, err := json.Marshal(map[string]any{
-		"lockfileVersion": 3,
-		"packages": map[string]any{
-			"":                 map[string]any{"dependencies": map[string]string{}},
-			"node_modules/foo": map[string]any{"version": "1.0.0", "resolved": "https://registry.npmjs.org/foo.tgz", "integrity": "sha512-xyz"},
-			"node_modules/bar": map[string]any{"version": "2.0.0"},
-			"node_modules/foo/node_modules/bundled-dep": map[string]any{"version": "1.0.0", "inBundle": true},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshaling fixture lockfile: %v", err)
-	}
-	h.NPMLock.Lockfile = lockfile
-	l.Harnesses["claude"] = h
-
-	if err := l.Validate(); err != nil {
-		t.Fatalf("Validate() with a bundled entry lacking resolved/integrity: %v (bundled entries must be exempt)", err)
+// TestNPMLockRawComplete_AllowsBundledEntryWithoutResolvedOrIntegrity covers
+// the bundled-dependency exclusion: npm marks a package bundled into its
+// parent's tarball with "inBundle": true and no "resolved" (there is
+// nothing to separately fetch — it ships inside the parent). RawComplete
+// already exempts this shape because it only fires when "resolved" is
+// non-empty, but this pins that behavior explicitly rather than leaving it
+// as an unproven side effect of the resolved=="" check.
+func TestNPMLockRawComplete_AllowsBundledEntryWithoutResolvedOrIntegrity(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, `,
+    "node_modules/well-formed/node_modules/bundled-dep": {"version": "1.0.0", "inBundle": true}`)}
+	if !n.RawComplete() {
+		t.Error("RawComplete() with a bundled entry lacking resolved/integrity = false, want true (bundled entries must be exempt)")
 	}
 }
 
