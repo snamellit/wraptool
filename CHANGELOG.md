@@ -46,6 +46,16 @@ non-Guix Linux — through Docker or Podman.
   (true only when at least one tree actually existed to remove); the `gc`
   audit event gains a `legacy_removed` field, recorded even if the legacy
   step itself later fails, so real deletions are never left unaudited.
+- Docs: [Harness pool: quarantine and scheduled refresh](https://pti.pages.snamellit.com/wraptool/harness-pool.html)
+  (§16 Phase 5 item 1) explains why a periodic `wraptool harness refresh` is
+  what makes `minimum_observation_age` actually count — a pool that never
+  refreshes never records `first_seen_at`, so the observation window never
+  starts — and gives a systemd user timer and a macOS launchd plist to
+  schedule it. It also states plainly which Phase-5 items already shipped
+  earlier (local observations and release-age eligibility in Phase 1;
+  `--allow-young` bypass audit events and `harness list`'s quarantine
+  countdown, also Phase 1) and that upstream signature/transparency
+  adapters (Phase 5 item 4) remain deliberately unimplemented.
 
 ### Changed
 
@@ -116,6 +126,12 @@ non-Guix Linux — through Docker or Podman.
   `--harness` is now validated against the descriptor registry before the
   shared server is started, not after, so an unknown harness fails fast
   instead of leaving a server spawned for nothing.
+- **Sunset: the older `wraptool-connect` Dev Container feature.** Its source
+  (`features/src/wraptool-connect/`, `features/test/wraptool-connect/`) is
+  deleted and it is no longer published by CI. Already-published registry
+  artifacts (`:0`, `0.1.x`) keep working for existing configs indefinitely —
+  only the source is retired. New setups use the merged `wraptool` (`:1`)
+  feature above.
 
 ### Upgrade notes
 

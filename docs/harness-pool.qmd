@@ -1,0 +1,174 @@
+---
+title: "Harness pool: quarantine and scheduled refresh"
+---
+
+The developer harness pool
+(`$XDG_DATA_HOME/wraptool/harness-pool`) installs a coding harness once and
+shares it across every project (see [Getting started](getting-started.qmd)
+and [Dev Containers](devcontainers.qmd) for the mount mechanics). This page
+covers its update-safety story — quarantine — and the one piece of upkeep it
+needs from you: a periodic `wraptool harness refresh`.
+
+## Why quarantine, and why refresh matters
+
+`wraptool harness update` does not just grab the newest release. Before a
+candidate version can be selected it must clear two independent age checks
+(`design/harness/unified-harness-pool.md` §9):
+
+```text
+now - published_at  >= minimum_release_age       # registry publish time
+now - first_seen_at >= minimum_observation_age   # this pool's own clock
+```
+
+`minimum_release_age` (default seven days, `policy set --minimum-release-age`)
+protects against a drive-by release published on compromised maintainer
+credentials: a version pulled or reported during its quarantine window is
+never downloaded. It only needs the registry's own publish timestamp, so it
+works even against a pool that has never run before.
+
+`minimum_observation_age` (default `0h`, opt-in) is different: it is not
+about when upstream published a release, it is about how long **this pool**
+has known the release exists. `first_seen_at` is recorded the first time
+`refresh` observes a given (source, package, version) triple, and it is
+write-once — repeated refreshes never move it forward or back. A pool that
+never runs `refresh` never records a `first_seen_at`, which means
+`minimum_observation_age` never starts counting for anything new: the
+countdown can only begin once metadata has actually been fetched at least
+once. If you set `minimum_observation_age` above zero and only ever refresh
+right before an `update`, you get the friction (a release looks freshly
+observed and stays quarantined) without the benefit (an attacker who
+compromises a release right after you observed it still slips through on
+your very next `update`). Refreshing on a schedule — independent of when you
+actually intend to update — is what makes the observation window mean
+anything.
+
+Metadata-only `refresh` is exactly the right shape for a timer: it takes the
+pool's advisory lock briefly (§6.5), talks only to the registry (no
+container/backend, no npm/docker/guix involved for an npm-sourced harness's
+metadata, and none at all for the archive-sourced ones), and never downloads
+a package payload or changes what is active. Running it daily or weekly costs
+nothing at update time and only helps.
+
+```bash
+# Metadata only for every harness the manifest already lists; safe for a
+# timer, and required for minimum_observation_age to ever start counting.
+wraptool harness refresh
+```
+
+With no harness argument this only touches harnesses the pool manifest
+already lists (i.e. that `wraptool harness install` has recorded intent
+for) — nothing to refresh before a first install.
+
+## Scheduling it
+
+### Linux: a systemd user timer
+
+Two unit files under `~/.config/systemd/user/`:
+
+`~/.config/systemd/user/wraptool-harness-refresh.service`:
+
+```ini
+[Unit]
+Description=Refresh wraptool harness pool candidate metadata
+
+[Service]
+Type=oneshot
+ExecStart=%h/go/bin/wraptool harness refresh
+```
+
+(Adjust `ExecStart` to wherever your `wraptool` binary actually lives —
+`%h` expands to your home directory.)
+
+`~/.config/systemd/user/wraptool-harness-refresh.timer`:
+
+```ini
+[Unit]
+Description=Run wraptool harness refresh daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Enable it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now wraptool-harness-refresh.timer
+```
+
+`Persistent=true` catches up a missed run (laptop suspended overnight) on
+the next login rather than silently skipping it. A weekly cadence
+(`OnCalendar=weekly`) is just as reasonable if `minimum_observation_age` is
+short or unset — the point is regularity, not frequency.
+
+### macOS: launchd
+
+`~/Library/LaunchAgents/com.wraptool.harness-refresh.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wraptool.harness-refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/wraptool</string>
+    <string>harness</string>
+    <string>refresh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>86400</integer>
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>
+```
+
+(Adjust the `ProgramArguments` path to wherever `wraptool` is installed —
+`which wraptool` on the machine you're loading this on.) Load it:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.wraptool.harness-refresh.plist
+```
+
+`StartInterval` is in seconds (86400 = daily); launchd runs the job roughly
+on that cadence and catches up a missed run once the machine wakes, similar
+in spirit to systemd's `Persistent=true`.
+
+## What's already shipped versus what's still deliberately missing
+
+The rest of §16 Phase 5 ("quarantine automation") in
+`design/harness/unified-harness-pool.md` is implemented, not just planned:
+
+- **Local observations and release-age eligibility** (item 2): `refresh`
+  records first-seen metadata in `observations.json`; `wraptool harness
+  list`'s `ELIGIBLE`/`QUARANTINED` columns and `update`/`install` themselves
+  enforce both `minimum_release_age` and `minimum_observation_age` before a
+  candidate is selected.
+- **Bypass audit events and candidate warnings** (item 3): `--allow-young
+  --reason '...'` on `install`/`update` explicitly bypasses quarantine,
+  prints the candidate's age, and appends an `allow_young` event to the
+  pool-local `audit.jsonl` — it is never implied by any other flag.
+  `wraptool harness list` shows a live countdown (e.g. `2.1.221 (3d left)`)
+  for anything still quarantined, so the wait is visible before you reach
+  for the bypass.
+
+Item 1 (this page) is scheduling *guidance* — refresh itself has run the
+observation clock since Phase 1; a systemd timer or launchd job is the
+missing piece that makes `minimum_observation_age` actually protective
+instead of accidentally decorative.
+
+Item 4, optional upstream signature/transparency adapters, remains
+**deliberately unimplemented**. Quarantine's time delay is a real, working
+mitigation on its own (§9) — it complements digest/integrity verification,
+exact dependency locking, no-network realization, and rollback — but it does
+not require or wait on any particular registry's signing scheme. If a
+source you use gains verifiable signatures or a transparency log, that is a
+future addition, not a prerequisite for anything documented here.
