@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pti/wraptool/internal/pool"
 )
@@ -209,13 +210,19 @@ func TestIntegration_ResolveFetchRealizeWithBackfilledIntegrity(t *testing.T) {
 		t.Errorf("expected the generation's own bin/%s to exist: %v", binName, err)
 	}
 
-	// --- Mutation: revert the raw-document patch (simulating the
-	// pre-fix state — the summary map and cache are exactly as a real Fetch
-	// left them, only the raw Lockfile's sibling entry integrity is
-	// stripped back out) and confirm Realize now fails. This is the
-	// regression guard: without the fix, this is exactly what shipped and
-	// broke `wraptool harness install pi`. ---
-	t.Run("reverting the raw-document patch reproduces the ENOTCACHED-class failure", func(t *testing.T) {
+	// --- Mutation: revert the raw-document patch (simulating a lock
+	// persisted by a PRE-FIX binary — the summary map and cache are exactly
+	// as a real Fetch left them, only the raw Lockfile's sibling entry
+	// integrity is stripped back out — exactly the shape `sync` can be
+	// asked to realize straight from an existing lock, with no Resolve in
+	// between) and confirm Realize now refuses it with the actionable,
+	// non-circular "re-run wraptool harness update" message — NPM.Realize's
+	// own backstop (item 4, npm-raw-lockfile-backfill rework) catching it
+	// BEFORE ever invoking real npm, rather than real npm dying with an
+	// opaque ENOTCACHED three subprocess calls deep. This is the regression
+	// guard: without the fix (and without this backstop), this exact shape
+	// is what shipped and broke `wraptool harness install pi`. ---
+	t.Run("reverting the raw-document patch is caught by Realize's own backstop before npm ever runs", func(t *testing.T) {
 		var doc map[string]any
 		if err := json.Unmarshal(lh.NPMLock.Lockfile, &doc); err != nil {
 			t.Fatalf("parsing Lockfile for mutation: %v", err)
@@ -244,10 +251,98 @@ func TestIntegration_ResolveFetchRealizeWithBackfilledIntegrity(t *testing.T) {
 		mutatedStaging := filepath.Join(t.TempDir(), "gen-mutated")
 		_, err = n.Realize(ctx, b, "pi", binName, &mutated, pool.PlatformLinuxAMD64Glibc, cacheDir, mutatedStaging)
 		if err == nil {
-			t.Fatal("Realize: got nil error with a reverted (integrity-stripped) raw lockfile, want the ENOTCACHED-class failure the fix prevents")
+			t.Fatal("Realize: got nil error with a reverted (integrity-stripped) raw lockfile, want the RawComplete backstop to refuse it")
 		}
-		if !strings.Contains(err.Error(), "ENOTCACHED") {
-			t.Errorf("Realize error = %v, want it to reproduce the live bug's real npm ENOTCACHED failure", err)
+		if !strings.Contains(err.Error(), "re-run wraptool harness update") {
+			t.Errorf("Realize error = %v, want the actionable, non-circular fix-command message", err)
 		}
 	})
+}
+
+// TestIntegration_SyncRejectsIncompleteRawLockfileWithActionableError is item
+// (c) of the npm-raw-lockfile-backfill rework: `sync` (pool.SyncHarness)
+// realizes straight from an existing lock entry — it never calls
+// Source.Resolve at all (see pool.SyncHarnessLocked's own doc comment), so
+// UpdateHarnessLocked's self-heal (which routes a raw-incomplete entry
+// through a fresh Resolve, see decision.go's LockNPMRawIncomplete) never
+// runs on this path. This exercises the REAL pool.SyncHarness against the
+// REAL NPM Source end to end, confirming the actionable "re-run wraptool
+// harness update" error (NPM.Realize's own backstop, item 4) surfaces
+// through the real orchestrator call a human would actually run — and here
+// that advice is NOT circular, since `wraptool harness update` (unlike
+// `sync`) DOES call Resolve and would genuinely heal it.
+//
+// No npm/network/backend calls happen in this test: the lock's NPMLock has
+// no Packages and no Runtime, so Source.Fetch (which SyncHarnessLocked calls
+// before Realize) is a pure no-op, and Realize's backstop check fires before
+// it would otherwise need a real npm/tar backend at all.
+func TestIntegration_SyncRejectsIncompleteRawLockfileWithActionableError(t *testing.T) {
+	incompleteLockfile := []byte(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"dependencies": {"@example/sync-test-harness": "1.0.0"}},
+    "node_modules/@example/sync-test-harness": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/@example/sync-test-harness/-/sync-test-harness-1.0.0.tgz",
+      "integrity": "sha512-AAAA=="
+    },
+    "node_modules/@example/sync-test-harness/node_modules/pi-sibling": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/pi-sibling/-/pi-sibling-2.0.0.tgz"
+    }
+  }
+}`)
+
+	root := t.TempDir()
+	paths := pool.PoolPaths{
+		Lock:         filepath.Join(root, "harness-lock.json"),
+		AdvisoryLock: filepath.Join(root, "lock"),
+		Cache:        filepath.Join(root, "cache", "sha256"),
+		Staging:      filepath.Join(root, "staging"),
+		Runtime:      filepath.Join(root, "runtime"),
+	}
+
+	now := pool.FormatTimestamp(time.Now().UTC())
+	lockDoc := &pool.Lock{
+		SchemaVersion: pool.LockSchemaVersion,
+		GeneratedAt:   now,
+		PolicyHash:    "sha256:" + strings.Repeat("a", 64),
+		Harnesses: map[string]pool.LockHarness{
+			"pi": {
+				Source:         "npm",
+				Package:        "@example/sync-test-harness",
+				Version:        "1.0.0",
+				PublishedAt:    now,
+				FirstSeenAt:    now,
+				RecipeRevision: "sha256:" + strings.Repeat("b", 64),
+				NPMLock: &pool.NPMLock{
+					LockfileVersion: 3,
+					Packages:        map[string]pool.NPMLockPackage{}, // deliberately empty: Fetch is a no-op
+					Lockfile:        incompleteLockfile,
+				},
+			},
+		},
+	}
+	if err := lockDoc.Validate(); err != nil {
+		t.Fatalf("test fixture lock fails Validate (lock LOADING must tolerate this shape): %v", err)
+	}
+	data, err := lockDoc.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.Lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Lock, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n := NewNPM("")
+	_, err = pool.SyncHarness(context.Background(), n, hostExecBackend{}, paths, "pi", "pi", pool.PlatformLinuxAMD64Glibc)
+	if err == nil {
+		t.Fatal("SyncHarness: got nil error with an incomplete raw lockfile, want the actionable realize-preflight error")
+	}
+	if !strings.Contains(err.Error(), "re-run wraptool harness update") {
+		t.Errorf("SyncHarness error = %v, want the actionable, non-circular fix-command message", err)
+	}
 }

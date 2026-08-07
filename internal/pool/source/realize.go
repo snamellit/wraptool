@@ -105,6 +105,21 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	if len(h.NPMLock.Lockfile) == 0 {
 		return nil, fmt.Errorf("realize: %s: lock predates the embedded-lockfile schema; re-run wraptool harness update %s", harnessName, harnessName)
 	}
+	// npm-raw-lockfile-backfill backstop: a lock persisted by a pre-fix
+	// binary can have a raw lockfile that is present and syntactically valid
+	// but still missing a backfilled integrity on some entry (see
+	// pool.NPMLock.RawComplete's doc comment) — `npm ci --offline` below
+	// cannot match such an entry's cache object by integrity and would die
+	// with an opaque ENOTCACHED. install/update self-heal this automatically
+	// (orchestrator.go folds RawComplete into the resolve-axis decision, so
+	// a fresh Resolve rewrites the entry before Realize ever runs on it
+	// again); this check exists for the one path that reaches Realize
+	// WITHOUT ever calling Resolve first — `sync`, which realizes straight
+	// from an existing lock entry — where "re-run wraptool harness update"
+	// is real, actionable advice rather than circular.
+	if !h.NPMLock.RawComplete() {
+		return nil, fmt.Errorf("realize: %s: lock's raw package-lock.json is missing an integrity value on at least one entry (predates the raw-lockfile integrity backfill); npm ci --offline cannot match its cache object; re-run wraptool harness update %s", harnessName, harnessName)
+	}
 	if h.Runtime == nil {
 		return nil, fmt.Errorf("realize: %s: lock has no runtime requirement", harnessName)
 	}
