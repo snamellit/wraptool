@@ -774,6 +774,82 @@ func TestResolve_BackfilledLockfileIsDeterministic(t *testing.T) {
 	}
 }
 
+// TestPatchLockfileIntegrity_PreservesLargeNumbersAndDecimals is the
+// UseNumber() regression test: an untouched numeric field elsewhere in the
+// raw document — one beyond float64's exact-integer range (2^53), and a
+// decimal — must survive patchLockfileIntegrity byte-for-byte. Before
+// UseNumber(), decoding into map[string]any would silently convert both to
+// float64 and re-Marshal could reformat them (dropping precision on the
+// large integer, or changing the decimal's textual shape), which would also
+// break Lockfile determinism across two Resolve calls whose registry
+// response happened to arrive with different (but numerically equal)
+// formatting.
+func TestPatchLockfileIntegrity_PreservesLargeNumbersAndDecimals(t *testing.T) {
+	const largeInt = "9007199254740993" // 2^53 + 1: not exactly representable as float64
+	const decimal = "1.50000"           // a decimal whose trailing zeros a float64 round trip would drop
+	raw := []byte(fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"dependencies": {}},
+    "node_modules/untouched": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/untouched.tgz",
+      "integrity": "sha512-UNTOUCHED==",
+      "someLargeCount": %s,
+      "someDecimal": %s
+    },
+    "node_modules/to-patch": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/to-patch.tgz"
+    }
+  }
+}`, largeInt, decimal))
+
+	patched, err := patchLockfileIntegrity(raw, map[string]string{
+		"node_modules/to-patch": "sha512-PATCHED==",
+	})
+	if err != nil {
+		t.Fatalf("patchLockfileIntegrity: %v", err)
+	}
+
+	var doc struct {
+		Packages map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(patched, &doc); err != nil {
+		t.Fatalf("parsing patched lockfile: %v", err)
+	}
+
+	// The patched entry got its integrity.
+	var patchedEntry struct {
+		Integrity string `json:"integrity"`
+	}
+	if err := json.Unmarshal(doc.Packages["node_modules/to-patch"], &patchedEntry); err != nil {
+		t.Fatalf("parsing patched entry: %v", err)
+	}
+	if patchedEntry.Integrity != "sha512-PATCHED==" {
+		t.Errorf("patched entry Integrity = %q, want sha512-PATCHED==", patchedEntry.Integrity)
+	}
+
+	// The UNTOUCHED entry's numeric fields survive with their exact original
+	// text — decoded via json.Number, not float64, so this string comparison
+	// is meaningful (a float64 round trip could still coincidentally print
+	// the same text for small numbers, but not for largeInt or a
+	// trailing-zero decimal like decimal above).
+	var untouched struct {
+		SomeLargeCount json.Number `json:"someLargeCount"`
+		SomeDecimal    json.Number `json:"someDecimal"`
+	}
+	if err := json.Unmarshal(doc.Packages["node_modules/untouched"], &untouched); err != nil {
+		t.Fatalf("parsing untouched entry: %v", err)
+	}
+	if untouched.SomeLargeCount.String() != largeInt {
+		t.Errorf("someLargeCount = %s, want %s byte-preserved (2^53+1 is not exactly representable as float64)", untouched.SomeLargeCount, largeInt)
+	}
+	if untouched.SomeDecimal.String() != decimal {
+		t.Errorf("someDecimal = %s, want %s byte-preserved (trailing zeros)", untouched.SomeDecimal, decimal)
+	}
+}
+
 // TestResolve_ReportsFirstUnlockableEntryDeterministically locks in the
 // sorted-key iteration: with several unlockable entries, the error must name
 // the lexicographically first one on every run, not whichever Go's random

@@ -400,10 +400,26 @@ func (n *NPM) backfillIntegrity(ctx context.Context, packuments map[string]*npmP
 // encoding/json's Marshal sorts map[string]any keys alphabetically at every
 // nesting level, so two Resolve calls that backfill the same entries produce
 // byte-identical output (modulo raw's own content, which a real registry
-// response holds fixed for a given package@version).
+// response holds fixed for a given package@version). Every JSON number in
+// raw is decoded via json.Number (see the UseNumber() call below), not
+// float64, so an untouched number field's original decimal text — including
+// one beyond float64's 2^53 exact-integer range — survives the round trip
+// unchanged rather than being reformatted (or silently losing precision) on
+// re-Marshal.
 func patchLockfileIntegrity(raw []byte, backfilled map[string]string) ([]byte, error) {
+	// UseNumber() keeps every JSON number as a json.Number (its original
+	// decimal text) instead of decoding it into a float64 — plain
+	// json.Unmarshal into map[string]any would otherwise silently round-trip
+	// any large or high-precision number (a future npm field, a package
+	// size, ...) through float64, losing precision above 2^53 and risking
+	// scientific-notation reformatting on re-Marshal. json.Marshal writes a
+	// json.Number back out verbatim, so this keeps every untouched number
+	// byte-identical while still letting the one "integrity" string field get
+	// patched.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
 	var doc map[string]any
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	if err := dec.Decode(&doc); err != nil {
 		return nil, fmt.Errorf("decoding raw lockfile: %w", err)
 	}
 	packagesAny, ok := doc["packages"]

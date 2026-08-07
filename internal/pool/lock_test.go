@@ -495,6 +495,36 @@ func TestLockValidate_AllowsRawLinkEntryWithoutIntegrity(t *testing.T) {
 	}
 }
 
+// TestLockValidate_AllowsRawBundledEntryWithoutResolvedOrIntegrity covers the
+// bundled-dependency exclusion: npm marks a package bundled into its parent's
+// tarball with "inBundle": true and no "resolved" (there is nothing to
+// separately fetch — it ships inside the parent). The new check already
+// exempts this shape because it only fires when "resolved" is non-empty, but
+// this pins that behavior explicitly rather than leaving it as an unproven
+// side effect of the resolved=="" check.
+func TestLockValidate_AllowsRawBundledEntryWithoutResolvedOrIntegrity(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	lockfile, err := json.Marshal(map[string]any{
+		"lockfileVersion": 3,
+		"packages": map[string]any{
+			"":                 map[string]any{"dependencies": map[string]string{}},
+			"node_modules/foo": map[string]any{"version": "1.0.0", "resolved": "https://registry.npmjs.org/foo.tgz", "integrity": "sha512-xyz"},
+			"node_modules/bar": map[string]any{"version": "2.0.0"},
+			"node_modules/foo/node_modules/bundled-dep": map[string]any{"version": "1.0.0", "inBundle": true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshaling fixture lockfile: %v", err)
+	}
+	h.NPMLock.Lockfile = lockfile
+	l.Harnesses["claude"] = h
+
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with a bundled entry lacking resolved/integrity: %v (bundled entries must be exempt)", err)
+	}
+}
+
 // --- LockArchive (archive-source additive schema) -----------------------
 
 // sampleArchiveArtifacts returns a well-formed Artifacts map for two
