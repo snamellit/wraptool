@@ -26,21 +26,123 @@ non-Guix Linux — through Docker or Podman.
 - `--backend auto|guix|oci` on `harness install`/`update`/`sync` overrides
   backend auto-selection; an explicit choice whose tooling is absent errors
   immediately.
+- `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
+  legacy `bin/`+`lib/` trees entirely, once they are no longer needed, and
+  writes a marker recording that — so a later `wraptool up`/`list` no
+  longer silently recreates them (`ensureHarnessPool` now checks it before
+  creating `bin/`+`lib/`; `home/` and the new always-created `runtime/`
+  directory, below, are unaffected by the marker either way). An explicit
+  `wraptool harness install <name>` (or `update`) removes the marker again,
+  deliberately un-gc'ing the pool. Explicit opt-in only — never automatic,
+  and there is no `--force` escape hatch. Refused (an error, and nothing at
+  all is removed — not even the ordinary generation/cache/staging cleanup)
+  when any pool-lockable harness named in `manifest.yaml` has no genuinely
+  realized, on-disk active generation for this host's own platform (a
+  dangling pointer whose generation is gone from disk does not count as
+  active); the error names every such harness, the fix
+  (`wraptool harness install <name>`), and the `manifest.yaml` escape hatch
+  for a harness no longer used. `--dry-run` reports what `--legacy` would
+  remove without touching anything. `GCReport` gains `LegacyRemoved`
+  (true only when at least one tree actually existed to remove); the `gc`
+  audit event gains a `legacy_removed` field, recorded even if the legacy
+  step itself later fails, so real deletions are never left unaudited.
 
 ### Changed
 
 - On a Docker-only host, `harness install` for an npm harness realizes and
   activates the pool generation, then warns (instead of failing) that the
   host-side legacy binary was not installed — containers on such hosts get
-  their harness via the wraptool devcontainer feature.
+  their harness via the wraptool devcontainer feature's `:0` (legacy,
+  per-image provisioning) major; the new `:1` wiring-only major (below)
+  never provisions a binary itself, on any host.
 - Cross-architecture `sync` no longer runs the host's legacy installer as
   a side effect.
+- The Guix container runtime tolerates a pool whose legacy `bin/`+`lib/`
+  have already been removed via `gc --legacy`: an active generation mounts
+  `runtime/` alone (the legacy expose is dropped, not attempted against a
+  now-missing host path), and a harness with neither an active generation
+  nor legacy `bin/`+`lib/` fails `wraptool up` with an actionable error —
+  naming the actual paths and the real fix — instead of an opaque
+  `guix shell --expose` failure. A pool with only ONE of the two legacy
+  directories present (never `gc --legacy`'s own doing — it always removes
+  both together) is treated as unusable rather than partially mounted, with
+  a distinct error calling out the inconsistency and naming both expected
+  paths.
+- `ensureHarnessPool` now always creates the pool's `runtime/` directory (not
+  just `bin/`+`lib/`+`home/`): a scaffolded devcontainer config's pool mount
+  source needs to exist, developer-owned, before any container engine gets
+  a chance to create it root-owned on first use.
+- **Breaking (Dev Container feature):** published a new `wraptool` feature
+  major, `1.0.0` (§12.2/§12.3 of the unified harness pool design). It removes
+  the `provision` and `version` options entirely — the harness binary is no
+  longer installed by the feature at image build time. Instead it comes from
+  the host's shared harness pool `runtime/` tree, which must be DECLARED as a
+  read-only mount in `devcontainer.json` — the devcontainer CLI's `--mount`
+  flag has no read-only field at all, so `wraptool up` cannot inject this
+  mount itself and only verifies it (`wraptool init devcontainer` scaffolds
+  the declaration for new projects; see the `up` entry below); `PATH` gains
+  the mount's `bin/` via `containerEnv` (appended, never prepended).
+  `connect.sh` now also checks that the selected harness resolves on `PATH`,
+  naming `wraptool harness install <name>` as the fix: with `connect: true`
+  (the default) a missing binary hard-fails postCreate; with `connect: false`
+  the same message is a warning only, so a container staged ahead of running
+  `harness install` isn't treated as broken. Consequence: `forge.snamellit.com/pti/wraptool/wraptool:latest` now
+  resolves to this wiring-only major — pin `:1` for the new behavior or `:0`
+  to keep the old per-image provisioning behavior; existing configs already
+  pinned to `:0` are unaffected.
+- `wraptool init devcontainer` scaffolds the `:1` wiring-only feature and both
+  pool mounts (`home/` read-write, `runtime/` read-only, the latter as the
+  verbatim `,readonly` string form the devcontainer CLI actually enforces — it
+  refuses to scaffold a runtime mount whose source path would corrupt that
+  form, e.g. one containing a comma). It no longer auto-adds the `node`
+  feature for npm harnesses (the pool runtime bundles its own) or scaffolds a
+  `provision`/`version` option for any harness. `gemini` (not pool-lockable)
+  gets accurate next-steps — bake its binary into the image yourself — instead
+  of a dead-end `harness install gemini` suggestion. This repo's own
+  `.devcontainer/devcontainer.json` and `examples/devcontainer/` move to the
+  same shape.
+- `wraptool up --runtime=devcontainer` verifies the pool runtime mount instead
+  of injecting it (§12.2): a pool-locked harness with the mount already
+  declared read-only prints an info line; a declared mount that the
+  devcontainer CLI will NOT actually enforce as read-only (object-form
+  entries, or a string-form entry missing `readonly`/`ro`) gets an unmissable
+  SECURITY notice, since a writable pool `runtime/` would let this project's
+  container rewrite every other project's dispatcher scripts; a missing
+  declaration prints the exact `mounts` string entry to add. The home mount
+  stays `up`-injected as before, and a declared-but-host-missing source (the
+  mixed-OS team case) warns for both mounts rather than failing. `up`'s own
+  interactive shell entry-wraps `PATH` with the pool `runtime/bin` dir for
+  legacy-feature containers that don't yet have it from `containerEnv`.
+  `--harness` is now validated against the descriptor registry before the
+  shared server is started, not after, so an unknown harness fails fast
+  instead of leaving a server spawned for nothing.
 
 ### Upgrade notes
 
 - First `install`/`update` per npm harness re-resolves its lock once (the
   recipe now includes the provisioning-image identity) — the same one-shot
   self-heal pattern as previous upgrades, not an error.
+- Dev Container feature consumers: if your `devcontainer.json` references
+  `forge.snamellit.com/pti/wraptool/wraptool:latest` (or an unpinned major),
+  it now resolves to the wiring-only `1.0.0` major and stops installing the
+  harness binary at image build. Pin `:0` explicitly to keep the old
+  provisioning behavior, or switch to `wraptool harness install <name>` +
+  `wraptool up`'s pool mount (the supported path going forward).
+
+### Known limitations
+
+- A harness whose npm package ships its own `npm-shrinkwrap.json` (`pi`,
+  `@earendil-works/pi-coding-agent`) does not yet realize into the pool:
+  npm reifies that package's dependency subtree from the shrinkwrap
+  embedded in its extracted tarball, not from the outer lockfile, and those
+  nested fetches need npm's URL-indexed HTTP cache — which offline pool
+  realization's `npm cache add` (content-only, keyed by integrity) never
+  populates. `resolve`/`refresh` work normally and the condition is
+  recorded on the lock; `install`/`update` print a warning and fall
+  through to the legacy (network) install path exactly as for any other
+  realize failure, and `sync` fails with the same actionable message.
+  Tracked follow-up: seeding npm's URL cache index so shrinkwrapped
+  packages can realize offline too.
 
 ## 0.4.0 — 2026-08-05
 

@@ -79,12 +79,15 @@ wraptool config validate
 ## 5. Scaffold the devcontainer and launch
 
 ```powershell
+wraptool harness install claude
 wraptool init devcontainer --harness claude --lang go
 wraptool up
 ```
 
-`up` starts the shared server, brings up the container via `devcontainer up`,
-provisions the harness, wires its MCP config to the host, and drops you into a
+The first command installs the harness into the shared pool once (the
+developer's toolbox, not the project's). `up` starts the shared server, brings
+up the container via `devcontainer up`, mounts the pool-installed harness
+binary in read-only and wires its MCP config to the host, and drops you into a
 shell. Host credentials are not mounted; privileged git goes through wraptool's
 MCP git tool. Stop with `wraptool down` (`--rm` to remove).
 

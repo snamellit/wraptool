@@ -822,6 +822,23 @@ bind targets are a Docker error) — the existing `devcontainerDeclaresPoolMount
 check extends to both targets, and `up` warns when a declared source does not
 exist on this host (the mixed-OS case, §12.3).
 
+**Phase-4 implementation ruling — the runtime mount is config-declared, not
+`up`-injected.** The devcontainer CLI's `--mount` flag accepts only
+`type=…,source=…,target=…[,external=…]` — it has NO read-only field (verified
+against the shipped CLI's argument validator), and a read-write runtime mount
+would breach §5's trust boundary. Read-only mounts ARE expressible as
+verbatim string entries in `devcontainer.json`'s `mounts`, so: the §12.3
+scaffolder and the wiring-only feature docs own DECLARING the runtime mount
+(`…,readonly` string form), while `up` VERIFIES — active pointer plus a
+declared runtime mount — and prints the exact mounts snippet to add when the
+declaration is missing. The home mount (read-write, expressible via
+`--mount`) stays `up`-injected as before. PATH likewise cannot ride a
+CLI-supplied `--remote-env` (the CLI substitutes `${containerEnv:…}` only in
+config-sourced values, and a CLI remote-env would override the feature's
+containerEnv PATH): the wiring-only feature's `"PATH": "${PATH}:…"`
+containerEnv is the mechanism, plus entry-wrapping for `up`'s own interactive
+shell on legacy-feature containers.
+
 Before container creation, `up` verifies the selected harness has an active
 pointer for the target platform key. A missing realization fails with:
 

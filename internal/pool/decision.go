@@ -98,6 +98,24 @@ type DecisionInput struct {
 	LockPackage        string
 	LockVersion        string
 	LockRecipeRevision string
+	// LockNPMRawIncomplete reports whether the existing lock entry's raw npm
+	// lockfile is INCOMPLETE per !(*NPMLock).RawComplete() — see that
+	// method's doc comment for what "incomplete" means and why it matters
+	// (npm-raw-lockfile-backfill). Named as the negative (a "problem found"
+	// flag, zero value false) rather than positive so every DecisionInput
+	// literal that predates this field — including every existing test —
+	// keeps its prior, unaffected behavior with no edits: the false zero
+	// value means "nothing to heal," matching a non-npm entry (no NPMLock at
+	// all, e.g. archive-sourced), a lock with no Lockfile yet, or simply
+	// HasLock being false, all of which the shell also leaves at the zero
+	// value since there is nothing to heal in any of them. When true, Decide
+	// folds it into lockMatchesRecipe exactly like a recipe-format bump: the
+	// existing entry is treated as NOT matching, forcing a fresh
+	// DecisionResolveVersion so Source.Resolve rewrites the entry with a
+	// patched raw lockfile — the same self-heal mechanism
+	// recipeFormatVersion bumps use (orchestrator.go), applied per-entry
+	// instead of pool-wide.
+	LockNPMRawIncomplete bool
 
 	// Constraint is the manifest's semver constraint for Harness (empty
 	// means "any version", §7's descriptor stable channel).
@@ -224,7 +242,14 @@ func Decide(in DecisionInput) Decision {
 			lockSatisfiesConstraint = constraintObj == nil || constraintObj.Check(v)
 		}
 	}
-	lockMatchesRecipe := in.HasLock && in.LockPackage == in.Package && in.LockRecipeRevision == in.RecipeRevision
+	// LockNPMRawIncomplete is folded in here, not as a separate branch: an
+	// existing entry whose raw npm lockfile is incomplete (see that field's
+	// doc comment) is treated exactly like a recipe mismatch — "not fully
+	// settled on the resolve axis" — so every lockMatchesRecipe consumer
+	// below (both the strict short-circuit and the "scan converged to what's
+	// already locked" case) automatically routes to a fresh resolve without
+	// needing its own awareness of the raw-lockfile concept.
+	lockMatchesRecipe := in.HasLock && in.LockPackage == in.Package && in.LockRecipeRevision == in.RecipeRevision && !in.LockNPMRawIncomplete
 
 	// realized is the realize axis's own verdict, independent of everything
 	// above — see generationRealized's doc comment. The shell (orchestrator.go)

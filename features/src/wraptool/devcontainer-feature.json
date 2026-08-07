@@ -1,30 +1,20 @@
 {
   "id": "wraptool",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "name": "wraptool",
-  "description": "Set up an AI coding harness in a dev container against a host-side wraptool MCP server. Two orthogonal, independently-toggled jobs off one harness choice: provision installs the harness binary per image and shares its state via a host-mounted pool (auth/skills persist across projects); connect writes the MCP client config that points it at the host wraptool. Supersedes the separate wraptool-harness and wraptool-connect features.",
+  "description": "Wire a dev container's AI coding harness to a host-side wraptool MCP server. Wiring-only major (see design/harness/unified-harness-pool.md §12): this feature no longer installs the harness binary. The binary comes from the host's shared harness pool `runtime/` tree (built by `wraptool harness install <name>`), which must be DECLARED as a read-only mount in devcontainer.json — the devcontainer CLI's `--mount` flag has no read-only field at all, so `wraptool up` cannot inject this mount itself; it only VERIFIES the declaration and prints the exact entry to add when it's missing. `wraptool init devcontainer` scaffolds the declaration for new projects. Existing configs (including anything scaffolded against the old `:0` provisioning major) must add BOTH pool mounts to declare it themselves, e.g.: { \"mounts\": [ \"source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind\", \"source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly\" ] } — rewrite the source for your OS per §12.3: on macOS the two sources are '${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home' and '${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/runtime'; on Windows they are '${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home' and '.../runtime' — the `${localEnv:HOME}` rewrite works there too (per internal/paths, %LOCALAPPDATA% is itself %USERPROFILE%\\AppData\\Local, just a different relative path than the Linux/macOS defaults); the Windows-specific step is setting HOME at all, since only %USERPROFILE% is set by default there (`setx HOME %USERPROFILE%`, see docs/platform-windows.qmd). This applies whether or not you use `wraptool up`: without the declaration there is no binary on PATH regardless of how the container was started. The `harness` option now only selects which MCP config shape `connect` writes. The old provisioning major (`:0`) remains published for existing configs that still set `provision`/`version`, but is deprecated — new setups should pin this major explicitly (`:1`, wiring-only) rather than `:latest`, which now resolves here; `:0` stays the address for the legacy per-image provisioning behavior.",
   "documentationURL": "https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool",
   "options": {
     "harness": {
       "type": "string",
       "enum": ["claude", "opencode", "pi", "agy", "gemini"],
       "default": "claude",
-      "description": "Which harness this feature targets — the single source for BOTH provisioning (which binary to install) and connect (which MCP config shape to write). claude/opencode/pi install via npm and need a node runtime; agy installs via its own script; gemini has no automated installer here (bake it in, provision: false)."
-    },
-    "provision": {
-      "type": "boolean",
-      "default": true,
-      "description": "Install the harness binary into the image at build time. Set false to bring your own binary (baked into your base image); the shared-pool HOME and connect wiring still apply."
+      "description": "Which harness this feature wires — the MCP config shape connect writes. No longer selects an installer: the binary is not provisioned by this feature (see the top-level description)."
     },
     "connect": {
       "type": "boolean",
       "default": true,
       "description": "Write the MCP client config that wires the harness to the host wraptool (postCreate). Set false to wire it yourself (e.g. host-side `wraptool init`)."
-    },
-    "version": {
-      "type": "string",
-      "default": "",
-      "description": "Version/tag for the npm-provisioned harnesses (claude/opencode/pi), e.g. 1.2.3. Empty = latest. Ignored for agy/gemini and when provision is false."
     },
     "port": {
       "type": "string",
@@ -38,10 +28,10 @@
       "description": "Explicit wraptool base URL for connect (e.g. http://172.18.0.1:8717). Empty = auto-detect the host as the container's default-route gateway."
     }
   },
-  "installsAfter": ["ghcr.io/devcontainers/features/node"],
-  "//": "HOME is pinned to the shared-pool mount target (/home/wraptool-harness — a dedicated user-space home, not a system /opt path). It is a feature invariant, not gated by a toggle: devcontainer features can't conditionalize containerEnv on an option value, and containerEnv is the layer that actually survives `devcontainer exec` (remoteEnv is reverted by its user-env probe). install.sh always creates the dir so HOME is valid even without a mount. `wraptool up` bind-mounts the host pool ($XDG_DATA_HOME/wraptool/harness-pool/home, per-developer XDG data) onto it; standalone Reopen-in-Container declares the same mount (see examples/devcontainer).",
+  "//": "HOME is pinned to the shared-pool mount target (/home/wraptool-harness — a dedicated user-space home, not a system /opt path). PATH gains the pool runtime's bin dir, appended (never prepended — pool tools must not shadow project tools, mirroring §12.1's rule). Both are feature invariants, not gated by a toggle: devcontainer features can't conditionalize containerEnv on an option value, and containerEnv is the layer that actually survives `devcontainer exec` (remoteEnv is reverted by its user-env probe). A Feature's containerEnv is emitted verbatim into the image's Dockerfile ENV — plain `$VAR`/`${VAR}` only, NOT the devcontainer-CLI's `containerEnv:`-prefixed substitution form (that form is remoteEnv/mounts/devcontainer.json scope only; BuildKit hard-errors on the colon modifier inside an ENV value), so PATH here reads the base image's own build-time PATH via `${PATH}`. Caveat shared with other official features: a base image whose config env has no PATH at all expands `${PATH}` to empty, leaving a leading ':' (implicitly puts CWD on PATH) — accepted. install.sh only creates the HOME dir (so it is valid even without a mount) and stages connect.sh; it installs no packages and makes no network access. `wraptool up` bind-mounts the host pool's home/ ($XDG_DATA_HOME/wraptool/harness-pool/home, per-developer XDG data) onto HOME automatically, but the read-only runtime/ mount onto the PATH target must be DECLARED in devcontainer.json (the devcontainer CLI's --mount has no read-only field): `wraptool init devcontainer` scaffolds the declaration, and `wraptool up` only verifies it is present and correctly read-only, printing the exact entry to add when it is not (design/harness/unified-harness-pool.md §12.2/§12.3, examples/devcontainer).",
   "containerEnv": {
-    "HOME": "/home/wraptool-harness"
+    "HOME": "/home/wraptool-harness",
+    "PATH": "${PATH}:/opt/wraptool-harness/runtime/bin"
   },
   "postCreateCommand": "/usr/local/share/wraptool/connect.sh"
 }

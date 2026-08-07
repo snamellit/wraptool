@@ -41,6 +41,31 @@ func AuditFile() string {
 	return filepath.Join(Root(), "audit.jsonl")
 }
 
+// LegacyRemovedMarkerFile returns the path of the marker
+// `wraptool harness gc --legacy` writes, after removing the pool's legacy
+// bin/+lib/ trees, at the developer's real pool root (§16 Phase 4 item 5).
+// Its presence is what stops `ensureHarnessPool` (cmd/guixcontainer.go)
+// from silently recreating bin/+lib/ on the very next `wraptool up` —
+// without it, a gc'd pool would resurrect itself the moment a developer
+// re-entered a container. An explicit reinstall (`wraptool harness install
+// <name>`, cmd/harness.go's legacy install path) removes this marker again,
+// deliberately un-gc'ing the pool. A production-only convenience wrapper
+// around LegacyRemovedMarkerFileAt(Root()) — every caller that must work
+// against a test-rooted pool (internal/pool.PoolPaths.LegacyRemovedMarker,
+// or a cmd-level fake pool root) uses that parameterized form instead.
+func LegacyRemovedMarkerFile() string {
+	return LegacyRemovedMarkerFileAt(Root())
+}
+
+// LegacyRemovedMarkerFileAt is LegacyRemovedMarkerFile parameterized on an
+// explicit pool root, so a caller that already has one in hand (a fake
+// t.TempDir() root in a test, or cmd/guixcontainer.go's own harnessPoolDir())
+// never needs to reconstruct or duplicate the "legacy-removed" filename
+// itself.
+func LegacyRemovedMarkerFileAt(root string) string {
+	return filepath.Join(root, "legacy-removed")
+}
+
 // CacheDir returns the pool's immutable downloaded-artifact cache root.
 func CacheDir() string {
 	return filepath.Join(Root(), "cache")

@@ -271,6 +271,11 @@ type PoolPaths struct {
 	// and Staging, so tests operate under a t.TempDir() root instead of the
 	// developer's real pool (production wiring passes pool.RuntimeDir()).
 	Runtime string
+	// LegacyRemovedMarker is pool.LegacyRemovedMarkerFile() (production) or
+	// a t.TempDir()-rooted equivalent (tests) — see that function's own doc
+	// comment. Only GCOptions.Legacy's removal step (gc.go) writes it; every
+	// other caller leaves this the zero value.
+	LegacyRemovedMarker string
 }
 
 // LockPool acquires the pool's single exclusive advisory lock (§6.5) for
@@ -703,6 +708,20 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		}
 	}
 
+	// npm-raw-lockfile-backfill field lesson: a lock persisted by a pre-fix
+	// binary can carry a raw npm lockfile that is syntactically valid (loads
+	// fine, validateNPMLockfile tolerates it) but semantically incomplete —
+	// a raw entry missing integrity that realize-side `npm ci --offline`
+	// cannot match by cache. false (the zero value) when there is nothing to
+	// heal: no existing lock, or an existing entry with no NPMLock at all
+	// (archive-sourced). See (*NPMLock).RawComplete's and
+	// DecisionInput.LockNPMRawIncomplete's doc comments for the self-heal
+	// this feeds into.
+	rawIncomplete := false
+	if hasLock && existing.NPMLock != nil {
+		rawIncomplete = !existing.NPMLock.RawComplete()
+	}
+
 	// Decide validates hm.Constraint itself (it has to — the table test
 	// exercises that failure directly), which is a deliberate, accepted
 	// ordering change from the pre-decision-core code: an invalid manifest
@@ -720,6 +739,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		LockPackage:              existing.Package,
 		LockVersion:              existing.Version,
 		LockRecipeRevision:       existing.RecipeRevision,
+		LockNPMRawIncomplete:     rawIncomplete,
 		Constraint:               hm.Constraint,
 		RecipeRevision:           recipeRevision,
 		Candidates:               candidates,

@@ -105,47 +105,65 @@ property. For most language + tool combinations the defaults are fine.
 
 ## The `wraptool` feature
 
-One feature does both jobs, keyed on a single `harness` choice so the name can't
-drift between two places:
+The feature is **wiring only** (major `:1` — see
+[`design/harness/unified-harness-pool.md`](https://forge.snamellit.com/pti/wraptool/src/branch/main/design/harness/unified-harness-pool.md)
+§12.3): it installs no harness binary. The binary comes from the **shared
+harness pool**'s `runtime/` tree instead — version-locked and built once per
+developer with `wraptool harness install <name>` on the host, then mounted
+**read-only** into every project container. The feature is keyed on a single
+`harness` choice, so the name can't drift between two places:
 
-- **`provision`** (default `true`) — installs the harness binary into the image
-  (`npm i -g` for claude/opencode/pi, the harness's own script for agy), plus
-  pins `HOME` to a host-mounted **shared pool** so the harness's auth, skills, and
-  config persist across every project (the developer toolbox — installed and
-  logged-in once, not per session).
-- **`connect`** (default `true`) — wires the container to a **host-side wraptool**
-  MCP server, so the agent's git/gcloud/kubectl calls execute on the host, where
-  the credentials live, while the container itself stays credential-free.
+- **`harness`** (default `claude`) — selects which MCP config shape `connect`
+  writes; no longer selects an installer.
+- **`connect`** (default `true`) — wires the container to a **host-side
+  wraptool** MCP server, so the agent's git/gcloud/kubectl calls execute on the
+  host, where the credentials live, while the container itself stays
+  credential-free. Set `false` to wire it yourself.
 
 ```jsonc
 {
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
   "features": {
-    // Language toolchains (npm harnesses need node — see below)
     "ghcr.io/devcontainers/features/go:1": {},
-    "ghcr.io/devcontainers/features/node:1": {},
-    // Provision the harness binary + wire it to the host wraptool
-    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
+    // Wire the container to the host wraptool. No binary is installed here —
+    // it comes from the runtime mount below.
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
   },
   // Host workspace path, so the server scopes tools to this worktree.
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   // The token is a secret → remoteEnv keeps it out of image layers.
   "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
-  // Share the host harness-state pool (login/skills once, every project).
+  // Share the host harness pool: home/ (state) read-write, runtime/ (binaries)
+  // read-only.
   "mounts": [
-    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
   ]
 }
 ```
 
 ::: {.callout-important}
-The `~/.local/share/...` mount source is the **Linux** pool location. Match it to
-your OS or the bind mount fails on a non-existent source. Use forward slashes
-under `${localEnv:HOME}` on every OS (backslashes are invalid in a JSON string):
-**macOS** `${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home`,
-**Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home`. `wraptool
-init devcontainer` and `wraptool up` write/mount the platform-correct path for
-you; only a hand-written `devcontainer.json` needs this adjustment.
+The `~/.local/share/...` mount sources are the **Linux** pool location. Match
+them to your OS or the bind mount fails on a non-existent source. `${localEnv:HOME}`
+works on all three OSes — the pool root always lives under the user's home
+directory, just at a different relative path per OS. Use forward slashes under
+`${localEnv:HOME}` on every OS (backslashes are invalid in a JSON string):
+**macOS** `${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}`,
+**Windows** `${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}`
+(`%LOCALAPPDATA%` is itself `%USERPROFILE%\AppData\Local`). The Windows-specific
+caveat isn't the mount source, it's that `HOME` isn't set by default there (only
+`USERPROFILE`) — see [Windows](platform-windows.qmd) for the one-time `setx HOME
+%USERPROFILE%` fix. `wraptool init devcontainer` and `wraptool up` write/mount
+the platform-correct paths for you; only a hand-written `devcontainer.json`
+needs this adjustment.
+
+The **runtime mount must stay the string form** shown above, ending in
+`,readonly`. The devcontainer CLI's object-form mounts (`{"source":...,
+"target":...}`) have no read-only field at all, so a `"readonly": true` key on
+an object-form entry is silently dropped and the mount comes up read-write —
+which would let this ONE project's container rewrite the pool binaries every
+OTHER project's container runs. The home mount has no such requirement (it is
+read-write either way), so object form is fine there.
 :::
 
 `connect` is **image-agnostic**: it adds no tools of its own, only the MCP client
@@ -164,18 +182,22 @@ variable-substituted):
 | `WRAPTOOL_CWD` | `containerEnv` | `${localWorkspaceFolder}` | Host workspace path, sent to the server as `?cwd=` so it scopes tools to this worktree. |
 
 ::: {.callout-note}
-**npm harnesses need node.** claude/opencode/pi install via `npm`, so the image
-needs a node runtime — add `ghcr.io/devcontainers/features/node:1`. The scaffolder
-(below) adds it for you. Set `"provision": false` to bring your own binary (baked
-into your base image), or `"connect": false` to wire the harness yourself. `agy`
-installs via its own script (no node); `gemini` has no automated installer, so use
-`"provision": false` and bake it in.
+**No harness needs a node feature in the image any more.** The runtime mount
+bundles its own pinned node for npm-sourced harnesses (claude/opencode/pi); the
+feature's own scripts are POSIX sh with no npm/node dependency. Add
+`ghcr.io/devcontainers/features/node:1` only if your *project* code needs node.
+`agy` installs via its own channel; `gemini` has no automated pool installer
+(not pool-lockable) — its binary is never in the runtime mount, so bake it into
+your image or install it by hand if you select it.
 :::
 
 See the [feature definition](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool/devcontainer-feature.json)
 for every option, and [Isolated environments](isolated-environments.md) for the
-threat model. The older `wraptool-connect` feature (wiring only) is deprecated but
-stays published for existing configs.
+threat model. The old per-image-provisioning major (`:0`, with `provision`/
+`version` options) remains published for existing configs but is deprecated —
+new setups should pin `:1` explicitly. The older `wraptool-connect` feature
+(wiring only, pre-dating the merged feature) is also deprecated but stays
+published for existing configs.
 
 ::: {.callout-important}
 For container use the server must listen where the container can reach it — bind
@@ -192,11 +214,16 @@ wraptool init devcontainer --harness claude --lang go,java
 ```
 
 It writes `.devcontainer/devcontainer.json` from the `base:ubuntu` + features
-model above: the language features you list, the `wraptool` feature with your
-harness, and the `WRAPTOOL_*` env + shared-pool mount prefilled. npm harnesses
-auto-pull the node feature so the build won't fail for lack of `npm`. It writes a
-fresh file and refuses to clobber an existing one (pass `--force`); it does **not**
-merge into a hand-authored config. Edit the result freely — it's a starting point.
+model above: the language features you list, the wiring-only `wraptool` feature
+with your harness, and the `WRAPTOOL_*` env + both shared-pool mounts (home
+read-write, runtime read-only) prefilled. It writes a fresh file and refuses to
+clobber an existing one (pass `--force`); it does **not** merge into a
+hand-authored config. Edit the result freely — it's a starting point. Install
+the harness itself once, on the host, before opening the container:
+
+```bash
+wraptool harness install claude
+```
 
 ## A complete example
 
@@ -212,16 +239,16 @@ extensions):
   "features": {
     "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
     "ghcr.io/devcontainers/features/java:1": { "version": "21" },
-    "ghcr.io/devcontainers/features/node:1": {},
 
-    "forge.snamellit.com/pti/wraptool/wraptool:0": { "harness": "claude" }
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
   },
 
   "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
   "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
 
   "mounts": [
-    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind"
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
   ],
 
   // Editor integration: install the language extensions in the container.
@@ -256,10 +283,15 @@ It is idempotent and does three things:
    host, else `devcontainer up` — injecting the connection info the
    `wraptool` feature needs: the auth token (`WRAPTOOL_TOKEN`) and this
    worktree's host path (`WRAPTOOL_CWD`), so `.mcp.json` is wired correctly
-   without you exporting anything. It also bind-mounts the shared harness pool
-   into the container — but **defers** when the `devcontainer.json` already
-   declares that mount (e.g. one written by `wraptool init devcontainer`), so
-   the two never collide on a duplicate-mount error.
+   without you exporting anything. It also bind-mounts the shared harness-pool
+   `home/` into the container — but **defers** when the `devcontainer.json`
+   already declares that mount (e.g. one written by `wraptool init
+   devcontainer`), so the two never collide on a duplicate-mount error. The
+   read-only `runtime/` mount (the harness binary) can't be injected the same
+   way — the devcontainer CLI's `--mount` flag has no read-only field — so `up`
+   only **verifies** it: it checks the selected harness is pool-locked and
+   that `devcontainer.json` declares the mount correctly, and prints the exact
+   snippet to add when it's missing.
 3. **Drops you into a shell** in the container, ready to code. Exiting the shell
    leaves the container running; re-enter any time by running `wraptool up` again.
 

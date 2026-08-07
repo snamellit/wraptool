@@ -3,6 +3,7 @@ package pool
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,17 @@ func sampleLockWithNPMLockfile() *Lock {
 	l := sampleLock()
 	h := l.Harnesses["claude"]
 	h.NPMLock.Lockfile = json.RawMessage(sampleLockNPMLockfile)
+	l.Harnesses["claude"] = h
+	return l
+}
+
+// sampleLockWithShrinkwrap is sampleLockWithNPMLockfile plus
+// NPMLock.HasShrinkwrap set — the additive npm-shrinkwrap-detection field
+// (npm-raw-lockfile-backfill rework item 2).
+func sampleLockWithShrinkwrap() *Lock {
+	l := sampleLockWithNPMLockfile()
+	h := l.Harnesses["claude"]
+	h.NPMLock.HasShrinkwrap = true
 	l.Harnesses["claude"] = h
 	return l
 }
@@ -212,6 +224,71 @@ func TestLockHarnessHash_StableWithNPMLockfile(t *testing.T) {
 	}
 	if hash1 != hash2 {
 		t.Errorf("Hash differs across two independently-built, logically-equal values: %q vs %q", hash1, hash2)
+	}
+}
+
+// TestNPMLockHasShrinkwrap_MarshalDeterministicRoundTripsAndAffectsHash
+// covers item 2 of the npm-raw-lockfile-backfill rework: NPMLock.HasShrinkwrap
+// is a plain, additive bool with no validation constraint, but it must
+// (a) survive Marshal/UnmarshalLock unchanged, (b) marshal deterministically
+// like every other field, and (c) actually participate in
+// (*LockHarness).Hash — a receipt's lock_entry_hash must change when this
+// flag does, since it changes what Realize will do with the entry.
+func TestNPMLockHasShrinkwrap_MarshalDeterministicRoundTripsAndAffectsHash(t *testing.T) {
+	l := sampleLockWithShrinkwrap()
+
+	a, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (1): %v", err)
+	}
+	b, err := sampleLockWithShrinkwrap().Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (2, independent value): %v", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("Marshal is not deterministic across equal values:\n--- a ---\n%s\n--- b ---\n%s", a, b)
+	}
+
+	got, err := UnmarshalLock(a)
+	if err != nil {
+		t.Fatalf("UnmarshalLock: %v", err)
+	}
+	if !got.Harnesses["claude"].NPMLock.HasShrinkwrap {
+		t.Error("round-tripped NPMLock.HasShrinkwrap = false, want true")
+	}
+	data2, err := got.Marshal()
+	if err != nil {
+		t.Fatalf("re-Marshal: %v", err)
+	}
+	if !bytes.Equal(a, data2) {
+		t.Fatalf("round trip is not byte-stable:\n--- original ---\n%s\n--- re-marshaled ---\n%s", a, data2)
+	}
+
+	withShrinkwrap := sampleLockWithShrinkwrap().Harnesses["claude"]
+	withoutShrinkwrap := sampleLockWithNPMLockfile().Harnesses["claude"]
+	hashWith, err := withShrinkwrap.Hash()
+	if err != nil {
+		t.Fatalf("Hash (with shrinkwrap): %v", err)
+	}
+	hashWithout, err := withoutShrinkwrap.Hash()
+	if err != nil {
+		t.Fatalf("Hash (without shrinkwrap): %v", err)
+	}
+	if hashWith == hashWithout {
+		t.Error("Hash is identical with and without HasShrinkwrap set — the field is not participating in the receipt's lock_entry_hash")
+	}
+}
+
+// TestNPMLockHasShrinkwrap_OmittedWhenFalse pins the omitempty behavior: the
+// overwhelmingly common (and every pre-existing) lock has HasShrinkwrap
+// false, and must not grow a new "has_shrinkwrap" key in that case.
+func TestNPMLockHasShrinkwrap_OmittedWhenFalse(t *testing.T) {
+	data, err := sampleLockWithNPMLockfile().Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "has_shrinkwrap") {
+		t.Errorf("Marshal output contains \"has_shrinkwrap\" with the field false, want it omitted:\n%s", data)
 	}
 }
 
@@ -424,6 +501,124 @@ func TestLockValidate_RejectsLockfileMissingASummaryMapEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "node_modules/bar") {
 		t.Errorf("error = %q, want it to name node_modules/bar", err.Error())
+	}
+}
+
+// TestLockValidate_ToleratesRawEntryMissingIntegrity is the field-wedge
+// lesson (npm-raw-lockfile-backfill rework): Validate — and therefore
+// UnmarshalLock, the path `wraptool harness update` itself uses to LOAD the
+// lock it needs to replace — must NOT reject a raw "packages" entry with a
+// resolved URL but no integrity. A pre-fix binary can persist exactly this
+// shape (@earendil-works/pi-tui's workspace-sibling entries); rejecting it
+// on load would wedge that pool permanently, since the "re-run wraptool
+// harness update" advice would be circular (update can't load the lock to
+// act on it). See RawComplete for the load-tolerant flag this shape trips
+// instead, and TestUpdateHarnessLocked_SelfHealsIncompleteRawLockfile
+// (orchestrator_test.go) for the self-heal this enables.
+func TestLockValidate_ToleratesRawEntryMissingIntegrity(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	lockfile, err := json.Marshal(map[string]any{
+		"lockfileVersion": 3,
+		"packages": map[string]any{
+			"":                 map[string]any{"dependencies": map[string]string{}},
+			"node_modules/foo": map[string]any{"version": "1.0.0", "resolved": "https://registry.npmjs.org/foo.tgz"},
+			"node_modules/bar": map[string]any{"version": "2.0.0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshaling fixture lockfile: %v", err)
+	}
+	h.NPMLock.Lockfile = lockfile
+	l.Harnesses["claude"] = h
+
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with a raw entry missing integrity: %v (lock LOADING must tolerate this old shape)", err)
+	}
+
+	data, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if _, err := UnmarshalLock(data); err != nil {
+		t.Fatalf("UnmarshalLock: %v (loading a pre-fix lock must not fail)", err)
+	}
+}
+
+// --- NPMLock.RawComplete --------------------------------------------------
+
+// npmRawLockfileJSON builds a minimal raw package-lock.json for
+// RawComplete's tests: one well-formed entry (resolved+integrity) plus
+// whatever extra "packages" entries the caller supplies as a raw JSON
+// fragment.
+func npmRawLockfileJSON(t *testing.T, extraPackagesJSON string) json.RawMessage {
+	t.Helper()
+	data := []byte(fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"dependencies": {}},
+    "node_modules/well-formed": {"version": "1.0.0", "resolved": "https://registry.npmjs.org/well-formed.tgz", "integrity": "sha512-xyz"}
+    %s
+  }
+}`, extraPackagesJSON))
+	var probe any
+	if err := json.Unmarshal(data, &probe); err != nil {
+		t.Fatalf("npmRawLockfileJSON: invalid JSON fixture: %v\n%s", err, data)
+	}
+	return data
+}
+
+func TestNPMLockRawComplete_NilOrEmptyIsComplete(t *testing.T) {
+	var nilLock *NPMLock
+	if !nilLock.RawComplete() {
+		t.Error("RawComplete() on a nil *NPMLock = false, want true (nothing to heal)")
+	}
+	empty := &NPMLock{}
+	if !empty.RawComplete() {
+		t.Error("RawComplete() with an empty Lockfile = false, want true")
+	}
+}
+
+func TestNPMLockRawComplete_WellFormedIsComplete(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, "")}
+	if !n.RawComplete() {
+		t.Error("RawComplete() on a fully-integrity'd lockfile = false, want true")
+	}
+}
+
+// TestNPMLockRawComplete_MissingIntegrityIsIncomplete is the exact
+// pi-coding-agent shape: a resolved entry with no integrity.
+func TestNPMLockRawComplete_MissingIntegrityIsIncomplete(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, `,
+    "node_modules/well-formed/node_modules/pi-sibling": {"version": "2.0.0", "resolved": "https://registry.npmjs.org/pi-sibling.tgz"}`)}
+	if n.RawComplete() {
+		t.Error("RawComplete() with a resolved-but-no-integrity entry = true, want false")
+	}
+}
+
+// TestNPMLockRawComplete_AllowsLinkEntryWithoutIntegrity covers the "link"
+// exclusion: a workspace-symlink raw entry legitimately has neither resolved
+// nor integrity, and must not trip RawComplete.
+func TestNPMLockRawComplete_AllowsLinkEntryWithoutIntegrity(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, `,
+    "node_modules/workspace-ws": {"resolved": "../workspace-ws", "link": true}`)}
+	if !n.RawComplete() {
+		t.Error("RawComplete() with a link entry lacking integrity = false, want true (link entries must be exempt)")
+	}
+}
+
+// TestNPMLockRawComplete_AllowsBundledEntryWithoutResolvedOrIntegrity covers
+// the bundled-dependency exclusion: npm marks a package bundled into its
+// parent's tarball with "inBundle": true and no "resolved" (there is
+// nothing to separately fetch — it ships inside the parent). RawComplete
+// already exempts this shape because it only fires when "resolved" is
+// non-empty, but this pins that behavior explicitly rather than leaving it
+// as an unproven side effect of the resolved=="" check.
+func TestNPMLockRawComplete_AllowsBundledEntryWithoutResolvedOrIntegrity(t *testing.T) {
+	n := &NPMLock{Lockfile: npmRawLockfileJSON(t, `,
+    "node_modules/well-formed/node_modules/bundled-dep": {"version": "1.0.0", "inBundle": true}`)}
+	if !n.RawComplete() {
+		t.Error("RawComplete() with a bundled entry lacking resolved/integrity = false, want true (bundled entries must be exempt)")
 	}
 }
 

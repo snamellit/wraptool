@@ -9,13 +9,20 @@ import (
 
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
+	"github.com/pti/wraptool/internal/pool"
 
 	"github.com/spf13/cobra"
 )
 
-// wraptoolFeatureRef is the merged wraptool Dev Container feature (provision +
-// connect). Pinned to the major so patch/minor updates flow in.
-const wraptoolFeatureRef = "forge.snamellit.com/pti/wraptool/wraptool:0"
+// wraptoolFeatureRef is the wiring-only wraptool Dev Container feature major
+// (design/harness/unified-harness-pool.md §12.3): it pins HOME/PATH and
+// writes the MCP client config, but installs no harness binary. The binary
+// comes from the host harness pool's `runtime/` tree, mounted read-only by
+// `wraptool up` (or declared here for a standalone `devcontainer up`) — run
+// `wraptool harness install <name>` on the host first. Pinned to the major so
+// patch/minor updates flow in. The old per-image-provisioning major (`:0`)
+// remains published for legacy configs but is not what this scaffolder emits.
+const wraptoolFeatureRef = "forge.snamellit.com/pti/wraptool/wraptool:1"
 
 // languageFeatures maps a --lang token to its devcontainers/features OCI ref, in
 // canonical emit order. Aligns with docs/devcontainers.qmd (base image + features).
@@ -36,10 +43,15 @@ func languageFeatureRef(name string) (string, bool) {
 	return "", false
 }
 
-// npmHarnesses are provisioned via npm and so need a node runtime in the image;
-// the scaffolder auto-adds the node feature for them (else the build fails when
-// wraptool's install.sh finds no npm — the footgun we hit in testing).
-var npmHarnesses = map[string]bool{"claude": true, "opencode": true, "pi": true}
+// The scaffolder no longer auto-adds the node feature for npm-installed
+// harnesses (claude/opencode/pi): that existed only because the OLD
+// provisioning feature ran `npm i -g` in-image at build time, and a missing
+// npm failed the build. The wiring-only feature installs no harness binary at
+// all — install.sh/connect.sh are POSIX sh with no npm/node dependency — and
+// the harness binary itself now comes from the host harness-pool `runtime/`
+// mount, which bundles its own pinned node (design/harness/unified-harness-pool.md
+// §12.3, §16 Phase 4 item 2). Pass `--lang node` yourself if your PROJECT code
+// needs a node toolchain; it is no longer implied by the harness choice.
 
 // baseImage resolves the --base shorthand to a full image ref. A value that
 // looks like a full ref (contains a slash) is passed through verbatim.
@@ -70,19 +82,21 @@ func newInitDevcontainerCmd() *cobra.Command {
 		Use:   "devcontainer",
 		Short: "Scaffold a .devcontainer/devcontainer.json wired for wraptool",
 		Long: `Generate a starting-point Dev Container config: a base image plus the
-language features you pick, the wraptool feature with a chosen harness, and the
-WRAPTOOL_* env / shared-pool mount prefilled. Follows docs/devcontainers.qmd
-(base image + features, not a fat all-in-one image).
+language features you pick, the wiring-only wraptool feature with a chosen
+harness, and the WRAPTOOL_* env / shared-pool mounts prefilled. Follows
+docs/devcontainers.qmd (base image + features, not a fat all-in-one image).
 
-It writes a NEW file and refuses to clobber an existing one (use --force). npm
-harnesses (claude/opencode/pi) auto-pull the node feature so the build won't fail
-for lack of npm.
+It writes a NEW file and refuses to clobber an existing one (use --force). The
+harness binary is NOT provisioned by this config: it comes from the host
+harness pool's runtime/ tree — run 'wraptool harness install <harness>' on the
+host, then 'wraptool up' (which mounts it) or plain 'devcontainer up' (which
+needs the mount declared, as this scaffolder does).
 
 Examples:
   # Go + Java project running Claude Code
   wraptool init devcontainer --harness claude --lang go,java
 
-  # Node project running opencode (node feature added automatically anyway)
+  # Node project running opencode
   wraptool init devcontainer --harness opencode --lang node`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -90,7 +104,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&harnessName, "harness", "claude", "container harness to provision + wire (claude, opencode, pi, agy, gemini)")
+	cmd.Flags().StringVar(&harnessName, "harness", "claude", "container harness to wire (claude, opencode, pi, agy, gemini)")
 	cmd.Flags().StringSliceVar(&langs, "lang", nil, "language features to add (go, node, java, python, rust)")
 	cmd.Flags().StringVar(&base, "base", "ubuntu", "base image: ubuntu, debian, alpine, or a full image ref")
 	cmd.Flags().StringVar(&out, "out", ".devcontainer/devcontainer.json", "output path")
@@ -102,15 +116,17 @@ Examples:
 
 func runInitDevcontainer(harnessName string, langs []string, base, out, name string, force bool) error {
 	// Validate the harness: must be a container-CLI harness (the wraptool feature
-	// installs a binary in the box; host IDEs like cursor/roo are configured
-	// host-side with `wraptool init --harness`).
+	// wires an MCP config for a binary in the box; host IDEs like cursor/roo are
+	// configured host-side with `wraptool init --harness`).
 	d, ok := harness.Registry[harnessName]
 	if !ok || !d.IsCLI() {
 		return fmt.Errorf("harness %q is not a container-CLI harness; pick one of claude, opencode, pi, agy, gemini "+
 			"(host IDEs are configured with `wraptool init --harness %s`)", harnessName, harnessName)
 	}
 
-	// Resolve + de-dup the language set, auto-adding node for npm harnesses.
+	// Resolve + de-dup the language set. No auto-add here (see the doc comment
+	// above languageFeatures): the harness binary no longer needs npm/node from
+	// this image.
 	want := map[string]bool{}
 	var order []string
 	add := func(l string) {
@@ -129,10 +145,6 @@ func runInitDevcontainer(harnessName string, langs []string, base, out, name str
 		}
 		add(l)
 	}
-	autoNode := npmHarnesses[harnessName] && !want["node"]
-	if autoNode {
-		add("node")
-	}
 	// Emit languages in canonical order regardless of input order.
 	sort.SliceStable(order, func(i, j int) bool { return langIndex(order[i]) < langIndex(order[j]) })
 
@@ -140,7 +152,10 @@ func runInitDevcontainer(harnessName string, langs []string, base, out, name str
 		name = deriveName(out)
 	}
 
-	content := renderDevcontainer(name, baseImage(base), order, harnessName, autoNode)
+	content, err := renderDevcontainer(name, baseImage(base), order, harnessName, d.PoolLockable())
+	if err != nil {
+		return err
+	}
 
 	// Guard: never clobber a hand-authored config unless forced.
 	out = expandTilde(out)
@@ -159,15 +174,18 @@ func runInitDevcontainer(harnessName string, langs []string, base, out, name str
 	fmt.Printf("wrote %s\n", out)
 	fmt.Printf("  base: %s\n", baseImage(base))
 	if len(order) > 0 {
-		note := strings.Join(order, ", ")
-		if autoNode {
-			note += " (node added for the npm harness)"
-		}
-		fmt.Printf("  languages: %s\n", note)
+		fmt.Printf("  languages: %s\n", strings.Join(order, ", "))
 	}
 	fmt.Printf("  harness: %s\n", harnessName)
-	fmt.Printf("\nNext: export WRAPTOOL_TOKEN on the host if your server uses auth, then open the folder\n")
-	fmt.Printf("in a Dev Container (or run `wraptool up`).\n")
+	if d.PoolLockable() {
+		fmt.Printf("\nOn the host: run `wraptool harness install %s` (once), export WRAPTOOL_TOKEN if\n", harnessName)
+		fmt.Printf("your server uses auth, then open the folder in a Dev Container (or run `wraptool up`).\n")
+	} else {
+		fmt.Printf("\n%s is not pool-lockable — no `wraptool harness install` for it; bake its binary\n", harnessName)
+		fmt.Printf("into your image yourself (or set \"connect\": false and wire it by hand). Export\n")
+		fmt.Printf("WRAPTOOL_TOKEN if your server uses auth, then open the folder in a Dev Container\n")
+		fmt.Printf("(or run `wraptool up`).\n")
+	}
 	return nil
 }
 
@@ -198,8 +216,9 @@ func deriveName(out string) string {
 
 // renderDevcontainer builds the JSONC config as a commented starting point. Hand-
 // built (not encoding/json) so the guiding comments survive — this is a template
-// for a human to edit, not machine state.
-func renderDevcontainer(name, image string, langs []string, harnessName string, autoNode bool) string {
+// for a human to edit, not machine state. Fails only when the runtime mount's
+// source can't be safely rendered in string form (poolRuntimeMountString).
+func renderDevcontainer(name, image string, langs []string, harnessName string, poolLockable bool) (string, error) {
 	var b strings.Builder
 	b.WriteString("{\n")
 	b.WriteString("  // Generated by `wraptool init devcontainer` — a starting point; edit freely.\n")
@@ -208,21 +227,28 @@ func renderDevcontainer(name, image string, langs []string, harnessName string, 
 	b.WriteString("\n  \"features\": {\n")
 	for _, l := range langs {
 		ref, _ := languageFeatureRef(l)
-		fmt.Fprintf(&b, "    %q: {},", ref)
-		if l == "node" && autoNode {
-			b.WriteString(" // required by the npm-installed harness")
-		}
-		b.WriteString("\n")
+		fmt.Fprintf(&b, "    %q: {},\n", ref)
 	}
-	// The wraptool feature. gemini has no automated installer, so scaffold it with
-	// provision:false and a pointer to bake the binary in.
-	b.WriteString("    // wraptool: provision installs the harness binary, connect writes the MCP wiring.\n")
-	if harnessName == "gemini" {
-		b.WriteString("    // gemini has no automated installer — provision is off; bake the binary into your image.\n")
-		fmt.Fprintf(&b, "    %q: { \"harness\": %q, \"provision\": false }\n", wraptoolFeatureRef, harnessName)
-	} else {
-		fmt.Fprintf(&b, "    %q: { \"harness\": %q }\n", wraptoolFeatureRef, harnessName)
+	// The wraptool feature: wiring only (§12.3). It writes the MCP config and
+	// pins HOME/PATH, but never installs the harness binary — that comes from
+	// the runtime/ mount declared below.
+	b.WriteString("    // wraptool: wiring only — MCP config + HOME/PATH pins. The harness\n")
+	b.WriteString("    // binary comes from the host harness pool's runtime/ mount below, not\n")
+	b.WriteString("    // this feature: run `wraptool harness install <name>` on the host.\n")
+	if !poolLockable {
+		// Not every harness has an automated pool installer (e.g. gemini) — the
+		// runtime mount will never contain its binary, and there is no
+		// `wraptool harness install` fallback to suggest. Correct guidance is
+		// bake-it-in or wire-it-yourself, NOT "install it by hand inside the
+		// container": with connect:true (this scaffold's default) the
+		// feature's postCreate hard-fails before a hand-install could ever
+		// happen (connect.sh's own PATH check).
+		b.WriteString("    // this harness has no automated pool installer (not pool-lockable), so\n")
+		b.WriteString("    // its binary is never in the runtime mount. Bake it into your image\n")
+		b.WriteString("    // yourself, or set \"connect\": false below and wire the MCP config\n")
+		b.WriteString("    // yourself once it's on PATH some other way.\n")
 	}
+	fmt.Fprintf(&b, "    %q: { \"harness\": %q }\n", wraptoolFeatureRef, harnessName)
 	b.WriteString("  },\n")
 
 	b.WriteString("\n  // WRAPTOOL_CWD scopes host tools to this worktree. WRAPTOOL_TOKEN authenticates\n")
@@ -231,36 +257,93 @@ func renderDevcontainer(name, image string, langs []string, harnessName string, 
 	b.WriteString("  \"containerEnv\": { \"WRAPTOOL_CWD\": \"${localWorkspaceFolder}\" },\n")
 	b.WriteString("  \"remoteEnv\": { \"WRAPTOOL_TOKEN\": \"${localEnv:WRAPTOOL_TOKEN}\" },\n")
 
-	b.WriteString("\n  // Share the host harness-state pool so the harness's auth/skills/config persist\n")
-	b.WriteString("  // across every project (the developer toolbox, mounted read-write).\n")
+	homeSrc, homeRelative := poolMountSourceOf(pool.HomeDir())
+	runtimeSrc, runtimeRelative := poolMountSourceOf(pool.RuntimeDir())
+	runtimeMount, err := poolRuntimeMountString(runtimeSrc)
+	if err != nil {
+		return "", err
+	}
+
+	b.WriteString("\n  // Share the host harness pool (design/harness/unified-harness-pool.md §12.3):\n")
+	b.WriteString("  // home/ (auth/skills/config) is read-write so it persists across every\n")
+	b.WriteString("  // project; runtime/ (the version-locked harness binaries) is read-only —\n")
+	b.WriteString("  // the pool is a cross-project trust domain the container must never write.\n")
+	b.WriteString("  // The runtime entry MUST stay the string form below: it is CSV-parsed by\n")
+	b.WriteString("  // the devcontainer CLI (so an interior space, e.g. macOS's own\n")
+	b.WriteString("  // ~/Library/Application Support, survives intact) and it is the ONLY form\n")
+	b.WriteString("  // the CLI honors a read-only flag on — object-form mounts have no\n")
+	b.WriteString("  // read-only field at all in its schema and silently come up read-write\n")
+	b.WriteString("  // regardless of any \"readonly\" key. home/ is read-write either way, so it\n")
+	b.WriteString("  // stays object form purely for readability.\n")
+	if !homeRelative || !runtimeRelative {
+		b.WriteString("  // NOTE: this host's harness-pool data dir is not under $HOME, so the\n")
+		b.WriteString("  // source below is a literal absolute path — correct only on THIS machine.\n")
+		b.WriteString("  // A teammate on a different host/OS must adjust it (§12.3 mixed-OS limits).\n")
+	}
 	b.WriteString("  \"mounts\": [\n")
-	// Object form (not the "source=…,target=…" string) so a source path containing
-	// a space — macOS ~/Library/Application Support — can't be mis-split by the
-	// mount-string parser. target reuses devcontainerPoolHome, the single source of
-	// the in-container HOME path.
-	fmt.Fprintf(&b, "    { \"source\": %q, \"target\": %q, \"type\": \"bind\" }\n", poolHomeMountSource(), devcontainerPoolHome)
+	fmt.Fprintf(&b, "    { \"source\": %q, \"target\": %q, \"type\": \"bind\" },\n", homeSrc, devcontainerPoolHome)
+	fmt.Fprintf(&b, "    %q\n", runtimeMount)
 	b.WriteString("  ]\n")
 	b.WriteString("}\n")
-	return b.String()
+	return b.String(), nil
 }
 
-// poolHomeMountSource returns the devcontainer bind-mount source for the shared
-// harness pool home, derived from the host's real data dir so it is correct on
-// every OS — matching where `wraptool up`'s ensureHarnessPool actually creates it
-// (paths.DataDir(): Linux ~/.local/share, macOS ~/Library/Application Support,
-// Windows %LOCALAPPDATA%). A hardcoded ~/.local/share works only on Linux; on
-// macOS it points at a directory wraptool never creates, so the bind mount fails.
-// The $HOME prefix is rewritten to ${localEnv:HOME} so the devcontainer CLI
-// expands it client-side; if the data dir is not under $HOME we emit it literally.
-func poolHomeMountSource() string {
-	poolHome := filepath.Join(paths.DataDir(), "harness-pool", "home")
+// poolMountSourceOf returns the devcontainer bind-mount source for a
+// harness-pool host path, and whether that source is `${localEnv:HOME}`-relative
+// (true) or a literal, ToSlash'd absolute path (false) — derived from the
+// host's real pool paths so it is correct on every OS (paths.DataDir(): Linux
+// ~/.local/share, macOS ~/Library/Application Support, Windows
+// %LOCALAPPDATA%). A hardcoded ~/.local/share works only on Linux; on macOS it
+// points at a directory wraptool never creates, so the bind mount fails. The
+// $HOME prefix is rewritten to ${localEnv:HOME} so the devcontainer CLI
+// expands it client-side (§12.3: this holds for the Linux/macOS defaults, and
+// for Windows only when HOME is set); when the data dir is not under $HOME we
+// emit the literal host path instead, and the caller documents the caveat.
+func poolMountSourceOf(hostPath string) (source string, homeRelative bool) {
 	if home, err := os.UserHomeDir(); err == nil {
-		if rel, err := filepath.Rel(home, poolHome); err == nil && !strings.HasPrefix(rel, "..") {
-			return "${localEnv:HOME}/" + filepath.ToSlash(rel)
+		if rel, err := filepath.Rel(home, hostPath); err == nil && !strings.HasPrefix(rel, "..") {
+			return "${localEnv:HOME}/" + filepath.ToSlash(rel), true
 		}
 	}
 	// ToSlash for forward slashes across OSes: the emitter uses %q so JSON escaping
 	// is already handled, but a devcontainer/docker bind source is more portable
 	// with forward slashes than Windows backslashes.
-	return filepath.ToSlash(poolHome)
+	return filepath.ToSlash(hostPath), false
+}
+
+// poolHomeMountSource returns the devcontainer bind-mount source for the
+// shared harness-pool home/ — kept as its own named function since tests here
+// and cmd/up.go's devcontainerLocalEnvRE doc comment reference it by name.
+func poolHomeMountSource() string {
+	src, _ := poolMountSourceOf(pool.HomeDir())
+	return src
+}
+
+// poolRuntimeMountSourceUnsafeChars are the characters that would corrupt the
+// runtime mount's CSV "source=...,target=...,type=bind,readonly" string form
+// (§12.3's CRITICAL FORM RULING — the only form the devcontainer CLI honors a
+// read-only flag on, see renderDevcontainer's own comment): a comma is the
+// CSV field separator the devcontainer CLI's mount-string parser splits on —
+// a comma in the path would silently misparse into the wrong target/type —
+// and a quote or backslash needs escaping that CSV mount strings don't
+// support at all. Mirrors cmd/up.go's devcontainerRuntimeMountSnippet guard
+// (which protects a printed, human-pasted snippet); here the corrupted output
+// would instead be written straight into a machine-generated devcontainer.json.
+const poolRuntimeMountSourceUnsafeChars = `,"\`
+
+// poolRuntimeMountString builds the runtime mount's string-form entry, or
+// refuses with an actionable error when src contains a character that would
+// corrupt it (poolRuntimeMountSourceUnsafeChars) — silently emitting a broken
+// mounts entry would be worse than failing the scaffold outright. A wraptool
+// data dir landing on such a path is unusual (an XDG_DATA_HOME override, or a
+// deliberately awkward directory name) but not impossible; relocating
+// XDG_DATA_HOME (or the platform-equivalent override) to a path without one
+// of these characters is the fix.
+func poolRuntimeMountString(src string) (string, error) {
+	if strings.ContainsAny(src, poolRuntimeMountSourceUnsafeChars) {
+		return "", fmt.Errorf("harness-pool runtime path %q contains a comma, quote, or backslash, which would "+
+			"corrupt the devcontainer runtime mount's required string form (§12.3); relocate the pool by setting "+
+			"XDG_DATA_HOME (or the platform-equivalent data-dir override) to a path without one", src)
+	}
+	return "source=" + src + ",target=" + devcontainerPoolRuntime + ",type=bind,readonly", nil
 }

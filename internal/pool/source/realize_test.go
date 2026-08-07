@@ -441,6 +441,39 @@ func TestRealize_MissingLockfileErrors(t *testing.T) {
 	}
 }
 
+// TestRealize_RejectsShrinkwrappedHarness covers the npm-shrinkwrap backstop
+// (a SEPARATE defect class from the RawComplete/missing-integrity checks): a
+// lock whose NPMLock.HasShrinkwrap is set must be refused before touching
+// the backend at all, naming the package and pointing at the legacy install
+// path — not attempt `npm ci --offline` and let it die however npm's own
+// unresolved-shrinkwrap-subtree failure happens to look.
+func TestRealize_RejectsShrinkwrappedHarness(t *testing.T) {
+	h := testLockHarness()
+	h.NPMLock.HasShrinkwrap = true
+	cacheDir := t.TempDir()
+	seedCache(t, cacheDir, h)
+	stagingGenDir := t.TempDir()
+	fb := newRealizeFakeBackend(stagingGenDir)
+	n := NewNPM("")
+
+	_, err := n.Realize(context.Background(), fb, "example-harness", fb.binName, h, pool.PlatformLinuxAMD64Glibc, cacheDir, stagingGenDir)
+	if err == nil {
+		t.Fatal("Realize: got nil error, want rejection of a shrinkwrapped harness")
+	}
+	if !strings.Contains(err.Error(), h.Package) {
+		t.Errorf("error = %q, want it to name the package %q", err.Error(), h.Package)
+	}
+	if !strings.Contains(err.Error(), "npm-shrinkwrap.json") {
+		t.Errorf("error = %q, want it to mention npm-shrinkwrap.json", err.Error())
+	}
+	if !strings.Contains(err.Error(), "legacy install path") {
+		t.Errorf("error = %q, want it to mention the legacy install path", err.Error())
+	}
+	if len(fb.calls) != 0 {
+		t.Errorf("backend.Run called %d times, want 0 (must fail before touching the backend)", len(fb.calls))
+	}
+}
+
 func TestRealize_MissingRuntimeArtifact(t *testing.T) {
 	h := testLockHarness()
 	cacheDir := t.TempDir()

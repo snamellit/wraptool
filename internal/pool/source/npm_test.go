@@ -570,6 +570,363 @@ func TestResolve_BackfillFailsWhenRegistryLacksIntegrity(t *testing.T) {
 	}
 }
 
+// piSiblingVersion is the sibling entry's version in piShapedLockJSON —
+// deliberately distinct from the top-level package's own version, and
+// matching the registry fixture packument's "1.5.0" version key in the tests
+// below.
+const piSiblingVersion = "1.5.0"
+
+// piShapedLockJSON builds a resolveFixture-style package-lock.json shaped
+// like the live @earendil-works/pi-tui bug: a nested entry with a resolved
+// URL but NO integrity, plus engines/dependencies/license — fields the typed
+// npmLockFile struct doesn't know about — alongside a sibling entry that
+// ALREADY has integrity and carries os/cpu/optional (also unknown to
+// npmLockFile). registryURL is embedded in the sibling's "resolved" so
+// backfillIntegrity's registry-host check passes.
+func piShapedLockJSON(pkg, version, registryURL string) string {
+	return resolveFixture(pkg, version, fmt.Sprintf(`,
+    "node_modules/%[1]s/node_modules/@parent/native": {
+      "version": "9.9.9",
+      "resolved": "%[2]s/@parent/native/-/native-9.9.9.tgz",
+      "integrity": "sha512-PARENTINTEGRITY==",
+      "os": ["linux"],
+      "cpu": ["x64"],
+      "optional": true
+    },
+    "node_modules/%[1]s/node_modules/@earendil-works/pi-tui": {
+      "version": %[3]q,
+      "resolved": "%[2]s/@earendil-works/pi-tui/-/pi-tui-%[3]s.tgz",
+      "engines": {"node": ">=18"},
+      "dependencies": {"leftpad": "^1.0.0"},
+      "license": "MIT"
+    }`, pkg, registryURL, piSiblingVersion))
+}
+
+// TestResolve_BackfillPatchesRawLockfilePreservingUnknownFields is the
+// pi-coding-agent regression test (npm-raw-lockfile-backfill work package): a
+// nested entry shaped like pi-tui's shrinkwrap-copied sibling package
+// (resolved, engines, dependencies, license — NO integrity) must have its
+// backfilled integrity land in the RETURNED NPMLock.Lockfile itself, not
+// just the NPMLock.Packages summary map — Realize materializes Lockfile
+// verbatim as package-lock.json, and a realize-side `npm ci --offline`
+// matches its offline cache by integrity, so a raw entry still missing it
+// fails realize with an opaque ENOTCACHED even though Fetch/the summary map
+// were already correct. This also asserts the sibling entry's own
+// unknown-to-npmLockFile fields (engines/dependencies/license) AND an
+// unrelated parent entry's unknown fields (os/cpu/optional) survive the
+// patch untouched — proving the patch is a generic, single-field
+// map[string]any edit, never a round trip through the typed struct.
+func TestResolve_BackfillPatchesRawLockfilePreservingUnknownFields(t *testing.T) {
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	const siblingIntegrity = "sha512-PITUIINTEGRITY=="
+	registrySrv := newRoutedRegistryServer(t, map[string]string{
+		"example": `{
+			"time": {"1.0.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"1.0.0": {}}
+		}`,
+		"@earendil-works/pi-tui": fmt.Sprintf(`{
+			"time": {"1.5.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"1.5.0": {"dist": {"integrity": %q}}}
+		}`, siblingIntegrity),
+	})
+	defer registrySrv.Close()
+
+	lockJSON := piShapedLockJSON("example", "1.0.0", registrySrv.URL)
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	lh, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	const siblingKey = "node_modules/example/node_modules/@earendil-works/pi-tui"
+	const parentKey = "node_modules/example/node_modules/@parent/native"
+
+	// --- summary map carries the backfilled integrity ---
+	sibling, ok := lh.NPMLock.Packages[siblingKey]
+	if !ok {
+		t.Fatal("backfilled sibling entry missing from NPMLock.Packages")
+	}
+	if sibling.Integrity != siblingIntegrity {
+		t.Errorf("summary Integrity = %q, want %q", sibling.Integrity, siblingIntegrity)
+	}
+
+	// --- the RETURNED raw Lockfile parses and carries the same integrity ---
+	var raw struct {
+		LockfileVersion int                        `json:"lockfileVersion"`
+		Packages        map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(lh.NPMLock.Lockfile, &raw); err != nil {
+		t.Fatalf("parsing returned Lockfile: %v", err)
+	}
+	if raw.LockfileVersion != 3 {
+		t.Errorf("raw Lockfile lockfileVersion = %d, want 3", raw.LockfileVersion)
+	}
+
+	rawSiblingBytes, ok := raw.Packages[siblingKey]
+	if !ok {
+		t.Fatal("raw Lockfile missing the sibling entry entirely")
+	}
+	var rawSibling struct {
+		Version      string            `json:"version"`
+		Resolved     string            `json:"resolved"`
+		Integrity    string            `json:"integrity"`
+		Engines      map[string]string `json:"engines"`
+		Dependencies map[string]string `json:"dependencies"`
+		License      string            `json:"license"`
+	}
+	if err := json.Unmarshal(rawSiblingBytes, &rawSibling); err != nil {
+		t.Fatalf("parsing raw sibling entry: %v", err)
+	}
+	if rawSibling.Integrity != siblingIntegrity {
+		t.Errorf("raw Lockfile sibling integrity = %q, want %q (the ENOTCACHED bug: raw document never patched)", rawSibling.Integrity, siblingIntegrity)
+	}
+	if rawSibling.Version != "1.5.0" {
+		t.Errorf("raw sibling version = %q, want 1.5.0 (unknown field lost across the patch)", rawSibling.Version)
+	}
+	if rawSibling.Engines["node"] != ">=18" {
+		t.Errorf("raw sibling engines = %+v, want node >=18 (unknown field lost across the patch)", rawSibling.Engines)
+	}
+	if rawSibling.Dependencies["leftpad"] != "^1.0.0" {
+		t.Errorf("raw sibling dependencies = %+v, want leftpad ^1.0.0 (unknown field lost across the patch)", rawSibling.Dependencies)
+	}
+	if rawSibling.License != "MIT" {
+		t.Errorf("raw sibling license = %q, want MIT (unknown field lost across the patch)", rawSibling.License)
+	}
+
+	// --- the UNRELATED parent entry's unknown fields survive untouched ---
+	rawParentBytes, ok := raw.Packages[parentKey]
+	if !ok {
+		t.Fatal("raw Lockfile missing the parent entry entirely")
+	}
+	var rawParent struct {
+		Integrity string   `json:"integrity"`
+		OS        []string `json:"os"`
+		CPU       []string `json:"cpu"`
+		Optional  bool     `json:"optional"`
+	}
+	if err := json.Unmarshal(rawParentBytes, &rawParent); err != nil {
+		t.Fatalf("parsing raw parent entry: %v", err)
+	}
+	if rawParent.Integrity != "sha512-PARENTINTEGRITY==" {
+		t.Errorf("raw parent integrity = %q, want unchanged sha512-PARENTINTEGRITY==", rawParent.Integrity)
+	}
+	if len(rawParent.OS) != 1 || rawParent.OS[0] != "linux" {
+		t.Errorf("raw parent os = %v, want [linux] (unknown field lost/mutated)", rawParent.OS)
+	}
+	if len(rawParent.CPU) != 1 || rawParent.CPU[0] != "x64" {
+		t.Errorf("raw parent cpu = %v, want [x64] (unknown field lost/mutated)", rawParent.CPU)
+	}
+	if !rawParent.Optional {
+		t.Error("raw parent optional = false, want true (unknown field lost/mutated)")
+	}
+
+	// --- summary map and raw document agree on the backfilled entry ---
+	if sibling.Integrity != rawSibling.Integrity {
+		t.Errorf("summary Integrity %q != raw Lockfile integrity %q", sibling.Integrity, rawSibling.Integrity)
+	}
+}
+
+// TestResolve_BackfilledLockfileIsDeterministic covers the determinism
+// requirement on a backfilled lock specifically (TestResolve's own "Lockfile
+// is the verbatim, compacted package-lock.json" subtest already covers the
+// unpatched path): two Resolve calls against the identical fixture must
+// produce byte-identical NPMLock.Lockfile output, since (*LockHarness).Hash
+// depends on it (§17 "deterministic lock serialization").
+func TestResolve_BackfilledLockfileIsDeterministic(t *testing.T) {
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	const siblingIntegrity = "sha512-PITUIINTEGRITY=="
+	registrySrv := newRoutedRegistryServer(t, map[string]string{
+		"example": `{
+			"time": {"1.0.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"1.0.0": {}}
+		}`,
+		"@earendil-works/pi-tui": fmt.Sprintf(`{
+			"time": {"1.5.0": "2026-01-01T00:00:00.000Z"},
+			"versions": {"1.5.0": {"dist": {"integrity": %q}}}
+		}`, siblingIntegrity),
+	})
+	defer registrySrv.Close()
+
+	lockJSON := piShapedLockJSON("example", "1.0.0", registrySrv.URL)
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+
+	var lockfiles [][]byte
+	for i := 0; i < 3; i++ {
+		fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+		lh, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+		if err != nil {
+			t.Fatalf("Resolve run %d: %v", i, err)
+		}
+		lockfiles = append(lockfiles, lh.NPMLock.Lockfile)
+	}
+	for i := 1; i < len(lockfiles); i++ {
+		if !bytes.Equal(lockfiles[0], lockfiles[i]) {
+			t.Errorf("Lockfile run %d differs from run 0:\n%s\nvs\n%s", i, lockfiles[i], lockfiles[0])
+		}
+	}
+}
+
+// TestPatchLockfileIntegrity_PreservesLargeNumbersAndDecimals is the
+// UseNumber() regression test: an untouched numeric field elsewhere in the
+// raw document — one beyond float64's exact-integer range (2^53), and a
+// decimal — must survive patchLockfileIntegrity byte-for-byte. Before
+// UseNumber(), decoding into map[string]any would silently convert both to
+// float64 and re-Marshal could reformat them (dropping precision on the
+// large integer, or changing the decimal's textual shape), which would also
+// break Lockfile determinism across two Resolve calls whose registry
+// response happened to arrive with different (but numerically equal)
+// formatting.
+func TestPatchLockfileIntegrity_PreservesLargeNumbersAndDecimals(t *testing.T) {
+	const largeInt = "9007199254740993" // 2^53 + 1: not exactly representable as float64
+	const decimal = "1.50000"           // a decimal whose trailing zeros a float64 round trip would drop
+	raw := []byte(fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"dependencies": {}},
+    "node_modules/untouched": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/untouched.tgz",
+      "integrity": "sha512-UNTOUCHED==",
+      "someLargeCount": %s,
+      "someDecimal": %s
+    },
+    "node_modules/to-patch": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/to-patch.tgz"
+    }
+  }
+}`, largeInt, decimal))
+
+	patched, err := patchLockfileIntegrity(raw, map[string]string{
+		"node_modules/to-patch": "sha512-PATCHED==",
+	})
+	if err != nil {
+		t.Fatalf("patchLockfileIntegrity: %v", err)
+	}
+
+	var doc struct {
+		Packages map[string]json.RawMessage `json:"packages"`
+	}
+	if err := json.Unmarshal(patched, &doc); err != nil {
+		t.Fatalf("parsing patched lockfile: %v", err)
+	}
+
+	// The patched entry got its integrity.
+	var patchedEntry struct {
+		Integrity string `json:"integrity"`
+	}
+	if err := json.Unmarshal(doc.Packages["node_modules/to-patch"], &patchedEntry); err != nil {
+		t.Fatalf("parsing patched entry: %v", err)
+	}
+	if patchedEntry.Integrity != "sha512-PATCHED==" {
+		t.Errorf("patched entry Integrity = %q, want sha512-PATCHED==", patchedEntry.Integrity)
+	}
+
+	// The UNTOUCHED entry's numeric fields survive with their exact original
+	// text — decoded via json.Number, not float64, so this string comparison
+	// is meaningful (a float64 round trip could still coincidentally print
+	// the same text for small numbers, but not for largeInt or a
+	// trailing-zero decimal like decimal above).
+	var untouched struct {
+		SomeLargeCount json.Number `json:"someLargeCount"`
+		SomeDecimal    json.Number `json:"someDecimal"`
+	}
+	if err := json.Unmarshal(doc.Packages["node_modules/untouched"], &untouched); err != nil {
+		t.Fatalf("parsing untouched entry: %v", err)
+	}
+	if untouched.SomeLargeCount.String() != largeInt {
+		t.Errorf("someLargeCount = %s, want %s byte-preserved (2^53+1 is not exactly representable as float64)", untouched.SomeLargeCount, largeInt)
+	}
+	if untouched.SomeDecimal.String() != decimal {
+		t.Errorf("someDecimal = %s, want %s byte-preserved (trailing zeros)", untouched.SomeDecimal, decimal)
+	}
+}
+
+// TestResolve_RecordsHasShrinkwrapWhenAnyEntryCarriesIt covers the
+// pi-coding-agent root-cause finding: npm marks a package that bundles its
+// own npm-shrinkwrap.json with "hasShrinkwrap": true on the CONSUMER
+// lockfile's entry for it. Resolve must succeed (this is a realize
+// limitation, not a resolve one — see NPMLock.HasShrinkwrap's doc comment)
+// and record NPMLock.HasShrinkwrap true, surviving a real persisted-lock
+// Marshal/UnmarshalLock round trip.
+func TestResolve_RecordsHasShrinkwrapWhenAnyEntryCarriesIt(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/example/node_modules/shrinkwrapped-dep": {"version": "3.0.0", "resolved": "https://registry.npmjs.org/shrinkwrapped-dep/-/shrinkwrapped-dep-3.0.0.tgz", "integrity": "sha512-CCCC==", "hasShrinkwrap": true}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	lh, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v (a shrinkwrapped entry must not fail Resolve — this is a realize limitation)", err)
+	}
+	if !lh.NPMLock.HasShrinkwrap {
+		t.Fatal("NPMLock.HasShrinkwrap = false, want true (an entry in the lockfile carries hasShrinkwrap)")
+	}
+
+	// Persisted round trip: the flag must survive a real Lock
+	// Marshal/UnmarshalLock cycle, not just live on the in-memory
+	// LockHarness Resolve returns. FirstSeenAt is stamped here since Resolve
+	// deliberately leaves it zero-formatted (the orchestrator's job,
+	// per Resolve's own doc comment) and Validate rejects a zero timestamp.
+	lh.FirstSeenAt = pool.FormatTimestamp(time.Now().UTC())
+	lockDoc := &pool.Lock{
+		SchemaVersion: pool.LockSchemaVersion,
+		GeneratedAt:   pool.FormatTimestamp(time.Now().UTC()),
+		PolicyHash:    "sha256:" + strings.Repeat("a", 64),
+		Harnesses:     map[string]pool.LockHarness{"example": lh},
+	}
+	data, err := lockDoc.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got, err := pool.UnmarshalLock(data)
+	if err != nil {
+		t.Fatalf("UnmarshalLock: %v", err)
+	}
+	if !got.Harnesses["example"].NPMLock.HasShrinkwrap {
+		t.Error("round-tripped NPMLock.HasShrinkwrap = false, want true")
+	}
+}
+
+// TestResolve_HasShrinkwrapFalseWhenNoEntryCarriesIt is the control: an
+// ordinary lockfile with no shrinkwrapped entries must leave
+// NPMLock.HasShrinkwrap false.
+func TestResolve_HasShrinkwrapFalseWhenNoEntryCarriesIt(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{
+		"2.1.220": "2026-07-29T12:00:00.000Z",
+	}, []string{"2.1.220"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(canonicalPackageLock)}
+
+	lh, err := n.Resolve(context.Background(), fb, "@anthropic-ai/claude-code", "2.1.220", t.TempDir(), "24.18.1", "sha256:recipe-rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if lh.NPMLock.HasShrinkwrap {
+		t.Error("NPMLock.HasShrinkwrap = true, want false (no entry in this fixture carries hasShrinkwrap)")
+	}
+}
+
 // TestResolve_ReportsFirstUnlockableEntryDeterministically locks in the
 // sorted-key iteration: with several unlockable entries, the error must name
 // the lexicographically first one on every run, not whichever Go's random
