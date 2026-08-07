@@ -2751,6 +2751,71 @@ func TestHarnessSyncSkipsLegacyInstallForCrossPlatformTarget(t *testing.T) {
 	})
 }
 
+// TestHarnessSyncOnDockerOnlyHostDowngradesGuixAbsentToWarning pins that
+// sync's OWN-platform path gets the same realized-generation legacy-install
+// downgrade install/update already get via maybeInstallLocked.
+//
+// Regression: sync used to call legacyInstallVersionLocked directly and
+// return its error unconditionally, so on a docker/podman-only host — the
+// exact host class the oci provisioner exists to support — `harness sync`
+// hard-failed AFTER SyncHarnessLocked had already realized and activated the
+// generation. The pool was left correct and complete; only the command's
+// exit status lied. Cross-platform sync was never affected (it skips the
+// legacy step outright, see TestHarnessSyncSkipsLegacyInstallForCrossPlatformTarget),
+// which is why the bug showed up only on the default target.
+func TestHarnessSyncOnDockerOnlyHostDowngradesGuixAbsentToWarning(t *testing.T) {
+	swapHasGuix(t, false) // docker-only host: claude's `guix shell node -- npm ...` recipe is impossible
+	swapRunInstallArgv(t, func([]string) error {
+		t.Error("runInstallArgv must not run when guix is absent — the recipe should short-circuit first")
+		return nil
+	})
+
+	paths := testHarnessPaths(t)
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+
+	// Install first: already downgrades today, and leaves the lock plus an
+	// active generation for this host — the precondition sync's downgrade
+	// requires (ActiveGeneration must resolve).
+	if err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], ">=2 <3", false, ""); err != nil {
+		t.Fatalf("install (should itself downgrade on a docker-only host): %v", err)
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "sync", "claude")
+	if err != nil {
+		t.Fatalf("sync must exit 0 once the generation is realized and activated, "+
+			"even though the host-side legacy install is guix-absent-blocked: %v\noutput:\n%s", err, out)
+	}
+	if !strings.Contains(out, "pool generation built and activated") {
+		t.Errorf("expected the downgraded warning to name what actually succeeded, got:\n%s", out)
+	}
+	if !strings.Contains(out, "host-side legacy install was skipped") {
+		t.Errorf("expected the downgraded warning to say the host-side binary was not installed, got:\n%s", out)
+	}
+	// The off-guix pointer error must name the command the user actually
+	// ran; it used to hardcode "wraptool harness install" no matter which
+	// command reached it, sending a `sync` reader to the wrong docs.
+	if !strings.Contains(out, "harness sync") {
+		t.Errorf("expected the off-guix error to name the invoked command (harness sync), got:\n%s", out)
+	}
+	if strings.Contains(out, "`wraptool harness install` provisions") {
+		t.Errorf("off-guix error still hardcodes install as the invoked command, got:\n%s", out)
+	}
+
+	// The pool must be genuinely complete — the whole justification for
+	// exiting 0 is that the real work succeeded.
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatalf("HostPlatformKey: %v", err)
+	}
+	if _, ok := pool.ActiveGeneration(paths, "claude", hostKey); !ok {
+		t.Error("expected an active generation pointer for claude after sync")
+	}
+}
+
 // TestHarnessInstallFoldsProvisioningImageIntoRecipeRevision pins that the
 // provisioningImage var must actually reach the persisted
 // harness-lock.json recipe_revision, not just the in-memory UpdateOptions
