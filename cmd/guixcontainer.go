@@ -201,7 +201,7 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 // instead names both expected paths with neutral wording.
 func guixPoolStatusMessage(poolRoot, poolBin, poolLib string, plan guixPoolPlan, legacyState legacyPoolState) string {
 	switch {
-	case plan.active && len(plan.pathDirs) > 1:
+	case plan.active && legacyState == legacyBothPresent:
 		return fmt.Sprintf("harness pool: %s (legacy bin/ also mounted for other harnesses/hand-dropped tools: %s)", poolRoot, poolBin)
 	case plan.active && legacyState == legacyHalfGone:
 		return fmt.Sprintf("harness pool: %s (runtime/ only — legacy pool trees are incomplete: expected both %s and %s)", poolRoot, poolBin, poolLib)
@@ -282,13 +282,13 @@ func ensureHarnessPool() (poolRoot, bin, lib, home string, err error) {
 	runtimeDir := filepath.Join(poolRoot, "runtime")
 	for _, d := range []string{home, runtimeDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
-			return "", "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
+			return "", "", "", "", fmt.Errorf("creating harness pool directory %s: %w", d, err)
 		}
 	}
 	if !legacyPoolRemoved(poolRoot) {
 		for _, d := range []string{bin, lib} {
 			if err := os.MkdirAll(d, 0o755); err != nil {
-				return "", "", "", "", fmt.Errorf("creating harness pool %s: %w", d, err)
+				return "", "", "", "", fmt.Errorf("creating harness pool directory %s: %w", d, err)
 			}
 		}
 	}
@@ -303,7 +303,10 @@ func ensureHarnessPool() (poolRoot, bin, lib, home string, err error) {
 // the marker's CONTENT, only its presence.
 func legacyPoolRemoved(root string) bool {
 	_, err := os.Stat(pool.LegacyRemovedMarkerFileAt(root))
-	return err == nil
+	// Any outcome other than a definite "does not exist" counts as removed:
+	// an unreadable-but-present marker (EPERM, a directory in its place)
+	// must NOT let ensureHarnessPool resurrect a deliberately gc'd pool.
+	return !os.IsNotExist(err)
 }
 
 // unmarkLegacyRemoved removes poolRoot's legacy-removed marker, if any —

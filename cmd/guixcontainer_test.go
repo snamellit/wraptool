@@ -946,3 +946,22 @@ func TestGuixPoolStatusMessage(t *testing.T) {
 		})
 	}
 }
+
+// legacyPoolRemoved must treat any stat outcome other than a definite
+// "does not exist" as removed — an unreadable-but-present marker (here: a
+// directory occupying the marker path, which makes a plain file read fail)
+// must not let ensureHarnessPool resurrect a deliberately gc'd pool. The
+// review caught the original err == nil form doing the opposite of its own
+// doc comment.
+func TestLegacyPoolRemovedUnreadableMarkerCountsAsRemoved(t *testing.T) {
+	root := t.TempDir()
+	if legacyPoolRemoved(root) {
+		t.Fatal("fresh pool root must not count as removed")
+	}
+	if err := os.MkdirAll(pool.LegacyRemovedMarkerFileAt(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !legacyPoolRemoved(root) {
+		t.Error("marker path occupied by a directory must still count as removed")
+	}
+}
