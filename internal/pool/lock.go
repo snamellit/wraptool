@@ -116,6 +116,25 @@ type NPMLock struct {
 	// materialization source, Packages is fetch/cache's. Empty on a lock
 	// produced before this field existed — Realize must re-resolve rather
 	// than degrade silently (see internal/pool/source's Realize).
+	//
+	// When Resolve had to backfill a missing "integrity" (a bundled
+	// npm-shrinkwrap.json workspace-sibling entry, see npm.go's
+	// backfillIntegrity), that value is ALSO patched into this raw document
+	// — a realize-side `npm ci --offline` matches its offline cache by
+	// integrity, so a raw entry missing it would pass Fetch/cache-object
+	// verification (which checks Packages, not this field) and then fail
+	// realize with an opaque ENOTCACHED. The patch is a generic
+	// map[string]any round trip (json.Unmarshal into map[string]any, set
+	// the one field, json.Marshal back), never a round trip through the
+	// typed npmLockFile struct — that struct only knows
+	// version/resolved/integrity/link and would silently drop every other
+	// field (os/cpu/optional/dependencies/engines/license, ...) a real
+	// lockfile entry carries. This means a backfilled lock's Lockfile is
+	// only SEMANTICALLY verbatim (same fields, same values, npm-Marshal's
+	// own key ordering/number formatting) rather than byte-verbatim from
+	// npm's own output — still deterministic (encoding/json sorts
+	// map[string]any keys), just not the identical byte sequence npm wrote.
+	// A lock with no backfilled entries keeps npm's original bytes exactly.
 	Lockfile json.RawMessage `json:"lockfile,omitempty"`
 }
 
@@ -249,12 +268,33 @@ func isLowerHexOfLen(s string, n int) bool {
 	return true
 }
 
+// npmRawLockfilePackageEntry is the subset of one raw "packages" map entry
+// validateNPMLockfile itself reads — deliberately not the source package's
+// npmLockPackageEntry (this package does not import internal/pool/source,
+// and importing it here would be the wrong direction anyway: source depends
+// on pool, not the reverse).
+type npmRawLockfilePackageEntry struct {
+	Resolved  string `json:"resolved"`
+	Integrity string `json:"integrity"`
+	Link      bool   `json:"link"`
+}
+
 // validateNPMLockfile checks n.Lockfile, when present: it must be valid
-// JSON, "lockfileVersion" 3, and every key in n.Packages (the summary map)
-// must appear in its own "packages" map — a consistency check between the
-// two, not a full structural validation of arbitrary npm lockfile content.
-// A no-op when Lockfile is empty (§ "empty on a lock produced before this
-// field existed", NPMLock.Lockfile's doc comment).
+// JSON, "lockfileVersion" 3, every key in n.Packages (the summary map) must
+// appear in its own "packages" map (a consistency check between the two, not
+// a full structural validation of arbitrary npm lockfile content), and every
+// non-root, non-link raw entry that carries a resolved URL must also carry a
+// non-empty integrity. That last check exists because a realize-side `npm ci
+// --offline` matches its offline cache purely by integrity (npm indexes a
+// `npm cache add`-seeded tarball by its SRI hash) — a raw entry missing
+// integrity passes Fetch's cache-object verification (which checks the
+// summary map, NPMLockPackage.Integrity, not this raw document) and then
+// fails realize with an opaque ENOTCACHED; this turns that into a validation
+// error at lock time, naming the offending entry (see
+// internal/pool/source/npm.go's Resolve, which patches a backfilled
+// integrity into this raw document precisely so this check passes for a lock
+// it produced). A no-op when Lockfile is empty (§ "empty on a lock produced
+// before this field existed", NPMLock.Lockfile's doc comment).
 func validateNPMLockfile(n *NPMLock) error {
 	if len(n.Lockfile) == 0 {
 		return nil
@@ -278,6 +318,29 @@ func validateNPMLockfile(n *NPMLock) error {
 	for _, name := range names {
 		if _, ok := raw.Packages[name]; !ok {
 			return fmt.Errorf("npm_lock.lockfile: missing packages entry %q, which is present in the summary map", name)
+		}
+	}
+
+	rawNames := make([]string, 0, len(raw.Packages))
+	for name := range raw.Packages {
+		rawNames = append(rawNames, name)
+	}
+	sort.Strings(rawNames) // deterministic "first offending entry" in the error below
+	for _, name := range rawNames {
+		if name == "" {
+			// The synthesized project root has no resolved/integrity by
+			// construction (see Resolve's own "" handling).
+			continue
+		}
+		var entry npmRawLockfilePackageEntry
+		if err := json.Unmarshal(raw.Packages[name], &entry); err != nil {
+			return fmt.Errorf("npm_lock.lockfile: decoding packages entry %q: %w", name, err)
+		}
+		if entry.Link {
+			continue
+		}
+		if entry.Resolved != "" && entry.Integrity == "" {
+			return fmt.Errorf("raw lockfile entry %q has no integrity; the realize-side npm ci cannot match its cache object — re-run wraptool harness update", name)
 		}
 	}
 	return nil
