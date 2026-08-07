@@ -233,7 +233,11 @@ func TestHarnessParityWithConnectSh(t *testing.T) {
 	}
 	connect := filepath.Join("..", "..", "features", "src", "wraptool", "connect.sh")
 	if _, err := os.Stat(connect); err != nil {
-		t.Skipf("connect.sh not found at %s", connect)
+		// In-repo file, not an optional external dependency: a silent skip here
+		// is exactly how this test would go unnoticed if connect.sh ever moved
+		// or was deleted out from under it again (as it briefly was for
+		// wraptool-connect during that feature's sunset).
+		t.Fatalf("connect.sh not found at %s: %v", connect, err)
 	}
 	connectAbs, _ := filepath.Abs(connect)
 
