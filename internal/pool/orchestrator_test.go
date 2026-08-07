@@ -66,6 +66,15 @@ type fakeSource struct {
 	// UpdateHarnessLocked's PublishedAt-synthesis-before-lock-persist path
 	// without depending on the real Archive implementation.
 	resolveZeroPublishedAt bool
+
+	// resolveNPMLockfile, when non-nil, is embedded as NPMLock.Lockfile on
+	// the LockHarness Resolve returns — the npm-raw-lockfile-backfill
+	// self-heal tests use this to simulate a (fixed) Source.Resolve
+	// producing a freshly patched, RawComplete-true raw lockfile, so the
+	// test can assert the SELF-HEAL round trip (existing lock incomplete ->
+	// Decide forces a fresh Resolve -> persisted lock complete) without
+	// depending on the real npm Source's HTTP/backend mechanics.
+	resolveNPMLockfile json.RawMessage
 }
 
 func (f *fakeSource) Refresh(_ context.Context, pkg string) ([]Candidate, error) {
@@ -85,13 +94,17 @@ func (f *fakeSource) Resolve(_ context.Context, _ backend.Backend, pkg, version,
 	if f.resolveZeroPublishedAt {
 		publishedAt = FormatTimestamp(time.Time{})
 	}
-	return LockHarness{
+	lh := LockHarness{
 		Source:         npmSourceName,
 		Package:        pkg,
 		Version:        version,
 		PublishedAt:    publishedAt,
 		RecipeRevision: recipeRevision,
-	}, nil
+	}
+	if f.resolveNPMLockfile != nil {
+		lh.NPMLock = &NPMLock{LockfileVersion: 3, Lockfile: f.resolveNPMLockfile}
+	}
+	return lh, nil
 }
 
 func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string) error {
@@ -104,8 +117,15 @@ func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string) error {
 	// package entry's pool-local sha256 cache-address field (and, for the
 	// allow-young integrity-reporting tests, the upstream integrity value)
 	// as objects are admitted to cache. UpdateHarness must persist the lock
-	// only after this mutation, never before.
-	h.NPMLock = &NPMLock{LockfileVersion: 3, Packages: map[string]NPMLockPackage{
+	// only after this mutation, never before. A Lockfile Resolve already set
+	// (resolveNPMLockfile above) is PRESERVED — the real Source.Fetch never
+	// touches NPMLock.Lockfile, only the Packages summary map (§8: Lockfile
+	// is realization's materialization source, Packages is fetch/cache's).
+	var lockfile json.RawMessage
+	if h.NPMLock != nil {
+		lockfile = h.NPMLock.Lockfile
+	}
+	h.NPMLock = &NPMLock{LockfileVersion: 3, Lockfile: lockfile, Packages: map[string]NPMLockPackage{
 		h.Package: {Version: h.Version, Resolved: "https://registry.npmjs.org/x.tgz", Integrity: "sha512-fakeintegrity", SHA256: "deadbeef"},
 	}}
 	return nil
