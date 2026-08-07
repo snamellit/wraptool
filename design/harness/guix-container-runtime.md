@@ -76,7 +76,9 @@ while leaving `devcontainer` intact for Arch and every other distro.
 
 - Strong *network* isolation combined with internet (the `passt`/`slirp4netns`
   path — see §9, deferred).
-- Non-Claude harnesses (mirrors the current `wraptool-connect` limitation).
+- Non-Claude harnesses (mirrored the original `wraptool-connect` feature's
+  claude-only limitation, since superseded — both by `--harness` here and by
+  the merged `wraptool` feature — `wraptool-connect`'s source is now retired).
 - `guix system container` (full-OS declarations) — heavier than needed; this
   design uses `guix shell --container` only.
 
@@ -278,9 +280,10 @@ the spike).
 ### 6.5 Connection config writer (`writeMCPConfig`)
 
 The devcontainer path writes `.mcp.json` *inside* the container via the
-`wraptool-connect` feature's `connect.sh` (needs `jq`, gateway detection). The
-Guix path writes it on the **host** into the shared workspace — simpler, no
-in-container tooling, no gateway parsing:
+`wraptool` feature's `connect.sh` (needs `jq`, gateway detection; originally
+the now-retired `wraptool-connect` feature's script). The Guix path writes it
+on the **host** into the shared workspace — simpler, no in-container tooling,
+no gateway parsing:
 
 ```
 func writeMCPConfig(path, baseURL, token, hostCWD string) error {

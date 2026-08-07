@@ -1,7 +1,11 @@
 # Design: a shared harness descriptor registry
 
 Status: **implemented (phases 1–3)** — PRs #15, #16, + this; phase 4
-(connect.sh → `wraptool init`) is a follow-up.
+(connect.sh → `wraptool init`) is a follow-up. The `wraptool-connect` feature
+named below was later folded into the merged, wiring-only `wraptool` (`:1`)
+feature (`design/harness/unified-harness-pool.md` §12); `wraptool-connect`'s
+own source is now retired (sunset), kept here only as the historical record of
+the problem this descriptor solved.
 Scope: unify "how to point coding-harness *X* at the wraptool MCP server" into
 one registry shared by `wraptool init`, `wraptool up` (both the guix and
 devcontainer runtimes), and — eventually — the `wraptool-connect` feature.
