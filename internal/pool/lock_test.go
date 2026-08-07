@@ -76,6 +76,17 @@ func sampleLockWithNPMLockfile() *Lock {
 	return l
 }
 
+// sampleLockWithShrinkwrap is sampleLockWithNPMLockfile plus
+// NPMLock.HasShrinkwrap set — the additive npm-shrinkwrap-detection field
+// (npm-raw-lockfile-backfill rework item 2).
+func sampleLockWithShrinkwrap() *Lock {
+	l := sampleLockWithNPMLockfile()
+	h := l.Harnesses["claude"]
+	h.NPMLock.HasShrinkwrap = true
+	l.Harnesses["claude"] = h
+	return l
+}
+
 func TestLockMarshalDeterministic(t *testing.T) {
 	l := sampleLock()
 
@@ -213,6 +224,71 @@ func TestLockHarnessHash_StableWithNPMLockfile(t *testing.T) {
 	}
 	if hash1 != hash2 {
 		t.Errorf("Hash differs across two independently-built, logically-equal values: %q vs %q", hash1, hash2)
+	}
+}
+
+// TestNPMLockHasShrinkwrap_MarshalDeterministicRoundTripsAndAffectsHash
+// covers item 2 of the npm-raw-lockfile-backfill rework: NPMLock.HasShrinkwrap
+// is a plain, additive bool with no validation constraint, but it must
+// (a) survive Marshal/UnmarshalLock unchanged, (b) marshal deterministically
+// like every other field, and (c) actually participate in
+// (*LockHarness).Hash — a receipt's lock_entry_hash must change when this
+// flag does, since it changes what Realize will do with the entry.
+func TestNPMLockHasShrinkwrap_MarshalDeterministicRoundTripsAndAffectsHash(t *testing.T) {
+	l := sampleLockWithShrinkwrap()
+
+	a, err := l.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (1): %v", err)
+	}
+	b, err := sampleLockWithShrinkwrap().Marshal()
+	if err != nil {
+		t.Fatalf("Marshal (2, independent value): %v", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("Marshal is not deterministic across equal values:\n--- a ---\n%s\n--- b ---\n%s", a, b)
+	}
+
+	got, err := UnmarshalLock(a)
+	if err != nil {
+		t.Fatalf("UnmarshalLock: %v", err)
+	}
+	if !got.Harnesses["claude"].NPMLock.HasShrinkwrap {
+		t.Error("round-tripped NPMLock.HasShrinkwrap = false, want true")
+	}
+	data2, err := got.Marshal()
+	if err != nil {
+		t.Fatalf("re-Marshal: %v", err)
+	}
+	if !bytes.Equal(a, data2) {
+		t.Fatalf("round trip is not byte-stable:\n--- original ---\n%s\n--- re-marshaled ---\n%s", a, data2)
+	}
+
+	withShrinkwrap := sampleLockWithShrinkwrap().Harnesses["claude"]
+	withoutShrinkwrap := sampleLockWithNPMLockfile().Harnesses["claude"]
+	hashWith, err := withShrinkwrap.Hash()
+	if err != nil {
+		t.Fatalf("Hash (with shrinkwrap): %v", err)
+	}
+	hashWithout, err := withoutShrinkwrap.Hash()
+	if err != nil {
+		t.Fatalf("Hash (without shrinkwrap): %v", err)
+	}
+	if hashWith == hashWithout {
+		t.Error("Hash is identical with and without HasShrinkwrap set — the field is not participating in the receipt's lock_entry_hash")
+	}
+}
+
+// TestNPMLockHasShrinkwrap_OmittedWhenFalse pins the omitempty behavior: the
+// overwhelmingly common (and every pre-existing) lock has HasShrinkwrap
+// false, and must not grow a new "has_shrinkwrap" key in that case.
+func TestNPMLockHasShrinkwrap_OmittedWhenFalse(t *testing.T) {
+	data, err := sampleLockWithNPMLockfile().Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if strings.Contains(string(data), "has_shrinkwrap") {
+		t.Errorf("Marshal output contains \"has_shrinkwrap\" with the field false, want it omitted:\n%s", data)
 	}
 }
 
