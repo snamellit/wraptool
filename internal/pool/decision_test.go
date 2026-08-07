@@ -193,14 +193,15 @@ type decisionWant struct {
 
 func TestDecide(t *testing.T) {
 	tests := []struct {
-		name       string
-		advance    bool // false = install, true = update
-		lock       lockState
-		candidates []Candidate
-		allowYoung bool
-		policy     EffectivePolicy // zero value means decisionTestPolicy (see the loop below)
-		realize    realizeAxis     // zero value (realizeUnspecified) means already realized (see realizeAxis.facts)
-		want       decisionWant
+		name          string
+		advance       bool // false = install, true = update
+		lock          lockState
+		candidates    []Candidate
+		allowYoung    bool
+		policy        EffectivePolicy // zero value means decisionTestPolicy (see the loop below)
+		realize       realizeAxis     // zero value (realizeUnspecified) means already realized (see realizeAxis.facts)
+		rawIncomplete bool            // npm-raw-lockfile-backfill: LockNPMRawIncomplete, zero value false ("nothing to heal")
+		want          decisionWant
 	}{
 		// --- install (Advance=false) + a fully agreeing lock: the strict
 		// short-circuit fires purely from (Advance, lock) — it never even
@@ -237,6 +238,47 @@ func TestDecide(t *testing.T) {
 			name: "install + lock agrees + already realized: up to date (both axes settled)",
 			lock: lockAgrees, candidates: candNewerEligible(), realize: realizeAlreadyRealized,
 			want: decisionWant{kind: DecisionUpToDate},
+		},
+
+		// --- npm-raw-lockfile-backfill: LockNPMRawIncomplete is folded into
+		// lockMatchesRecipe exactly like a recipe-format bump (decision.go's
+		// doc comment) — an otherwise fully agreeing lock whose raw npm
+		// lockfile is incomplete must NOT take the strict short-circuit
+		// (install) or converge to DecisionUpToDate/DecisionRealize (update);
+		// it must force a fresh DecisionResolveVersion so Resolve rewrites
+		// the entry with a patched raw lockfile. Reachable via both the
+		// install short-circuit (step 1) and the update
+		// scan-converges-to-locked path (step 3) — the same two code paths
+		// the realize-axis rows above independently exercise.
+		{
+			name:          "install + lock agrees BUT raw lockfile incomplete: forces a fresh resolve, not up to date",
+			lock:          lockAgrees,
+			candidates:    candNewerEligible(),
+			rawIncomplete: true,
+			want:          decisionWant{kind: DecisionResolveVersion, selectedVersion: "2.1.224", allowYoungApplied: false},
+		},
+		{
+			name:          "update + lock agrees + only the locked version eligible BUT raw lockfile incomplete: forces a fresh resolve of the SAME version",
+			advance:       true,
+			lock:          lockAgrees,
+			candidates:    candOnlySameVersionEligible(),
+			rawIncomplete: true,
+			want:          decisionWant{kind: DecisionResolveVersion, selectedVersion: "2.1.220", allowYoungApplied: false},
+		},
+		{
+			// Decide does NOT fold LockNPMRawIncomplete into DecisionKeepExisting
+			// either — that path's own lockMatchesRecipe-independent check
+			// (in.HasLock && in.LockPackage == in.Package && lockSatisfiesConstraint)
+			// never consults it, mirroring the realize axis's own carve-out for
+			// this same Kind (see the "STILL keeps existing" row above). There
+			// is nothing to resolve when nothing is eligible, regardless of the
+			// raw lockfile's completeness.
+			name:          "update + lock agrees + nothing eligible (quarantined) BUT raw lockfile incomplete: STILL keeps existing",
+			advance:       true,
+			lock:          lockAgrees,
+			candidates:    candQuarantinedOnly(),
+			rawIncomplete: true,
+			want:          decisionWant{kind: DecisionKeepExisting, noteContains: []string{"2.1.220", "2.1.230", "quarantined", "remaining"}},
 		},
 
 		// --- update (Advance=true) + a fully agreeing lock: update always
@@ -543,6 +585,7 @@ func TestDecide(t *testing.T) {
 				LockPackage:              tt.lock.pkg,
 				LockVersion:              tt.lock.ver,
 				LockRecipeRevision:       tt.lock.recp,
+				LockNPMRawIncomplete:     tt.rawIncomplete,
 				Constraint:               constraint,
 				RecipeRevision:           decisionTestCurrent,
 				Candidates:               tt.candidates,
