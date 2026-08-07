@@ -129,6 +129,21 @@ non-Guix Linux — through Docker or Podman.
   provisioning behavior, or switch to `wraptool harness install <name>` +
   `wraptool up`'s pool mount (the supported path going forward).
 
+### Known limitations
+
+- A harness whose npm package ships its own `npm-shrinkwrap.json` (`pi`,
+  `@earendil-works/pi-coding-agent`) does not yet realize into the pool:
+  npm reifies that package's dependency subtree from the shrinkwrap
+  embedded in its extracted tarball, not from the outer lockfile, and those
+  nested fetches need npm's URL-indexed HTTP cache — which offline pool
+  realization's `npm cache add` (content-only, keyed by integrity) never
+  populates. `resolve`/`refresh` work normally and the condition is
+  recorded on the lock; `install`/`update` print a warning and fall
+  through to the legacy (network) install path exactly as for any other
+  realize failure, and `sync` fails with the same actionable message.
+  Tracked follow-up: seeding npm's URL cache index so shrinkwrapped
+  packages can realize offline too.
+
 ## 0.4.0 — 2026-08-05
 
 Phase 2 wave 2 of the unified harness pool: realized generations now

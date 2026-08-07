@@ -120,6 +120,29 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	if !h.NPMLock.RawComplete() {
 		return nil, fmt.Errorf("realize: %s: lock's raw package-lock.json is missing an integrity value on at least one entry (predates the raw-lockfile integrity backfill); npm ci --offline cannot match its cache object; re-run wraptool harness update %s", harnessName, harnessName)
 	}
+	// npm-shrinkwrap backstop — a SEPARATE, currently-unfixable defect class
+	// from the RawComplete check above (see NPMLock.HasShrinkwrap's doc
+	// comment): a shrinkwrapped package's own dependency subtree is reified
+	// by a real npm install from the npm-shrinkwrap.json embedded in its
+	// extracted tarball, not from this lock's Lockfile, and those nested
+	// fetches need npm's URL-indexed HTTP cache — populated by a normal,
+	// online `npm install`'s network fetch — which `npm cache add`
+	// (content-only, keyed by integrity) never populates. `npm ci --offline`
+	// cannot ever satisfy them, no matter how integrity-complete the raw
+	// lockfile is. Resolve intentionally still SUCCEEDS for a shrinkwrapped
+	// harness and records the condition on the lock (it is a REALIZE
+	// limitation, not a resolve one; failing Resolve would break install/
+	// update's non-fatal-realize-failure handling for something realize,
+	// not resolve, cannot do) — refusing here is what lets install/update
+	// warn and fall through to the legacy install path instead of failing
+	// the whole command, while `sync` (which hard-fails on a realize error
+	// by design) surfaces this as an honest, actionable error instead of
+	// silently trying and dying deep inside a container.
+	if h.NPMLock.HasShrinkwrap {
+		return nil, fmt.Errorf(
+			"realize: %s: package %s ships an npm-shrinkwrap.json; npm resolves its dependency subtree from the shrinkwrap at install time, which offline pool realization cannot satisfy yet — this harness stays on the legacy install path (tracked follow-up: seeding npm's URL cache index)",
+			harnessName, h.Package)
+	}
 	if h.Runtime == nil {
 		return nil, fmt.Errorf("realize: %s: lock has no runtime requirement", harnessName)
 	}

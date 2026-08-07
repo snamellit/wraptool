@@ -346,3 +346,246 @@ func TestIntegration_SyncRejectsIncompleteRawLockfileWithActionableError(t *test
 		t.Errorf("SyncHarness error = %v, want the actionable, non-circular fix-command message", err)
 	}
 }
+
+// TestIntegration_SyncRejectsShrinkwrappedHarnessWithActionableError is the
+// npm-shrinkwrap counterpart of
+// TestIntegration_SyncRejectsIncompleteRawLockfileWithActionableError: `sync`
+// realizes straight from an existing lock entry with no Resolve call, so it
+// hits NPM.Realize's shrinkwrap backstop directly. This is the LIVE
+// pi-coding-agent root cause (an integrity-complete raw lockfile whose
+// harness package itself carries npm's own "hasShrinkwrap" marker) — unlike
+// the missing-integrity fixture above, this one has a fully-formed,
+// integrity-complete Lockfile, isolating the shrinkwrap check from the
+// RawComplete one.
+func TestIntegration_SyncRejectsShrinkwrappedHarnessWithActionableError(t *testing.T) {
+	const pkg = "@earendil-works/pi-coding-agent"
+	shrinkwrappedLockfile := []byte(fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"dependencies": {%q: "1.0.0"}},
+    "node_modules/%s": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/%s/-/pi-coding-agent-1.0.0.tgz",
+      "integrity": "sha512-AAAA==",
+      "hasShrinkwrap": true
+    }
+  }
+}`, pkg, pkg, pkg))
+
+	root := t.TempDir()
+	paths := pool.PoolPaths{
+		Lock:         filepath.Join(root, "harness-lock.json"),
+		AdvisoryLock: filepath.Join(root, "lock"),
+		Cache:        filepath.Join(root, "cache", "sha256"),
+		Staging:      filepath.Join(root, "staging"),
+		Runtime:      filepath.Join(root, "runtime"),
+	}
+
+	now := pool.FormatTimestamp(time.Now().UTC())
+	lockDoc := &pool.Lock{
+		SchemaVersion: pool.LockSchemaVersion,
+		GeneratedAt:   now,
+		PolicyHash:    "sha256:" + strings.Repeat("a", 64),
+		Harnesses: map[string]pool.LockHarness{
+			"pi": {
+				Source:         "npm",
+				Package:        pkg,
+				Version:        "1.0.0",
+				PublishedAt:    now,
+				FirstSeenAt:    now,
+				RecipeRevision: "sha256:" + strings.Repeat("b", 64),
+				NPMLock: &pool.NPMLock{
+					LockfileVersion: 3,
+					Packages:        map[string]pool.NPMLockPackage{}, // deliberately empty: Fetch is a no-op
+					Lockfile:        shrinkwrappedLockfile,
+					HasShrinkwrap:   true,
+				},
+			},
+		},
+	}
+	if err := lockDoc.Validate(); err != nil {
+		t.Fatalf("test fixture lock fails Validate: %v", err)
+	}
+	data, err := lockDoc.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.Lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Lock, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	n := NewNPM("")
+	_, err = pool.SyncHarness(context.Background(), n, hostExecBackend{}, paths, "pi", "pi", pool.PlatformLinuxAMD64Glibc)
+	if err == nil {
+		t.Fatal("SyncHarness: got nil error for a shrinkwrapped harness, want the actionable realize-preflight error")
+	}
+	if !strings.Contains(err.Error(), pkg) {
+		t.Errorf("SyncHarness error = %v, want it to name the package %q", err, pkg)
+	}
+	if !strings.Contains(err.Error(), "npm-shrinkwrap.json") {
+		t.Errorf("SyncHarness error = %v, want it to mention npm-shrinkwrap.json", err)
+	}
+	if !strings.Contains(err.Error(), "legacy install path") {
+		t.Errorf("SyncHarness error = %v, want it to mention the legacy install path", err)
+	}
+}
+
+// TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness is the
+// install-path counterpart of the two sync tests above: `install`
+// (pool.UpdateHarness, Advance=false, first resolve — no existing lock)
+// drives a REAL Resolve+Fetch+Realize against a shrinkwrapped fixture
+// through the REAL orchestrator (pool.RefreshHarness/pool.UpdateHarness,
+// hybridIntegrationBackend faking only the resolve-phase `npm install`,
+// exactly like npm_integration_test.go's own end-to-end test). Unlike
+// `sync`, a realize failure on install/update is NON-FATAL
+// (UpdateResult.RealizeErr, orchestrator.go's own doc comment) — this
+// confirms the whole call still reports success (err == nil, "exit 0"
+// equivalent) with the actionable message surfaced through RealizeErr, so a
+// caller (cmd/harness.go) prints the warning and falls through to the
+// legacy install path instead of failing the command outright.
+//
+// No real npm/tar subprocess ever runs in this test: NPM.Realize's
+// shrinkwrap preflight fires before its first backend.Run call, so the npm
+// package "tarball" and node runtime "tarballs" served below are arbitrary
+// bytes — Fetch only downloads and hashes them, it never extracts anything.
+func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.T) {
+	const pkg = "@earendil-works/pi-coding-agent"
+	const version = "1.0.0"
+	// nodeVersion must match orchestrator.go's own unexported
+	// defaultNodeVersion constant — UpdateHarnessLocked always resolves
+	// against that pinned Node version itself (npm_integration_test.go's
+	// wantNodeVersion documents the same constraint).
+	const nodeVersion = "22.11.0"
+
+	packument := map[string]any{
+		"time": map[string]string{
+			"created":  "2020-01-01T00:00:00.000Z",
+			"modified": "2026-07-01T00:00:00.000Z",
+			version:    "2026-01-01T00:00:00.000Z",
+		},
+		"versions": map[string]json.RawMessage{version: json.RawMessage(`{}`)},
+	}
+	packumentBody, err := json.Marshal(packument)
+	if err != nil {
+		t.Fatalf("marshaling fixture packument: %v", err)
+	}
+	registrySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(packumentBody)
+	}))
+	defer registrySrv.Close()
+
+	tarballContent := []byte("arbitrary npm tarball bytes — never extracted in this test")
+	npmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(tarballContent)
+	}))
+	defer npmSrv.Close()
+
+	amd64Content := []byte("arbitrary amd64 node tarball bytes — never extracted")
+	arm64Content := []byte("arbitrary arm64 node tarball bytes — never extracted")
+	amd64Name := fmt.Sprintf("node-v%s-linux-x64.tar.xz", nodeVersion)
+	arm64Name := fmt.Sprintf("node-v%s-linux-arm64.tar.xz", nodeVersion)
+	shasums := fmt.Sprintf("%s  %s\n%s  %s\n",
+		sha256Hex(amd64Content), amd64Name,
+		sha256Hex(arm64Content), arm64Name)
+	nodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "SHASUMS256.txt"):
+			w.Write([]byte(shasums))
+		case strings.HasSuffix(r.URL.Path, amd64Name):
+			w.Write(amd64Content)
+		case strings.HasSuffix(r.URL.Path, arm64Name):
+			w.Write(arm64Content)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer nodeSrv.Close()
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+
+	lockJSON := fmt.Sprintf(`{
+  "lockfileVersion": 3,
+  "packages": {
+    "": {"name": "resolve-scratch", "version": "0.0.0", "dependencies": {%q: %q}},
+    %q: {
+      "version": %q,
+      "resolved": %q,
+      "integrity": %q,
+      "hasShrinkwrap": true
+    }
+  }
+}`, pkg, version, "node_modules/"+pkg, version, npmSrv.URL+"/pi-coding-agent-1.0.0.tgz", sriFor(tarballContent))
+	hb := hybridIntegrationBackend{lockJSON: []byte(lockJSON)}
+
+	root := t.TempDir()
+	paths := pool.PoolPaths{
+		Manifest:     filepath.Join(root, "manifest.yaml"),
+		Lock:         filepath.Join(root, "harness-lock.json"),
+		Observations: filepath.Join(root, "observations.json"),
+		Audit:        filepath.Join(root, "audit.jsonl"),
+		AdvisoryLock: filepath.Join(root, "lock"),
+		Cache:        filepath.Join(root, "cache", "sha256"),
+		Staging:      filepath.Join(root, "staging"),
+		Runtime:      filepath.Join(root, "runtime"),
+	}
+	manifestYAML := "schema_version: 1\npolicy:\n  minimum_release_age: 0h\nharnesses:\n  pi: {}\n"
+	if err := os.MkdirAll(filepath.Dir(paths.Manifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.Manifest, []byte(manifestYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+
+	if _, err := pool.RefreshHarness(ctx, n, paths, pool.SourceNPM, pkg, now); err != nil {
+		t.Fatalf("RefreshHarness: %v", err)
+	}
+
+	result, err := pool.UpdateHarness(ctx, n, hb, paths, pool.UpdateOptions{
+		Harness: "pi", Package: pkg, BinName: "pi", Now: now, Advance: false,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: got error %v, want nil (install must warn-and-continue on a realize failure, not fail the command — exit-0 equivalent)", err)
+	}
+	if !result.Changed {
+		t.Error("Changed = false, want true (this is a fresh resolve — the first install)")
+	}
+	if result.RealizeErr == nil {
+		t.Fatal("RealizeErr = nil, want the shrinkwrap backstop's actionable error (install continues to the legacy path on any realize failure)")
+	}
+	if !strings.Contains(result.RealizeErr.Error(), pkg) {
+		t.Errorf("RealizeErr = %v, want it to name the package %q", result.RealizeErr, pkg)
+	}
+	if !strings.Contains(result.RealizeErr.Error(), "npm-shrinkwrap.json") {
+		t.Errorf("RealizeErr = %v, want it to mention npm-shrinkwrap.json", result.RealizeErr)
+	}
+	if !strings.Contains(result.RealizeErr.Error(), "legacy install path") {
+		t.Errorf("RealizeErr = %v, want it to mention the legacy install path", result.RealizeErr)
+	}
+	if result.RealizedGenerationID != "" {
+		t.Errorf("RealizedGenerationID = %q, want empty (realize failed)", result.RealizedGenerationID)
+	}
+
+	lockBytes, err := os.ReadFile(paths.Lock)
+	if err != nil {
+		t.Fatalf("reading harness-lock.json: %v", err)
+	}
+	lockDoc, err := pool.UnmarshalLock(lockBytes)
+	if err != nil {
+		t.Fatalf("harness-lock.json failed to validate: %v", err)
+	}
+	lh, ok := lockDoc.Harnesses["pi"]
+	if !ok {
+		t.Fatal("no persisted lock entry for pi")
+	}
+	if lh.NPMLock == nil || !lh.NPMLock.HasShrinkwrap {
+		t.Error("persisted lock's NPMLock.HasShrinkwrap = false, want true — the condition must be recorded even though realize failed")
+	}
+}

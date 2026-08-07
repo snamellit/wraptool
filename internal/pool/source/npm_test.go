@@ -850,6 +850,83 @@ func TestPatchLockfileIntegrity_PreservesLargeNumbersAndDecimals(t *testing.T) {
 	}
 }
 
+// TestResolve_RecordsHasShrinkwrapWhenAnyEntryCarriesIt covers the
+// pi-coding-agent root-cause finding: npm marks a package that bundles its
+// own npm-shrinkwrap.json with "hasShrinkwrap": true on the CONSUMER
+// lockfile's entry for it. Resolve must succeed (this is a realize
+// limitation, not a resolve one — see NPMLock.HasShrinkwrap's doc comment)
+// and record NPMLock.HasShrinkwrap true, surviving a real persisted-lock
+// Marshal/UnmarshalLock round trip.
+func TestResolve_RecordsHasShrinkwrapWhenAnyEntryCarriesIt(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{"1.0.0": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", `,
+    "node_modules/example/node_modules/shrinkwrapped-dep": {"version": "3.0.0", "resolved": "https://registry.npmjs.org/shrinkwrapped-dep/-/shrinkwrapped-dep-3.0.0.tgz", "integrity": "sha512-CCCC==", "hasShrinkwrap": true}`)
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	lh, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v (a shrinkwrapped entry must not fail Resolve — this is a realize limitation)", err)
+	}
+	if !lh.NPMLock.HasShrinkwrap {
+		t.Fatal("NPMLock.HasShrinkwrap = false, want true (an entry in the lockfile carries hasShrinkwrap)")
+	}
+
+	// Persisted round trip: the flag must survive a real Lock
+	// Marshal/UnmarshalLock cycle, not just live on the in-memory
+	// LockHarness Resolve returns. FirstSeenAt is stamped here since Resolve
+	// deliberately leaves it zero-formatted (the orchestrator's job,
+	// per Resolve's own doc comment) and Validate rejects a zero timestamp.
+	lh.FirstSeenAt = pool.FormatTimestamp(time.Now().UTC())
+	lockDoc := &pool.Lock{
+		SchemaVersion: pool.LockSchemaVersion,
+		GeneratedAt:   pool.FormatTimestamp(time.Now().UTC()),
+		PolicyHash:    "sha256:" + strings.Repeat("a", 64),
+		Harnesses:     map[string]pool.LockHarness{"example": lh},
+	}
+	data, err := lockDoc.Marshal()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	got, err := pool.UnmarshalLock(data)
+	if err != nil {
+		t.Fatalf("UnmarshalLock: %v", err)
+	}
+	if !got.Harnesses["example"].NPMLock.HasShrinkwrap {
+		t.Error("round-tripped NPMLock.HasShrinkwrap = false, want true")
+	}
+}
+
+// TestResolve_HasShrinkwrapFalseWhenNoEntryCarriesIt is the control: an
+// ordinary lockfile with no shrinkwrapped entries must leave
+// NPMLock.HasShrinkwrap false.
+func TestResolve_HasShrinkwrapFalseWhenNoEntryCarriesIt(t *testing.T) {
+	registrySrv := newPackumentServer(t, map[string]string{
+		"2.1.220": "2026-07-29T12:00:00.000Z",
+	}, []string{"2.1.220"})
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(canonicalPackageLock)}
+
+	lh, err := n.Resolve(context.Background(), fb, "@anthropic-ai/claude-code", "2.1.220", t.TempDir(), "24.18.1", "sha256:recipe-rev")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if lh.NPMLock.HasShrinkwrap {
+		t.Error("NPMLock.HasShrinkwrap = true, want false (no entry in this fixture carries hasShrinkwrap)")
+	}
+}
+
 // TestResolve_ReportsFirstUnlockableEntryDeterministically locks in the
 // sorted-key iteration: with several unlockable entries, the error must name
 // the lexicographically first one on every run, not whichever Go's random

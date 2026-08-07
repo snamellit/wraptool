@@ -457,12 +457,25 @@ type npmLockFile struct {
 
 // npmLockPackageEntry is one "packages" map entry. Link marks an npm
 // workspace symlink entry, which — like a git dependency — has no
-// resolved/integrity pair and cannot be locked.
+// resolved/integrity pair and cannot be locked. HasShrinkwrap marks a
+// package that bundles its own npm-shrinkwrap.json (npm sets this on the
+// CONSUMER lockfile's entry for that package, e.g.
+// @earendil-works/pi-coding-agent) — a real npm install reifies that
+// package's own dependency subtree from the shrinkwrap embedded in its
+// extracted tarball at install time, not from this outer lockfile's
+// "packages" map; those nested fetches need npm's URL-indexed HTTP cache
+// (populated by `npm install`'s network fetch), which `npm cache add`
+// (content-only, keyed by integrity) never populates. This is a SEPARATE
+// defect class from the missing-integrity one backfillIntegrity fixes: even
+// a fully integrity-complete raw lockfile for a shrinkwrapped package cannot
+// be realized offline today (see NPMLock.HasShrinkwrap's doc comment and
+// Realize's preflight in the sibling realize.go).
 type npmLockPackageEntry struct {
-	Version   string `json:"version"`
-	Resolved  string `json:"resolved"`
-	Integrity string `json:"integrity"`
-	Link      bool   `json:"link"`
+	Version       string `json:"version"`
+	Resolved      string `json:"resolved"`
+	Integrity     string `json:"integrity"`
+	Link          bool   `json:"link"`
+	HasShrinkwrap bool   `json:"hasShrinkwrap"`
 }
 
 // validateLockableIntegrity checks an npm_lock candidate's non-empty
@@ -630,6 +643,17 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 	// map).
 	backfilled := make(map[string]string)
 
+	// hasShrinkwrap becomes true the moment ANY entry in the lockfile carries
+	// npm's own "hasShrinkwrap" marker — see npmLockPackageEntry.HasShrinkwrap
+	// and NPMLock.HasShrinkwrap's doc comments for why this is recorded
+	// rather than failing Resolve outright: the condition is real and
+	// currently unfixable offline, but Resolve succeeding and Realize
+	// refusing (with an actionable message) is what lets install/update's
+	// existing non-fatal-realize-failure handling do the right thing —
+	// warn and fall through to the legacy install path — instead of
+	// failing the whole command.
+	hasShrinkwrap := false
+
 	packages := make(map[string]pool.NPMLockPackage, len(lockFile.Packages))
 	for _, name := range names {
 		entry := lockFile.Packages[name]
@@ -638,6 +662,9 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 			// dependency — it has no resolved/integrity by construction and
 			// is not part of the harness's dependency graph.
 			continue
+		}
+		if entry.HasShrinkwrap {
+			hasShrinkwrap = true
 		}
 		if entry.Link {
 			return pool.LockHarness{}, fmt.Errorf(
@@ -743,6 +770,7 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 			LockfileVersion: lockFile.LockfileVersion,
 			Packages:        packages,
 			Lockfile:        append([]byte(nil), compactedLock.Bytes()...),
+			HasShrinkwrap:   hasShrinkwrap,
 		},
 	}, nil
 }
