@@ -385,6 +385,53 @@ func (n *NPM) backfillIntegrity(ctx context.Context, packuments map[string]*npmP
 	return manifest.Dist.Integrity, nil
 }
 
+// patchLockfileIntegrity sets packages[key].integrity = integrity for every
+// (key, integrity) pair in backfilled, on the RAW package-lock.json document
+// — never on the typed npmLockFile struct below. npmLockFile only decodes
+// four fields per entry (version/resolved/integrity/link); round-tripping
+// through it and re-marshaling would silently drop every field it doesn't
+// know about (os, cpu, optional, dependencies, engines, license, ...), which
+// a real npm lockfile entry commonly carries and Realize's `npm ci` depends
+// on (see NPMLock.Lockfile's doc comment). This function instead
+// round-trips raw through a generic map[string]any, so every field —
+// known or not — survives untouched except the one being patched.
+//
+// The result is deterministic for a given (raw, backfilled) pair:
+// encoding/json's Marshal sorts map[string]any keys alphabetically at every
+// nesting level, so two Resolve calls that backfill the same entries produce
+// byte-identical output (modulo raw's own content, which a real registry
+// response holds fixed for a given package@version).
+func patchLockfileIntegrity(raw []byte, backfilled map[string]string) ([]byte, error) {
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("decoding raw lockfile: %w", err)
+	}
+	packagesAny, ok := doc["packages"]
+	if !ok {
+		return nil, fmt.Errorf(`raw lockfile has no top-level "packages" key`)
+	}
+	packages, ok := packagesAny.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf(`raw lockfile "packages" is not a JSON object`)
+	}
+	for key, integrity := range backfilled {
+		entryAny, ok := packages[key]
+		if !ok {
+			return nil, fmt.Errorf("raw lockfile has no packages entry %q to patch", key)
+		}
+		entry, ok := entryAny.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("raw lockfile packages entry %q is not a JSON object", key)
+		}
+		entry["integrity"] = integrity
+	}
+	patched, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("re-marshaling patched raw lockfile: %w", err)
+	}
+	return patched, nil
+}
+
 // npmLockFile is the subset of package-lock.json (lockfileVersion 3) this
 // package reads.
 type npmLockFile struct {
@@ -557,6 +604,16 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 	// Packument cache shared by every backfillIntegrity call in this resolve.
 	packuments := make(map[string]*npmPackument)
 
+	// backfilled records every entry (by its "packages" map key) whose
+	// integrity came from backfillIntegrity rather than npm's own lockfile
+	// output. When non-empty after the loop below, the RAW lockfile document
+	// (not just the summary map built here) is patched with the same values
+	// before compaction — see the patchLockfileIntegrity call below and
+	// NPMLock.Lockfile's doc comment for why the raw document must carry it
+	// too (realize-side `npm ci --offline` reads Lockfile, not this summary
+	// map).
+	backfilled := make(map[string]string)
+
 	packages := make(map[string]pool.NPMLockPackage, len(lockFile.Packages))
 	for _, name := range names {
 		entry := lockFile.Packages[name]
@@ -581,6 +638,7 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 				return pool.LockHarness{}, err
 			}
 			entry.Integrity = integrity
+			backfilled[name] = integrity
 		}
 		if err := validateLockableIntegrity(entry.Integrity); err != nil {
 			return pool.LockHarness{}, fmt.Errorf("package-lock.json entry %q: %w", name, err)
@@ -615,24 +673,41 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 		return pool.LockHarness{}, err
 	}
 
-	// Store the verbatim package-lock.json alongside the summary map, so
-	// Realize can materialize npm's own output byte-for-byte instead of
-	// hand-reconstructing one (§8, review finding: a hand-reconstructed
-	// lockfile loses optional/os/cpu gating and nested version-conflict
-	// edges that only the full document carries — see NPMLock.Lockfile's
-	// doc comment). Compacted once here via json.Compact — NOT for
-	// persisted-file compactness (pool.Lock.Marshal's indenting encoder
-	// re-indents an embedded json.RawMessage's bytes when it writes
-	// harness-lock.json to disk regardless of how they were stored, so
-	// compaction buys nothing there), but for DETERMINISM: (*LockHarness).Hash
-	// marshals with encoding/json's plain, non-indenting Marshal, which
-	// embeds a RawMessage's bytes AS-IS with no reformatting at all. Without
-	// compacting here, two functionally-identical lockfiles that happened to
-	// arrive with different (but semantically equivalent) whitespace would
-	// hash differently, breaking Hash's "equal lock entries hash equal"
-	// contract.
+	// When any entry above needed backfillIntegrity, the RAW document must
+	// carry that same integrity too — not just the summary map built above —
+	// since Realize materializes THIS field verbatim as package-lock.json and
+	// a realize-side `npm ci --offline` matches its offline cache by
+	// integrity (see NPMLock.Lockfile's doc comment and
+	// patchLockfileIntegrity's own doc comment for why this is a generic
+	// map[string]any patch, never a round trip through the typed npmLockFile
+	// struct above).
+	rawLock := lockBytes
+	if len(backfilled) > 0 {
+		patched, err := patchLockfileIntegrity(lockBytes, backfilled)
+		if err != nil {
+			return pool.LockHarness{}, fmt.Errorf("patching backfilled integrity into raw package-lock.json: %w", err)
+		}
+		rawLock = patched
+	}
+
+	// Store the verbatim (or, when backfilled, semantically-verbatim — see
+	// NPMLock.Lockfile's doc comment) package-lock.json alongside the
+	// summary map, so Realize can materialize npm's own output byte-for-byte
+	// instead of hand-reconstructing one (§8, review finding: a
+	// hand-reconstructed lockfile loses optional/os/cpu gating and nested
+	// version-conflict edges that only the full document carries). Compacted
+	// once here via json.Compact — NOT for persisted-file compactness
+	// (pool.Lock.Marshal's indenting encoder re-indents an embedded
+	// json.RawMessage's bytes when it writes harness-lock.json to disk
+	// regardless of how they were stored, so compaction buys nothing there),
+	// but for DETERMINISM: (*LockHarness).Hash marshals with encoding/json's
+	// plain, non-indenting Marshal, which embeds a RawMessage's bytes AS-IS
+	// with no reformatting at all. Without compacting here, two
+	// functionally-identical lockfiles that happened to arrive with
+	// different (but semantically equivalent) whitespace would hash
+	// differently, breaking Hash's "equal lock entries hash equal" contract.
 	var compactedLock bytes.Buffer
-	if err := json.Compact(&compactedLock, lockBytes); err != nil {
+	if err := json.Compact(&compactedLock, rawLock); err != nil {
 		return pool.LockHarness{}, fmt.Errorf("compacting package-lock.json: %w", err)
 	}
 

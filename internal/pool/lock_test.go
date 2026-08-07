@@ -427,6 +427,74 @@ func TestLockValidate_RejectsLockfileMissingASummaryMapEntry(t *testing.T) {
 	}
 }
 
+// TestLockValidate_RejectsRawEntryMissingIntegrity covers the
+// npm-raw-lockfile-backfill regression guard: a raw "packages" entry that
+// carries a resolved URL but no integrity must be rejected at lock-Validate
+// time, naming the entry — this is what turns the pi-coding-agent ENOTCACHED
+// failure (realize-side `npm ci --offline` cannot match its offline cache by
+// integrity) into a validation error at lock time instead of an opaque
+// realize failure. The entry is otherwise well-formed (present in the
+// summary map too), so this exercises the NEW check specifically, not the
+// existing summary/raw consistency check above.
+func TestLockValidate_RejectsRawEntryMissingIntegrity(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	lockfile, err := json.Marshal(map[string]any{
+		"lockfileVersion": 3,
+		"packages": map[string]any{
+			"":                 map[string]any{"dependencies": map[string]string{}},
+			"node_modules/foo": map[string]any{"version": "1.0.0", "resolved": "https://registry.npmjs.org/foo.tgz"},
+			"node_modules/bar": map[string]any{"version": "2.0.0"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshaling fixture lockfile: %v", err)
+	}
+	h.NPMLock.Lockfile = lockfile
+	l.Harnesses["claude"] = h
+
+	err = l.Validate()
+	if err == nil {
+		t.Fatal("Validate: got nil error, want rejection of a raw entry with a resolved URL but no integrity")
+	}
+	if !strings.Contains(err.Error(), "node_modules/foo") {
+		t.Errorf("error = %q, want it to name node_modules/foo", err.Error())
+	}
+	if !strings.Contains(err.Error(), "has no integrity") {
+		t.Errorf("error = %q, want it to contain \"has no integrity\"", err.Error())
+	}
+	if !strings.Contains(err.Error(), "re-run wraptool harness update") {
+		t.Errorf("error = %q, want it to name the fix command", err.Error())
+	}
+}
+
+// TestLockValidate_AllowsRawLinkEntryWithoutIntegrity covers the "link"
+// exclusion: a workspace-symlink raw entry legitimately has neither resolved
+// nor integrity (or a resolved workspace-relative path with no integrity —
+// npm marks these "link": true), and must not trip the new check.
+func TestLockValidate_AllowsRawLinkEntryWithoutIntegrity(t *testing.T) {
+	l := sampleLock()
+	h := l.Harnesses["claude"]
+	lockfile, err := json.Marshal(map[string]any{
+		"lockfileVersion": 3,
+		"packages": map[string]any{
+			"":                          map[string]any{"dependencies": map[string]string{}},
+			"node_modules/foo":          map[string]any{"version": "1.0.0", "resolved": "https://registry.npmjs.org/foo.tgz", "integrity": "sha512-xyz"},
+			"node_modules/bar":          map[string]any{"version": "2.0.0"},
+			"node_modules/workspace-ws": map[string]any{"resolved": "../workspace-ws", "link": true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshaling fixture lockfile: %v", err)
+	}
+	h.NPMLock.Lockfile = lockfile
+	l.Harnesses["claude"] = h
+
+	if err := l.Validate(); err != nil {
+		t.Fatalf("Validate() with a link entry lacking integrity: %v (link entries must be exempt)", err)
+	}
+}
+
 // --- LockArchive (archive-source additive schema) -----------------------
 
 // sampleArchiveArtifacts returns a well-formed Artifacts map for two
