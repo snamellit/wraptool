@@ -3,6 +3,7 @@ package source
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +18,14 @@ import (
 	"github.com/pti/wraptool/internal/pool"
 	"github.com/pti/wraptool/internal/pool/backend"
 )
+
+// seedCacheIndexScript is seed-cache-index.js, verbatim (§11.4 step 2a — see
+// seedShrinkwrapCacheIndex's doc comment). Static, checked-in content with no
+// per-harness data ever interpolated into it; all variable data travels
+// through the separate seed-manifest.json this package generates per call.
+//
+//go:embed seed_cache_index.js
+var seedCacheIndexScript string
 
 // Container-side mount points for Realize's backend invocations (§6.3: Linux
 // paths built with `path`, from named constants — never a host path). cacheDir
@@ -38,6 +47,8 @@ type realizeStagingPaths struct {
 	buildHome     string // <staging>/.build/home — scratch $HOME for npm
 	buildCache    string // <staging>/.build/npm-cache — scratch, writable npm cache (cacache format)
 	buildTarballs string // <staging>/.build/npm-tarballs — .tgz-suffixed hardlinks npm cache add can recognize
+	seedScript    string // <staging>/.build/seed-cache-index.js — see seedShrinkwrapCacheIndex
+	seedManifest  string // <staging>/.build/seed-manifest.json — see seedShrinkwrapCacheIndex
 	runtimeNode   string // <staging>/runtime/node — the unpacked node runtime
 }
 
@@ -48,6 +59,8 @@ func newRealizeStagingPaths() realizeStagingPaths {
 		buildHome:     path.Join(build, "home"),
 		buildCache:    path.Join(build, "npm-cache"),
 		buildTarballs: path.Join(build, "npm-tarballs"),
+		seedScript:    path.Join(build, "seed-cache-index.js"),
+		seedManifest:  path.Join(build, "seed-manifest.json"),
 		runtimeNode:   path.Join(realizeStagingContainerDir, "runtime", "node"),
 	}
 }
@@ -120,29 +133,27 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	if !h.NPMLock.RawComplete() {
 		return nil, fmt.Errorf("realize: %s: lock's raw package-lock.json is missing an integrity value on at least one entry (predates the raw-lockfile integrity backfill); npm ci --offline cannot match its cache object; re-run wraptool harness update %s", harnessName, harnessName)
 	}
-	// npm-shrinkwrap backstop — a SEPARATE, currently-unfixable defect class
-	// from the RawComplete check above (see NPMLock.HasShrinkwrap's doc
-	// comment): a shrinkwrapped package's own dependency subtree is reified
-	// by a real npm install from the npm-shrinkwrap.json embedded in its
-	// extracted tarball, not from this lock's Lockfile, and those nested
-	// fetches need npm's URL-indexed HTTP cache — populated by a normal,
-	// online `npm install`'s network fetch — which `npm cache add`
-	// (content-only, keyed by integrity) never populates. `npm ci --offline`
-	// cannot ever satisfy them, no matter how integrity-complete the raw
-	// lockfile is. Resolve intentionally still SUCCEEDS for a shrinkwrapped
-	// harness and records the condition on the lock (it is a REALIZE
-	// limitation, not a resolve one; failing Resolve would break install/
-	// update's non-fatal-realize-failure handling for something realize,
-	// not resolve, cannot do) — refusing here is what lets install/update
-	// warn and fall through to the legacy install path instead of failing
-	// the whole command, while `sync` (which hard-fails on a realize error
-	// by design) surfaces this as an honest, actionable error instead of
-	// silently trying and dying deep inside a container.
-	if h.NPMLock.HasShrinkwrap {
-		return nil, fmt.Errorf(
-			"realize: %s: package %s ships an npm-shrinkwrap.json; npm resolves its dependency subtree from the shrinkwrap at install time, which offline pool realization cannot satisfy yet — this harness stays on the legacy install path (tracked follow-up: seeding npm's URL cache index)",
-			harnessName, h.Package)
-	}
+	// npm-shrinkwrap — a SEPARATE defect class from the RawComplete check
+	// above (see NPMLock.HasShrinkwrap's doc comment): a shrinkwrapped
+	// package's own dependency subtree is reified by a real npm install from
+	// the npm-shrinkwrap.json embedded in its extracted tarball, not from
+	// this lock's Lockfile, and those nested fetches go through npm's
+	// URL-indexed HTTP cache (make-fetch-happen) rather than the
+	// integrity-addressed shortcut a normal lockfile-driven install takes —
+	// `npm cache add` (content-only, keyed by integrity) never populates
+	// that URL index. This USED TO be a hard preflight refusal here; it no
+	// longer is. seedShrinkwrapCacheIndex (called after `npm cache add`,
+	// below) seeds exactly that index from this same lock's already-verified
+	// (resolved URL, integrity) pairs, which is sufficient for `npm ci
+	// --offline` to satisfy the nested fetches without ever touching the
+	// network (§11.4 step 2a; empirically verified against a real
+	// @earendil-works/pi-coding-agent lockfile+shrinkwrap — see this
+	// package's tests). If the seeded `npm ci --offline` still fails (an npm
+	// internals change invalidates the seeding approach, or some other
+	// realize-time defect), the ordinary error path below surfaces it like
+	// any other realize failure — non-fatal on install/update, hard-fail on
+	// sync — there is no longer a special early rejection to keep in sync
+	// with that outcome.
 	if h.Runtime == nil {
 		return nil, fmt.Errorf("realize: %s: lock has no runtime requirement", harnessName)
 	}
@@ -248,6 +259,18 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 		return nil, fmt.Errorf("realize: %s: npm cache add: %w", harnessName, err)
 	}
 
+	// Step 2a: for a shrinkwrapped harness only, additionally seed npm's
+	// URL-indexed HTTP cache (make-fetch-happen) — see
+	// seedShrinkwrapCacheIndex's doc comment for why this is needed and what
+	// it does. Gated on HasShrinkwrap: this is an extra container run plus
+	// coupling to npm's own cacache internals, so it only runs where that
+	// cost buys something.
+	if h.NPMLock.HasShrinkwrap {
+		if err := seedShrinkwrapCacheIndex(ctx, b, harnessName, h.Package, h.NPMLock.Packages, cacheDir, buildDir, sp, mounts, homeEnvArg, arch); err != nil {
+			return nil, err
+		}
+	}
+
 	// Step 3: install from that cache, fully offline. Lifecycle scripts run
 	// (--foreground-scripts, not --ignore-scripts, unlike Resolve): a script
 	// that needs network fails here, which is correct — that dependency was
@@ -333,6 +356,130 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 		return nil, fmt.Errorf("realize: %s: assembling receipt: %w", harnessName, err)
 	}
 	return receipt, nil
+}
+
+// --- shrinkwrap URL-cache seeding (§11.4 step 2a) ---------------------------
+
+// seedManifestEntry is one entry of seed-manifest.json — seed_cache_index.js's
+// only per-harness input, besides the npm cache dir itself: a resolved
+// tarball URL's upstream integrity and the tarball's own byte size, both
+// already known and verified (Fetch verified integrity at cache-admission
+// time; size is simply that cache object's file size on disk).
+type seedManifestEntry struct {
+	Integrity string `json:"integrity"`
+	Size      int64  `json:"size"`
+}
+
+// seedShrinkwrapCacheIndex seeds npm's URL-indexed HTTP cache
+// (make-fetch-happen — distinct from the content-addressed cache `npm cache
+// add` already populated, in the same call sequence, just above this one)
+// so that `npm ci --offline` can satisfy a shrinkwrapped package's nested,
+// install-time fetches without ever touching the network.
+//
+// THE PROBLEM (empirically diagnosed against a real
+// @earendil-works/pi-coding-agent lockfile+shrinkwrap, 2026-08 — see
+// TestIntegration_ShrinkwrapSeeding): when npm reifies a package's own
+// bundled npm-shrinkwrap.json subtree, each nested dependency goes through
+// pacote's normal fetch path (pacote's RemoteFetcher), which takes a direct
+// content-addressed cache shortcut (`cacache.get.stream.byDigest` — no
+// network, no make-fetch-happen involvement at all) ONLY when BOTH a
+// resolved URL and an integrity are already known before the fetch starts
+// (pacote's fetcher.js, the `tarballStream` "fromCache" guard). A
+// workspace-sibling dependency's entry INSIDE the embedded shrinkwrap
+// (frozen into the tarball at publish time — wraptool has no way to patch
+// those bytes, unlike its own outer lockfile, which backfillIntegrity
+// already fixes) can carry a resolved URL but no integrity: the identical
+// defect class backfillIntegrity fixes for wraptool's OWN lockfile, just
+// unreachable here because it lives inside already-published tarball
+// content. Without integrity, the direct-cache shortcut cannot apply, so
+// pacote falls through to an ordinary make-fetch-happen fetch with no
+// integrity constraint on the request at all; `npm ci --offline` maps to
+// fetch mode "only-if-cached" (npm-registry-fetch's getCacheMode), which
+// throws ENOTCACHED the instant there is no matching URL-keyed index entry
+// — regardless of the fact that the tarball's CONTENT is already sitting in
+// that very same cache, addressed by integrity.
+//
+// THE FIX: seed one make-fetch-happen index entry per locked package, keyed
+// exactly as make-fetch-happen itself would
+// ("make-fetch-happen:request-cache:<url>"), pointing at the integrity `npm
+// cache add` already verified and stored content for. Since the fetch that
+// would otherwise 404 has no integrity constraint of its own (see above),
+// make-fetch-happen's entry-matching only checks header shape
+// (host/compress/accept-*), which a same-origin, bare GET tarball request
+// trivially satisfies against empty recorded headers; "only-if-cached" then
+// returns straight from the index entry with no staleness check at all.
+// Content is streamed from the SAME cache object `npm cache add` populated
+// — nothing is re-downloaded, re-verified against a new value, or trusted
+// beyond what Fetch already verified once at cache-admission time.
+//
+// This is deliberately coupled to npm's own cacache/make-fetch-happen
+// internals — no public npm API describes or guarantees this cache format.
+// seed_cache_index.js documents the exact internal modules/paths it depends
+// on; TestIntegration_ShrinkwrapSeeding (a real `npm ci` against a real,
+// shrinkwrapped fixture) is the backstop: it breaks loudly, not silently,
+// the day upstream npm changes any of this.
+//
+// pkgs is h.NPMLock.Packages — every locked package, not only the ones
+// nested under the shrinkwrapped subtree specifically — since determining
+// in Go which entries the embedded shrinkwrap will actually need (that
+// information lives inside the tarball, not this outer lock) is neither
+// possible nor worth attempting: seeding the whole locked graph is simple
+// and harmless.
+func seedShrinkwrapCacheIndex(ctx context.Context, b backend.Backend, harnessName, pkgName string, pkgs map[string]pool.NPMLockPackage, cacheDir, buildDir string, sp realizeStagingPaths, mounts []backend.Mount, homeEnvArg, arch string) error {
+	manifest, err := buildSeedManifest(pkgs, cacheDir)
+	if err != nil {
+		return fmt.Errorf("realize: %s: building shrinkwrap cache-seed manifest for %s: %w", harnessName, pkgName, err)
+	}
+	manifestJSON, err := marshalDeterministicJSON(manifest)
+	if err != nil {
+		return fmt.Errorf("realize: %s: encoding shrinkwrap cache-seed manifest for %s: %w", harnessName, pkgName, err)
+	}
+	// Written into buildDir (the SAME .build scratch tree the cache-add/ci
+	// steps use), so the existing removeBuildResidue's whole-tree RemoveAll
+	// already deletes both files — no separate residue-cleanup rule needed.
+	if err := os.WriteFile(filepath.Join(buildDir, "seed-manifest.json"), manifestJSON, 0o644); err != nil {
+		return fmt.Errorf("realize: %s: writing shrinkwrap cache-seed manifest: %w", harnessName, err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "seed-cache-index.js"), []byte(seedCacheIndexScript), 0o644); err != nil {
+		return fmt.Errorf("realize: %s: writing shrinkwrap cache-seed script: %w", harnessName, err)
+	}
+
+	if err := b.Run(ctx, backend.RunSpec{
+		Argv:     []string{"env", homeEnvArg, "node", sp.seedScript, sp.seedManifest, sp.buildCache},
+		Mounts:   mounts,
+		Network:  false,
+		Platform: arch,
+	}); err != nil {
+		return fmt.Errorf("realize: %s: seeding npm's URL cache index for shrinkwrapped package %s: %w", harnessName, pkgName, err)
+	}
+	return nil
+}
+
+// buildSeedManifest builds seedShrinkwrapCacheIndex's per-URL manifest from
+// pkgs: for every locked package's resolved URL, its upstream integrity and
+// the byte size of its already-fetched cache object (cacheDir/<sha256>) —
+// exactly what `npm cache add` already verified and stored, restated as the
+// (url, integrity, size) triple make-fetch-happen's own index format needs.
+// Two packages resolving to the identical URL (the same version reached via
+// two different lockfile paths) must record identical integrity and size;
+// anything else indicates lock corruption and is rejected outright rather
+// than silently picking one arbitrarily.
+func buildSeedManifest(pkgs map[string]pool.NPMLockPackage, cacheDir string) (map[string]seedManifestEntry, error) {
+	names := sortedNPMPackageKeys(pkgs)
+	manifest := make(map[string]seedManifestEntry, len(pkgs))
+	for _, name := range names {
+		pkg := pkgs[name]
+		fi, err := os.Stat(filepath.Join(cacheDir, pkg.SHA256))
+		if err != nil {
+			return nil, fmt.Errorf("package %q: stat cache object %s: %w", name, pkg.SHA256, err)
+		}
+		entry := seedManifestEntry{Integrity: pkg.Integrity, Size: fi.Size()}
+		if existing, ok := manifest[pkg.Resolved]; ok && existing != entry {
+			return nil, fmt.Errorf("package %q: resolved URL %s already recorded with different integrity/size (%+v vs %+v)", name, pkg.Resolved, existing, entry)
+		}
+		manifest[pkg.Resolved] = entry
+	}
+	return manifest, nil
 }
 
 // platformArch maps a PlatformKey to the RunSpec.Platform arch string

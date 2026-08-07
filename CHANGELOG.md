@@ -26,6 +26,16 @@ non-Guix Linux — through Docker or Podman.
 - `--backend auto|guix|oci` on `harness install`/`update`/`sync` overrides
   backend auto-selection; an explicit choice whose tooling is absent errors
   immediately.
+- A harness whose npm package ships its own `npm-shrinkwrap.json` (`pi`,
+  `@earendil-works/pi-coding-agent`) now realizes into the pool like any
+  other npm harness. npm reifies that package's dependency subtree from the
+  shrinkwrap embedded in its extracted tarball at install time, not from
+  the outer lockfile, and those nested fetches need npm's URL-indexed HTTP
+  cache — which offline pool realization's `npm cache add` (content-only,
+  keyed by integrity) never populates. Realize now seeds that URL index
+  itself, from the same lock's already-verified (resolved URL, integrity)
+  pairs, before running `npm ci --offline` — no network access, no change
+  to what gets trusted. This was a known limitation as of 0.4.0.
 - `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
   legacy `bin/`+`lib/` trees entirely, once they are no longer needed, and
   writes a marker recording that — so a later `wraptool up`/`list` no
@@ -128,21 +138,6 @@ non-Guix Linux — through Docker or Podman.
   harness binary at image build. Pin `:0` explicitly to keep the old
   provisioning behavior, or switch to `wraptool harness install <name>` +
   `wraptool up`'s pool mount (the supported path going forward).
-
-### Known limitations
-
-- A harness whose npm package ships its own `npm-shrinkwrap.json` (`pi`,
-  `@earendil-works/pi-coding-agent`) does not yet realize into the pool:
-  npm reifies that package's dependency subtree from the shrinkwrap
-  embedded in its extracted tarball, not from the outer lockfile, and those
-  nested fetches need npm's URL-indexed HTTP cache — which offline pool
-  realization's `npm cache add` (content-only, keyed by integrity) never
-  populates. `resolve`/`refresh` work normally and the condition is
-  recorded on the lock; `install`/`update` print a warning and fall
-  through to the legacy (network) install path exactly as for any other
-  realize failure, and `sync` fails with the same actionable message.
-  Tracked follow-up: seeding npm's URL cache index so shrinkwrapped
-  packages can realize offline too.
 
 ## 0.4.0 — 2026-08-05
 

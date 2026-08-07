@@ -347,111 +347,43 @@ func TestIntegration_SyncRejectsIncompleteRawLockfileWithActionableError(t *test
 	}
 }
 
-// TestIntegration_SyncRejectsShrinkwrappedHarnessWithActionableError is the
-// npm-shrinkwrap counterpart of
-// TestIntegration_SyncRejectsIncompleteRawLockfileWithActionableError: `sync`
-// realizes straight from an existing lock entry with no Resolve call, so it
-// hits NPM.Realize's shrinkwrap backstop directly. This is the LIVE
-// pi-coding-agent root cause (an integrity-complete raw lockfile whose
-// harness package itself carries npm's own "hasShrinkwrap" marker) — unlike
-// the missing-integrity fixture above, this one has a fully-formed,
-// integrity-complete Lockfile, isolating the shrinkwrap check from the
-// RawComplete one.
-func TestIntegration_SyncRejectsShrinkwrappedHarnessWithActionableError(t *testing.T) {
-	const pkg = "@earendil-works/pi-coding-agent"
-	shrinkwrappedLockfile := []byte(fmt.Sprintf(`{
-  "lockfileVersion": 3,
-  "packages": {
-    "": {"dependencies": {%q: "1.0.0"}},
-    "node_modules/%s": {
-      "version": "1.0.0",
-      "resolved": "https://registry.npmjs.org/%s/-/pi-coding-agent-1.0.0.tgz",
-      "integrity": "sha512-AAAA==",
-      "hasShrinkwrap": true
-    }
-  }
-}`, pkg, pkg, pkg))
-
-	root := t.TempDir()
-	paths := pool.PoolPaths{
-		Lock:         filepath.Join(root, "harness-lock.json"),
-		AdvisoryLock: filepath.Join(root, "lock"),
-		Cache:        filepath.Join(root, "cache", "sha256"),
-		Staging:      filepath.Join(root, "staging"),
-		Runtime:      filepath.Join(root, "runtime"),
-	}
-
-	now := pool.FormatTimestamp(time.Now().UTC())
-	lockDoc := &pool.Lock{
-		SchemaVersion: pool.LockSchemaVersion,
-		GeneratedAt:   now,
-		PolicyHash:    "sha256:" + strings.Repeat("a", 64),
-		Harnesses: map[string]pool.LockHarness{
-			"pi": {
-				Source:         "npm",
-				Package:        pkg,
-				Version:        "1.0.0",
-				PublishedAt:    now,
-				FirstSeenAt:    now,
-				RecipeRevision: "sha256:" + strings.Repeat("b", 64),
-				NPMLock: &pool.NPMLock{
-					LockfileVersion: 3,
-					Packages:        map[string]pool.NPMLockPackage{}, // deliberately empty: Fetch is a no-op
-					Lockfile:        shrinkwrappedLockfile,
-					HasShrinkwrap:   true,
-				},
-			},
-		},
-	}
-	if err := lockDoc.Validate(); err != nil {
-		t.Fatalf("test fixture lock fails Validate: %v", err)
-	}
-	data, err := lockDoc.Marshal()
-	if err != nil {
-		t.Fatalf("Marshal: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(paths.Lock), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(paths.Lock, data, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	n := NewNPM("")
-	_, err = pool.SyncHarness(context.Background(), n, hostExecBackend{}, paths, "pi", "pi", pool.PlatformLinuxAMD64Glibc)
-	if err == nil {
-		t.Fatal("SyncHarness: got nil error for a shrinkwrapped harness, want the actionable realize-preflight error")
-	}
-	if !strings.Contains(err.Error(), pkg) {
-		t.Errorf("SyncHarness error = %v, want it to name the package %q", err, pkg)
-	}
-	if !strings.Contains(err.Error(), "npm-shrinkwrap.json") {
-		t.Errorf("SyncHarness error = %v, want it to mention npm-shrinkwrap.json", err)
-	}
-	if !strings.Contains(err.Error(), "legacy install path") {
-		t.Errorf("SyncHarness error = %v, want it to mention the legacy install path", err)
-	}
-}
+// Note: this file used to also carry
+// TestIntegration_SyncRejectsShrinkwrappedHarnessWithActionableError, proving
+// that `sync` hit NPM.Realize's shrinkwrap preflight and refused outright.
+// That preflight is gone (see realize.go's seedShrinkwrapCacheIndex): a
+// shrinkwrapped lock entry now realizes like any other, seeding npm's
+// URL-cache index first. See TestIntegration_ShrinkwrapSeeding
+// (realize_shrinkwrap_integration_test.go) for the real, end-to-end
+// replacement, and TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness
+// below for the "seeding doesn't help" (unrealizable fixture) case.
 
 // TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness is the
-// install-path counterpart of the two sync tests above: `install`
-// (pool.UpdateHarness, Advance=false, first resolve — no existing lock)
-// drives a REAL Resolve+Fetch+Realize against a shrinkwrapped fixture
+// "seeding doesn't help" counterpart of TestIntegration_ShrinkwrapSeeding:
+// `install` (pool.UpdateHarness, Advance=false, first resolve — no existing
+// lock) drives a REAL Resolve+Fetch+Realize against a shrinkwrapped fixture
 // through the REAL orchestrator (pool.RefreshHarness/pool.UpdateHarness,
 // hybridIntegrationBackend faking only the resolve-phase `npm install`,
 // exactly like npm_integration_test.go's own end-to-end test). Unlike
 // `sync`, a realize failure on install/update is NON-FATAL
 // (UpdateResult.RealizeErr, orchestrator.go's own doc comment) — this
 // confirms the whole call still reports success (err == nil, "exit 0"
-// equivalent) with the actionable message surfaced through RealizeErr, so a
-// caller (cmd/harness.go) prints the warning and falls through to the
+// equivalent) with the underlying npm error surfaced through RealizeErr, so
+// a caller (cmd/harness.go) prints the warning and falls through to the
 // legacy install path instead of failing the command outright.
 //
-// No real npm/tar subprocess ever runs in this test: NPM.Realize's
-// shrinkwrap preflight fires before its first backend.Run call, so the npm
-// package "tarball" and node runtime "tarballs" served below are arbitrary
-// bytes — Fetch only downloads and hashes them, it never extracts anything.
+// A REAL npm/tar subprocess now runs in this test (realize's preflight
+// rejection is gone — see realize.go's seedShrinkwrapCacheIndex): the npm
+// package "tarball" and node runtime "tarballs" served below are
+// deliberately still arbitrary, non-tarball bytes (this test cares about
+// install's forgiving behavior on ANY realize failure, not about a
+// specific one), so `npm cache add` itself fails immediately
+// (TAR_BAD_ARCHIVE) — a realize failure exactly like any other, just no
+// longer a shrinkwrap-specific message. Skips if npm is not on PATH.
 func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.T) {
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm not on PATH")
+	}
+
 	const pkg = "@earendil-works/pi-coding-agent"
 	const version = "1.0.0"
 	// nodeVersion must match orchestrator.go's own unexported
@@ -558,16 +490,10 @@ func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.
 		t.Error("Changed = false, want true (this is a fresh resolve — the first install)")
 	}
 	if result.RealizeErr == nil {
-		t.Fatal("RealizeErr = nil, want the shrinkwrap backstop's actionable error (install continues to the legacy path on any realize failure)")
+		t.Fatal("RealizeErr = nil, want the underlying npm failure (arbitrary bytes are not a real tarball) — install continues to the legacy path on any realize failure")
 	}
-	if !strings.Contains(result.RealizeErr.Error(), pkg) {
-		t.Errorf("RealizeErr = %v, want it to name the package %q", result.RealizeErr, pkg)
-	}
-	if !strings.Contains(result.RealizeErr.Error(), "npm-shrinkwrap.json") {
-		t.Errorf("RealizeErr = %v, want it to mention npm-shrinkwrap.json", result.RealizeErr)
-	}
-	if !strings.Contains(result.RealizeErr.Error(), "legacy install path") {
-		t.Errorf("RealizeErr = %v, want it to mention the legacy install path", result.RealizeErr)
+	if !strings.Contains(result.RealizeErr.Error(), "npm cache add") {
+		t.Errorf("RealizeErr = %v, want it to name the failing step (npm cache add)", result.RealizeErr)
 	}
 	if result.RealizedGenerationID != "" {
 		t.Errorf("RealizedGenerationID = %q, want empty (realize failed)", result.RealizedGenerationID)

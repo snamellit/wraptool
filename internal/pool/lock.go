@@ -137,30 +137,26 @@ type NPMLock struct {
 	// A lock with no backfilled entries keeps npm's original bytes exactly.
 	Lockfile json.RawMessage `json:"lockfile,omitempty"`
 	// HasShrinkwrap is true when ANY raw "packages" entry carries npm's own
-	// "hasShrinkwrap" marker (e.g. @earendil-works/pi-coding-agent) — a
-	// SEPARATE, currently-unfixable defect class from the missing-integrity
-	// one Lockfile's backfill patches above. A real npm install reifies a
-	// shrinkwrapped package's own dependency subtree from the
-	// npm-shrinkwrap.json embedded in its extracted tarball, not from this
-	// outer lockfile's "packages" map; those nested fetches need npm's
-	// URL-indexed HTTP cache (populated by a normal, online `npm install`'s
-	// network fetch), which realize-side `npm cache add` — content-only,
-	// keyed by integrity — never populates. Resolve still succeeds and
-	// records this flag rather than failing outright (§ resolve errors are
-	// fatal on the update path; a fatal Resolve here would break install/
-	// update's non-fatal-realize-failure handling for something that is a
-	// REALIZE limitation, not a resolve one): NPM.Realize's own preflight
-	// (internal/pool/source/realize.go, next to its RawComplete check)
-	// refuses with an actionable message, surfacing through the ordinary
-	// non-fatal RealizeErr warn on install/update and the hard error on
-	// sync. Nothing here is "healed" by re-resolving (a fresh Resolve
-	// reproduces the identical condition), so decision.go's self-heal
-	// machinery deliberately does NOT consult this field — the realize axis
-	// simply keeps returning DecisionRealize (or DecisionUpToDate never,
-	// since it never succeeds) forever, the same steady state any other
-	// permanent realize failure reaches. omitempty since false is the
-	// overwhelmingly common case and this field postdates many existing
-	// locks.
+	// "hasShrinkwrap" marker (e.g. @earendil-works/pi-coding-agent). A real
+	// npm install reifies a shrinkwrapped package's own dependency subtree
+	// from the npm-shrinkwrap.json embedded in its extracted tarball, not
+	// from this outer lockfile's "packages" map; those nested fetches go
+	// through npm's URL-indexed HTTP cache (make-fetch-happen) rather than
+	// the plain content-addressed shortcut a normal lockfile-driven install
+	// takes. NPM.Realize (internal/pool/source/realize.go) handles this by
+	// seeding that URL index from this same lock's already-verified
+	// (resolved URL, integrity) pairs before running `npm ci --offline`
+	// (seedShrinkwrapCacheIndex) — this field is what gates that extra,
+	// npm-internals-coupled step to the harnesses that actually need it,
+	// rather than paying its cost (and its npm-version-fragility) on every
+	// realize. It used to also gate a hard realize-time refusal (a
+	// currently-unfixable defect class, at the time); that refusal is gone
+	// now that seeding lets a shrinkwrapped harness realize like any other.
+	// If seeding one day stops working (an npm internals change), the
+	// ordinary realize-failure path still applies: non-fatal RealizeErr warn
+	// on install/update, hard error on sync — nothing here special-cases
+	// that outcome. omitempty since false is the overwhelmingly common case
+	// and this field postdates many existing locks.
 	HasShrinkwrap bool `json:"has_shrinkwrap,omitempty"`
 }
 
