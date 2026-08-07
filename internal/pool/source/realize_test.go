@@ -211,6 +211,8 @@ func (f *realizeFakeBackend) Run(_ context.Context, spec backend.RunSpec) error 
 		return nil // npm cache add: nothing to fabricate, just recorded
 	case "tar":
 		return f.simulateNodeUnpack()
+	case "node":
+		return nil // shrinkwrap cache-index seeding: nothing to fabricate, just recorded
 	default:
 		return fmt.Errorf("realizeFakeBackend: unexpected argv %v", spec.Argv)
 	}
@@ -441,13 +443,15 @@ func TestRealize_MissingLockfileErrors(t *testing.T) {
 	}
 }
 
-// TestRealize_RejectsShrinkwrappedHarness covers the npm-shrinkwrap backstop
-// (a SEPARATE defect class from the RawComplete/missing-integrity checks): a
-// lock whose NPMLock.HasShrinkwrap is set must be refused before touching
-// the backend at all, naming the package and pointing at the legacy install
-// path — not attempt `npm ci --offline` and let it die however npm's own
-// unresolved-shrinkwrap-subtree failure happens to look.
-func TestRealize_RejectsShrinkwrappedHarness(t *testing.T) {
+// TestRealize_ShrinkwrapSeedsCacheIndex covers the shrinkwrap URL-cache
+// seeding step (seedShrinkwrapCacheIndex): a lock whose NPMLock.HasShrinkwrap
+// is set gets one EXTRA backend.Run — `node <script> <manifest> <cache>`,
+// network off — inserted between `npm cache add` and `npm ci --offline`,
+// and Realize otherwise succeeds exactly as it would without shrinkwrap
+// (this package's fake backend does not actually run npm, so this only
+// proves the wiring — TestIntegration_ShrinkwrapSeeding is the real,
+// end-to-end proof against a real npm and a real shrinkwrapped fixture).
+func TestRealize_ShrinkwrapSeedsCacheIndex(t *testing.T) {
 	h := testLockHarness()
 	h.NPMLock.HasShrinkwrap = true
 	cacheDir := t.TempDir()
@@ -457,20 +461,94 @@ func TestRealize_RejectsShrinkwrappedHarness(t *testing.T) {
 	n := NewNPM("")
 
 	_, err := n.Realize(context.Background(), fb, "example-harness", fb.binName, h, pool.PlatformLinuxAMD64Glibc, cacheDir, stagingGenDir)
+	if err != nil {
+		t.Fatalf("Realize: %v", err)
+	}
+
+	if len(fb.calls) != 4 {
+		t.Fatalf("got %d backend.Run calls, want 4 (cache add, seed, ci, tar unpack): %+v", len(fb.calls), fb.calls)
+	}
+	seed := stripEnvPrefix(fb.calls[1].Argv)
+	if len(seed) != 4 || seed[0] != "node" {
+		t.Fatalf("seed call argv = %v, want [node <script> <manifest> <cache>]", seed)
+	}
+	if fb.calls[1].Network {
+		t.Error("seed call has Network=true, want false (§6.2: realize never touches the network)")
+	}
+
+	// removeBuildResidue's whole-.build RemoveAll must have deleted the seed
+	// script and manifest along with everything else under .build — neither
+	// should survive into the digested generation.
+	for _, name := range []string{"seed-cache-index.js", "seed-manifest.json"} {
+		p := filepath.Join(stagingGenDir, ".build", name)
+		if _, err := os.Stat(p); err == nil {
+			t.Errorf("%s still exists after Realize, want removed with the rest of .build", p)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("stat %s: %v", p, err)
+		}
+	}
+}
+
+// TestRealize_NoShrinkwrapSkipsSeeding is the control: a lock with
+// HasShrinkwrap false (the common case) never runs the extra seed step —
+// exactly today's 3 backend.Run calls.
+func TestRealize_NoShrinkwrapSkipsSeeding(t *testing.T) {
+	h := testLockHarness()
+	cacheDir := t.TempDir()
+	seedCache(t, cacheDir, h)
+	stagingGenDir := t.TempDir()
+	fb := newRealizeFakeBackend(stagingGenDir)
+	n := NewNPM("")
+
+	if _, err := n.Realize(context.Background(), fb, "example-harness", fb.binName, h, pool.PlatformLinuxAMD64Glibc, cacheDir, stagingGenDir); err != nil {
+		t.Fatalf("Realize: %v", err)
+	}
+	if len(fb.calls) != 3 {
+		t.Fatalf("got %d backend.Run calls, want 3 (cache add, ci, tar unpack — no seeding)", len(fb.calls))
+	}
+}
+
+// TestBuildSeedManifest covers buildSeedManifest directly: one manifest
+// entry per distinct resolved URL, carrying that package's upstream
+// integrity and its cache object's on-disk byte size.
+func TestBuildSeedManifest(t *testing.T) {
+	h := testLockHarness()
+	cacheDir := t.TempDir()
+	seedCache(t, cacheDir, h) // writes 1-byte ("x") objects for every SHA256
+
+	manifest, err := buildSeedManifest(h.NPMLock.Packages, cacheDir)
+	if err != nil {
+		t.Fatalf("buildSeedManifest: %v", err)
+	}
+	if len(manifest) != len(h.NPMLock.Packages) {
+		t.Fatalf("got %d manifest entries, want %d (one per distinct resolved URL)", len(manifest), len(h.NPMLock.Packages))
+	}
+	for name, pkg := range h.NPMLock.Packages {
+		entry, ok := manifest[pkg.Resolved]
+		if !ok {
+			t.Errorf("manifest has no entry for %q's resolved URL %s", name, pkg.Resolved)
+			continue
+		}
+		if entry.Integrity != pkg.Integrity {
+			t.Errorf("%s: Integrity = %q, want %q", pkg.Resolved, entry.Integrity, pkg.Integrity)
+		}
+		if entry.Size != 1 { // seedCache writes a single byte ("x") per object
+			t.Errorf("%s: Size = %d, want 1", pkg.Resolved, entry.Size)
+		}
+	}
+}
+
+// TestBuildSeedManifest_MissingCacheObjectErrors covers buildSeedManifest's
+// dependency on Fetch having already run: a package whose cache object is
+// absent must fail loudly, not silently produce an incomplete manifest that
+// only fails deep inside the seed script's own cacache.get.hasContent check.
+func TestBuildSeedManifest_MissingCacheObjectErrors(t *testing.T) {
+	h := testLockHarness()
+	cacheDir := t.TempDir() // deliberately not seeded
+
+	_, err := buildSeedManifest(h.NPMLock.Packages, cacheDir)
 	if err == nil {
-		t.Fatal("Realize: got nil error, want rejection of a shrinkwrapped harness")
-	}
-	if !strings.Contains(err.Error(), h.Package) {
-		t.Errorf("error = %q, want it to name the package %q", err.Error(), h.Package)
-	}
-	if !strings.Contains(err.Error(), "npm-shrinkwrap.json") {
-		t.Errorf("error = %q, want it to mention npm-shrinkwrap.json", err.Error())
-	}
-	if !strings.Contains(err.Error(), "legacy install path") {
-		t.Errorf("error = %q, want it to mention the legacy install path", err.Error())
-	}
-	if len(fb.calls) != 0 {
-		t.Errorf("backend.Run called %d times, want 0 (must fail before touching the backend)", len(fb.calls))
+		t.Fatal("buildSeedManifest: got nil error, want failure on a missing cache object")
 	}
 }
 

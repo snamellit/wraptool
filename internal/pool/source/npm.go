@@ -466,10 +466,12 @@ type npmLockFile struct {
 // "packages" map; those nested fetches need npm's URL-indexed HTTP cache
 // (populated by `npm install`'s network fetch), which `npm cache add`
 // (content-only, keyed by integrity) never populates. This is a SEPARATE
-// defect class from the missing-integrity one backfillIntegrity fixes: even
-// a fully integrity-complete raw lockfile for a shrinkwrapped package cannot
-// be realized offline today (see NPMLock.HasShrinkwrap's doc comment and
-// Realize's preflight in the sibling realize.go).
+// defect class from the missing-integrity one backfillIntegrity fixes:
+// the shrinkwrap embedded in the published tarball permanently lacks
+// integrity fields, so Realize must seed npm's URL cache index for the
+// locked (url, integrity) pairs before `npm ci --offline` — this flag is
+// the sole gate on that seeding step (see NPMLock.HasShrinkwrap's doc
+// comment and seedShrinkwrapCacheIndex in the sibling realize.go).
 type npmLockPackageEntry struct {
 	Version       string `json:"version"`
 	Resolved      string `json:"resolved"`
@@ -645,13 +647,10 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 
 	// hasShrinkwrap becomes true the moment ANY entry in the lockfile carries
 	// npm's own "hasShrinkwrap" marker — see npmLockPackageEntry.HasShrinkwrap
-	// and NPMLock.HasShrinkwrap's doc comments for why this is recorded
-	// rather than failing Resolve outright: the condition is real and
-	// currently unfixable offline, but Resolve succeeding and Realize
-	// refusing (with an actionable message) is what lets install/update's
-	// existing non-fatal-realize-failure handling do the right thing —
-	// warn and fall through to the legacy install path — instead of
-	// failing the whole command.
+	// and NPMLock.HasShrinkwrap's doc comments. Recording it (rather than
+	// acting on it here) is what lets Realize run its cache-index seeding
+	// step for exactly these harnesses: seedShrinkwrapCacheIndex in the
+	// sibling realize.go is gated solely on this flag.
 	hasShrinkwrap := false
 
 	packages := make(map[string]pool.NPMLockPackage, len(lockFile.Packages))

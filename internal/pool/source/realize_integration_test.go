@@ -167,6 +167,7 @@ type fixtureLockPackage struct {
 	OptionalDependencies map[string]string `json:"optionalDependencies,omitempty"`
 	Optional             bool              `json:"optional,omitempty"`
 	OS                   []string          `json:"os,omitempty"`
+	HasShrinkwrap        bool              `json:"hasShrinkwrap,omitempty"`
 }
 
 // buildRawLockfile assembles a real-shaped (lockfileVersion 3) raw
