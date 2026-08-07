@@ -222,7 +222,7 @@ func TestWriteDirResolution(t *testing.T) {
 }
 
 // TestHarnessParityWithConnectSh asserts the registry's output matches the
-// wraptool-connect feature's connect.sh (the devcontainer path) for every
+// wraptool feature's connect.sh (the devcontainer path) for every
 // container-CLI harness. Comparison is semantic, not byte (connect.sh minimally
 // URL-encodes cwd; the Go path uses url.QueryEscape) — they must decode
 // identically. Host IDEs (cursor, roo) run host-side and are not in connect.sh.
@@ -231,9 +231,13 @@ func TestHarnessParityWithConnectSh(t *testing.T) {
 	if err != nil {
 		t.Skip("no sh available")
 	}
-	connect := filepath.Join("..", "..", "features", "src", "wraptool-connect", "connect.sh")
+	connect := filepath.Join("..", "..", "features", "src", "wraptool", "connect.sh")
 	if _, err := os.Stat(connect); err != nil {
-		t.Skipf("connect.sh not found at %s", connect)
+		// In-repo file, not an optional external dependency: a silent skip here
+		// is exactly how this test would go unnoticed if connect.sh ever moved
+		// or was deleted out from under it again (as it briefly was for
+		// wraptool-connect during that feature's sunset).
+		t.Fatalf("connect.sh not found at %s: %v", connect, err)
 	}
 	connectAbs, _ := filepath.Abs(connect)
 
@@ -271,15 +275,23 @@ func TestHarnessParityWithConnectSh(t *testing.T) {
 				}
 				goSrv := readServer(t, filepath.Join(goDir, filepath.FromSlash(h.relPath)), h.topKey)
 
-				// connect.sh (devcontainer path).
+				// connect.sh (devcontainer path). Stub the harness binary onto PATH:
+				// connect.sh's postCreate check (§12.3) hard-fails when WT_HARNESS
+				// doesn't resolve and WT_CONNECT defaults to true, but this test only
+				// cares about the config it writes, not a real harness install.
+				stubDir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(stubDir, h.name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
 				shOut := filepath.Join(t.TempDir(), filepath.FromSlash(h.relPath))
 				cmd := exec.Command(sh, connectAbs)
 				cmd.Env = append(os.Environ(),
+					"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
 					"WT_URL="+base, "WRAPTOOL_TOKEN="+tc.token, "WRAPTOOL_CWD="+cwd,
 					"WT_HARNESS="+h.name, "WT_CONFIG_OUT="+shOut,
 					// Isolate from a host-installed options.env (present when the
-					// wraptool-connect feature is installed on the test machine),
-					// which would otherwise clobber WT_URL above.
+					// wraptool feature is installed on the test machine), which would
+					// otherwise clobber WT_URL above.
 					"WT_SHARE_DIR="+t.TempDir(),
 				)
 				if out, err := cmd.CombinedOutput(); err != nil {

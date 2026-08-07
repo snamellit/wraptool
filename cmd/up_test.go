@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -888,5 +889,88 @@ func TestStripJSONCOnRealRepoDevcontainerConfig(t *testing.T) {
 	}
 	if got := devcontainerClassifyMount(dir, devcontainerPoolRuntime); got != devcontainerMountReadOnly {
 		t.Errorf("classify = %v, want devcontainerMountReadOnly (the repo's own devcontainer.json declares the runtime mount as a string ending in ,readonly)", got)
+	}
+}
+
+// TestStaleBinaryNotice covers staleBinaryNotice's four silent cases plus the
+// one case that actually prints — never shelling to git (headSHA is a plain
+// injected func).
+func TestStaleBinaryNotice(t *testing.T) {
+	wraptoolRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wraptoolRoot, "go.mod"),
+		[]byte("module github.com/pti/wraptool\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	otherRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(otherRoot, "go.mod"),
+		[]byte("module example.com/other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	noModRoot := t.TempDir()
+
+	sameSHA := func() (string, error) { return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", nil }
+	diffSHA := func() (string, error) { return "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", nil }
+	errSHA := func() (string, error) { return "", errors.New("git not answerable") }
+	emptySHA := func() (string, error) { return "", nil } // no error, but nothing to compare
+
+	const buildRev = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	tests := []struct {
+		name     string
+		root     string
+		buildRev string
+		headSHA  func() (string, error)
+		want     bool // whether a non-empty notice is expected
+	}{
+		{"match: same sha prints nothing", wraptoolRoot, buildRev, sameSHA, false},
+		{"mismatch: different sha prints a notice", wraptoolRoot, buildRev, diffSHA, true},
+		{"not a wraptool checkout: different module", otherRoot, buildRev, diffSHA, false},
+		{"not a wraptool checkout: no go.mod at all", noModRoot, buildRev, diffSHA, false},
+		{"no revision: release build with unstamped VCS info", wraptoolRoot, "", diffSHA, false},
+		{"git not answerable: error return", wraptoolRoot, buildRev, errSHA, false},
+		{"git not answerable: empty sha, no error", wraptoolRoot, buildRev, emptySHA, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := staleBinaryNotice(tt.root, tt.buildRev, tt.headSHA)
+			if (got != "") != tt.want {
+				t.Errorf("staleBinaryNotice(%q, %q) = %q, want non-empty=%v", tt.root, tt.buildRev, got, tt.want)
+			}
+		})
+	}
+
+	t.Run("notice names both short shas and the rebuild command", func(t *testing.T) {
+		got := staleBinaryNotice(wraptoolRoot, buildRev, diffSHA)
+		for _, want := range []string{shortSHA(buildRev), shortSHA("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"), "go build -o wraptool ."} {
+			if !strings.Contains(got, want) {
+				t.Errorf("notice %q missing %q", got, want)
+			}
+		}
+	})
+}
+
+// TestIsWraptoolModuleRoot pins the exact-match module-line detection: a
+// module line that merely contains the wraptool import path (a fork, a
+// vanity-suffixed module) must not match.
+func TestIsWraptoolModuleRoot(t *testing.T) {
+	cases := map[string]bool{
+		"module github.com/pti/wraptool\n":                     true,
+		"module github.com/pti/wraptool\n\ngo 1.23\n":          true,
+		"module github.com/pti/wraptool/v2\n":                  false,
+		"module github.com/example/wraptool\n":                 false,
+		"// module github.com/pti/wraptool\n":                  false,
+		"module github.com/pti/wraptool // trailing comment\n": false,
+		"": false,
+	}
+	for content, want := range cases {
+		dir := t.TempDir()
+		if content != "" {
+			if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := isWraptoolModuleRoot(dir); got != want {
+			t.Errorf("isWraptoolModuleRoot(%q) = %v, want %v", content, got, want)
+		}
 	}
 }

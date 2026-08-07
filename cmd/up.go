@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pti/wraptool/internal/buildinfo"
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
@@ -54,7 +55,7 @@ func newUpCmd() *cobra.Command {
 Run in a git repository or worktree root. up is idempotent: it ensures the
 shared wraptool MCP server is running (starting it detached if needed), then
 brings up the project's dev container with the connection info (token + this
-worktree's path) injected, so the wraptool-connect feature can wire the MCP
+worktree's path) injected, so the wraptool feature can wire the MCP
 client to the host server.
 
 Multiple worktrees share one server; each worktree's container is scoped to its
@@ -90,6 +91,7 @@ func runUp(opts upOptions) error {
 		}
 	}
 	root, _ = filepath.Abs(root)
+	printStaleBinaryNotice(root)
 
 	configPath := opts.configPath
 	if configPath == "" {
@@ -1259,6 +1261,83 @@ func gitToplevel() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// wraptoolModuleLine is go.mod's exact module declaration for wraptool's own
+// source checkout — the only case the stale-binary notice below applies to.
+const wraptoolModuleLine = "module github.com/pti/wraptool"
+
+// isWraptoolModuleRoot reports whether root/go.mod declares wraptool's own
+// module. Pure filesystem read; a missing/unreadable go.mod is simply "no".
+// The match is deliberately exact (the whole trimmed line, nothing appended
+// or prepended): a module line carrying a trailing comment, or one that only
+// contains the import path as a substring (a fork, a vanity-suffixed
+// module), reads as "not wraptool" rather than risk a false positive.
+func isWraptoolModuleRoot(root string) bool {
+	b, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.TrimSpace(line) == wraptoolModuleLine {
+			return true
+		}
+	}
+	return false
+}
+
+// gitHeadSHA reads the full commit SHA of root's checked-out HEAD.
+func gitHeadSHA(root string) (string, error) {
+	out, err := exec.Command("git", "-C", root, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// shortSHA truncates a full SHA the same way buildinfo.Get does for a devel
+// version, so the notice below and `wraptool version`'s own output agree.
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
+// staleBinaryNotice returns a one-line stderr notice (or "" for nothing) when
+// this wraptool binary was built from a different commit than the wraptool
+// source checkout `up` is running in — bites during self-hosted development:
+// build, forget to reinstall, and the harness keeps exercising yesterday's
+// code. Pure and read-only; headSHA is injected so tests never shell to git.
+// Silent whenever the comparison can't be made confidently: not a wraptool
+// checkout, a release build with no stamped VCS revision, or git not
+// answerable — this must never block `up`.
+func staleBinaryNotice(root, buildRev string, headSHA func() (string, error)) string {
+	if buildRev == "" {
+		return ""
+	}
+	if !isWraptoolModuleRoot(root) {
+		return ""
+	}
+	head, err := headSHA()
+	if err != nil || head == "" {
+		return ""
+	}
+	if head == buildRev {
+		return ""
+	}
+	return fmt.Sprintf("notice: this wraptool binary was built from %s but this checkout is at %s — "+
+		"rebuild (go build -o wraptool .) and reinstall to test current code",
+		shortSHA(buildRev), shortSHA(head))
+}
+
+// printStaleBinaryNotice wires staleBinaryNotice to the real build info and a
+// real git HEAD read; see staleBinaryNotice for the actual logic and when it
+// stays silent.
+func printStaleBinaryNotice(root string) {
+	if msg := staleBinaryNotice(root, buildinfo.Get().Revision, func() (string, error) { return gitHeadSHA(root) }); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
 }
 
 // isInContainer is a variable so runUp tests can exercise host-only startup
