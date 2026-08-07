@@ -1,4 +1,4 @@
-// seed-cache-index.js — seeds npm's make-fetch-happen URL cache index for a
+// seed_cache_index.js — seeds npm's make-fetch-happen URL cache index for a
 // shrinkwrapped harness (see realize.go's seedShrinkwrapCacheIndex doc
 // comment for the full "why").
 //
@@ -27,6 +27,7 @@
 
 const fs = require('fs')
 const path = require('path')
+const { format } = require('url')
 const { execFileSync } = require('child_process')
 
 const [, , manifestPath, npmCacheDir] = process.argv
@@ -100,12 +101,18 @@ async function main () {
     // response getter). If a future npm changes any of this, the
     // integration test this script exists for breaks loudly rather than
     // this comment silently going stale.
-    const key = `make-fetch-happen:request-cache:${url}`
+    // Key on the same normalized URL form make-fetch-happen itself keys on
+    // (lib/cache/key.js: url.format over a parsed URL, auth stripped,
+    // fragment stripped, search kept) — a lock whose resolved URL carries a
+    // default port, uppercase host, or credentials would otherwise seed a
+    // dead entry that npm's own lookup never hits.
+    const normalizedURL = format(new URL(url), { auth: false, fragment: false, search: true, unicode: false })
+    const key = `make-fetch-happen:request-cache:${normalizedURL}`
     await cacache.index.insert(cachePath, key, integrity, {
       size,
       metadata: {
         time: Date.now(),
-        url,
+        url: normalizedURL,
         reqHeaders: {},
         resHeaders: {},
         options: { compress: true },

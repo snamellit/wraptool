@@ -19,7 +19,7 @@ import (
 	"github.com/pti/wraptool/internal/pool/backend"
 )
 
-// seedCacheIndexScript is seed-cache-index.js, verbatim (§11.4 step 2a — see
+// seedCacheIndexScript is seed_cache_index.js, verbatim (§11.4 step 2a — see
 // seedShrinkwrapCacheIndex's doc comment). Static, checked-in content with no
 // per-harness data ever interpolated into it; all variable data travels
 // through the separate seed-manifest.json this package generates per call.
@@ -437,10 +437,10 @@ func seedShrinkwrapCacheIndex(ctx context.Context, b backend.Backend, harnessNam
 	// Written into buildDir (the SAME .build scratch tree the cache-add/ci
 	// steps use), so the existing removeBuildResidue's whole-tree RemoveAll
 	// already deletes both files — no separate residue-cleanup rule needed.
-	if err := os.WriteFile(filepath.Join(buildDir, "seed-manifest.json"), manifestJSON, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(buildDir, path.Base(sp.seedManifest)), manifestJSON, 0o644); err != nil {
 		return fmt.Errorf("realize: %s: writing shrinkwrap cache-seed manifest: %w", harnessName, err)
 	}
-	if err := os.WriteFile(filepath.Join(buildDir, "seed-cache-index.js"), []byte(seedCacheIndexScript), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(buildDir, path.Base(sp.seedScript)), []byte(seedCacheIndexScript), 0o644); err != nil {
 		return fmt.Errorf("realize: %s: writing shrinkwrap cache-seed script: %w", harnessName, err)
 	}
 

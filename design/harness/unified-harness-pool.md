@@ -744,6 +744,18 @@ Inside the backend container, network off, staging rw, cache ro:
 2. Seed npm's cache offline: `npm cache add <cache/sha256/…>` for every locked
    tarball (cache objects are the verified tarballs; npm re-verifies its
    sha512 SRI on add).
+
+   2a. **Shrinkwrapped harnesses only** (`NPMLock.HasShrinkwrap`, §8.1): seed
+   npm's make-fetch-happen **URL cache index** with one entry per locked
+   `(resolved URL, integrity, size)` triple, via npm's own bundled cacache.
+   Rationale: a package shipping `npm-shrinkwrap.json` has its subtree
+   reified from the shrinkwrap embedded in its published tarball, whose
+   entries permanently lack `integrity` — so pacote's content-addressed
+   shortcut cannot fire and `npm ci --offline` falls back to a URL-keyed
+   HTTP-cache lookup (`only-if-cached`). The seeded index entries satisfy
+   that lookup from content step 2 already verified; no new trust is
+   introduced beyond what Fetch admitted into the cache. Cache keys use
+   make-fetch-happen's own normalized URL form.
 3. `npm ci --offline --foreground-scripts` — lifecycle scripts run with no
    network; a script that needs one fails the realization (correct: that
    dependency was not locked).
