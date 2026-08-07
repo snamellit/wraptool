@@ -20,6 +20,33 @@ now - published_at  >= minimum_release_age       # registry publish time
 now - first_seen_at >= minimum_observation_age   # this pool's own clock
 ```
 
+::: {.callout-warning}
+## A source with no publish history skips `minimum_release_age` entirely
+
+`minimum_release_age` only means something measured against a *real* upstream
+publication timestamp. Some sources don't have one: the `agy` (Antigravity)
+archive channel carries no publish-history field at all, and occasionally an
+npm package is missing its registry `time` metadata too. For exactly these
+candidates the pool synthesizes `published_at` from `first_seen_at` (its own
+first-refresh clock read) instead — and, because that synthesized value isn't
+a real publish timestamp, `pool.Eligible` (and the `list` quarantine
+countdown) **skip the `minimum_release_age` check entirely** for them. Their
+*only* quarantine is `minimum_observation_age`, measured against the real
+`first_seen_at`.
+
+The shipped default for `minimum_observation_age` is `0h`. Put together: for
+`agy` today, out of the box, that is **zero quarantine** — a freshly
+refreshed candidate is eligible immediately, with no age check of any kind
+standing between it and `install`/`update`. This is deliberate (a source with
+no publish history would otherwise hit an unconditional wall on every first
+install — see `internal/pool/eligibility.go`'s `PublishedAtSynthesized` doc
+comment for the full ruling), but it means the scheduled-`refresh` habit this
+page argues for is not just about making `minimum_observation_age` count
+*sooner* for npm-sourced harnesses — for a synthesized-timestamp source like
+`agy` it is the entire quarantine story. Set a nonzero
+`minimum_observation_age` if you want any time-based protection at all there.
+:::
+
 `minimum_release_age` (default seven days, `policy set --minimum-release-age`)
 protects against a drive-by release published on compromised maintainer
 credentials: a version pulled or reported during its quarantine window is
@@ -28,7 +55,15 @@ works even against a pool that has never run before.
 
 `minimum_observation_age` (default `0h`, opt-in) is different: it is not
 about when upstream published a release, it is about how long **this pool**
-has known the release exists. `first_seen_at` is recorded the first time
+has known the release exists.
+
+```bash
+# Require 48h of this pool's own observation before a candidate is eligible —
+# the same syntax as minimum-release-age above (--harness scopes it).
+wraptool harness policy set --minimum-observation-age 48h
+```
+
+`first_seen_at` is recorded the first time
 `refresh` observes a given (source, package, version) triple, and it is
 write-once — repeated refreshes never move it forward or back. A pool that
 never runs `refresh` never records a `first_seen_at`, which means
@@ -132,11 +167,16 @@ short or unset — the point is regularity, not frequency.
 ```
 
 (Adjust the `ProgramArguments` path to wherever `wraptool` is installed —
-`which wraptool` on the machine you're loading this on.) Load it:
+`which wraptool` on the machine you're loading this on.) Load it with the
+modern `launchctl bootstrap` form (targets your per-user GUI domain
+explicitly, unlike the older, ambiguous `load`):
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.wraptool.harness-refresh.plist
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.wraptool.harness-refresh.plist
 ```
+
+On an older macOS without `bootstrap`, fall back to
+`launchctl load ~/Library/LaunchAgents/com.wraptool.harness-refresh.plist`.
 
 `StartInterval` is in seconds (86400 = daily); launchd runs the job roughly
 on that cadence and catches up a missed run once the machine wakes, similar
