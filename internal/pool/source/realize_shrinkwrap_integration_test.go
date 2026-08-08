@@ -33,7 +33,13 @@ func TestIntegration_ShrinkwrapSeeding(t *testing.T) {
 	}
 
 	const closedPort = "http://127.0.0.1:1"
-	siblingURL := closedPort + "/tiny-shrink-sibling-1.0.0.tgz"
+	// The sibling URL deliberately carries a query string: make-fetch-happen
+	// keys its cache index on the normalized URL WITH search kept
+	// (seed_cache_index.js's format options), so a registry serving tarballs
+	// via pre-signed or proxied URLs only hits the seeded entry if the query
+	// survives normalization — dropping `search: true` there must fail this
+	// test, not just exotic registries in the field.
+	siblingURL := closedPort + "/tiny-shrink-sibling-1.0.0.tgz?x=1"
 	harnessURL := closedPort + "/tiny-shrink-harness-1.0.0.tgz"
 
 	siblingTarball := buildNPMTarballGZ(t, map[string]string{
