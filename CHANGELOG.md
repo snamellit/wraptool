@@ -26,6 +26,18 @@ non-Guix Linux — through Docker or Podman.
 - `--backend auto|guix|oci` on `harness install`/`update`/`sync` overrides
   backend auto-selection; an explicit choice whose tooling is absent errors
   immediately.
+- A harness whose npm package ships its own `npm-shrinkwrap.json` (`pi`,
+  `@earendil-works/pi-coding-agent`) now realizes into the pool like any
+  other npm harness. npm reifies that package's dependency subtree from the
+  shrinkwrap embedded in its extracted tarball at install time, not from
+  the outer lockfile, and those nested fetches need npm's URL-indexed HTTP
+  cache — which offline pool realization's `npm cache add` (content-only,
+  keyed by integrity) never populates. Realize now seeds that URL index
+  itself, from the same lock's already-verified (resolved URL, integrity)
+  pairs, before running `npm ci --offline` — no network access, no change
+  to what gets trusted. Pool realization of a shrinkwrapped harness was not
+  possible before this release (0.4.0 surfaced it as an opaque npm
+  `ENOTCACHED` failure, falling back to the legacy install).
 - `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
   legacy `bin/`+`lib/` trees entirely, once they are no longer needed, and
   writes a marker recording that — so a later `wraptool up`/`list` no
@@ -46,6 +58,28 @@ non-Guix Linux — through Docker or Podman.
   (true only when at least one tree actually existed to remove); the `gc`
   audit event gains a `legacy_removed` field, recorded even if the legacy
   step itself later fails, so real deletions are never left unaudited.
+- Docs: [Harness pool: quarantine and scheduled refresh](https://pti.pages.snamellit.com/wraptool/harness-pool.html)
+  (§16 Phase 5 item 1) explains why a periodic `wraptool harness refresh` is
+  what makes `minimum_observation_age` actually count — a pool that never
+  refreshes never records `first_seen_at`, so the observation window never
+  starts — and gives a systemd user timer and a macOS launchd plist to
+  schedule it. It also states plainly which Phase-5 items already shipped
+  earlier (local observations and release-age eligibility in Phase 1;
+  `--allow-young` bypass audit events and `harness list`'s quarantine
+  countdown, also Phase 1) and that upstream signature/transparency
+  adapters (Phase 5 item 4) remain deliberately unimplemented.
+- `wraptool up` prints a one-line stderr notice when the running binary was
+  built from a different commit than the wraptool source checkout it's
+  launched in (`go.mod`'s module line is exactly `module
+  github.com/pti/wraptool`), comparing `buildinfo`'s stamped VCS revision
+  against `git rev-parse HEAD`. Silent for a binary with no stamped VCS
+  revision, in any other project, or whenever git can't answer — never
+  blocks `up`. A tagged release binary does carry a stamped revision, so
+  running it inside a wraptool checkout that has moved past the tag prints
+  the notice too — that reader is developing wraptool, and the hint is
+  deliberate. Catches the
+  "built a fix, forgot to reinstall, harness keeps exercising yesterday's
+  code" self-hosted-development trap.
 
 ### Changed
 
@@ -116,6 +150,12 @@ non-Guix Linux — through Docker or Podman.
   `--harness` is now validated against the descriptor registry before the
   shared server is started, not after, so an unknown harness fails fast
   instead of leaving a server spawned for nothing.
+- **Sunset: the older `wraptool-connect` Dev Container feature.** Its source
+  (`features/src/wraptool-connect/`, `features/test/wraptool-connect/`) is
+  deleted and it is no longer published by CI. Already-published registry
+  artifacts (`:0`, `0.1.x`) keep working for existing configs indefinitely —
+  only the source is retired. New setups use the merged `wraptool` (`:1`)
+  feature above.
 
 ### Upgrade notes
 
@@ -128,21 +168,6 @@ non-Guix Linux — through Docker or Podman.
   harness binary at image build. Pin `:0` explicitly to keep the old
   provisioning behavior, or switch to `wraptool harness install <name>` +
   `wraptool up`'s pool mount (the supported path going forward).
-
-### Known limitations
-
-- A harness whose npm package ships its own `npm-shrinkwrap.json` (`pi`,
-  `@earendil-works/pi-coding-agent`) does not yet realize into the pool:
-  npm reifies that package's dependency subtree from the shrinkwrap
-  embedded in its extracted tarball, not from the outer lockfile, and those
-  nested fetches need npm's URL-indexed HTTP cache — which offline pool
-  realization's `npm cache add` (content-only, keyed by integrity) never
-  populates. `resolve`/`refresh` work normally and the condition is
-  recorded on the lock; `install`/`update` print a warning and fall
-  through to the legacy (network) install path exactly as for any other
-  realize failure, and `sync` fails with the same actionable message.
-  Tracked follow-up: seeding npm's URL cache index so shrinkwrapped
-  packages can realize offline too.
 
 ## 0.4.0 — 2026-08-05
 

@@ -349,7 +349,10 @@ writes the MCP client config that points the container at the host wraptool
 and pins `HOME`/`PATH`, but it installs no harness binary — that comes from
 the shared harness pool's `runtime/` tree, built once per developer with
 `wraptool harness install <name>` on the host and mounted **read-only** into
-every project container. It layers onto any base image.
+every project container. It layers onto any base image. See
+[Harness pool: quarantine and scheduled refresh](harness-pool.qmd) for keeping
+that pool's candidate metadata current with a periodic `wraptool harness
+refresh`.
 
 Rather than hand-write the `.devcontainer/devcontainer.json`, scaffold it:
 
@@ -405,8 +408,8 @@ At container create the feature writes the MCP client config pointing at the hos
 wraptool, auto-detecting the host as the container's default-route gateway — so
 it works across docker networks and worktrees with no `host.docker.internal` or
 `--add-host`. See [Dev Containers](devcontainers.qmd) for every option, including
-the deprecated `:0` per-image-provisioning major and the older `wraptool-connect`
-feature (wiring only) — both remain published for existing configs.
+the deprecated `:0` per-image-provisioning major, which remains published for
+existing configs.
 
 ::: {.callout-important}
 For container use the server must listen where the container can reach it — bind

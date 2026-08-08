@@ -45,6 +45,7 @@ website:
           - troubleshooting.qmd
           - hot-reload.qmd
           - web-ui.qmd
+          - harness-pool.qmd
     right:
       - icon: git
         href: https://forge.snamellit.com/pti/wraptool
@@ -80,6 +81,7 @@ website:
           - examples.qmd
           - hot-reload.qmd
           - web-ui.qmd
+          - harness-pool.qmd
           - troubleshooting.qmd
       - section: Project
         contents:
