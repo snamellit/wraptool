@@ -22,6 +22,7 @@ first (the foundational wrapping model), then browse by area below.
 | Path | Area | Status | One line |
 |------|------|--------|----------|
 | `mcp-server-wrapping.md` | core | draft | Wrapping local stdio MCP servers (the foundational model) |
+| `documentation-onboarding.md` | docs | proposed | Close the 0.5.0 docs gap; make first-run the documented path |
 | `harness/guix-container-runtime.md` | harness | implemented | Guix-container runtime for `wraptool up` |
 | `harness/harness-descriptor.md` | harness | implemented | A shared harness descriptor registry |
 | `harness/harness-pool-devcontainer.md` | harness | superseded | Shared harness pool for the devcontainer runtime → `unified-harness-pool.md` |
