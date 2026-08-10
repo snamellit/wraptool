@@ -48,12 +48,27 @@ it the devcontainer runtime cannot start.
 
 ## 4. Install wraptool
 
-Follow [Installation](installation.qmd) — the Linux/macOS release script detects
-`darwin` and installs to `~/.local/bin`. Then:
+With Homebrew:
+
+```bash
+brew tap pti/wraptool https://forge.snamellit.com/pti/homebrew-wraptool.git
+brew install pti/wraptool/wraptool
+wraptool version
+```
+
+Later upgrades are then `brew update && brew upgrade pti/wraptool/wraptool`.
+
+Or follow [Installation](installation.qmd) — the Linux/macOS release script
+detects `darwin` and installs to `~/.local/bin`. Then:
 
 ```bash
 wraptool version
 ```
+
+The binary is the same one either way, so the notarization note below applies
+to both. The `Killed: 9` warning does not apply to Homebrew: `brew upgrade`
+installs into a new Cellar directory and relinks instead of overwriting an
+executable in place, and a formula download is never quarantined.
 
 ::: {.callout-note title="Notarization"}
 macOS release binaries are not Apple-notarized. If local policy requires

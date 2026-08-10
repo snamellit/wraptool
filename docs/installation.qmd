@@ -18,6 +18,47 @@ statically linked with `CGO_ENABLED=0`; no Go installation is required.
 Replace the example version below with the version shown on the
 [latest release](https://forge.snamellit.com/pti/wraptool/releases/latest).
 
+### Homebrew (macOS and Linux)
+
+Homebrew is the shortest path on macOS, and the only one that handles upgrades
+for you. The formula lives in a wraptool-owned tap rather than homebrew-core,
+so tap it once with its full clone URL:
+
+```bash
+brew tap pti/wraptool https://forge.snamellit.com/pti/homebrew-wraptool.git
+brew install pti/wraptool/wraptool
+wraptool version
+```
+
+Upgrade with the rest of your Homebrew packages:
+
+```bash
+brew update && brew upgrade pti/wraptool/wraptool
+```
+
+The formula installs the same release binary documented below and verifies the
+same SHA-256 checksum, so it needs no compiler and no Go toolchain. It covers
+macOS and Linux on both AMD64 and ARM64.
+
+Homebrew installs only wraptool itself. The AI harnesses (`claude`, `agy`, and
+friends) still come from wraptool's own harness pool — see [Harness
+pool](harness-pool.qmd) — and never from `brew`.
+
+::: {.callout-note title="Linux: prefer the script"}
+Homebrew on Linux resolves an implicit `gcc` and `glibc` dependency for any
+formula it did not build a bottle for, so a first `brew install` pulls roughly
+600 MB of toolchain even though wraptool is a prebuilt static binary that
+compiles nothing. The install script below costs one 20 MB download instead.
+macOS is unaffected: nothing beyond wraptool itself is installed there.
+:::
+
+::: {.callout-note title="Gatekeeper"}
+A `brew`-installed binary is not subject to the quarantine attribute that
+Gatekeeper applies to browser downloads, so the unnotarized macOS binary runs
+without a security prompt. Homebrew also replaces the file rather than writing
+over it, which avoids the stale code-signature failure described below.
+:::
+
 ### Linux or macOS
 
 The following commands detect the platform and architecture, download the
