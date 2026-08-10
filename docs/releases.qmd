@@ -14,6 +14,25 @@ Windows on AMD64 and ARM64. Each Forgejo release also includes a
 `checksums.txt` file containing SHA-256 checksums and `build-info.txt` recording
 the source commit, Go version, and hashes of the pinned Guix inputs.
 
+## Homebrew tap
+
+The same workflow generates `wraptool.rb` from the checksums of the build it
+just produced, attaches it to the release, and commits it to the Homebrew tap
+repository — so the tap can never reference bytes that were not released
+together. The tap is a separate repository because `brew tap` clones a whole
+repository named `homebrew-<tap>`:
+
+- Repository: `pti/homebrew-wraptool`, with the formula at `Formula/wraptool.rb`
+  on the default branch. Override the name with the repository variable
+  `HOMEBREW_TAP_REPOSITORY`.
+- Secret: `HOMEBREW_TAP_TOKEN`, a Forgejo token with write access to that
+  repository *only*. `github.token` is scoped to this repository and cannot
+  push to the tap.
+
+Without the secret the tap step logs a skip and the release still succeeds; the
+generated `wraptool.rb` is attached to the release and can be committed to the
+tap by hand. Nothing about the tap affects the binaries themselves.
+
 Create a release from a clean `main` branch that exactly matches `origin/main`:
 
 ```bash
