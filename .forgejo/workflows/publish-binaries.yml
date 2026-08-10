@@ -140,19 +140,11 @@ jobs:
               on_arm do
                 url "$base/wraptool_${version}_darwin_arm64", using: :nounzip
                 sha256 "$darwin_arm64"
-
-                def install
-                  bin.install "wraptool_#{version}_darwin_arm64" => "wraptool"
-                end
               end
 
               on_intel do
                 url "$base/wraptool_${version}_darwin_amd64", using: :nounzip
                 sha256 "$darwin_amd64"
-
-                def install
-                  bin.install "wraptool_#{version}_darwin_amd64" => "wraptool"
-                end
               end
             end
 
@@ -160,20 +152,20 @@ jobs:
               on_arm do
                 url "$base/wraptool_${version}_linux_arm64", using: :nounzip
                 sha256 "$linux_arm64"
-
-                def install
-                  bin.install "wraptool_#{version}_linux_arm64" => "wraptool"
-                end
               end
 
               on_intel do
                 url "$base/wraptool_${version}_linux_amd64", using: :nounzip
                 sha256 "$linux_amd64"
-
-                def install
-                  bin.install "wraptool_#{version}_linux_amd64" => "wraptool"
-                end
               end
+            end
+
+            # One install method rather than one per platform block: brew style
+            # rejects a def inside a block (Sorbet/BlockMethodDefinition), and
+            # the staging directory holds exactly the single asset that the
+            # matching url above downloaded, so the glob is unambiguous.
+            def install
+              bin.install Dir["wraptool_*"].first => "wraptool"
             end
 
             def caveats
@@ -254,6 +246,10 @@ jobs:
           fi
           guix time-machine -C channels.scm -- shell git nss-certs coreutils -- sh -ec '
             host=${FORGEJO_URL#https://}
+            # A cleartext instance URL is stripped the same way and the clone
+            # still goes out over https below: a push token must never travel
+            # over http, so failing to connect is the correct outcome there.
+            host=${host#http://}
             host=${host%/}
             checkout=$(mktemp -d)
             trap "rm -rf \"$checkout\"" EXIT

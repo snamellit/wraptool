@@ -44,6 +44,14 @@ Homebrew installs only wraptool itself. The AI harnesses (`claude`, `agy`, and
 friends) still come from wraptool's own harness pool — see [Harness
 pool](harness-pool.qmd) — and never from `brew`.
 
+::: {.callout-note title="Linux: prefer the script"}
+Homebrew on Linux resolves an implicit `gcc` and `glibc` dependency for any
+formula it did not build a bottle for, so a first `brew install` pulls roughly
+600 MB of toolchain even though wraptool is a prebuilt static binary that
+compiles nothing. The install script below costs one 20 MB download instead.
+macOS is unaffected: nothing beyond wraptool itself is installed there.
+:::
+
 ::: {.callout-note title="Gatekeeper"}
 A `brew`-installed binary is not subject to the quarantine attribute that
 Gatekeeper applies to browser downloads, so the unnotarized macOS binary runs
