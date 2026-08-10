@@ -37,7 +37,14 @@ non-Guix Linux — through Docker or Podman.
   pairs, before running `npm ci --offline` — no network access, no change
   to what gets trusted. Pool realization of a shrinkwrapped harness was not
   possible before this release (0.4.0 surfaced it as an opaque npm
-  `ENOTCACHED` failure, falling back to the legacy install).
+  `ENOTCACHED` failure, falling back to the legacy install). The seeding
+  gate reads npm's own `hasShrinkwrap` markers from the verbatim embedded
+  lockfile, not only the lock's summary flag — a lock entry resolved by an
+  earlier wraptool carries the markers but not the flag, and nothing ever
+  forces such a still-current lock to re-resolve, so trusting the flag
+  alone left exactly the pre-existing locks this feature targets failing
+  with the same `ENOTCACHED` (found in the field on a real pi 0.83.0
+  pool).
 - `wraptool harness gc --legacy` (§16 Phase 4 item 5): removes the pool's
   legacy `bin/`+`lib/` trees entirely, once they are no longer needed, and
   writes a marker recording that — so a later `wraptool up`/`list` no

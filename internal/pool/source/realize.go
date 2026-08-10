@@ -262,10 +262,11 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	// Step 2a: for a shrinkwrapped harness only, additionally seed npm's
 	// URL-indexed HTTP cache (make-fetch-happen) — see
 	// seedShrinkwrapCacheIndex's doc comment for why this is needed and what
-	// it does. Gated on HasShrinkwrap: this is an extra container run plus
+	// it does. Gated on needsShrinkwrapSeeding, not the summary
+	// HasShrinkwrap flag alone: this is an extra container run plus
 	// coupling to npm's own cacache internals, so it only runs where that
 	// cost buys something.
-	if h.NPMLock.HasShrinkwrap {
+	if needsShrinkwrapSeeding(h.NPMLock) {
 		if err := seedShrinkwrapCacheIndex(ctx, b, harnessName, h.Package, h.NPMLock.Packages, cacheDir, buildDir, sp, mounts, homeEnvArg, arch); err != nil {
 			return nil, err
 		}
@@ -453,6 +454,38 @@ func seedShrinkwrapCacheIndex(ctx context.Context, b backend.Backend, harnessNam
 		return fmt.Errorf("realize: %s: seeding npm's URL cache index for shrinkwrapped package %s: %w", harnessName, pkgName, err)
 	}
 	return nil
+}
+
+// needsShrinkwrapSeeding reports whether the lock entry describes a
+// shrinkwrapped package, from BOTH recorded sources: the summary
+// NPMLock.HasShrinkwrap flag (written by Resolve since the flag existed) OR
+// npm's own "hasShrinkwrap" markers inside the verbatim embedded
+// package-lock.json. The raw document is the authority: a lock entry
+// resolved by a wraptool that predates the summary flag carries the raw
+// markers but not the flag, and nothing forces such a lock to re-resolve
+// (the version is current and recipe_revision unchanged — found in the
+// field on a real pi 0.83.0 lock, which failed `npm ci --offline` with
+// ENOTCACHED because seeding was skipped). Deriving from the raw lockfile
+// heals every such stale entry with no recipe-format bump and no
+// re-resolve. A raw document that fails to parse contributes false rather
+// than an error (the summary flag still applies): Realize's own
+// materialization step will surface a genuinely corrupt document loudly,
+// and the wedge rule says derived niceties must never hard-fail a path a
+// re-resolve wouldn't also fix.
+func needsShrinkwrapSeeding(l *pool.NPMLock) bool {
+	if l.HasShrinkwrap {
+		return true
+	}
+	var raw npmLockFile
+	if err := json.Unmarshal(l.Lockfile, &raw); err != nil {
+		return false
+	}
+	for _, entry := range raw.Packages {
+		if entry.HasShrinkwrap {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSeedManifest builds seedShrinkwrapCacheIndex's per-URL manifest from
