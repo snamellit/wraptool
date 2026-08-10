@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/pti/wraptool/internal/pool"
+	"github.com/pti/wraptool/internal/pool/backend"
 )
 
 // TestIntegration_ShrinkwrapSeeding is the "money test" for
@@ -163,27 +164,70 @@ func TestIntegration_ShrinkwrapSeeding(t *testing.T) {
 		}
 	})
 
-	// Mutation: force HasShrinkwrap false on an otherwise-identical lock —
-	// the sole gate seedShrinkwrapCacheIndex checks — so the seeding step
-	// never runs. Everything else (the harness/sibling tarballs, the
-	// embedded shrinkwrap with its missing-integrity sibling entry, the
-	// outer lockfile) is unchanged. `npm ci --offline` must then fail
-	// ENOTCACHED trying to fetch the sibling exactly as the live bug did —
-	// proving the seeding step (not some other difference) is what makes
-	// the first subtest succeed.
-	t.Run("seeding skipped: fails ENOTCACHED-class", func(t *testing.T) {
-		unseeded := *h.NPMLock
-		unseeded.HasShrinkwrap = false
-		hUnseeded := *h
-		hUnseeded.NPMLock = &unseeded
+	// The field case that motivated needsShrinkwrapSeeding (a real pi
+	// 0.83.0 lock on a real pool): the lock entry was resolved by a
+	// wraptool predating the summary has_shrinkwrap flag, so the flag is
+	// false — but the verbatim embedded package-lock.json still carries
+	// npm's own "hasShrinkwrap" marker. Nothing forces such a lock to
+	// re-resolve (version current, recipe_revision unchanged), so realize
+	// must derive the gate from the raw document and seed anyway.
+	t.Run("stale lock: raw marker only, summary flag false — still seeds", func(t *testing.T) {
+		stale := *h.NPMLock
+		stale.HasShrinkwrap = false
+		hStale := *h
+		hStale.NPMLock = &stale
 
+		staging := filepath.Join(t.TempDir(), "gen-stale")
+		receipt, err := n.Realize(ctx, b, "tiny-shrink-harness", "tiny-shrink-harness", &hStale, pool.PlatformLinuxAMD64Glibc, cacheDir, staging)
+		if err != nil {
+			t.Fatalf("Realize: %v", err)
+		}
+		if err := pool.VerifyGenerationTree(staging, receipt); err != nil {
+			t.Errorf("VerifyGenerationTree: %v", err)
+		}
+	})
+
+	// Mutation: run the IDENTICAL lock through a backend that silently
+	// swallows the seed invocation — the lock data cannot be used to force
+	// the gate false anymore, because stripping the raw "hasShrinkwrap"
+	// marker changes npm's OWN behavior (without the marker in the outer
+	// lockfile, arborist installs the sibling from the outer lock's
+	// integrity entry and never consults the embedded shrinkwrap — the
+	// original forced-flag-false technique only worked while the flag was
+	// the sole gate). Dropping the seed run while leaving everything else
+	// untouched keeps npm on the shrinkwrap path: `npm ci --offline` must
+	// then fail ENOTCACHED fetching the sibling exactly as the live bug
+	// did — proving the seeding step (not some other difference) is what
+	// makes the subtests above succeed.
+	t.Run("seeding skipped: fails ENOTCACHED-class", func(t *testing.T) {
 		staging := filepath.Join(t.TempDir(), "gen-unseeded")
-		_, err := n.Realize(ctx, b, "tiny-shrink-harness", "tiny-shrink-harness", &hUnseeded, pool.PlatformLinuxAMD64Glibc, cacheDir, staging)
+		_, err := n.Realize(ctx, seedSwallowingBackend{b}, "tiny-shrink-harness", "tiny-shrink-harness", h, pool.PlatformLinuxAMD64Glibc, cacheDir, staging)
 		if err == nil {
-			t.Fatal("Realize: got nil error with seeding skipped, want the ENOTCACHED-class npm ci failure")
+			t.Fatal("Realize: got nil error with seeding swallowed, want the ENOTCACHED-class npm ci failure")
 		}
 		if !strings.Contains(err.Error(), "ENOTCACHED") && !strings.Contains(err.Error(), "only-if-cached") {
 			t.Errorf("Realize error = %v, want an ENOTCACHED-class npm cache-miss failure", err)
 		}
 	})
+}
+
+// seedSwallowingBackend passes every backend.Run through except the
+// shrinkwrap cache-seed invocation (recognized by the seed script's path in
+// argv), which it silently skips — the narrowest possible "seeding did not
+// happen" mutation, leaving the lock and npm's own shrinkwrap handling
+// untouched.
+type seedSwallowingBackend struct {
+	inner hostExecBackend
+}
+
+func (s seedSwallowingBackend) Name() string    { return s.inner.Name() }
+func (s seedSwallowingBackend) Available() bool { return s.inner.Available() }
+
+func (s seedSwallowingBackend) Run(ctx context.Context, spec backend.RunSpec) error {
+	for _, a := range spec.Argv {
+		if strings.HasSuffix(a, "seed-cache-index.js") {
+			return nil
+		}
+	}
+	return s.inner.Run(ctx, spec)
 }

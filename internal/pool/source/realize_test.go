@@ -508,6 +508,38 @@ func TestRealize_NoShrinkwrapSkipsSeeding(t *testing.T) {
 	}
 }
 
+// TestNeedsShrinkwrapSeeding covers the gate's two sources directly: the
+// summary flag, and npm's own "hasShrinkwrap" markers inside the verbatim
+// embedded package-lock.json — the latter is what heals a lock entry
+// resolved by a wraptool predating the summary flag (the field case: a
+// real pi 0.83.0 lock whose realize skipped seeding and died ENOTCACHED).
+func TestNeedsShrinkwrapSeeding(t *testing.T) {
+	rawWithMarker := []byte(`{"lockfileVersion":3,"packages":{"":{},"node_modules/a":{"version":"1.0.0","hasShrinkwrap":true}}}`)
+	rawWithout := []byte(`{"lockfileVersion":3,"packages":{"":{},"node_modules/a":{"version":"1.0.0"}}}`)
+	malformed := []byte(`{"packages":`)
+
+	for _, tc := range []struct {
+		name string
+		flag bool
+		raw  []byte
+		want bool
+	}{
+		{"summary flag alone", true, rawWithout, true},
+		{"raw marker alone (stale pre-flag lock)", false, rawWithMarker, true},
+		{"both sources", true, rawWithMarker, true},
+		{"neither", false, rawWithout, false},
+		{"malformed raw, flag false", false, malformed, false},
+		{"malformed raw, flag true", true, malformed, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &pool.NPMLock{HasShrinkwrap: tc.flag, Lockfile: tc.raw}
+			if got := needsShrinkwrapSeeding(l); got != tc.want {
+				t.Errorf("needsShrinkwrapSeeding = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestBuildSeedManifest covers buildSeedManifest directly: one manifest
 // entry per distinct resolved URL, carrying that package's upstream
 // integrity and its cache object's on-disk byte size.
