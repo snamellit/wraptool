@@ -76,6 +76,7 @@ website:
           - security.qmd
           - isolated-environments.md
           - git-hardening.qmd
+          - comparison.qmd
       - section: Operate
         contents:
           - examples.qmd

@@ -1,0 +1,77 @@
+---
+title: "wraptool vs. Docker Sandboxes"
+description: "How wraptool's capability mediation relates to Docker Sandboxes' microVM isolation — different threat models that compose rather than compete."
+---
+
+[Docker Sandboxes](https://www.docker.com/products/docker-sandboxes/)
+(`docker sandbox run` / `sbx`) targets the same headline use-case as
+wraptool: run an AI coding agent without handing it your machine and your
+credentials. The two answer *different questions*, and understanding the
+difference is the best way to understand what wraptool is for.
+
+::: {.callout-note}
+Docker Sandboxes is an experimental preview as of mid-2026; details below
+may change as the product matures.
+:::
+
+## Two threat models
+
+**Docker Sandboxes is environment isolation.** The agent runs free inside
+a disposable microVM: only the project workspace is mounted, network
+access is configurable, and secrets live in the OS keychain behind a
+proxy — the agent sees a sentinel value in the environment and the proxy
+injects the real credential at the boundary. The safety claim is about
+blast radius: unattended "YOLO mode" is acceptable because the damage is
+confined to the box.
+
+**wraptool is capability mediation.** The agent never touches credentials
+in any form, proxied or otherwise. Privileged operations go through MCP
+tools policed per subcommand and per flag (deny > allow > constraints),
+executed as argv arrays with no shell, with output scrubbed of secrets
+and every call audited. New capabilities are granted through an operator
+approve/deny workflow, not a static configuration. The container (Guix or
+Dev Container) is wraptool's *second* layer, not the whole story.
+
+The concrete consequence: an agent granted git-push through a credential
+proxy can push anything, anywhere that credential reaches — `--force`, a
+wrong remote, `remote set-url` followed by a push. wraptool's policy can
+allow `git push` while denying `--force` and `remote set-url`
+specifically. Inversely, a microVM is a *harder* boundary than the
+namespaces and containers wraptool uses: container escapes via the shared
+kernel are a real vulnerability class, microVM escapes are much rarer.
+
+Isolation alone does not stop a confused-deputy agent from misusing
+credentials it was legitimately given — that gap is exactly what
+per-operation policy, output scrubbing, and the audit trail fill.
+
+## Side by side
+
+| | Docker Sandboxes | wraptool |
+|---|---|---|
+| Boundary strength | microVM (hard) | user/mount namespaces or container (shared kernel) |
+| Credential model | proxied — agent *uses* credentials, scoped by the proxy | mediated — agent *requests operations*, never holds credentials |
+| Policy granularity | filesystem, network, secrets on/off | per-subcommand, per-flag, value constraints |
+| Audit | enterprise tier (Docker AI Governance) | built-in append-only event log + web UI, self-hosted |
+| Approval workflow | none — grants are static | capability request → operator review → config merge |
+| Agent supply chain | installs whatever the agent's installer ships | version-locked harness pool: quarantine windows, receipts, rollback |
+| Toolchain reproducibility | image-dependent | same Guix manifest inside and outside the container |
+| Setup cost | near zero-config | config authoring and policy curation |
+| Unattended multi-agent | first-class goal | per-project `wraptool up`, shared server; not the focus |
+| Vendor coupling | Docker stack; governance is commercial | none — works with any forge, fully self-hosted |
+
+## They compose
+
+The approaches are complementary rather than competing. Sandboxes answers
+"how much damage can the agent do to my machine?" — the box. wraptool
+answers "what can the agent do *with my authority*?" — exactly the
+whitelist. Nothing prevents running wraptool's container runtime inside a
+harder isolation boundary while wraptool keeps mediating the privileged
+operations; the policy, audit, and harness-pool supply-chain layers have
+no counterpart in the isolation-only model, and the microVM boundary has
+no counterpart in wraptool's.
+
+If your concern is a runaway agent trashing a workstation, isolation
+alone may be enough. If your concern includes what an agent can quietly
+do with your git remotes, your cloud sessions, and your cluster — or
+proving afterwards what it did — you need mediation, whichever box it
+runs in.
