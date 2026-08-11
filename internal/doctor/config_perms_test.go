@@ -178,7 +178,9 @@ func TestRunConfigPermsDirPerms(t *testing.T) {
 				env.Files[configpermsPath] = MapFile{Mode: 0o600}
 			},
 			wantOutcome: OutcomeFinding,
-			wantDetail:  []string{"/home/user/.config/wraptool", "group-writable"},
+			// The printed mode includes the type bit and matches `ls -ld` (no
+			// sticky bit here, so no trailing t/T).
+			wantDetail: []string{"/home/user/.config/wraptool", "group-writable", "0775 (drwxrwxr-x)"},
 		},
 		{
 			name: "the directory holding a symlink's TARGET is checked, not the link's own directory",
@@ -190,6 +192,18 @@ func TestRunConfigPermsDirPerms(t *testing.T) {
 			},
 			wantOutcome: OutcomeFinding,
 			wantDetail:  []string{"/home/user/dotfiles", "group- and other-writable"},
+		},
+		{
+			// Original false positive (blocker 2): a 1777 dir (e.g. /tmp) is
+			// group/other-writable, but the sticky bit means only the owner (or
+			// root) can rename/unlink an entry they don't own — exactly the
+			// risk this check exists to catch. Must not fail.
+			name: "1777 sticky dir is not a fail — sticky prevents rename-in-place substitution",
+			build: func(env *MapEnv) {
+				env.Files["/home/user/.config/wraptool"] = MapFile{Mode: fs.ModeDir | fs.ModeSticky | 0o777}
+				env.Files[configpermsPath] = MapFile{Mode: 0o600}
+			},
+			wantOutcome: OutcomePass,
 		},
 	}
 	for _, tc := range cases {
@@ -256,6 +270,61 @@ func TestRunConfigPermsFileReadableSecrets_ReadableNoEnv(t *testing.T) {
 
 	if res.Outcome() != OutcomePass {
 		t.Fatalf("Outcome() = %v, want pass — no inline env: entries at all; findings=%+v", res.Outcome(), res.Findings)
+	}
+}
+
+// TestRunConfigPermsFileReadableSecrets_ReadableNonCredentialEnv is the
+// ORIGINAL false positive (blocker 1): docs/configuration.qmd itself
+// prescribes CLOUDSDK_CORE_PROJECT (an example inline env: entry, line 102)
+// and an inline HOME override (line 244) in a config that may well be
+// group/other-readable. Neither key name is credential-shaped, so this must
+// get no finding at all — not even a warn.
+func TestRunConfigPermsFileReadableSecrets_ReadableNonCredentialEnv(t *testing.T) {
+	env := NewMapEnv()
+	env.Files[configpermsPath] = MapFile{Mode: 0o644}
+	in := configpermsInput(env, &config.Config{
+		Tools: map[string]config.ToolConfig{
+			"gcloud": {Env: map[string]string{"CLOUDSDK_CORE_PROJECT": "my-project", "HOME": "/work/home"}},
+		},
+	})
+
+	res := runConfigPermsFileReadableSecrets(context.Background(), in)
+
+	if res.Outcome() != OutcomePass {
+		t.Fatalf("Outcome() = %v, want pass — CLOUDSDK_CORE_PROJECT/HOME are not credential-shaped names; "+
+			"findings=%+v", res.Outcome(), res.Findings)
+	}
+}
+
+// TestRunConfigPermsFileReadableSecrets_MixedCredentialAndNonCredentialEnv
+// checks that a section mixing a credential-shaped key with ordinary ones
+// reports only the credential-shaped key.
+func TestRunConfigPermsFileReadableSecrets_MixedCredentialAndNonCredentialEnv(t *testing.T) {
+	env := NewMapEnv()
+	env.Files[configpermsPath] = MapFile{Mode: 0o644}
+	in := configpermsInput(env, &config.Config{
+		Tools: map[string]config.ToolConfig{
+			"gcloud": {Env: map[string]string{
+				"CLOUDSDK_CORE_PROJECT": "my-project",
+				"GH_TOKEN":              "should-never-appear",
+			}},
+		},
+	})
+
+	res := runConfigPermsFileReadableSecrets(context.Background(), in)
+
+	if res.Outcome() != OutcomeFinding {
+		t.Fatalf("Outcome() = %v, want finding; res=%+v", res.Outcome(), res)
+	}
+	if len(res.Findings) != 1 {
+		t.Fatalf("len(Findings) = %d, want 1; %+v", len(res.Findings), res.Findings)
+	}
+	f := res.Findings[0]
+	if strings.Contains(f.Detail, "CLOUDSDK_CORE_PROJECT") {
+		t.Errorf("Detail = %q, must not name the non-credential-shaped key", f.Detail)
+	}
+	if !strings.Contains(f.Detail, "GH_TOKEN") {
+		t.Errorf("Detail = %q, want it to name the credential-shaped key GH_TOKEN", f.Detail)
 	}
 }
 
@@ -412,6 +481,83 @@ func TestRunConfigPermsSymlinked(t *testing.T) {
 				if !strings.Contains(f.Detail, want) {
 					t.Errorf("Detail = %q, want it to contain %q", f.Detail, want)
 				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------- configpermsIsCredentialKey
+
+// TestConfigPermsIsCredentialKey pins the explicit credential-shaped keyword
+// set (design §7.2 ruling) directly: a whole `_`-delimited word or adjacent
+// word-sequence, never a loose substring — the observed false positives
+// (CLOUDSDK_CORE_PROJECT, a HOME override) are test cases here so the next
+// widening of this heuristic has to argue with them, mirroring
+// TestPoolIsCredentialPath's own rationale for pool.home-perms.
+func TestConfigPermsIsCredentialKey(t *testing.T) {
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		// Observed false positives (blocker 1): must NOT match.
+		{"CLOUDSDK_CORE_PROJECT", false},
+		{"HOME", false},
+		{"PATH", false},
+		{"LANG", false},
+		// The genuine articles.
+		{"GH_TOKEN", true},
+		{"TOKEN", true},
+		{"API_SECRET", true},
+		{"DB_PASSWORD", true},
+		{"PASSWD", true},
+		{"MY_CREDENTIAL", true},
+		{"CREDENTIALS", true},
+		{"MY_CREDENTIALS_FILE", true},
+		{"API_KEY", true},
+		{"MY_API_KEY_FOO", true},
+		{"APIKEY", true},
+		{"PRIVATE_KEY", true},
+		{"ACCESS_KEY", true},
+		{"SESSION_KEY", true},
+		{"AUTH_TOKEN", true},
+		{"BASIC_AUTH", true},
+		// Case-insensitive.
+		{"gh_token", true},
+		// A near-miss must not match: KEY alone is not credential-shaped, and
+		// "APIKEYFOO" (no underscore, not exactly APIKEY) is not either.
+		{"KEY", false},
+		{"APIKEYFOO", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			if got := configpermsIsCredentialKey(tc.key); got != tc.want {
+				t.Errorf("configpermsIsCredentialKey(%q) = %v, want %v", tc.key, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------- configpermsModeString
+
+// TestConfigPermsModeString pins the ls-matching rendering directly: type
+// letter, permission bits, and the sticky bit shown as t/T in the operator-
+// visible position (blocker 2 — the previous rendering dropped both).
+func TestConfigPermsModeString(t *testing.T) {
+	cases := []struct {
+		name string
+		mode fs.FileMode
+		want string
+	}{
+		{"0700 dir", fs.ModeDir | 0o700, "0700 (drwx------)"},
+		{"0775 dir", fs.ModeDir | 0o775, "0775 (drwxrwxr-x)"},
+		{"1777 sticky dir (world-writable+executable other)", fs.ModeDir | fs.ModeSticky | 0o777, "1777 (drwxrwxrwt)"},
+		{"1770 sticky dir (other has no execute bit)", fs.ModeDir | fs.ModeSticky | 0o770, "1770 (drwxrwx--T)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fi := FileInfo{Mode: tc.mode}
+			if got := configpermsModeString(fi); got != tc.want {
+				t.Errorf("configpermsModeString(%v) = %q, want %q", tc.mode, got, tc.want)
 			}
 		})
 	}

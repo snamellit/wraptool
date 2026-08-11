@@ -17,6 +17,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -51,8 +52,8 @@ var (
 	configpermsFileReadableSecretsMeta = Meta{
 		ID:    configpermsFileReadableSecrets,
 		Needs: NeedsConfig | NeedsModeBits,
-		Summary: "checks for inline env: credentials in a config.yaml that is group- or " +
-			"other-readable",
+		Summary: "checks for inline env: variables with credential-shaped names in a " +
+			"config.yaml that is group- or other-readable",
 	}
 	configpermsSymlinkedMeta = Meta{
 		ID:      configpermsSymlinked,
@@ -116,7 +117,14 @@ func runConfigPermsFilePerms(_ context.Context, in *Input) Result {
 // config is group- or other-writable: rename-in-place substitution of the
 // file defeats a locked-down leaf, so the containing directory is the same
 // credential boundary as the file itself (design §7.2, same fail severity by
-// the same argument as config.file-perms).
+// the same argument as config.file-perms) — UNLESS the directory has the
+// sticky bit set (e.g. mode 1777, as ls shows drwxrwxrwt). Sticky is exactly
+// the mechanism that prevents the rename-in-place substitution this check
+// exists to catch: with it set, only the file's owner (or root) may rename
+// or unlink an entry inside the directory that they don't own, regardless of
+// the directory's own group/other write bits. A sticky, world-writable
+// directory (mode 1777, e.g. /tmp) is a configuration working as designed,
+// not a fail (SeverityFail's own doc comment).
 func runConfigPermsDirPerms(_ context.Context, in *Input) Result {
 	resolved, ok := configpermsResolve(in)
 	if !ok {
@@ -127,6 +135,9 @@ func runConfigPermsDirPerms(_ context.Context, in *Input) Result {
 	if err != nil {
 		return Skipped("config directory %s could not be stat'd: %v", dir, err)
 	}
+	if fi.Mode&fs.ModeSticky != 0 {
+		return Pass()
+	}
 	if !fi.GroupOrOtherWritable() {
 		return Pass()
 	}
@@ -134,12 +145,55 @@ func runConfigPermsDirPerms(_ context.Context, in *Input) Result {
 		Severity: SeverityFail,
 		Title:    "Config directory is group- or other-writable",
 		Detail: fmt.Sprintf(
-			"%s, the directory holding the resolved config %s, is mode %04o (%s) — anyone who can write into it "+
+			"%s, the directory holding the resolved config %s, is mode %s, %s — anyone who can write into it "+
 				"can replace config.yaml outright, which defeats a locked-down file",
-			dir, resolved, fi.Perm(), configpermsWritableDesc(fi)),
+			dir, resolved, configpermsModeString(fi), configpermsWritableDesc(fi)),
 		Remedy: fmt.Sprintf("chmod go-w %s", dir),
 		DocRef: "docs/configuration.qmd#validating-a-config",
 	})
+}
+
+// configpermsModeString renders fi's type, permission, and sticky bits the
+// way `ls -l`/`stat` show them on the SAME path (e.g. "1777 (drwxrwxrwt)"):
+// config.dir-perms's subject is a directory, which can carry the sticky bit,
+// and printing only the bare permission octet — dropping the type letter and
+// the sticky bit that neutralizes this very check's risk — would show an
+// operator a mode string that does not match what they see with `ls -ld`.
+func configpermsModeString(fi FileInfo) string {
+	perm := fi.Perm()
+	octal := uint32(perm)
+	sticky := fi.Mode&fs.ModeSticky != 0
+	if sticky {
+		octal |= 0o1000
+	}
+
+	masks := [9]fs.FileMode{0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001}
+	letters := [9]byte{'r', 'w', 'x', 'r', 'w', 'x', 'r', 'w', 'x'}
+	bits := make([]byte, 9)
+	for i, mask := range masks {
+		if perm&mask != 0 {
+			bits[i] = letters[i]
+		} else {
+			bits[i] = '-'
+		}
+	}
+	if sticky {
+		if bits[8] == 'x' {
+			bits[8] = 't'
+		} else {
+			bits[8] = 'T'
+		}
+	}
+
+	typeChar := byte('-')
+	switch {
+	case fi.IsDir():
+		typeChar = 'd'
+	case fi.IsSymlink():
+		typeChar = 'l'
+	}
+
+	return fmt.Sprintf("%04o (%c%s)", octal, typeChar, bits)
 }
 
 // configpermsWritableDesc names which of group/other carries the write bit,
@@ -162,11 +216,15 @@ func configpermsWritableDesc(fi FileInfo) string {
 // ---------------------------------------------------------------- config.file-readable-secrets
 
 // runConfigPermsFileReadableSecrets fires when the resolved config is
-// group- or other-readable AND holds at least one inline `env:` entry under
-// `tools.*` or `mcp_servers.*` (design §7.2). It reports the offending KEY
-// NAMES only, never the values (§10.1 forbids printing a secret) — the
-// finding's point is "this config file is a credential-bearing file that
-// anyone can read", regardless of what any individual variable is named.
+// group- or other-readable AND holds at least one inline `env:` entry, under
+// `tools.*` or `mcp_servers.*`, whose KEY NAME is credential-shaped
+// (configpermsIsCredentialKey; design §7.2). It reports the offending key
+// names only, never the values (§10.1 forbids printing a secret) — but it
+// also does not assert "credential" from a variable name alone: this repo's
+// own docs/configuration.qmd prescribes plenty of non-secret inline env
+// (CLOUDSDK_CORE_PROJECT, a HOME override) that must get no finding at all,
+// not even a warn. A section whose inline env: names nothing
+// credential-shaped is silent.
 func runConfigPermsFileReadableSecrets(_ context.Context, in *Input) Result {
 	resolved, ok := configpermsResolve(in)
 	if !ok {
@@ -187,12 +245,12 @@ func runConfigPermsFileReadableSecrets(_ context.Context, in *Input) Result {
 
 	var findings []Finding
 	for _, name := range configpermsSortedToolNames(in.Config.Tools) {
-		if keys := configpermsSortedKeys(in.Config.Tools[name].Env); len(keys) > 0 {
+		if keys := configpermsCredentialKeys(in.Config.Tools[name].Env); len(keys) > 0 {
 			findings = append(findings, configpermsSecretsFinding("tools", name, resolved, fi, keys))
 		}
 	}
 	for _, name := range configpermsSortedMCPServerNames(in.Config.MCPServers) {
-		if keys := configpermsSortedKeys(in.Config.MCPServers[name].Env); len(keys) > 0 {
+		if keys := configpermsCredentialKeys(in.Config.MCPServers[name].Env); len(keys) > 0 {
 			findings = append(findings, configpermsSecretsFinding("mcp_servers", name, resolved, fi, keys))
 		}
 	}
@@ -202,9 +260,9 @@ func runConfigPermsFileReadableSecrets(_ context.Context, in *Input) Result {
 func configpermsSecretsFinding(section, name, resolved string, fi FileInfo, keys []string) Finding {
 	return Finding{
 		Severity: SeverityFail,
-		Title:    "Config holds inline credentials and is readable beyond the owner",
+		Title:    "World-readable config sets a credential-shaped env variable",
 		Detail: fmt.Sprintf(
-			"%s is mode %04o (%s), and %s.%s.env sets %d inline variable(s): %s",
+			"%s is mode %04o (%s), and %s.%s.env sets %d credential-shaped inline variable(s): %s",
 			resolved, fi.Perm(), configpermsReadableDesc(fi), section, name, len(keys), strings.Join(keys, ", ")),
 		Path: At(section, name, "env"),
 		Remedy: fmt.Sprintf(
@@ -212,6 +270,81 @@ func configpermsSecretsFinding(section, name, resolved string, fi FileInfo, keys
 			resolved),
 		DocRef: "docs/configuration.qmd#environment-isolation",
 	}
+}
+
+// configpermsCredentialKeywords are the credential-shaped name fragments
+// this check fires on, matched case-insensitively as a WHOLE `_`-delimited
+// word/word-sequence in the key — never a loose substring (design §7.2
+// ruling; the pool.home-perms precedent, commit 9101b2a, hit exactly that
+// bug with a substring rule on "session"/"token"). A key like
+// CLOUDSDK_CORE_PROJECT or a plain HOME override — both prescribed by
+// docs/configuration.qmd — must not match any of these.
+var configpermsCredentialKeywords = [][]string{
+	{"TOKEN"},
+	{"SECRET"},
+	{"PASSWORD"},
+	{"PASSWD"},
+	{"CREDENTIAL"},
+	{"CREDENTIALS"},
+	{"API", "KEY"},
+	{"APIKEY"},
+	{"PRIVATE", "KEY"},
+	{"ACCESS", "KEY"},
+	{"SESSION", "KEY"},
+	{"AUTH"},
+}
+
+// configpermsIsCredentialKey reports whether name is credential-shaped: its
+// upper-cased, `_`-split segments contain one of configpermsCredentialKeywords
+// as a contiguous run. "MY_API_KEY_FOO" matches (API, KEY are adjacent
+// segments); "CLOUDSDK_CORE_PROJECT" and "HOME" do not — no segment or
+// adjacent-segment run equals a listed keyword.
+func configpermsIsCredentialKey(name string) bool {
+	segs := strings.Split(strings.ToUpper(name), "_")
+	for _, kw := range configpermsCredentialKeywords {
+		if configpermsContainsRun(segs, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// configpermsContainsRun reports whether sub appears as a contiguous run
+// within segs.
+func configpermsContainsRun(segs, sub []string) bool {
+	if len(sub) > len(segs) {
+		return false
+	}
+	for i := 0; i+len(sub) <= len(segs); i++ {
+		match := true
+		for j, s := range sub {
+			if segs[i+j] != s {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
+}
+
+// configpermsCredentialKeys returns m's keys that are credential-shaped
+// (configpermsIsCredentialKey), sorted for determinism — never the full key
+// set: a section whose inline env: sets only non-credential-shaped names
+// (CLOUDSDK_CORE_PROJECT) contributes nothing here, which is what makes it
+// produce no finding at all rather than a fail that asserts a credential it
+// never saw.
+func configpermsCredentialKeys(m map[string]string) []string {
+	var out []string
+	for k := range m {
+		if configpermsIsCredentialKey(k) {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // configpermsReadableDesc mirrors configpermsWritableDesc for the readable
@@ -230,10 +363,11 @@ func configpermsReadableDesc(fi FileInfo) string {
 	}
 }
 
-// configpermsSortedToolNames/configpermsSortedMCPServerNames/
-// configpermsSortedKeys impose a fixed order over map iteration — required
-// for TestChecksAreDeterministic (invariants_test.go runs every check 8
-// times over a fixture with 3 tools and 2 mcp_servers entries).
+// configpermsSortedToolNames/configpermsSortedMCPServerNames impose a fixed
+// order over map iteration — required for TestChecksAreDeterministic
+// (invariants_test.go runs every check 8 times over a fixture with 3 tools
+// and 2 mcp_servers entries). configpermsCredentialKeys (above) sorts its
+// own filtered key list the same way.
 func configpermsSortedToolNames(m map[string]config.ToolConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -244,15 +378,6 @@ func configpermsSortedToolNames(m map[string]config.ToolConfig) []string {
 }
 
 func configpermsSortedMCPServerNames(m map[string]config.MCPServerConfig) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func configpermsSortedKeys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)
