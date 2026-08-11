@@ -231,6 +231,42 @@ tools:
 For HTTPS, append a second command-scope `credential.helper` value naming the
 trusted helper and increase `GIT_CONFIG_COUNT`.
 
+### 7.1 What the scaffold ships (and what it did not)
+
+Since `dd1e1db` (2026-08-11) the generated starter config
+(`internal/config/default_config.yaml`) carries two of the pairs above:
+
+```yaml
+      GIT_CONFIG_COUNT: "2"
+      GIT_CONFIG_KEY_0: core.hooksPath
+      GIT_CONFIG_VALUE_0: <config dir>/empty-hooks
+      GIT_CONFIG_KEY_1: core.fsmonitor
+      GIT_CONFIG_VALUE_1: "false"
+```
+
+Only those two. `maintenance.auto`, `gc.auto` and `credential.helper` are
+deliberately left to the operator: they change behaviour rather than close an
+execution channel, and the starter config is meant to stay readable.
+
+The history is worth recording, because it is the shape of the risk this
+document exists to remove. From `bf66885` (2026-07-24), when the scaffolder
+was introduced, until `dd1e1db`, every fresh install shipped a config allowing
+`git pull` with **no** command-scope hardening. `wraptool up` runs that pull on
+the host, as the operator, in a bind-mounted working tree the agent can write
+to — so a `.git/hooks/post-merge` or a `core.fsmonitor` entry written from
+inside the container executed on the host on the next wrapped pull. The
+recipe in this section was already written; nothing applied it.
+
+That window is closed for new installs only, and the qualifiers below still
+hold in full. In particular:
+
+- `EnsureConfigFile` never overwrites an existing file, so a configuration
+  created before `dd1e1db` does not gain the settings by upgrading wraptool.
+  Operators upgrading from an earlier version have to copy them in.
+- Nothing validates that they are present. An operator who deletes them gets
+  no warning at load, because the executor still enforces no Git configuration
+  of its own — that is §8's work, and it remains unbuilt.
+
 This is useful defense in depth, not yet a complete wraptool guarantee:
 
 - the operator can omit or weaken values;
