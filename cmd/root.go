@@ -35,6 +35,7 @@ environment (equivalent to 'wraptool up').`,
 
 	root.AddCommand(newServeCmd("serve", true)) // hidden alias for `server start`
 	root.AddCommand(newConfigCmd())
+	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newRequestsCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newHarnessCmd())
