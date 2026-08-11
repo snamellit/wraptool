@@ -14,7 +14,7 @@ via the same merge as `requests approve --apply`; the running server
 then [hot-reloads](hot-reload.qmd) the change.
 
 ::: {.callout-important}
-The review UI is **operator-facing, not AI-facing**. Bind it to
+The review UI is **operator-facing, not agent-facing**. Bind it to
 `127.0.0.1` only. It is a separate listener from the MCP transport by
 design — the agent never reaches it.
 :::
@@ -26,7 +26,7 @@ Add an `admin` block separate from the MCP listener:
 ```yaml
 mcp:
   transport: sse
-  listen: 127.0.0.1:8717          # AI-facing MCP transport
+  listen: 127.0.0.1:8717          # agent-facing MCP transport
   auth_token_file: ~/.config/wraptool/mcp-token
 admin:
   listen: 127.0.0.1:8718          # operator-facing UI — localhost only
