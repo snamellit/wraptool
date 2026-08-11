@@ -15,8 +15,8 @@ statically linked with `CGO_ENABLED=0`; no Go installation is required.
 | macOS | `wraptool_VERSION_darwin_amd64` | `wraptool_VERSION_darwin_arm64` |
 | Windows | `wraptool_VERSION_windows_amd64.exe` | `wraptool_VERSION_windows_arm64.exe` |
 
-Replace the example version below with the version shown on the
-[latest release](https://forge.snamellit.com/pti/wraptool/releases/latest).
+Homebrew tracks releases for you. The two scripts further down resolve the
+newest release themselves, and each shows how to pin a version instead.
 
 ### Homebrew (macOS and Linux)
 
@@ -113,7 +113,11 @@ matching binary, verify its SHA-256 checksum, and install it under
 `~/.local/bin`:
 
 ```bash
-version=0.2.1
+# Resolve the newest release. To pin one instead, replace this command with
+# e.g. version=X.Y.Z
+version=$(curl -fsSL https://forge.snamellit.com/api/v1/repos/pti/wraptool/releases/latest \
+  | sed -n 's/.*"tag_name":"wraptool-v\([^"]*\)".*/\1/p')
+test -n "$version" || { echo "cannot resolve the latest version" >&2; exit 1; }
 
 case "$(uname -s)" in
   Linux) os=linux ;;
@@ -164,7 +168,11 @@ This example detects AMD64 versus ARM64, verifies the downloaded executable,
 and installs it under `%USERPROFILE%\bin`:
 
 ```powershell
-$Version = "0.2.1"
+# Resolve the newest release. To pin one instead, replace these two lines with
+# e.g. $Version = "X.Y.Z"
+$Latest = Invoke-RestMethod "https://forge.snamellit.com/api/v1/repos/pti/wraptool/releases/latest"
+$Version = $Latest.tag_name -replace '^wraptool-v', ''
+
 $Arch = switch ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()) {
   "X64"   { "amd64" }
   "Arm64" { "arm64" }
