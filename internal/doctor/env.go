@@ -37,7 +37,7 @@ func runEnvContainerBackend(_ context.Context, in *Input) Result {
 		// ID is stamped by the engine from Meta.ID.
 		Severity: SeverityInfo,
 		Title:    "Container backends",
-		Detail:   describeBackends(present, absent),
+		Detail:   envDescribeBackends(present, absent),
 		DocRef:   "docs/isolated-environments.md",
 	}
 	if len(present) == 0 {
@@ -50,7 +50,7 @@ func runEnvContainerBackend(_ context.Context, in *Input) Result {
 	return Found(f)
 }
 
-func describeBackends(present, absent []string) string {
+func envDescribeBackends(present, absent []string) string {
 	var b strings.Builder
 	if len(present) > 0 {
 		b.WriteString("found: ")
