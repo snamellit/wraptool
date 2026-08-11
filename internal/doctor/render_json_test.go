@@ -259,6 +259,53 @@ func TestRenderJSONDoesNotEscapeHTML(t *testing.T) {
 	}
 }
 
+// TestRenderJSONThroughApplySuppression is C2's own edit to this file
+// (design §6.2): it exercises the REAL pipeline — Run, then
+// ApplySuppression (cmd/doctor.go's own call order) — rather than a
+// hand-built Report, and confirms RenderJSON needed no production-code
+// change at all: Finding's existing `suppressed`/`suppression_reason` json
+// tags already carry ApplySuppression's marking straight through.
+func TestRenderJSONThroughApplySuppression(t *testing.T) {
+	const doc = `
+tools:
+  git:
+    allow:
+      # doctor:ignore policy.dangerous-flag -- reviewed 2026-08
+      - subcommand: [pull]
+        flags: ["-c"]
+`
+	check := doctorCheck("policy.dangerous-flag", NeedsNothing, func(context.Context, *Input) Result {
+		return Found(Finding{
+			Severity: SeverityWarn, Title: "t", Detail: "d", Remedy: "fix it",
+			Path: At("tools", "git", "allow").Item("subcommand", "pull").Key("flags").Elem("-c"),
+		})
+	})
+	in := &Input{Env: NewMapEnv(), GOOS: "linux", ConfigPath: "/x/config.yaml", ConfigState: ConfigLoaded}
+	r := Run(context.Background(), in, RunOptions{
+		Checks:  []Check{check},
+		Locator: NewLocator("/x/config.yaml", []byte(doc)),
+	})
+	r = ApplySuppression(r, []byte(doc))
+
+	var buf strings.Builder
+	if err := RenderJSON(&buf, r); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	var got struct {
+		Summary  Summary   `json:"summary"`
+		Findings []Finding `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &got); err != nil {
+		t.Fatalf("decoding: %v\noutput was:\n%s", err, buf.String())
+	}
+	if got.Summary.Suppressed != 1 {
+		t.Errorf("summary.suppressed = %d, want 1", got.Summary.Suppressed)
+	}
+	if len(got.Findings) != 1 || !got.Findings[0].Suppressed || got.Findings[0].SuppressionReason != "reviewed 2026-08" {
+		t.Errorf("findings = %+v, want one suppressed finding with reason %q", got.Findings, "reviewed 2026-08")
+	}
+}
+
 func TestRenderJSONNeverMentionsStdioTransport(t *testing.T) {
 	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: []Check{
 		doctorFindingCheck("env.container-backend", SeverityInfo, "found: docker (/usr/bin/docker)"),

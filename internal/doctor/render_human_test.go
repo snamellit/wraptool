@@ -136,6 +136,35 @@ func TestRenderHumanFooterOmitsSuppressedParentheticalWhenZero(t *testing.T) {
 	}
 }
 
+// TestRenderHumanSuppressedFindingNotPrinted is C2's own edit to this file
+// (design §6.2): a suppressed finding is counted (the footer's parenthetical
+// is asserted separately above) but must not appear in the body at all —
+// neither its own group section nor its Detail/Remedy text.
+func TestRenderHumanSuppressedFindingNotPrinted(t *testing.T) {
+	r := Report{
+		Findings: []Finding{
+			{ID: "policy.dangerous-flag", Severity: SeverityWarn, Title: "t", Detail: "SUPPRESSED-DETAIL", Remedy: "fix it",
+				Suppressed: true, SuppressionReason: "reviewed"},
+			{ID: "config.symlinked", Severity: SeverityWarn, Title: "t", Detail: "STILL-VISIBLE-DETAIL", Remedy: "fix it"},
+		},
+		Summary: Summary{Warn: 2, Suppressed: 1},
+	}
+	var buf strings.Builder
+	if err := RenderHuman(&buf, r); err != nil {
+		t.Fatalf("RenderHuman: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "SUPPRESSED-DETAIL") {
+		t.Errorf("suppressed finding was printed, want it omitted from the body: %s", out)
+	}
+	if !strings.Contains(out, "STILL-VISIBLE-DETAIL") {
+		t.Errorf("missing the non-suppressed finding, got: %s", out)
+	}
+	if !strings.Contains(out, "2 warnings (1 suppressed)") {
+		t.Errorf("missing suppressed footer accounting for the omitted finding, got: %s", out)
+	}
+}
+
 func TestRenderHumanNeverMentionsStdioTransport(t *testing.T) {
 	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: []Check{
 		doctorFindingCheck("env.container-backend", SeverityInfo, "found: docker (/usr/bin/docker)"),

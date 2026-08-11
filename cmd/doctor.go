@@ -219,6 +219,12 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string, flags doctorRun
 		Locator: doctor.NewLocator(path, in.ConfigRaw),
 	})
 
+	// C2: mark every warn finding a `# doctor:ignore <id>` config comment
+	// suppresses (design §6.2), against the SAME ConfigRaw bytes just parsed
+	// for the Locator above. Safe to call unconditionally, including on the
+	// ConfigAbsent/ConfigUnreadable paths — nil/unparseable raw is a no-op.
+	report = doctor.ApplySuppression(report, in.ConfigRaw)
+
 	render := deps.render
 	if flags.jsonOut {
 		render = deps.renderJSON
