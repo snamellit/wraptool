@@ -1,8 +1,8 @@
 ---
-title: "Request-Review Web UI"
+title: "Review UI"
 ---
 
-The Web UI is an operator-facing dashboard for reviewing capability
+The review UI is an operator-facing dashboard for reviewing capability
 requests — the same approve / deny / apply workflow as the
 [`wraptool requests`](hot-reload.qmd#operator-workflow) CLI, in the
 browser.
@@ -14,9 +14,9 @@ via the same merge as `requests approve --apply`; the running server
 then [hot-reloads](hot-reload.qmd) the change.
 
 ::: {.callout-important}
-The Web UI is **operator-facing, not AI-facing**. Bind it to
+The review UI is **operator-facing, not AI-facing**. Bind it to
 `127.0.0.1` only. It is a separate listener from the MCP transport by
-design — the AI never reaches it.
+design — the agent never reaches it.
 :::
 
 ## Enabling it
@@ -64,7 +64,7 @@ All comparisons are constant-time. The session cookie is `HttpOnly`,
 `SameSite=Lax`. Static assets (CSS) are served without auth so the
 login page renders styled.
 
-The admin UI never runs without authentication. Loopback is reachable from
+The review UI never runs without authentication. Loopback is reachable from
 Guix containers that share the host network namespace and is not an
 authorization boundary.
 
@@ -100,7 +100,7 @@ request-apply — the YAML node-tree editor (`config.AddRule` /
 `UpdateRule` / `DeleteRule`), round-trip validation, atomic write, and
 file-watch hot-reload.
 
-![The Rules view: one card per tool (here `acli` and `git`) with its binary path, an ALLOW section of editable subcommand + flags rows, a DENY section, inline Save / Delete, and Add Allow / Add Deny. Rules carrying `flag_constraints` / `arg_constraints` show an `ADV` badge.](rules_view.png){fig-alt="wraptool Web UI Rules page showing acli and git tool cards with allow and deny rules and edit controls"}
+![The Rules view: one card per tool (here `acli` and `git`) with its binary path, an ALLOW section of editable subcommand + flags rows, a DENY section, inline Save / Delete, and Add Allow / Add Deny. Rules carrying `flag_constraints` / `arg_constraints` show an `ADV` badge.](rules_view.png){fig-alt="wraptool review UI Rules page showing acli and git tool cards with allow and deny rules and edit controls"}
 
 - **Add** a rule: fill the *new subcommand* (and, for allow rules,
   *flags*) row under a tool and submit. Subcommand and flags are
@@ -128,7 +128,7 @@ constraint blocks themselves require a YAML edit.
 
 ## Restart to enable
 
-The Web UI listener is bound once at startup. Adding or changing the
+The review UI listener is bound once at startup. Adding or changing the
 `admin` block requires restarting the server (`wraptool server start`) —
 config hot-reload swaps tools and policy but does not start or move the
 web listener.

@@ -1,33 +1,33 @@
 # wraptool
 
 An MCP server that places CLI tools and local stdio MCP servers behind a
-security policy, so AI coding assistants can use credentialed host capabilities
+security policy, so coding agents can use credentialed host capabilities
 without direct access to the underlying credentials.
 
 ## Why
 
-AI coding assistants need CLI tools to be productive, but giving them
+Coding agents need CLI tools to be productive, but giving them
 direct access exposes API keys, SSH keys, kubeconfigs, and service
 account credentials to the model context. The same risk runs through
 everyday development: a `postinstall` hook or a compromised transitive
 dependency executes with your full credentials the moment you build,
 test, or bump a package. wraptool **treats everything running in your
-workspace — the assistant, its tool calls, and the build/test/dependency
+workspace — the agent, its tool calls, and the build/test/dependency
 code they trigger — as untrusted**, and bounds what it can reach:
 
 - **Credentials stay isolated** -- wraptool runs as a separate process
-  with its own environment; secrets never enter the AI context.
+  with its own environment; secrets never enter the agent context.
 - **Bounded blast radius** -- inside `wraptool up`'s throwaway container
-  the assistant, your build scripts, and the dependencies they pull in
+  the agent, your build scripts, and the dependencies they pull in
   all run with no host credentials. A hijacked agent *or* a poisoned
-  dependency can't steal your credentials or exceed the whitelist: raw
+  dependency can't steal your credentials or exceed the policy: raw
   host secrets (SSH keys, gcloud, kubeconfig, push access) never leave the
   host, and privileged `git`/`kubectl` happen only through wraptool's
-  whitelisted, constrained subcommands. A malicious payload still runs
+  policy-allowed, constrained subcommands. A malicious payload still runs
   with the container's network and source tree, and can invoke the same
   approved tools the agent can — but policy, not the payload, bounds which
   operations reach the host.
-- **Subcommand-level whitelisting** -- allow `git commit` but deny
+- **Subcommand-level policy** -- allow `git commit` but deny
   `git push --force`, with flag-level granularity and value
   constraints.
 - **MCP-server filtering** -- spawn credentialed local stdio MCP servers and
@@ -50,7 +50,7 @@ go build -o wraptool .
 
 Create `~/.config/wraptool/config.yaml` listing the tools to expose (allow/deny
 rules, auth token) — see [Getting started](docs/getting-started.qmd) for a full
-example. Then pick how your AI assistant reaches wraptool:
+example. Then pick how your agent reaches wraptool:
 
 ### 1. One isolated container per project — recommended
 
@@ -60,7 +60,7 @@ wraptool up          # or just `wraptool`, from any git repo
 
 Brings up a credential-isolated container — a native **Guix container** built from
 your `manifest.scm` when Guix is available, otherwise a **Dev Container** — with
-your coding assistant inside it (installed once: a shared pool for Guix, the
+your coding agent inside it (installed once: a shared pool for Guix, the
 `wraptool` feature for Dev Containers) wired to the wraptool server on the host.
 Secrets never enter the container: `git push`, `gcloud`, and `kubectl` run on the
 host through MCP. The host gateway is auto-detected — no URL to set.
@@ -76,25 +76,25 @@ Writes `.devcontainer/devcontainer.json` — base image + language features + th
 harness login/skills across projects). Commit it; teammates get the same isolated
 box on "Reopen in Container" or `wraptool up`.
 
-### 3. Minimal — assistant on the host, no container
+### 3. Minimal — agent on the host, no container
 
 ```bash
 wraptool init --harness claude   # writes .mcp.json pointing at localhost
 wraptool server start
 ```
 
-The assistant runs on the same host as wraptool, so `127.0.0.1:8717` is reachable.
+The agent runs on the same host as wraptool, so `127.0.0.1:8717` is reachable.
 From **inside a container it is not** — loopback is the container's own, not the
 host's; use option 1 or 2, which detect the host gateway for you.
 
-## Web UI
+## Review UI
 
 An optional operator-facing dashboard (bound to `127.0.0.1`, **not**
 AI-facing) reviews capability requests and provides full rule CRUD —
 edit a tool's allow/deny rules in the browser and the running server
 hot-reloads the change. See [`docs/web-ui.qmd`](docs/web-ui.qmd).
 
-![wraptool Web UI — the Rules view, with per-tool allow/deny rules and inline edit controls](docs/rules_view.png)
+![wraptool review UI — the Rules view, with per-tool allow/deny rules and inline edit controls](docs/rules_view.png)
 
 ## Documentation
 
@@ -112,7 +112,7 @@ Full documentation lives in `docs/`, is rendered with
 | Architecture | [`docs/architecture.qmd`](docs/architecture.qmd) |
 | Security model | [`docs/security.qmd`](docs/security.qmd) |
 | Hot-reload & capability requests | [`docs/hot-reload.qmd`](docs/hot-reload.qmd) |
-| Request-review Web UI | [`docs/web-ui.qmd`](docs/web-ui.qmd) |
+| Review UI | [`docs/web-ui.qmd`](docs/web-ui.qmd) |
 | Isolated environments | [`docs/isolated-environments.md`](docs/isolated-environments.md) |
 | Troubleshooting | [`docs/troubleshooting.qmd`](docs/troubleshooting.qmd) |
 | Contributing | [`docs/contributing.qmd`](docs/contributing.qmd) |

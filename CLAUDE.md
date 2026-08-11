@@ -3,8 +3,13 @@
 ## Project
 
 wraptool is a Go MCP server that wraps CLI tools behind a security
-whitelist. It isolates credentials from AI coding assistants while
+policy. It isolates credentials from coding agents while
 letting them use tools like git, gcloud, and kubectl through MCP.
+
+Documentation changes follow `docs/contributing.qmd#documentation-style`
+(style rules, scoped by page type) and `docs/terminology.qmd` (one name per
+concept — the Preferred/Avoid table is binding). Read both before editing
+`docs/` or `README.md`; do not restate their rules here.
 
 ## Build & Test
 

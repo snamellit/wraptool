@@ -5,11 +5,11 @@ title: "Security model"
 ## Threat model
 
 wraptool treats the **whole workspace as untrusted**. The adversary is
-not just the AI assistant (or its operator) but everything the assistant
+not just the agent (or its operator) but everything the agent
 sets in motion: the build, test, and dependency code its tool calls
-trigger. Prompt injection can steer the assistant; a malicious
+trigger. Prompt injection can steer the agent; a malicious
 `postinstall` hook or a compromised transitive dependency pulled in
-during a routine version bump runs drive-by, with the assistant's
+during a routine version bump runs drive-by, with the agent's
 reach, the moment you build or test. Any of them may:
 
 - Probe for any reachable secret in its process environment.
@@ -21,17 +21,17 @@ wraptool's job is to make the **set of reachable host capabilities** finite,
 audited, and credential-free from the workspace's point of view. Run
 under `wraptool up`'s throwaway container (see [Deployment
 patterns](#deployment-patterns)) this bounds the blast radius for both
-the assistant and the code it triggers.
+the agent and the code it triggers.
 
 ### Scope — what wraptool does and does not protect
 
 Be honest about the boundary. The container has network access and the
 full source tree, and in-container code can read the `.mcp.json` config
-and its bearer token — so it can invoke the **same** whitelisted host
+and its bearer token — so it can invoke the **same** policy-allowed host
 tools the agent can. wraptool therefore:
 
 - **Protects host credentials** — SSH keys, gcloud, kubeconfig, and the
-  rest of the host environment never enter the container or the AI
+  rest of the host environment never enter the container or the agent
   context.
 - **Bounds which operations run** — privileged/remote actions go through
   constrained CLI subcommands or explicitly named tools from local MCP servers.
@@ -76,7 +76,7 @@ flowchart LR
 ```
 
 The MCP transport (SSE / Unix socket) is the only path across
-the boundary. The AI sees:
+the boundary. The agent sees:
 
 - The schema of allowed CLI tools and allowed upstream MCP tools.
 - CLI stdout/stderr and MCP text results, **after heuristic scrubbing**.
@@ -115,7 +115,7 @@ in as its own argument token:
 
 ### Credential scrubbing
 
-Output is filtered before being returned to the AI:
+Output is filtered before being returned to the agent:
 
 - Bearer tokens (`Authorization: Bearer ...`)
 - API keys with common prefixes (`sk-...`, `pk_...`, AWS access key
@@ -180,10 +180,10 @@ per-rule via `deny_flags` like any other flag.
 
 ### Capability requests
 
-Denied commands return a structured error pointing the AI at
-`wraptool_request_capability`. The AI submits a rationale; an
+Denied commands return a structured error pointing the agent at
+`wraptool_request_capability`. The agent submits a rationale; an
 operator reviews and approves out-of-band. This makes the policy
-**evolvable** without giving the AI a path to bypass it.
+**evolvable** without giving the agent a path to bypass it.
 
 ## Known limitations
 
@@ -219,14 +219,14 @@ The recommended default is `wraptool up`: from any git repo it brings up
 a **throwaway container per project** — a native Guix container built
 from your `manifest.scm` when Guix is available, otherwise a Dev
 Container — wired to the wraptool server on the host over an
-`auth_token`. The assistant, your build scripts, and their dependencies
+`auth_token`. The agent, your build scripts, and their dependencies
 all run inside with **no host credentials**; privileged and remote
 actions (`git push`, `gcloud`, `kubectl`) go back through wraptool's
-whitelisted subcommands on the host. Per the scope above, the container
+subcommands the policy allows on the host. Per the scope above, the container
 still has network and the source tree, so this bounds credentials and
 policy, not confidentiality or egress.
 
-More generally, run the AI assistant in a container or VM without
+More generally, run the agent in a container or VM without
 credentials, with wraptool on the host or a separate container that
 holds the secrets. See [isolated
 environments](isolated-environments.md) for Guix, Docker, Podman, and
