@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -237,7 +238,62 @@ func TestRunToolBinaryWritable(t *testing.T) {
 			if !strings.Contains(f.Detail, tc.wantSegment) {
 				t.Errorf("Detail %q does not name offending segment %q", f.Detail, tc.wantSegment)
 			}
+			// Every case above is under /usr/local — the one shape design
+			// §7.4 documents as a legitimate exception — so the Homebrew
+			// reassurance is expected here. TestToolHomebrewShaped covers the
+			// non-/usr/local case where it must NOT appear.
+			if !strings.Contains(f.Detail, "Homebrew") {
+				t.Errorf("Detail %q, want the Homebrew hint for a /usr/local segment", f.Detail)
+			}
 		})
+	}
+}
+
+// TestRunToolBinaryWritableNoHomebrewHintOutsideUsrLocal proves the Homebrew
+// reassurance does NOT leak onto an unrelated group-writable path: this
+// check cannot know the host is macOS or that a given /opt/shared segment is
+// actually Homebrew's doing, so asserting "safe to leave as-is" there would
+// be exactly the over-claim the standing rule (no finding may assert what
+// the check cannot know) forbids.
+func TestRunToolBinaryWritableNoHomebrewHintOutsideUsrLocal(t *testing.T) {
+	cfg := &config.Config{Tools: map[string]config.ToolConfig{
+		"mytool": {Binary: "/opt/shared/bin/mytool"},
+	}}
+	env := NewMapEnv()
+	env.Files["/"] = MapFile{Mode: fs.ModeDir | 0o755}
+	env.Files["/opt"] = MapFile{Mode: fs.ModeDir | 0o755}
+	env.Files["/opt/shared"] = MapFile{Mode: fs.ModeDir | 0o775, GID: 100}
+	env.Files["/opt/shared/bin"] = MapFile{Mode: fs.ModeDir | 0o755}
+	env.Files["/opt/shared/bin/mytool"] = MapFile{Mode: 0o755}
+
+	res := runToolBinaryWritable(context.Background(), toolTestInput(cfg, env))
+	if got := res.Outcome(); got != OutcomeFinding {
+		t.Fatalf("Outcome() = %v, want finding (findings: %+v)", got, res.Findings)
+	}
+	f := res.Findings[0]
+	if strings.Contains(f.Detail, "Homebrew") {
+		t.Errorf("Detail %q wrongly reassures about Homebrew for a non-/usr/local segment", f.Detail)
+	}
+	if strings.Contains(f.Remedy, "Homebrew") {
+		t.Errorf("Remedy %q wrongly qualifies with Homebrew for a non-/usr/local segment", f.Remedy)
+	}
+}
+
+func TestToolHomebrewShaped(t *testing.T) {
+	cases := []struct {
+		seg  string
+		want bool
+	}{
+		{"/usr/local", true},
+		{"/usr/local/bin", true},
+		{"/usr/localfoo", false}, // prefix collision, not a real subpath
+		{"/opt/shared", false},
+		{"/home/dev/.local/bin", false},
+	}
+	for _, tc := range cases {
+		if got := toolHomebrewShaped(tc.seg); got != tc.want {
+			t.Errorf("toolHomebrewShaped(%q) = %v, want %v", tc.seg, got, tc.want)
+		}
 	}
 }
 
@@ -282,8 +338,12 @@ func TestRunToolWorkingDir(t *testing.T) {
 				t.Fatalf("Outcome() = %v, want %v (findings: %+v)", got, tc.wantOutcome, res.Findings)
 			}
 			for _, f := range res.Findings {
-				if f.Severity != SeverityFail {
-					t.Errorf("Severity = %v, want fail", f.Severity)
+				// warn, not fail: working_dir is only the LAST fallback in
+				// paths.ResolveCWD — a client ?cwd= (which every
+				// wraptool-generated harness config appends) bypasses it
+				// entirely, so this check cannot know every call will fail.
+				if f.Severity != SeverityWarn {
+					t.Errorf("Severity = %v, want warn", f.Severity)
 				}
 			}
 		})
@@ -449,14 +509,46 @@ func TestToolExpandHome(t *testing.T) {
 		{"relative/env", "relative/env"},
 	}
 	for _, tc := range cases {
-		if got := toolExpandHome(env, tc.in); got != tc.want {
+		if got := toolExpandHome(env, "linux", tc.in); got != tc.want {
 			t.Errorf("toolExpandHome(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 
 	t.Run("HOME unset leaves the path unchanged", func(t *testing.T) {
 		empty := NewMapEnv()
-		if got := toolExpandHome(empty, "~/env"); got != "~/env" {
+		if got := toolExpandHome(empty, "linux", "~/env"); got != "~/env" {
+			t.Errorf("toolExpandHome(~/env) = %q, want unchanged", got)
+		}
+	})
+
+	t.Run("windows: HOME unset, USERPROFILE set — expands from USERPROFILE", func(t *testing.T) {
+		win := NewMapEnv()
+		win.Vars["USERPROFILE"] = `C:\Users\dev`
+		if got := toolExpandHome(win, "windows", "~/env"); got != filepath.Join(`C:\Users\dev`, "env") {
+			t.Errorf("toolExpandHome(~/env) = %q, want expansion from USERPROFILE", got)
+		}
+	})
+
+	t.Run("windows: USERPROFILE preferred over HOME when both set", func(t *testing.T) {
+		win := NewMapEnv()
+		win.Vars["HOME"] = "/home/user"
+		win.Vars["USERPROFILE"] = `C:\Users\dev`
+		if got := toolExpandHome(win, "windows", "~"); got != `C:\Users\dev` {
+			t.Errorf("toolExpandHome(~) = %q, want USERPROFILE", got)
+		}
+	})
+
+	t.Run("windows: USERPROFILE unset falls back to HOME", func(t *testing.T) {
+		win := NewMapEnv()
+		win.Vars["HOME"] = "/home/user"
+		if got := toolExpandHome(win, "windows", "~"); got != "/home/user" {
+			t.Errorf("toolExpandHome(~) = %q, want HOME fallback", got)
+		}
+	})
+
+	t.Run("windows: neither set leaves the path unchanged", func(t *testing.T) {
+		win := NewMapEnv()
+		if got := toolExpandHome(win, "windows", "~/env"); got != "~/env" {
 			t.Errorf("toolExpandHome(~/env) = %q, want unchanged", got)
 		}
 	})

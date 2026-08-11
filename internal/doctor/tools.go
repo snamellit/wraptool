@@ -113,14 +113,30 @@ func toolResolvedBinary(env Env, binary string) (resolved string, ok bool) {
 }
 
 // toolExpandHome expands a leading "~" the same way
-// internal/config.expandPath does (bare "~" and "~/..."), but through
-// Env.Getenv("HOME") rather than os.UserHomeDir — Env is the only host seam
-// this package may use (host.go, CLOSED, plan §1 rule 10), and env_files
-// entries are expanded lazily at resolveEnv time, so in.Config's own
-// EnvFiles strings are still exactly what the operator wrote. An unset HOME
+// internal/config.expandPath does (bare "~" and "~/..."), but through Env
+// rather than os.UserHomeDir — Env is the only host seam this package may use
+// (host.go, CLOSED, plan §1 rule 10), and env_files entries are expanded
+// lazily at resolveEnv time, so in.Config's own EnvFiles strings are still
+// exactly what the operator wrote.
+//
+// Platform-aware: os.UserHomeDir (what expandPath calls) reads %USERPROFILE%
+// on Windows and never consults HOME, and this check runs there (
+// tools.env-file-missing declares NeedsConfig, not NeedsModeBits, so it is
+// not Windows-skipped) — docs/platform-windows.qmd documents PowerShell as a
+// first-class path, where $env:HOME is unset by default. A HOME-only lookup
+// would report a present env_files entry (e.g. a documented
+// ~/.config/wraptool/kubectl.env) as missing on every fresh Windows install.
+// goos=="windows" therefore prefers USERPROFILE (mirroring os.UserHomeDir's
+// own key), falling back to HOME; every other platform stays HOME-only, per
+// expandPath. An unresolvable home (both unset, or non-Windows with no HOME)
 // leaves the path unchanged, mirroring expandPath's own fallback.
-func toolExpandHome(env Env, path string) string {
+func toolExpandHome(env Env, goos, path string) string {
 	home := env.Getenv("HOME")
+	if goos == "windows" {
+		if up := env.Getenv("USERPROFILE"); up != "" {
+			home = up
+		}
+	}
 	if home == "" {
 		return path
 	}
@@ -258,6 +274,20 @@ func toolGroupLabel(gid int) string {
 	return fmt.Sprintf("gid %d", gid)
 }
 
+// toolHomebrewShaped reports whether seg IS the one shape design §7.4
+// documents as a legitimate, unavoidable exception: Intel-macOS Homebrew's
+// own group-writable prefix (or a path under it). This check cannot know the
+// host is actually macOS, or that seg is actually Homebrew's doing rather
+// than an unrelated misconfiguration that merely happens to share the
+// prefix — so the reassurance below is gated on this, rather than attached
+// to every finding regardless of segment: an unconditional "safe to leave
+// as-is" on an arbitrary /opt or /home/shared segment would assert
+// something this check cannot know, teaching an operator to ignore a real
+// finding.
+func toolHomebrewShaped(seg string) bool {
+	return seg == "/usr/local" || strings.HasPrefix(seg, "/usr/local/")
+}
+
 // runToolBinaryWritable fires on the FIRST group- or other-writable segment
 // (root to leaf, across both tc.Binary's own ancestor chain and resolved's —
 // see toolWritableSegments) in a tool binary's path — arbitrary code could be
@@ -283,19 +313,23 @@ func runToolBinaryWritable(_ context.Context, in *Input) Result {
 			if !fi.GroupOrOtherWritable() {
 				continue
 			}
+			detail := fmt.Sprintf(
+				"tools.%s: binary %s resolves through %s, which is group- or other-writable (mode %s, %s) — "+
+					"this lets arbitrary code be substituted inside the credential boundary",
+				name, tc.Binary, seg, fi.Mode, toolGroupLabel(fi.GID))
+			remedy := fmt.Sprintf(
+				"tighten permissions on %s (or move the binary to a path with no group/other-writable segment)", seg)
+			if toolHomebrewShaped(seg) {
+				detail += ". Expected and safe to leave as-is on Intel-macOS Homebrew, whose /usr/local is group-writable by design"
+				remedy += ", unless this is the expected Homebrew layout"
+			}
 			findings = append(findings, Finding{
 				Severity: SeverityWarn,
 				Title:    "Tool binary is reachable through a group- or other-writable path",
-				Detail: fmt.Sprintf(
-					"tools.%s: binary %s resolves through %s, which is group- or other-writable (mode %s, %s) — "+
-						"this lets arbitrary code be substituted inside the credential boundary. Expected and "+
-						"safe to leave as-is on Intel-macOS Homebrew, whose /usr/local is group-writable by design",
-					name, tc.Binary, seg, fi.Mode, toolGroupLabel(fi.GID)),
-				Path: At("tools", name, "binary"),
-				Remedy: fmt.Sprintf(
-					"tighten permissions on %s (or move the binary to a path with no group/other-writable segment), "+
-						"unless this is the expected Homebrew layout", seg),
-				DocRef: "docs/configuration.qmd",
+				Detail:   detail,
+				Path:     At("tools", name, "binary"),
+				Remedy:   remedy,
+				DocRef:   "docs/configuration.qmd",
 			})
 			break // report the highest (root-most) offending segment only
 		}
@@ -306,9 +340,19 @@ func runToolBinaryWritable(_ context.Context, in *Input) Result {
 // ---------------------------------------------------------------- tools.working-dir
 
 // runToolWorkingDir fires when tools.<name>.working_dir is set but is not an
-// existing absolute directory — validated nowhere today (design §7.4), so a
-// typo'd or relative value fails every call to that tool at exec, not at
-// config load.
+// existing absolute directory — validated nowhere today. warn, not fail
+// (design §7.4 amendment): working_dir is only the LAST fallback in
+// paths.ResolveCWD (internal/paths/context.go) — an explicit client ?cwd=
+// wins first, a unix-socket peer PID's /proc/<pid>/cwd second — and every
+// harness config wraptool generates appends ?cwd= unconditionally unless
+// --global (internal/harness/harness.go's appendCWD; cmd/serve.go's
+// cwdContextFunc injects it), so under `wraptool up`/`wraptool init` the
+// configured value is never consulted at all. This check cannot know whether
+// any given deployment ever reaches the fallback, so it cannot assert "every
+// call will fail" the way tools.binary-executable can (a bad binary has no
+// analogous override) — it can only report what IS knowable: this is the
+// fallback used when the client supplies no ?cwd= and no peer-PID cwd
+// resolves, and a bad value fails the call when that fallback is reached.
 func runToolWorkingDir(_ context.Context, in *Input) Result {
 	var findings []Finding
 	for _, name := range toolSortedNames(in.Config.Tools) {
@@ -333,12 +377,16 @@ func runToolWorkingDir(_ context.Context, in *Input) Result {
 			continue
 		}
 		findings = append(findings, Finding{
-			Severity: SeverityFail,
+			Severity: SeverityWarn,
 			Title:    "working_dir is not an existing absolute directory",
-			Detail:   fmt.Sprintf("tools.%s: working_dir %q %s — every call to this tool will fail at exec", name, wd, reason),
-			Path:     At("tools", name, "working_dir"),
-			Remedy:   "set working_dir to an existing absolute directory, or remove it",
-			DocRef:   "docs/configuration.qmd",
+			Detail: fmt.Sprintf(
+				"tools.%s: working_dir %q %s — this is only the fallback paths.ResolveCWD uses when the client "+
+					"supplies no ?cwd= and no peer-PID cwd is resolvable (every wraptool-generated harness config "+
+					"appends ?cwd=, so the fallback is not consulted there); when it IS used, the call fails at exec",
+				name, wd, reason),
+			Path:   At("tools", name, "working_dir"),
+			Remedy: "set working_dir to an existing absolute directory, or remove it",
+			DocRef: "docs/configuration.qmd",
 		})
 	}
 	return Found(findings...)
@@ -383,7 +431,7 @@ func runToolEnvFileMissing(_ context.Context, in *Input) Result {
 	var findings []Finding
 	for _, subj := range toolEnvFileSubjects(in.Config) {
 		for _, raw := range subj.Files {
-			expanded := toolExpandHome(in.Env, raw)
+			expanded := toolExpandHome(in.Env, in.GOOS, raw)
 			if _, err := in.Env.ReadFile(expanded); err != nil {
 				findings = append(findings, Finding{
 					Severity: SeverityFail,
@@ -409,7 +457,7 @@ func runToolEnvFilePerms(_ context.Context, in *Input) Result {
 	var findings []Finding
 	for _, subj := range toolEnvFileSubjects(in.Config) {
 		for _, raw := range subj.Files {
-			expanded := toolExpandHome(in.Env, raw)
+			expanded := toolExpandHome(in.Env, in.GOOS, raw)
 			fi, err := in.Env.Stat(expanded)
 			if err != nil {
 				continue
