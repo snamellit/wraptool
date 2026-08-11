@@ -50,6 +50,9 @@ func TestRunOrderingIsTotalAndPermutationInvariant(t *testing.T) {
 	}
 	r2 := Run(context.Background(), virginInput(), RunOptions{Checks: reversed})
 
+	if r1.Incomplete {
+		t.Fatalf("r1 unexpectedly Incomplete: %s", r1.IncompleteReason)
+	}
 	if len(r1.Findings) != len(r2.Findings) {
 		t.Fatalf("got %d vs %d findings", len(r1.Findings), len(r2.Findings))
 	}
@@ -179,20 +182,98 @@ func TestFatalAbortsRemainderAndPreservesArithmetic(t *testing.T) {
 	}
 }
 
+// TestRunWithExplicitChecksIsIndependentOfRegistryErr covers the ONE collision
+// two parallel Phase-B authors can create that git merges cleanly: a
+// duplicate check ID. Before this fix, a global RegistryErr() short-circuited
+// Run unconditionally, so EVERY synthetic-check engine test — which never
+// touches the global registry — would fail as a side effect of that merge,
+// hiding the actually useful diagnostic (TestRegistryIsWellFormed naming both
+// registration sites) behind an unrelated panic/failure in whichever engine
+// test happened to run first.
+func TestRunWithExplicitChecksIsIndependentOfRegistryErr(t *testing.T) {
+	prev := registryErrs
+	registryErrs = append(append([]error(nil), registryErrs...), errors.New("synthetic registry corruption"))
+	t.Cleanup(func() { registryErrs = prev })
+
+	r := Run(context.Background(), virginInput(), RunOptions{Checks: []Check{passCheck("env.a")}})
+	if r.Incomplete {
+		t.Fatalf("Run with explicit Checks must be independent of a global registry error, got Incomplete: %s", r.IncompleteReason)
+	}
+
+	r2 := Run(context.Background(), virginInput(), RunOptions{})
+	if !r2.Incomplete {
+		t.Fatal("Run with Checks == nil (falls back to Registered()) must still honor RegistryErr()")
+	}
+	if !r2.Aborted {
+		t.Error("a registry-error Incomplete must also be Aborted (no check ran)")
+	}
+}
+
+// -------------------------------------------------------------- nil guards
+
+// TestRunNilInputOrEnvDoesNotPanic covers the no-panic posture (RULING R3): a
+// Phase-B author hand-building an *Input in a table test is the obvious way
+// to leave Env nil, and Run must report Incomplete rather than dereference it.
+func TestRunNilInputOrEnvDoesNotPanic(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   *Input
+	}{
+		{"nil Input", nil},
+		{"nil Env", &Input{GOOS: "linux"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Run(context.Background(), tc.in, RunOptions{})
+			if !r.Incomplete {
+				t.Fatal("expected Incomplete = true")
+			}
+			if !r.Aborted {
+				t.Error("expected Aborted = true: no check could run")
+			}
+			if r.IncompleteReason == "" {
+				t.Error("expected a non-empty IncompleteReason")
+			}
+		})
+	}
+}
+
 // -------------------------------------------------------------- validation
 
+// TestEmptySeverityYieldsIncompleteNotMisorderedReport puts a legitimate,
+// finding-emitting check BEFORE the malformed one on purpose: with the
+// malformed check first (as an earlier version of this test had it), an early,
+// uncounted `return r` on the invalid-Result path is indistinguishable from
+// the correct behaviour, because there is nothing published yet either way.
+// With a real finding already collected, the bug is observable: Summary's own
+// documented invariants (Fail+Warn+Info == len(Findings),
+// Pass+WithFindings+Skipped == Total) must still hold, and the published
+// finding must still be in canonical (sorted) order.
 func TestEmptySeverityYieldsIncompleteNotMisorderedReport(t *testing.T) {
 	checks := []Check{
-		check("env.bad", NeedsNothing, func(context.Context, *Input) Result {
+		findingCheck("env.good", SeverityFail, "a real, well-formed finding"),
+		check("tools.bad", NeedsNothing, func(context.Context, *Input) Result {
 			return Found(Finding{Title: "t", Detail: "d"}) // Severity left zero-value
 		}),
+		passCheck("tools.z"), // never runs: aborted by tools.bad
 	}
 	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
 	if !r.Incomplete {
 		t.Fatal("expected Incomplete = true for an invalid severity")
 	}
-	if len(r.Findings) != 0 {
-		t.Errorf("an incomplete run must not publish the offending finding: got %+v", r.Findings)
+	if !r.Aborted {
+		t.Error("expected Aborted = true: tools.z never ran")
+	}
+	if len(r.Findings) != 1 || r.Findings[0].ID != "env.good" {
+		t.Fatalf("expected only the earlier, well-formed finding to be published: got %+v", r.Findings)
+	}
+	if got := r.Summary.Fail + r.Summary.Warn + r.Summary.Info; got != len(r.Findings) {
+		t.Errorf("Fail+Warn+Info = %d, want len(Findings) = %d (Summary doc comment invariant)", got, len(r.Findings))
+	}
+	if got := r.Summary.Pass + r.Summary.WithFindings + r.Summary.Skipped; got != r.Summary.Total {
+		t.Errorf("Pass+WithFindings+Skipped = %d, want Total = %d (Summary doc comment invariant)", got, r.Summary.Total)
+	}
+	if r.Summary.WithFindings != 1 || r.Summary.Skipped != 2 {
+		t.Errorf("got WithFindings=%d Skipped=%d, want 1/2 (tools.bad + tools.z both skipped)", r.Summary.WithFindings, r.Summary.Skipped)
 	}
 }
 

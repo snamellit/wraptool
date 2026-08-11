@@ -83,14 +83,34 @@ func TestRenderHumanUnreadableConfigHeader(t *testing.T) {
 	}
 }
 
+// TestRenderHumanIncompleteBanner covers the ConfigUnreadable-only case
+// (§10.1): every selected check still ran, so Aborted is false and the
+// "did not run" clause must NOT appear.
 func TestRenderHumanIncompleteBanner(t *testing.T) {
 	r := Report{ConfigState: ConfigUnreadable, ConfigPath: "/x/config.yaml", Incomplete: true, IncompleteReason: "parsing config: yaml: bad indent"}
 	var buf strings.Builder
 	if err := RenderHuman(&buf, r); err != nil {
 		t.Fatalf("RenderHuman: %v", err)
 	}
-	if !strings.Contains(buf.String(), "doctor could not complete: parsing config: yaml: bad indent. Checks after this point did not run.") {
+	if !strings.Contains(buf.String(), "doctor could not complete: parsing config: yaml: bad indent.") {
 		t.Errorf("missing incomplete banner, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "did not run") {
+		t.Errorf("ConfigUnreadable-only banner must not claim checks did not run (every selected check ran), got:\n%s", buf.String())
+	}
+}
+
+// TestRenderHumanAbortedBanner covers a run cut short (registry error,
+// selection error, Result.Fatal, or a malformed Result): Aborted is true and
+// the "did not run" clause is accurate.
+func TestRenderHumanAbortedBanner(t *testing.T) {
+	r := Report{Incomplete: true, Aborted: true, IncompleteReason: "config is unparseable"}
+	var buf strings.Builder
+	if err := RenderHuman(&buf, r); err != nil {
+		t.Fatalf("RenderHuman: %v", err)
+	}
+	if !strings.Contains(buf.String(), "doctor could not complete: config is unparseable. Checks after this point did not run.") {
+		t.Errorf("missing aborted banner, got:\n%s", buf.String())
 	}
 }
 

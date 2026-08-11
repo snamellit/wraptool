@@ -300,6 +300,15 @@ type Finding struct {
 	// subject (a binary path, a socket directory, a pool generation dir); a
 	// non-empty Path always wins. Reserving this field is what makes C1 a
 	// zero-line edit per group file.
+	//
+	// Plan §1 rule 9: never set Location for a config finding — set Path.
+	// Hand-rolling Location as in.ConfigPath (or in.ConfigPath plus a
+	// guessed ":line") looks like it works today (C1 has not landed a real
+	// Locator yet, so nullLocator never overwrites it), but it is exactly the
+	// silent rot C1 is designed to avoid: C1 cannot retrofit a real file:line
+	// onto a finding that already has a Location, without editing that
+	// check's own group file. TestFindingsAreWellFormed additionally rejects a
+	// Location that has in.ConfigPath as a prefix while Path is empty.
 	Location string `json:"location"`
 
 	Remedy string `json:"remedy"`  // the change to make; "" when there is nothing to do

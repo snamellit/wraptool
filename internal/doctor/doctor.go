@@ -20,7 +20,17 @@ type HostPaths struct {
 	DataDir    string
 	CacheDir   string
 	RuntimeDir string // serve.state, pidfile (B9)
-	PoolRoot   string // pool.Root(); internal/pool is root-parameterized (B8)
+	// PoolRoot is pool.Root(), resolved ONCE here. internal/pool's zero-argument
+	// layout accessors (Root/HomeDir/LockFile/RuntimeDir/CacheDir/...) are NOT
+	// root-parameterized — they resolve through paths.DataDir() directly
+	// (internal/pool/layout.go), so calling e.g. pool.HomeDir() from a check
+	// would read the REAL host's $XDG_DATA_HOME even under a MapEnv-backed unit
+	// test. Only the pool.PoolPaths-TAKING functions (ActiveGeneration,
+	// VerifyGenerationTree) are root-parameterized; B8 builds its own
+	// pool.PoolPaths from this field, never by calling pool's zero-arg
+	// accessors directly (enforced by invariants_test.go's
+	// forbiddenHostSelectors).
+	PoolRoot string
 }
 
 // ConfigState is a closed enum covering the three states §10.1 distinguishes.
@@ -73,7 +83,14 @@ type Input struct {
 	// one read. Left out of A1 rather than shipped as a permanently nil field.
 	// F1 adds: Prober — an introspection-shaped interface, nil meaning
 	// unavailable, NEVER a generic Exec on Env.
-	// B9/E1 add: Server *ServerState.
+	//
+	// B9 does NOT need an Input field: it sits inside the nine-way parallel
+	// wave and cannot widen a shared type without conflicting with every other
+	// Phase-B step. cmd/server.go's serveState is unexported anyway, so
+	// runtime.go reads and decodes serve.state itself — Input.Paths.RuntimeDir
+	// names the file, Env.ReadFile reads it — entirely within B9's own file.
+	// E1 lands AFTER the parallel wave and can safely add Server *ServerState
+	// here if a later step benefits from a pre-parsed, shared representation.
 }
 
 // RunOptions is the engine-side selection hook. A2 wires --only/--skip/--strict
@@ -144,6 +161,14 @@ type Report struct {
 	// Result or Finding, or ConfigState == ConfigUnreadable.
 	Incomplete       bool
 	IncompleteReason string
+	// Aborted is true iff Incomplete AND at least one SELECTED check never ran
+	// because of it: a registry error, a selection error, a check returning
+	// Result.Fatal, or a check returning an invalid Result — every one of these
+	// cuts the run short (RenderHuman's "Checks after this point did not run.").
+	// False for the ConfigUnreadable-only case (§10.1): every selected check,
+	// including the full env.* group, still ran and is reported below the
+	// incomplete banner, so that clause would be actively wrong there.
+	Aborted bool
 }
 
 // SchemaVersion is A2's --json schema identifier.
@@ -190,6 +215,22 @@ func knownGroup(g Group) bool {
 // Pipeline (four separable phases, so C2's suppression pass can insert between
 // collect and count without restructuring): execute -> collect -> sort -> count.
 func Run(ctx context.Context, in *Input, opts RunOptions) Report {
+	// A nil Input or a nil Env would panic on in.Env.Now() below. The package
+	// otherwise takes a deliberate no-panic posture (RULING R3: register
+	// records rather than panics) — a Phase-B author hand-building an Input in
+	// a table test is the obvious way to hit this, so it gets the same
+	// Incomplete/exit-2 treatment as every other "cannot proceed" case rather
+	// than a crash.
+	if in == nil || in.Env == nil {
+		return Report{
+			Schema:           SchemaVersion,
+			Version:          buildinfo.Version(),
+			Incomplete:       true,
+			IncompleteReason: "doctor: Input.Env is nil",
+			Aborted:          true,
+		}
+	}
+
 	r := Report{
 		Schema:      SchemaVersion,
 		Version:     buildinfo.Version(),
@@ -202,11 +243,19 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 	}
 
 	// An inconsistent catalog cannot produce a trustworthy report: stop before
-	// running anything.
-	if err := RegistryErr(); err != nil {
-		r.Incomplete = true
-		r.IncompleteReason = fmt.Sprintf("doctor check registry is invalid: %v", err)
-		return r
+	// running anything. Gated on opts.Checks == nil: a caller supplying its own
+	// check list (every engine test, and any future external caller) never
+	// depends on the GLOBAL registry, so the one collision two parallel Phase-B
+	// authors can create that git merges cleanly (a duplicate ID, caught by
+	// TestRegistryIsWellFormed) does not also break every synthetic-check
+	// engine test that happens to run first in the same `go test` process.
+	if opts.Checks == nil {
+		if err := RegistryErr(); err != nil {
+			r.Incomplete = true
+			r.IncompleteReason = fmt.Sprintf("doctor check registry is invalid: %v", err)
+			r.Aborted = true
+			return r
+		}
 	}
 
 	checks := opts.Checks
@@ -221,6 +270,7 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 	if err != nil {
 		r.Incomplete = true
 		r.IncompleteReason = err.Error()
+		r.Aborted = true
 		return r
 	}
 	r.Summary.Total = len(selected)
@@ -256,9 +306,22 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 		res := c.Run(ctx, in)
 
 		if reason := validateResult(m.ID, res); reason != "" {
+			// A malformed Result is untrustworthy: record THIS check as skipped
+			// (never publish whatever it returned) and every remaining selected
+			// check as not run, same as the Result.Fatal path below — then fall
+			// through to sortFindings/countSeverities so the footer matches the
+			// (findings-so-far) body instead of an early, uncounted `return r`
+			// that both violates Summary's own documented invariants (doctor.go
+			// Summary doc comment) and publishes findings out of canonical order.
 			r.Incomplete = true
 			r.IncompleteReason = reason
-			return r
+			r.Aborted = true
+			r.Skipped = append(r.Skipped, SkipRecord{ID: m.ID, Reason: reason})
+			r.Outcomes = append(r.Outcomes, CheckOutcome{ID: m.ID, Outcome: OutcomeSkipped, Skip: reason})
+			r.Summary.Skipped++
+			aborted = true
+			abortedAfter = m.ID
+			continue
 		}
 
 		outcome := res.Outcome()
@@ -293,6 +356,7 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 		if res.Fatal != nil {
 			r.Incomplete = true
 			r.IncompleteReason = res.Fatal.Error()
+			r.Aborted = true
 			aborted = true
 			abortedAfter = m.ID
 		}

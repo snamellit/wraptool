@@ -13,8 +13,17 @@ func RenderHuman(w io.Writer, r Report) error {
 	}
 
 	if r.Incomplete {
-		if _, err := fmt.Fprintf(w, "\ndoctor could not complete: %s. Checks after this point did not run.\n",
-			r.IncompleteReason); err != nil {
+		// The "did not run" clause is only true when Report.Aborted is set: on
+		// the ConfigUnreadable-only path (§10.1) every selected check, incl. the
+		// full env.* group, DID run and is reported below this banner — printing
+		// the clause there would tell the operator the opposite of what
+		// happened.
+		suffix := ""
+		if r.Aborted {
+			suffix = " Checks after this point did not run."
+		}
+		if _, err := fmt.Fprintf(w, "\ndoctor could not complete: %s.%s\n",
+			r.IncompleteReason, suffix); err != nil {
 			return err
 		}
 	}
