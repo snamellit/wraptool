@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pti/wraptool/internal/config"
 )
@@ -22,6 +23,19 @@ func runtimeTestInput(env *MapEnv, cfg *config.Config) *Input {
 		Paths:  runtimeHostPaths,
 		Config: cfg,
 	}
+}
+
+// runtimeTestInputWithConfigPath is runtimeTestInput plus ConfigPath, for
+// every E1/E2 test that exercises runtimeLiveMatchingState's config_path
+// gate (runtime.uid, runtime.stale-policy, and — via env_test.go/
+// exposure_files_test.go's own helpers — env.path-differs-from-server and
+// exposure.token-owner). Kept separate from runtimeTestInput rather than
+// widening it, so every already-merged Phase 1 test above (which never sets
+// ConfigPath) is untouched.
+func runtimeTestInputWithConfigPath(env *MapEnv, cfg *config.Config, configPath string) *Input {
+	in := runtimeTestInput(env, cfg)
+	in.ConfigPath = configPath
+	return in
 }
 
 func runtimeSetPIDFile(env *MapEnv, content string) {
@@ -388,13 +402,371 @@ func TestRuntimeIsUpBindAdjustmentTable(t *testing.T) {
 	}
 }
 
-// TestRuntimeParseServeStateIgnoresUnknownKeys locks in tolerant parsing: a
-// future Phase-2 key (uid=, config_path=, config_loaded_at=) that this Phase-1
-// reader does not recognize must be silently ignored, not misparsed into
-// listen/auth.
-func TestRuntimeParseServeStateIgnoresUnknownKeys(t *testing.T) {
-	s := runtimeParseServeState([]byte("listen=127.0.0.1:8717\nauth=true\nuid=1000\nconfig_path=/etc/wraptool/config.yaml\n"))
+// TestRuntimeParseServeStateParsesPhase2Fields locks in that every field E0
+// added (§4.1) round-trips through this file's own reader — the counterpart
+// to cmd/server.go's readServeState/writeServeState pair, which this file
+// cannot import (see the header comment) and therefore re-implements.
+func TestRuntimeParseServeStateParsesPhase2Fields(t *testing.T) {
+	s := runtimeParseServeState([]byte("listen=127.0.0.1:8717\n" +
+		"auth=true\n" +
+		"transport=sse\n" +
+		"admin_listen=127.0.0.1:8718\n" +
+		"uid=1000\n" +
+		"config_path=/etc/wraptool/config.yaml\n" +
+		"path=/usr/local/bin:/usr/bin\n" +
+		"started_at=2024-01-01T00:00:00Z\n" +
+		"config_loaded_at=2024-01-01T00:05:00Z\n"))
 	if s.Listen != "127.0.0.1:8717" || !s.Auth {
-		t.Errorf("got %+v, want listen=127.0.0.1:8717 auth=true, unknown keys ignored", s)
+		t.Fatalf("got %+v", s)
+	}
+	if s.Transport != "sse" {
+		t.Errorf("Transport = %q, want sse", s.Transport)
+	}
+	if s.AdminListen != "127.0.0.1:8718" {
+		t.Errorf("AdminListen = %q", s.AdminListen)
+	}
+	if uid, ok := s.UID(); !ok || uid != 1000 {
+		t.Errorf("UID() = (%d, %v), want (1000, true)", uid, ok)
+	}
+	if s.ConfigPath != "/etc/wraptool/config.yaml" {
+		t.Errorf("ConfigPath = %q", s.ConfigPath)
+	}
+	if s.Path != "/usr/local/bin:/usr/bin" {
+		t.Errorf("Path = %q", s.Path)
+	}
+	if s.StartedAt != "2024-01-01T00:00:00Z" {
+		t.Errorf("StartedAt = %q", s.StartedAt)
+	}
+	if s.ConfigLoadedAt != "2024-01-01T00:05:00Z" {
+		t.Errorf("ConfigLoadedAt = %q", s.ConfigLoadedAt)
+	}
+}
+
+// TestRuntimeParseServeStateUIDAbsentIsNotZero pins the "absent means
+// UNKNOWN, never 0/root" invariant (this file's header, cmd/server.go's own
+// serveState.UID() doc comment) against an old-format state file written
+// before E0 — no uid key at all.
+func TestRuntimeParseServeStateUIDAbsentIsNotZero(t *testing.T) {
+	s := runtimeParseServeState([]byte("listen=127.0.0.1:8717\nauth=true\n"))
+	if uid, ok := s.UID(); ok {
+		t.Errorf("UID() = (%d, true), want ok=false for an old-format state file", uid)
+	}
+}
+
+// TestRuntimeParseServeStateIgnoresTrulyUnknownKeys keeps the forward-compat
+// guarantee this reader has always had (renamed from
+// TestRuntimeParseServeStateIgnoresUnknownKeys now that uid=/config_path=
+// ARE recognized by this revision): a key even THIS revision does not know
+// about — a hypothetical future field — is silently ignored, never
+// misparsed into an existing one.
+func TestRuntimeParseServeStateIgnoresTrulyUnknownKeys(t *testing.T) {
+	s := runtimeParseServeState([]byte("listen=127.0.0.1:8717\nauth=true\nsome_future_key=surprise\n"))
+	if s.Listen != "127.0.0.1:8717" || !s.Auth {
+		t.Errorf("got %+v, want listen=127.0.0.1:8717 auth=true, unrecognized key ignored", s)
+	}
+}
+
+// TestRuntimeParseServeStateUnescapes pins the \n/\\ escaping
+// cmd/server.go's writeServeState applies to every value (serveStateEscape) —
+// a config_path or PATH entry may legitimately contain either character, and
+// this file re-implements the inverse rather than importing cmd (header
+// comment). Encoded input is built from raw string literals so the
+// backslashes below are the literal on-disk bytes, not a Go escape.
+func TestRuntimeParseServeStateUnescapes(t *testing.T) {
+	line1 := "config_path=" + `/etc/wrap\ntool/config.yaml` + "\n" // encodes an embedded real newline
+	line2 := "path=" + `C:\\bin` + "\n"                            // encodes a single literal backslash
+	s := runtimeParseServeState([]byte(line1 + line2))
+
+	if want := "/etc/wrap\ntool/config.yaml"; s.ConfigPath != want {
+		t.Errorf("ConfigPath = %q, want %q (embedded newline unescaped)", s.ConfigPath, want)
+	}
+	if want := `C:\bin`; s.Path != want {
+		t.Errorf("Path = %q, want %q (doubled backslash collapsed to one)", s.Path, want)
+	}
+}
+
+// -------------------------------------------------- runtimeResolvedConfigPath
+
+func TestRuntimeResolvedConfigPath(t *testing.T) {
+	t.Run("no symlink involved: falls back to the raw absolute path", func(t *testing.T) {
+		in := &Input{Env: NewMapEnv(), ConfigPath: "/etc/wraptool/config.yaml"}
+		if got := runtimeResolvedConfigPath(in); got != "/etc/wraptool/config.yaml" {
+			t.Errorf("got %q", got)
+		}
+	})
+
+	t.Run("symlinked dotfiles layout resolves to the real target", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Links["/home/user/.config/wraptool/config.yaml"] = "/home/user/dotfiles/wraptool.yaml"
+		env.Files["/home/user/dotfiles/wraptool.yaml"] = MapFile{Mode: 0o644}
+		in := &Input{Env: env, ConfigPath: "/home/user/.config/wraptool/config.yaml"}
+		if got := runtimeResolvedConfigPath(in); got != "/home/user/dotfiles/wraptool.yaml" {
+			t.Errorf("got %q, want the resolved symlink target", got)
+		}
+	})
+}
+
+// -------------------------------------------------- runtimeLiveMatchingState
+
+func TestRuntimeLiveMatchingState(t *testing.T) {
+	const cfgPath = "/etc/wraptool/config.yaml"
+
+	t.Run("no live server at all", func(t *testing.T) {
+		in := runtimeTestInputWithConfigPath(NewMapEnv(), nil, cfgPath)
+		_, skip := runtimeLiveMatchingState(in)
+		if skip != "no live server process recorded" {
+			t.Errorf("skip = %q", skip)
+		}
+	})
+
+	t.Run("pidfile present but the process is dead", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		// Deliberately no env.Pids[4412] entry.
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\n")
+		in := runtimeTestInputWithConfigPath(env, nil, cfgPath)
+		_, skip := runtimeLiveMatchingState(in)
+		if skip != "no live server process recorded" {
+			t.Errorf("skip = %q", skip)
+		}
+	})
+
+	t.Run("live pid, no serve.state file at all", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		in := runtimeTestInputWithConfigPath(env, nil, cfgPath)
+		_, skip := runtimeLiveMatchingState(in)
+		if skip != "no server state recorded" {
+			t.Errorf("skip = %q", skip)
+		}
+	})
+
+	t.Run("serve.state has no config_path (pre-E0 format)", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\n")
+		in := runtimeTestInputWithConfigPath(env, nil, cfgPath)
+		_, skip := runtimeLiveMatchingState(in)
+		if skip != "server state does not record a config path" {
+			t.Errorf("skip = %q", skip)
+		}
+	})
+
+	t.Run("config_path names a different config: not this audit's concern", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path=/other/config.yaml\n")
+		in := runtimeTestInputWithConfigPath(env, nil, cfgPath)
+		_, skip := runtimeLiveMatchingState(in)
+		if skip != "server was started from a different config" {
+			t.Errorf("skip = %q", skip)
+		}
+	})
+
+	t.Run("matching config_path succeeds and returns the decoded state", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=1000\nconfig_path="+cfgPath+"\n")
+		in := runtimeTestInputWithConfigPath(env, nil, cfgPath)
+		state, skip := runtimeLiveMatchingState(in)
+		if skip != "" {
+			t.Fatalf("skip = %q, want empty", skip)
+		}
+		if uid, ok := state.UID(); !ok || uid != 1000 {
+			t.Errorf("UID() = (%d, %v), want (1000, true)", uid, ok)
+		}
+	})
+
+	t.Run("matching config_path follows a symlinked config to the same target the server resolved", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		env.Links["/home/user/.config/wraptool/config.yaml"] = "/home/user/dotfiles/wraptool.yaml"
+		env.Files["/home/user/dotfiles/wraptool.yaml"] = MapFile{Mode: 0o644}
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path=/home/user/dotfiles/wraptool.yaml\n")
+		in := runtimeTestInputWithConfigPath(env, nil, "/home/user/.config/wraptool/config.yaml")
+		_, skip := runtimeLiveMatchingState(in)
+		if skip != "" {
+			t.Errorf("skip = %q, want empty (both spellings resolve to the same file)", skip)
+		}
+	})
+}
+
+// -------------------------------------------------------------- runtime.uid
+
+func TestRunRuntimeUID(t *testing.T) {
+	const cfgPath = "/etc/wraptool/config.yaml"
+
+	t.Run("no live matching server: skipped", func(t *testing.T) {
+		res := runRuntimeUID(context.Background(), runtimeTestInputWithConfigPath(NewMapEnv(), nil, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("live matching server, old-format state with no uid key: skipped, never asserted as root", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\n")
+		res := runRuntimeUID(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("uid recorded: info finding naming it", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=1000\nconfig_path="+cfgPath+"\n")
+		res := runRuntimeUID(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeFinding {
+			t.Fatalf("outcome = %v, want finding", res.Outcome())
+		}
+		f := res.Findings[0]
+		if f.Severity != SeverityInfo {
+			t.Errorf("severity = %v, want info", f.Severity)
+		}
+		if !strings.Contains(f.Detail, "1000") {
+			t.Errorf("Detail %q does not name the uid", f.Detail)
+		}
+	})
+
+	// A fixture-only case: wraptool refuses to run as root before any check
+	// executes (cmd/rootuser.go), so uid 0 is unreachable in practice, but
+	// this pins that a RECORDED 0 is reported verbatim rather than being
+	// treated as "unknown" by any accidental zero-value check.
+	t.Run("uid 0 is reported verbatim, never conflated with absent", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=0\nconfig_path="+cfgPath+"\n")
+		res := runRuntimeUID(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeFinding {
+			t.Fatalf("outcome = %v, want finding", res.Outcome())
+		}
+		if !strings.Contains(res.Findings[0].Detail, "uid 0") {
+			t.Errorf("Detail %q does not report uid 0 explicitly", res.Findings[0].Detail)
+		}
+	})
+}
+
+// -------------------------------------------------------- runtime.stale-policy
+
+func TestRunRuntimeStalePolicy(t *testing.T) {
+	const cfgPath = "/etc/wraptool/config.yaml"
+	const loadedAt = "2024-01-01T00:05:00Z"
+	baseState := "listen=127.0.0.1:8717\nauth=true\nconfig_path=" + cfgPath + "\nconfig_loaded_at=" + loadedAt + "\n"
+
+	t.Run("no live matching server: skipped", func(t *testing.T) {
+		res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(NewMapEnv(), nil, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("live matching server, no config_loaded_at recorded: skipped", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\n")
+		res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("config_loaded_at does not parse as RFC3339: skipped, never asserted", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\nconfig_loaded_at=not-a-time\n")
+		res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("config file cannot be stat'd: skipped", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, baseState)
+		// Deliberately no env.Files[cfgPath] entry.
+		res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("config mtime at or before config_loaded_at: pass", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, baseState)
+		env.Files[cfgPath] = MapFile{Mode: 0o600, ModTime: time.Date(2024, 1, 1, 0, 5, 0, 0, time.UTC)}
+		res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("outcome = %v, want pass", res.Outcome())
+		}
+	})
+
+	t.Run("config mtime newer than config_loaded_at: warn, reload kept the OLD policy", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, baseState)
+		env.Files[cfgPath] = MapFile{Mode: 0o600, ModTime: time.Date(2024, 1, 1, 0, 6, 0, 0, time.UTC)}
+		res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+		if res.Outcome() != OutcomeFinding {
+			t.Fatalf("outcome = %v, want finding", res.Outcome())
+		}
+		f := res.Findings[0]
+		if f.Severity != SeverityWarn {
+			t.Errorf("severity = %v, want warn", f.Severity)
+		}
+		if f.Remedy == "" {
+			t.Error("warn finding must carry a Remedy")
+		}
+	})
+}
+
+// TestRuntimeStalePolicyIgnoresSubSecondMtime pins the resolution mismatch that
+// made this check warn after every successful reload: cmd/server.go records
+// config_loaded_at at whole-second RFC3339 precision, while a file mtime carries
+// nanoseconds, so a config saved a fraction of a second before the load that
+// read it is not stale.
+func TestRuntimeStalePolicyIgnoresSubSecondMtime(t *testing.T) {
+	loaded := time.Date(2026, 8, 11, 12, 0, 5, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		mtime time.Time
+		want  Outcome
+	}{
+		{"saved within the same second as the load", loaded.Add(400 * time.Millisecond), OutcomePass},
+		{"saved exactly at the recorded load time", loaded, OutcomePass},
+		{"saved before the load", loaded.Add(-2 * time.Second), OutcomePass},
+		{"genuinely edited after the load", loaded.Add(30 * time.Second), OutcomeFinding},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const cfgPath = "/etc/wraptool/config.yaml"
+			env := NewMapEnv()
+			runtimeSetPIDFile(env, "4412\n")
+			env.Pids[4412] = true
+			runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+
+				"\nconfig_loaded_at="+loaded.Format(time.RFC3339)+"\n")
+			env.Files[cfgPath] = MapFile{Mode: 0o600, ModTime: tc.mtime}
+			res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+			if res.Outcome() != tc.want {
+				t.Errorf("outcome = %v, want %v (findings=%+v, skip=%q)", res.Outcome(), tc.want, res.Findings, res.SkipReason)
+			}
+		})
 	}
 }

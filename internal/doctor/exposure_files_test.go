@@ -181,6 +181,111 @@ func TestRunExposureFilesTokenWeakUnreadableFileIsSkippedNotFinding(t *testing.T
 	}
 }
 
+// ---------------------------------------------------------------- token-owner
+
+// exposureFilesTokenOwnerTestInput builds the *Input this check needs on top
+// of exposureFilesTestInput: Paths.RuntimeDir (so runtimeLiveMatchingState,
+// runtime.go, resolves the SAME pidfile/serve.state paths
+// runtimeSetPIDFile/runtimeSetServeState — runtime_test.go, same package —
+// write to) plus ConfigPath, the gate's other half.
+func exposureFilesTokenOwnerTestInput(env *MapEnv, cfg *config.Config, configPath string) *Input {
+	in := exposureFilesTestInput(env, cfg)
+	in.Paths = runtimeHostPaths
+	in.ConfigPath = configPath
+	return in
+}
+
+func TestRunExposureFilesTokenOwner(t *testing.T) {
+	const cfgPath = "/etc/wraptool/config.yaml"
+	tokenCfg := &config.Config{MCP: config.MCPConfig{AuthTokenFile: "/etc/wraptool/mcp-token"}}
+
+	t.Run("no auth_token_file configured: skipped", func(t *testing.T) {
+		res := runExposureFilesTokenOwner(context.Background(),
+			exposureFilesTokenOwnerTestInput(NewMapEnv(), &config.Config{}, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("no live matching server: skipped", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Files["/etc/wraptool/mcp-token"] = MapFile{Mode: 0o600, UID: 999, GID: 999}
+		res := runExposureFilesTokenOwner(context.Background(), exposureFilesTokenOwnerTestInput(env, tokenCfg, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("live matching server, old-format state with no uid key: skipped", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Files["/etc/wraptool/mcp-token"] = MapFile{Mode: 0o600, UID: 999, GID: 999}
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\n")
+		res := runExposureFilesTokenOwner(context.Background(), exposureFilesTokenOwnerTestInput(env, tokenCfg, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("token file owner matches the server's recorded uid: pass", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Files["/etc/wraptool/mcp-token"] = MapFile{Mode: 0o600, UID: 1000, GID: 1000}
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=1000\nconfig_path="+cfgPath+"\n")
+		res := runExposureFilesTokenOwner(context.Background(), exposureFilesTokenOwnerTestInput(env, tokenCfg, cfgPath))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("outcome = %v, want pass", res.Outcome())
+		}
+	})
+
+	t.Run("token file owner differs from the server's recorded uid: warn, not fail (service-user deployment)", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Files["/etc/wraptool/mcp-token"] = MapFile{Mode: 0o600, UID: 1000, GID: 1000}
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=999\nconfig_path="+cfgPath+"\n")
+		res := runExposureFilesTokenOwner(context.Background(), exposureFilesTokenOwnerTestInput(env, tokenCfg, cfgPath))
+		if res.Outcome() != OutcomeFinding {
+			t.Fatalf("outcome = %v, want finding", res.Outcome())
+		}
+		f := res.Findings[0]
+		if f.Severity != SeverityWarn {
+			t.Errorf("severity = %v, want warn (a service-user deployment legitimately has files doctor does not own)", f.Severity)
+		}
+		if !strings.Contains(f.Detail, "1000") || !strings.Contains(f.Detail, "999") {
+			t.Errorf("Detail %q does not name both uids", f.Detail)
+		}
+		if !f.Path.Empty() || f.Location == "" {
+			t.Errorf("finding must set Location (non-config subject), not Path: Path=%v Location=%q", f.Path, f.Location)
+		}
+	})
+
+	t.Run("token file owner unknown (e.g. Windows-shaped fixture): silently skipped, never asserted", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Files["/etc/wraptool/mcp-token"] = MapFile{Mode: 0o600, UID: -1, GID: -1}
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=1000\nconfig_path="+cfgPath+"\n")
+		res := runExposureFilesTokenOwner(context.Background(), exposureFilesTokenOwnerTestInput(env, tokenCfg, cfgPath))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("outcome = %v, want pass (unknown ownership must never be asserted as a mismatch)", res.Outcome())
+		}
+	})
+
+	t.Run("token file does not exist: silently skipped, not a finding", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nuid=1000\nconfig_path="+cfgPath+"\n")
+		res := runExposureFilesTokenOwner(context.Background(), exposureFilesTokenOwnerTestInput(env, tokenCfg, cfgPath))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("outcome = %v, want pass", res.Outcome())
+		}
+	})
+}
+
 // ---------------------------------------------------------------- unix-socket-dir
 
 func TestRunExposureFilesUnixSocketDir(t *testing.T) {
@@ -482,6 +587,7 @@ func TestExposureFilesCheckMeta(t *testing.T) {
 	}{
 		{exposureFilesTokenPermsMeta, exposureFilesTokenPerms, NeedsConfig | NeedsModeBits},
 		{exposureFilesTokenWeakMeta, exposureFilesTokenWeak, NeedsConfig},
+		{exposureFilesTokenOwnerMeta, exposureFilesTokenOwner, NeedsConfig | NeedsModeBits},
 		{exposureFilesUnixSocketDirMeta, exposureFilesUnixSocketDir, NeedsConfig | NeedsModeBits},
 		{exposureFilesCWDRootsUnsetMeta, exposureFilesCWDRootsUnset, NeedsConfig},
 		{exposureFilesRequestLogWritableMeta, exposureFilesRequestLogWritable, NeedsConfig | NeedsModeBits},

@@ -13,8 +13,9 @@
 // config CONTENT (mcp.allowed_cwd_roots itself), so it sets Finding.Path
 // instead (RULING R5, plan §1 rule 9).
 //
-// exposure.token-owner is explicitly Phase 2 (needs serve.state's uid, §4.1)
-// and is NOT shipped here.
+// exposure.token-owner is Phase 2 (§4.1's serve.state uid extension, landed
+// by E0) and is shipped here now: it calls runtimeLiveMatchingState
+// (runtime.go, same package) rather than duplicating that gate.
 package doctor
 
 import (
@@ -30,6 +31,7 @@ import (
 const (
 	exposureFilesTokenPerms         CheckID = "exposure.token-perms"
 	exposureFilesTokenWeak          CheckID = "exposure.token-weak"
+	exposureFilesTokenOwner         CheckID = "exposure.token-owner"
 	exposureFilesUnixSocketDir      CheckID = "exposure.unix-socket-dir"
 	exposureFilesCWDRootsUnset      CheckID = "exposure.cwd-roots-unset"
 	exposureFilesRequestLogWritable CheckID = "exposure.request-log-writable"
@@ -50,6 +52,11 @@ var (
 		ID:      exposureFilesTokenWeak,
 		Needs:   NeedsConfig,
 		Summary: "checks that a configured auth token is not empty, short, or a known placeholder",
+	}
+	exposureFilesTokenOwnerMeta = Meta{
+		ID:      exposureFilesTokenOwner,
+		Needs:   NeedsConfig | NeedsModeBits,
+		Summary: "warns when a configured auth_token_file's owner differs from the server's recorded uid",
 	}
 	exposureFilesUnixSocketDirMeta = Meta{
 		ID:      exposureFilesUnixSocketDir,
@@ -76,6 +83,7 @@ var (
 func init() {
 	register(exposureFilesTokenPermsMeta, runExposureFilesTokenPerms)
 	register(exposureFilesTokenWeakMeta, runExposureFilesTokenWeak)
+	register(exposureFilesTokenOwnerMeta, runExposureFilesTokenOwner)
 	register(exposureFilesUnixSocketDirMeta, runExposureFilesUnixSocketDir)
 	register(exposureFilesCWDRootsUnsetMeta, runExposureFilesCWDRootsUnset)
 	register(exposureFilesRequestLogWritableMeta, runExposureFilesRequestLogWritable)
@@ -241,6 +249,52 @@ func runExposureFilesTokenWeak(_ context.Context, in *Input) Result {
 			Detail:   fmt.Sprintf("%s (%s): %s", tf.Label, tf.Path, reason),
 			Location: tf.Path,
 			Remedy:   fmt.Sprintf("replace it with a long random value, e.g. `openssl rand -hex 32 > %s`", tf.Path),
+			DocRef:   "docs/configuration.qmd",
+		})
+	}
+	return Found(findings...)
+}
+
+// ---------------------------------------------------------------- exposure.token-owner
+
+// runExposureFilesTokenOwner is SeverityWarn, never fail: a service-user
+// deployment legitimately has token files doctor's own process does not own
+// (§4.1's consumer table, §7.3). Gated on runtimeLiveMatchingState
+// (runtime.go, same package) — a dead or foreign-config server's recorded
+// uid says nothing about the token file this audit is looking at — then on
+// the uid key itself being present (absent on an old-format state file or on
+// Windows; NeedsModeBits already excludes Windows at the engine level, since
+// FileInfo.OwnerKnown() is never true there either).
+func runExposureFilesTokenOwner(_ context.Context, in *Input) Result {
+	files := exposureFilesTokenFiles(in.Config)
+	if len(files) == 0 {
+		return Skipped("no auth_token_file configured")
+	}
+	state, skip := runtimeLiveMatchingState(in)
+	if skip != "" {
+		return Skipped("%s", skip)
+	}
+	serverUID, ok := state.UID()
+	if !ok {
+		return Skipped("server state does not record a uid")
+	}
+
+	var findings []Finding
+	for _, tf := range files {
+		fi, err := in.Env.Stat(tf.Path)
+		if err != nil {
+			continue // exposure.token-perms/config.validate already cover an absent/unreadable file
+		}
+		if !fi.OwnerKnown() || fi.UID == serverUID {
+			continue
+		}
+		findings = append(findings, Finding{
+			Severity: SeverityWarn,
+			Title:    "Auth token file owner differs from the server",
+			Detail: fmt.Sprintf("%s (%s) is owned by uid %d, but the server runs as uid %d — expected for a "+
+				"service-user deployment doctor does not own", tf.Label, tf.Path, fi.UID, serverUID),
+			Location: tf.Path,
+			Remedy:   "confirm this is intentional (a service-user deployment); otherwise align ownership",
 			DocRef:   "docs/configuration.qmd",
 		})
 	}

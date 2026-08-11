@@ -240,6 +240,69 @@ func TestRunEnvGuixRuntimeSelected(t *testing.T) {
 	}
 }
 
+// -------------------------------------------------- env.path-differs-from-server
+
+// envPathDiffersTestInput builds the *Input this check needs: Paths.RuntimeDir
+// (so runtimeLiveMatchingState, runtime.go, resolves the SAME pidfile/
+// serve.state paths runtimeSetPIDFile/runtimeSetServeState — runtime_test.go,
+// same package — write to) plus ConfigPath, the gate's other half.
+func envPathDiffersTestInput(env *MapEnv, configPath string) *Input {
+	return &Input{Env: env, GOOS: "linux", Paths: runtimeHostPaths, ConfigPath: configPath}
+}
+
+func TestRunEnvPathDiffersFromServer(t *testing.T) {
+	const cfgPath = "/etc/wraptool/config.yaml"
+
+	t.Run("no live matching server: skipped", func(t *testing.T) {
+		res := runEnvPathDiffersFromServer(context.Background(), envPathDiffersTestInput(NewMapEnv(), cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("live matching server, no PATH recorded (pre-E0 state): skipped", func(t *testing.T) {
+		env := NewMapEnv()
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\n")
+		res := runEnvPathDiffersFromServer(context.Background(), envPathDiffersTestInput(env, cfgPath))
+		if res.Outcome() != OutcomeSkipped {
+			t.Fatalf("outcome = %v, want skipped", res.Outcome())
+		}
+	})
+
+	t.Run("doctor's PATH matches the server's recorded PATH: pass", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Vars["PATH"] = "/usr/local/bin:/usr/bin"
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\npath=/usr/local/bin:/usr/bin\n")
+		res := runEnvPathDiffersFromServer(context.Background(), envPathDiffersTestInput(env, cfgPath))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("outcome = %v, want pass", res.Outcome())
+		}
+	})
+
+	t.Run("doctor's PATH differs from the server's: info finding naming both", func(t *testing.T) {
+		env := NewMapEnv()
+		env.Vars["PATH"] = "/home/user/bin:/usr/bin"
+		runtimeSetPIDFile(env, "4412\n")
+		env.Pids[4412] = true
+		runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+"\npath=/usr/local/bin:/usr/bin\n")
+		res := runEnvPathDiffersFromServer(context.Background(), envPathDiffersTestInput(env, cfgPath))
+		if res.Outcome() != OutcomeFinding {
+			t.Fatalf("outcome = %v, want finding", res.Outcome())
+		}
+		f := res.Findings[0]
+		if f.Severity != SeverityInfo {
+			t.Errorf("severity = %v, want info", f.Severity)
+		}
+		if !strings.Contains(f.Detail, "/home/user/bin:/usr/bin") || !strings.Contains(f.Detail, "/usr/local/bin:/usr/bin") {
+			t.Errorf("Detail %q does not name both PATHs", f.Detail)
+		}
+	})
+}
+
 // -------------------------------------------------------- env.xdg-writable
 
 // envTestPaths is the HostPaths every TestRunEnvXDGWritable case shares.
