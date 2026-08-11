@@ -26,6 +26,53 @@ review.
 6. **A step that discovers a design error stops and reports it** rather than
    widening. The design note is wrong often enough (two adversarial passes
    found real breakage) that this will happen.
+7. **Prefix every unexported identifier with its file's own group prefix**
+   (`internal/doctor/env.go`'s `envBackends`, `envDescribeBackends`,
+   `runEnvContainerBackend` — never a bare `describeBackends`). A package-level
+   name collision between two concurrently authored group files is invisible
+   to git and merges cleanly; it breaks only on the merge commit, with a
+   redeclaration error that names neither author. The prefix is the file's own
+   name (its first `_`-delimited segment: `config_load.go`/`config_perms.go`
+   -> `config`, `exposure_listen.go`/`exposure_files.go` -> `exposure`), not
+   the report `Group` — two files can share a `Group` and still land
+   concurrently (`tools.go`/`mcpservers.go` are both group `tools`;
+   `exposure_listen.go`/`exposure_files.go` are both group `exposure`). When
+   your file's prefix collides with another file landing in the SAME parallel
+   wave, extend it with your file's own distinguishing segment
+   (`exposureListen*`/`exposureFiles*`) rather than relying on the shared,
+   coarser one. `internal/doctor/invariants_test.go`'s
+   `TestGroupFileIdentifiersArePrefixedWithFileGroup` mechanically enforces the
+   coarse half of this rule (identifier contains its file's group prefix,
+   case-insensitively, so `run<Group>...` check functions pass too); the finer
+   same-prefix-same-wave disambiguation is reviewer-enforced.
+8. **A check's `RunFunc` is a named, package-level function** (`runFoo`, per
+   rule 7), tested by calling it directly with a hand-built `*Input` — never a
+   closure defined inside `init()`, and no test asserts over the global
+   `Registered()`/registry for a specific check's OWN behaviour (the registry
+   is for registry-WIDE invariants: `internal/doctor/invariants_test.go`).
+   This is what stops one author's tests from breaking when another author's
+   file merges: a test written against `Registered()` sees every OTHER
+   already-merged check too.
+9. **Never set `Finding.Location` for a config finding — set `Finding.Path`.**
+   `Location` is engine-owned for config findings (RULING R5): the engine
+   fills it from `Path` via the `Locator`, and C1 is a zero-line edit per group
+   file only because no group file writes `Location` for a config subject
+   itself. Hand-rolling `Location` as `in.ConfigPath` (or a guessed
+   `path:line`) looks like it works before C1 lands (`nullLocator` never
+   overwrites a check-set `Location`), but silently defeats C1's retrofit for
+   that finding once it does — the exact regression
+   `TestFindingsAreWellFormed` in `internal/doctor/invariants_test.go` rejects
+   (a `Location` with `in.ConfigPath` as a prefix, `Path` empty).
+   `Finding.Location`'s own doc comment (`internal/doctor/finding.go`) states
+   this rule too.
+10. **A step that believes it needs a new `Requirement` bit or `Env` method
+    stops and reports** rather than widening `internal/doctor/finding.go`'s
+    `Requirement` vocabulary or `internal/doctor/host.go`'s `Env` interface.
+    Both are CLOSED in A1 on purpose (see their own doc comments): either one
+    is a file shared by all nine Phase-B branches, so an author who adds a bit
+    or a method to unblock their own check puts every other branch in
+    conflict with theirs. This is rule 6 applied to the two shared vocabulary
+    types specifically.
 
 ## 2. File map
 
@@ -70,10 +117,14 @@ that may run at the same time because their file sets are disjoint.
 A1 is the only step whose review matters structurally — it fixes the seam every
 later step plugs into. Review it properly; the rest are additive.
 
-### Phase B — static checks (8 steps, all parallel after A2)
+### Phase B — static checks (9 steps, all parallel after A2)
 
 Every step here is: one new file, one test file, `init()` registration, a row
-in the docs table. None touches another's file.
+in the docs table. None touches another's file. **§1 rules 7–10 are the
+concurrency contract for this phase specifically** — read them before writing
+a check: rule 7 (naming) and rule 9 (`Path` not `Location`) are the two whose
+violation either merges cleanly and breaks a later merge commit, or silently
+defeats a later step (C1) with no error at all.
 
 | Step | Lands | Depends | Parallel with |
 |---|---|---|---|
