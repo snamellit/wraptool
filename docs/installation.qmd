@@ -40,7 +40,7 @@ The formula installs the same release binary documented below and verifies the
 same SHA-256 checksum, so it needs no compiler and no Go toolchain. It covers
 macOS and Linux on both AMD64 and ARM64.
 
-Homebrew installs only wraptool itself. The AI harnesses (`claude`, `agy`, and
+Homebrew installs only wraptool itself. The harnesses (`claude`, `agy`, and
 friends) still come from wraptool's own harness pool — see [Harness
 pool](harness-pool.qmd) — and never from `brew`.
 

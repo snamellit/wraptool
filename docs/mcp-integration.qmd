@@ -92,6 +92,6 @@ not scrubbed and MCP output has no equivalent of the CLI output cap.
 
 ::: {.callout-warning title="Current limitations"}
 `mcp_servers.*.working_dir` is parsed but is not currently assigned to the child
-process. Capability-request apply and Web UI rule editing only manage CLI rules,
-not proxied MCP rules. Treat both as planned work, not active controls.
+process. Capability-request apply and review UI rule editing only manage CLI
+rules, not proxied MCP rules. Treat both as planned work, not active controls.
 :::

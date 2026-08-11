@@ -7,7 +7,7 @@ title: "Configuration reference"
 ::: {.callout-warning}
 Configuration uses top-level `mcp` and `admin` sections. The former `server`
 section and its nested `web` section are not supported: move MCP settings from
-`server` to `mcp`, and move Web UI settings from `server.web` to `admin`.
+`server` to `mcp`, and move review UI settings from `server.web` to `admin`.
 :::
 
 | Previous key | Replacement |
@@ -40,9 +40,9 @@ If no config exists at the resolved path, `wraptool serve` and `wraptool up`
 write a commented starter there (mode `0600`) and log the location, rather than
 erroring. They never overwrite an existing file. The starter enables one
 privileged tool — `git pull` — so the server comes up and demonstrates the
-point of wraptool: it wraps commands that need host credentials the AI never
+point of wraptool: it wraps commands that need host credentials the agent never
 sees. Read-only local git (`status`, `log`, `diff`) is intentionally not
-included — it needs no credentials and the assistant can run it itself. Edit the
+included — it needs no credentials and the agent can run it itself. Edit the
 file to expose the tools you want; it hot-reloads on save.
 :::
 
@@ -64,7 +64,7 @@ targets.
 
 ## `admin`
 
-Starts an operator-facing Web UI for reviewing capability requests inside
+Starts an operator-facing review UI for reviewing capability requests inside
 the `serve` process, on its own listener — independent of the MCP
 transport, so it works regardless of transport. Leave `listen` empty to disable.
 
@@ -122,7 +122,7 @@ tools:
 | Field | Type | Description |
 |-------|------|-------------|
 | `subcommand` | `[]string` | Token list; matched **exactly** (`[remote, set-url]` does not match `[remote]`) |
-| `flags` | `[]string` | Whitelist of permitted flags |
+| `flags` | `[]string` | Allowed flags |
 | `deny_flags` | `[]string` | Flags blocked even though in `flags` |
 | `flag_constraints` | `map[flag]Constraint` | Value-level rules |
 | `arg_constraints.positional_max` | `int` | Max positional args |
