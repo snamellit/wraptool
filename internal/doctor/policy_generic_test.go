@@ -236,7 +236,12 @@ func TestRunPolicygenericOverbroadPattern(t *testing.T) {
 		{"dot-plus", ".+", 1},
 		{"lazy dot-star", ".*?", 1},
 		{"dotall dot-star", "(?s).*", 1},
-		{"explicit empty pattern with an entry present", "", 1},
+		// An absent pattern is indistinguishable from an explicitly empty one at
+		// the struct level, and docs/getting-started.qmd's own
+		// {type: integer, max: 100} constraint has no pattern while constraining
+		// its value perfectly well. This check speaks only about patterns that
+		// were actually written.
+		{"no pattern at all: silent, that is unpatterned-value-flag's subject", "", 0},
 		{"a real, specific pattern: silent", "^[a-z]+$", 0},
 		{"an unanchored but non-degenerate pattern: silent (F6 anchors it)", "main", 0},
 	}
@@ -459,5 +464,36 @@ func TestPolicygenericIsStrictPrefix(t *testing.T) {
 				t.Errorf("policygenericIsStrictPrefix(%v, %v) = %v, want %v", tc.prefix, tc.full, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDenyPrefixGapExemptsAnExactDeny pins the exemption that separates a real
+// gap from a hardened policy: when the longer subcommand is itself denied at
+// exact length, whitelist matches that rule, the allow is dead, and the gap the
+// check exists to report is already closed. Warning there nags an operator for
+// having done precisely what the remedy asks — usually on the next line of the
+// same file.
+func TestDenyPrefixGapExemptsAnExactDeny(t *testing.T) {
+	rules := func(deny ...[]string) map[string]config.ToolConfig {
+		var d []config.DenyRule
+		for _, s := range deny {
+			d = append(d, config.DenyRule{Subcommand: s})
+		}
+		return map[string]config.ToolConfig{"git": {
+			Allow: []config.AllowRule{{Subcommand: []string{"remote", "set-url"}}},
+			Deny:  d,
+		}}
+	}
+
+	gap := runPolicygenericDenyPrefixGap(context.Background(),
+		&Input{Env: NewMapEnv(), Config: &config.Config{Tools: rules([]string{"remote"})}})
+	if len(gap.Findings) != 1 {
+		t.Fatalf("an unclosed prefix gap: got %d findings, want 1: %+v", len(gap.Findings), gap.Findings)
+	}
+
+	closed := runPolicygenericDenyPrefixGap(context.Background(),
+		&Input{Env: NewMapEnv(), Config: &config.Config{Tools: rules([]string{"remote"}, []string{"remote", "set-url"})}})
+	if len(closed.Findings) != 0 {
+		t.Errorf("the longer subcommand is denied at exact length, so the gap is closed: got %+v", closed.Findings)
 	}
 }

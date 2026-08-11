@@ -190,10 +190,17 @@ func runPolicygenericUncompilablePattern(_ context.Context, in *Input) Result {
 // constrain nothing once anchored: ".*"/".+"/"(?s).*" all admit essentially
 // any value a caller could supply; ".*?" is written lazy, but an anchored
 // ^(?:.*?)$ backtracks to match exactly the same everything a greedy .*
-// does; an EMPTY pattern is the same as no pattern check at all —
-// validateValue skips its whole pattern block when c.Pattern == ""
-// (constraints.go:68), so a flag_constraints entry that carries one anyway
-// constrains nothing either. Deliberately a closed, literal set, not a
+// does.
+//
+// The EMPTY pattern is deliberately NOT here. config.FlagConstraint.Pattern's
+// zero value cannot distinguish an explicitly written `pattern: ""` from no
+// pattern key at all, so including it made this check fire on every constraint
+// that simply has no pattern — including docs/getting-started.qmd's own
+// `"--depth": {type: integer, max: 100}`, where validateValue really does
+// parse and range-check the value, so "effectively unconstrained" was a false
+// statement and the remedy would have deleted a working constraint. This check
+// speaks only about patterns the operator actually wrote; the no-pattern case
+// belongs to policy.unpatterned-value-flag. Deliberately a closed, literal set, not a
 // semantic "matches everything" analysis: a differently spelled but
 // equally-overbroad pattern (e.g. "[\s\S]*") is outside what this heuristic
 // catches, matching the same closed-list nature as every other §7.7 check.
@@ -202,7 +209,6 @@ var policygenericOverbroadPatterns = map[string]bool{
 	".+":     true,
 	".*?":    true,
 	"(?s).*": true,
-	"":       true,
 }
 
 func runPolicygenericOverbroadPattern(_ context.Context, in *Input) Result {
@@ -293,6 +299,17 @@ func policygenericIsStrictPrefix(prefix, full []string) bool {
 	return true
 }
 
+// policygenericDeniedExactly reports whether some deny rule names subcommand at
+// exactly its own length, which is the length whitelist matches at.
+func policygenericDeniedExactly(deny []config.DenyRule, subcommand []string) bool {
+	for _, d := range deny {
+		if slices.Equal(d.Subcommand, subcommand) {
+			return true
+		}
+	}
+	return false
+}
+
 func runPolicygenericDenyPrefixGap(_ context.Context, in *Input) Result {
 	var findings []Finding
 	for _, name := range toolSortedNames(in.Config.Tools) {
@@ -301,6 +318,14 @@ func runPolicygenericDenyPrefixGap(_ context.Context, in *Input) Result {
 			denySub := strings.Join(deny.Subcommand, " ")
 			for _, allow := range tc.Allow {
 				if !policygenericIsStrictPrefix(deny.Subcommand, allow.Subcommand) {
+					continue
+				}
+				// The gap is closed when the longer subcommand is itself denied at
+				// exact length by another rule for the same tool: whitelist matches
+				// that one and the allow rule is dead. Warning there would nag an
+				// operator for having done exactly the thing the remedy asks for,
+				// usually on the next line of the same file.
+				if policygenericDeniedExactly(tc.Deny, allow.Subcommand) {
 					continue
 				}
 				allowSub := strings.Join(allow.Subcommand, " ")
