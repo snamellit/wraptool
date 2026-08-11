@@ -81,7 +81,10 @@ brew tap pti/wraptool https://forge.snamellit.com/pti/homebrew-wraptool.git
 # 1. read it — it declares four URLs, four checksums, and one install line
 less "$(brew --repository pti/wraptool)/Formula/wraptool.rb"
 # 2. compare its sha256 values against the checksums published with the release
-curl -fL https://forge.snamellit.com/pti/wraptool/releases/download/wraptool-v0.6.0/checksums.txt
+#    it pins — read the version out of the formula rather than assuming latest
+formula="$(brew --repository pti/wraptool)/Formula/wraptool.rb"
+version=$(awk -F'"' '/^  version /{print $2}' "$formula")
+curl -fL "https://forge.snamellit.com/pti/wraptool/releases/download/wraptool-v$version/checksums.txt"
 brew trust pti/wraptool
 ```
 
