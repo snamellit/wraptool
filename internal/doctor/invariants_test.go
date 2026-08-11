@@ -98,10 +98,10 @@ func invariantsVirginInput() *Input {
 // provides() knows about, so a config-gated (or workspace-gated, probe-gated,
 // pool-verify-gated) check gets exercised by the registry-wide invariants too
 // — not just the checks that happen to need nothing. Config carries three
-// tools and two mcp_servers entries (map iteration order has too few
-// permutations to reliably trip TestChecksAreDeterministic with only two —
-// three keys gives an unsorted range six orderings to differ across, not
-// two), a non-loopback mcp.listen and an auth_token_file: a config-gated
+// tools and two mcp_servers entries (a 2-key map's two ranges agree ~78% of
+// the time and a 3-key map's ~59%, so entry count alone cannot make
+// TestChecksAreDeterministic reliable — invariantsDeterminismRuns is what
+// does), a non-loopback mcp.listen and an auth_token_file: a config-gated
 // check that ranges over cfg.Tools/cfg.MCPServers without sorting keys, or
 // that only reaches its real logic past a non-empty-listen/non-empty-token
 // branch, needs more than one entry and a non-default listener to ever be
@@ -190,20 +190,29 @@ func TestChecksSurviveAVirginHost(t *testing.T) {
 	}
 }
 
-// TestChecksAreDeterministic runs each registered check (whose Needs the
-// Input satisfies) twice against the same Input and requires an identical
-// Result both times. Catches the likeliest defect class: ranging over a Go
-// map (e.g. cfg.Tools) without sorting keys — which needs >= 2 map entries to
-// ever be able to fail, hence invariantsFullyPopulatedInput's Tools/MCPServers.
+// invariantsDeterminismRuns is how many times TestChecksAreDeterministic runs
+// each check. Two is not enough: two independent ranges over the fixture's
+// 3-key map happen to agree ~59% of the time, so an unsorted `range cfg.Tools`
+// would pass CI more often than not. At eight runs the miss probability is
+// under 1%.
+const invariantsDeterminismRuns = 8
+
+// TestChecksAreDeterministic runs each registered check (whose Needs the Input
+// satisfies) repeatedly against the same Input and requires an identical
+// Result every time. Catches the likeliest defect class: ranging over a Go map
+// (e.g. cfg.Tools) without sorting keys — which needs >= 2 map entries to be
+// able to fail at all, hence invariantsFullyPopulatedInput's Tools/MCPServers.
 func TestChecksAreDeterministic(t *testing.T) {
 	for _, tc := range invariantsInputCases() {
 		for _, c := range invariantsChecksSatisfying(tc.in) {
 			m := c.Meta()
 			t.Run(tc.name+"/"+string(m.ID), func(t *testing.T) {
-				r1 := c.Run(context.Background(), tc.in)
-				r2 := c.Run(context.Background(), tc.in)
-				if !reflect.DeepEqual(r1, r2) {
-					t.Errorf("check %q is non-deterministic:\nrun 1: %+v\nrun 2: %+v", m.ID, r1, r2)
+				first := c.Run(context.Background(), tc.in)
+				for i := 1; i < invariantsDeterminismRuns; i++ {
+					again := c.Run(context.Background(), tc.in)
+					if !reflect.DeepEqual(first, again) {
+						t.Fatalf("check %q is non-deterministic (run 1 vs run %d):\nrun 1: %+v\nrun %d: %+v", m.ID, i+1, first, i+1, again)
+					}
 				}
 			})
 		}
@@ -378,16 +387,16 @@ func invariantsGroupStem(filename string) string {
 	return stem
 }
 
-// invariantsFilePrefix derives the MECHANICAL prefix for a group stem: its
-// first `_`-delimited segment ("env" -> "env", "config_load"/"config_perms"
-// -> "config", "mcpservers" -> "mcpservers", no underscore to cut at). Two
-// files that share this coarse prefix AND land in the SAME parallel wave
-// (exposure_listen.go/exposure_files.go; policy_*.go) must extend it with
-// their own distinguishing segment (exposureListen*/exposureFiles*) per plan
-// §1 rule 7 — reviewer-enforced, not mechanical.
+// invariantsFilePrefix derives the MECHANICAL prefix for a group stem: the
+// WHOLE stem with its `_` separators removed ("env" -> "env", "config_load"
+// -> "configload", "exposure_listen" -> "exposurelisten"). Using the whole
+// stem rather than its first segment is what makes rule 7 mechanical for the
+// case it exists to prevent: exposure_listen.go and exposure_files.go land in
+// the same parallel wave, and a shared coarse "exposure" prefix would let both
+// authors write exposureInput() — each branch green, the merge commit broken.
+// Requiring the full stem rejects that on each author's own branch instead.
 func invariantsFilePrefix(stem string) string {
-	seg, _, _ := strings.Cut(stem, "_")
-	return seg
+	return strings.ReplaceAll(stem, "_", "")
 }
 
 // invariantsFilePrefixOverrides names the stems (see invariantsGroupStem)
@@ -439,7 +448,11 @@ func TestGroupFileIdentifiersArePrefixedWithFileGroup(t *testing.T) {
 		if e.IsDir() || !strings.HasSuffix(name, ".go") {
 			continue
 		}
-		if invariantsFoundationFiles[name] {
+		// Keyed on the stem, not the raw name, so a foundation file's own
+		// _test.go (render_json_test.go, toolknowledge_test.go) is exempt with
+		// its production file — the same stem unification invariantsGroupStem
+		// applies to group files.
+		if invariantsFoundationFiles[invariantsGroupStem(name)+".go"] {
 			continue
 		}
 

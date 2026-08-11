@@ -155,6 +155,32 @@ func TestMapEnvReadDirFollowsSymlinkedDirectory(t *testing.T) {
 	if entries[0].Path != "/link/dir/a.txt" {
 		t.Errorf("ReadDir through a symlinked directory: entries[0].Path = %q, want %q", entries[0].Path, "/link/dir/a.txt")
 	}
+	// ...and a path MapEnv hands out must be one MapEnv can take back, which
+	// needs resolve to follow symlinked ancestors the way a real host does.
+	if _, err := m.Stat(entries[0].Path); err != nil {
+		t.Errorf("Stat of a path ReadDir returned: %v", err)
+	}
+	if _, err := m.ReadFile(entries[0].Path); err != nil {
+		t.Errorf("ReadFile of a path ReadDir returned: %v", err)
+	}
+}
+
+// TestMapEnvReadDirOnANonDirectoryIsNotErrNotExist pins the distinction a
+// check relies on when it walks to the nearest existing ancestor: a real host
+// answers ENOTDIR for a path that exists but is a file, never ErrNotExist, so
+// a check branching on errors.Is(err, fs.ErrNotExist) to mean "absent" must
+// not take that branch against the fake either.
+func TestMapEnvReadDirOnANonDirectoryIsNotErrNotExist(t *testing.T) {
+	m := NewMapEnv()
+	m.Files["/a/f.txt"] = MapFile{Mode: 0o644}
+
+	_, err := m.ReadDir("/a/f.txt")
+	if err == nil {
+		t.Fatal("ReadDir of a regular file: got nil error, want ENOTDIR-shaped error")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("ReadDir of a regular file: %v satisfies fs.ErrNotExist; a real host returns ENOTDIR", err)
+	}
 }
 
 func TestMapEnvGetenvGetuidNowProcessAlive(t *testing.T) {

@@ -122,9 +122,10 @@ var idPattern = regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z0-9]+(-[a-z0-9]+)*$`)
 // Requirement is a bitmask of inputs a check needs. The engine computes what the
 // Input actually provides once and skips any check whose Needs are unmet, with
 // ONE canned reason per bit — so nine parallel authors do not invent nine
-// phrasings of "no config file", and the plan's own acknowledged
-// `skipIfNoModeBits()` duplication between B3/B5/B6 (plan §3, "Windows
-// handling") never happens.
+// phrasings of "no config file", and a cross-cutting concern like "this host
+// has no POSIX mode bits" is declared in Meta by each check that needs it
+// (plan §3, "Windows handling") rather than shared through a helper that would
+// have to live in a file every branch touches.
 //
 // This vocabulary is CLOSED in A1. A Phase-B step that believes it needs a new
 // bit has hit plan §1 rule 6: stop and report, do not widen.

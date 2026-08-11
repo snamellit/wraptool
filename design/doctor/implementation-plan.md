@@ -36,32 +36,28 @@ review.
    redeclaration error that names neither author — and the package's shared
    `_test.go` namespace is where a generic helper name (`check`, `virginInput`)
    is likeliest of all to collide, since it is the one file every one of the
-   nine Phase-B authors is guaranteed to write. The prefix is the file's own
-   name (its first `_`-delimited segment, `.go`/`_test.go` stripped:
-   `config_load.go`/`config_load_test.go` -> `config`,
-   `exposure_listen.go` -> `exposure`), not the report `Group` — two files can
-   share a `Group` and still land concurrently (`tools.go`/`mcpservers.go` are
-   both group `tools`; `exposure_listen.go`/`exposure_files.go` are both group
-   `exposure`). If that mechanical first-segment prefix does not fit your
-   file's natural, idiomatic naming (a plural file name over singular
+   nine Phase-B authors is guaranteed to write. The prefix is your file's own
+   name with `.go`/`_test.go` stripped and `_` separators removed —
+   `env.go`/`env_test.go` -> `env`, `config_load.go` -> `configload`,
+   `exposure_listen.go` -> `exposurelisten` — not the report `Group`. It is the
+   whole file name rather than its first segment on purpose: `exposure_listen.go`
+   and `exposure_files.go` share a `Group` AND a parallel wave, so a coarse
+   `exposure` prefix would let both authors write `exposureInput()`, each branch
+   green and the merge commit broken. Requiring `exposureListen*`/`exposureFiles*`
+   rejects that on each author's own branch instead. If the mechanical prefix does
+   not fit your file's natural, idiomatic naming (a plural file name over singular
    helpers, a compound name whose real group is its shorter head noun),
-   `internal/doctor/invariants_test.go`'s `invariantsFilePrefixOverrides`
-   table already names the prefix to use for every file in §2's map — it
-   exists before your branch does, so you never edit that test file yourself
-   to add an entry. When your prefix collides with another file landing in
-   the SAME parallel wave, extend it with your file's own distinguishing
-   segment (`exposureListen*`/`exposureFiles*`) rather than relying on the
-   shared, coarser one — reviewer-enforced, not mechanical.
-   `internal/doctor/invariants_test.go`'s
-   `TestGroupFileIdentifiersArePrefixedWithFileGroup` mechanically enforces the
-   coarse half of this rule, over every `.go` file in the package INCLUDING
-   `_test.go` ones (identifier contains one of its file's allowed prefixes,
-   case-insensitively, so `run<Group>...` check functions pass too), except
-   the seam/foundation/data-only files named in `invariantsFoundationFiles`
-   (`finding.go`, `doctor.go`, `render_human.go`, `render_json.go`, `host.go`,
-   `host_stat_unix.go`, `host_stat_other.go`, `mapenv.go`, `toolknowledge.go`
-   — never a check group, so never scanned); the finer same-prefix-same-wave
-   disambiguation is reviewer-enforced.
+   `internal/doctor/invariants_test.go`'s `invariantsFilePrefixOverrides` table
+   already names the prefix to use for every file in §2's map — it exists before
+   your branch does, so you never edit that test file yourself to add an entry.
+   `TestGroupFileIdentifiersArePrefixedWithFileGroup` enforces this over every
+   `.go` file in the package INCLUDING `_test.go` ones (identifier contains one of
+   its file's allowed prefixes, case-insensitively, so `run<Group>...` check
+   functions pass too), except the seam/foundation/data-only files named in
+   `invariantsFoundationFiles` (`finding.go`, `doctor.go`, `render_human.go`,
+   `render_json.go`, `host.go`, `host_stat_unix.go`, `host_stat_other.go`,
+   `mapenv.go`, `toolknowledge.go` — never a check group, so never scanned,
+   and their own `_test.go` files are exempt with them).
 8. **A check's `RunFunc` is a named, package-level function** (`runFoo`, per
    rule 7), tested by calling it directly with a hand-built `*Input` — never a
    closure defined inside `init()`, and no test asserts over the global

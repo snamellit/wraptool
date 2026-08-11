@@ -28,10 +28,23 @@ func (c fakeDoctorCheck) Run(ctx context.Context, in *doctor.Input) doctor.Resul
 	return c.run(ctx, in)
 }
 
+// fakeDoctorHostPaths mirrors what cmd/doctor.go always populates: absolute
+// roots, never the zero HostPaths. A check that resolves a root-parameterized
+// sibling-package path from Input.Paths (pool.PoolPaths from PoolRoot, say)
+// would otherwise resolve it RELATIVE to the test's working directory and read
+// the real repository — silently, since the run still succeeds.
+var fakeDoctorHostPaths = doctor.HostPaths{
+	ConfigDir:  "/home/user/.config/wraptool",
+	DataDir:    "/home/user/.local/share/wraptool",
+	CacheDir:   "/home/user/.cache/wraptool",
+	RuntimeDir: "/run/user/1000/wraptool",
+	PoolRoot:   "/home/user/.local/share/wraptool/harness-pool",
+}
+
 func fakeDoctorDeps(load func(string) (*config.Config, error), checks []doctor.Check) doctorDeps {
 	return doctorDeps{
 		env:    func() doctor.Env { return doctor.NewMapEnv() },
-		paths:  func() doctor.HostPaths { return doctor.HostPaths{} },
+		paths:  func() doctor.HostPaths { return fakeDoctorHostPaths },
 		load:   load,
 		goos:   "linux",
 		render: doctor.RenderHuman,

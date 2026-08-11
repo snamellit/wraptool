@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"errors"
 	"io/fs"
 	"os/exec"
 	"path/filepath"
@@ -9,7 +10,9 @@ import (
 )
 
 // MapEnv is a data-only Env. A Phase-B author populates maps and never writes a
-// method — which is why adding an Env method never breaks an in-flight branch.
+// method — so an Env method added later breaks no in-flight branch's fake, though
+// adding one still edits this file and host.go, which every branch shares (Env is
+// CLOSED in A1; see its doc comment and plan §1 rule 10).
 // It is production code, not a _test.go type: cmd/doctor_test.go needs it too
 // (env.container-backend calls LookPath, so a cmd-level exit-code test against
 // the real PATH would be non-deterministic across CI runners), and a _test.go
@@ -57,20 +60,47 @@ func (m *MapEnv) LookPath(file string) (string, error) {
 	return "", exec.ErrNotFound
 }
 
-// resolve follows m.Links from path, bounded to 32 hops, and returns the final
-// non-symlink path.
+// errMapEnvNotDir is what MapEnv returns when a path exists but is not a
+// directory, mirroring the real ENOTDIR. It deliberately does NOT satisfy
+// errors.Is(err, fs.ErrNotExist): a check that reads "absent" from that
+// predicate must take the same branch against the fake as against a host.
+var errMapEnvNotDir = errors.New("not a directory")
+
+// resolve follows m.Links from path and returns the final non-symlink path,
+// resolving symlinked ANCESTORS as well as a symlinked leaf — a real host
+// resolves /link/dir/a.txt through /link -> /real without /link/dir/a.txt
+// itself being a link, and a FileInfo.Path handed out by ReadDir is rooted at
+// the requested path, so it must Stat back the same way. Bounded to 64
+// rewrites so a cyclic Links map terminates.
 func (m *MapEnv) resolve(path string) (string, error) {
 	cur := path
-	for hops := 0; ; hops++ {
-		target, ok := m.Links[cur]
+	for range 64 {
+		if target, ok := m.Links[cur]; ok {
+			cur = target
+			continue
+		}
+		rewritten, ok := m.resolveAncestor(cur)
 		if !ok {
 			return cur, nil
 		}
-		if hops >= 32 {
-			return "", fs.ErrNotExist
-		}
-		cur = target
+		cur = rewritten
 	}
+	return "", fs.ErrNotExist
+}
+
+// resolveAncestor rewrites path through its longest symlinked ancestor, if it
+// has one: with Links["/link"] = "/real", "/link/dir/a.txt" becomes
+// "/real/dir/a.txt".
+func (m *MapEnv) resolveAncestor(path string) (string, bool) {
+	dir, rest := filepath.Dir(path), filepath.Base(path)
+	for dir != "" && dir != "." && dir != string(filepath.Separator) {
+		if target, ok := m.Links[dir]; ok {
+			return filepath.Join(target, rest), true
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = filepath.Dir(dir)
+	}
+	return "", false
 }
 
 func (m *MapEnv) Stat(path string) (FileInfo, error) {
@@ -123,8 +153,11 @@ func (m *MapEnv) ReadDir(path string) ([]FileInfo, error) {
 		return nil, &fs.PathError{Op: "readdir", Path: path, Err: err}
 	}
 	dir, ok := m.Files[final]
-	if !ok || !dir.Mode.IsDir() {
+	if !ok {
 		return nil, &fs.PathError{Op: "readdir", Path: path, Err: fs.ErrNotExist}
+	}
+	if !dir.Mode.IsDir() {
+		return nil, &fs.PathError{Op: "readdir", Path: path, Err: errMapEnvNotDir}
 	}
 	seen := map[string]bool{}
 	var out []FileInfo

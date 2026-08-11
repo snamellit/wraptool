@@ -161,13 +161,16 @@ type Report struct {
 	// Result or Finding, or ConfigState == ConfigUnreadable.
 	Incomplete       bool
 	IncompleteReason string
-	// Aborted is true iff Incomplete AND at least one SELECTED check never ran
-	// because of it: a registry error, a selection error, a check returning
-	// Result.Fatal, or a check returning an invalid Result — every one of these
-	// cuts the run short (RenderHuman's "Checks after this point did not run.").
-	// False for the ConfigUnreadable-only case (§10.1): every selected check,
-	// including the full env.* group, still ran and is reported below the
-	// incomplete banner, so that clause would be actively wrong there.
+	// Aborted is true when no check could be run at all (a registry error, a
+	// selection error, a nil Env), or when at least one selected check was cut
+	// short by an abort — the two cases where RenderHuman's "Checks after this
+	// point did not run." is accurate.
+	//
+	// False in two cases that are Incomplete but cut nothing short: the
+	// ConfigUnreadable-only path (§10.1), where every selected check including
+	// the full env.* group still ran and is reported below the banner; and a
+	// Result.Fatal or invalid Result from the LAST selected check, where there
+	// was nothing left to skip.
 	Aborted bool
 }
 

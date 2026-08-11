@@ -22,3 +22,6 @@
 .mcp.json*
 opencode.json
 skills-lock.json
+
+/.quarto/
+**/*.quarto_ipynb

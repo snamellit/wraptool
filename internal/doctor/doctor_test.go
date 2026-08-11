@@ -219,12 +219,11 @@ func TestAbortOfTheLastSelectedCheckIsNotReportedAborted(t *testing.T) {
 
 // TestRunWithExplicitChecksIsIndependentOfRegistryErr covers the ONE collision
 // two parallel Phase-B authors can create that git merges cleanly: a
-// duplicate check ID. Before this fix, a global RegistryErr() short-circuited
-// Run unconditionally, so EVERY synthetic-check engine test — which never
-// touches the global registry — would fail as a side effect of that merge,
-// hiding the actually useful diagnostic (TestRegistryIsWellFormed naming both
-// registration sites) behind an unrelated panic/failure in whichever engine
-// test happened to run first.
+// duplicate check ID. Run with an explicit RunOptions.Checks list never
+// consults the global registry, so that merge fails only
+// TestRegistryIsWellFormed — which names both registration sites — instead of
+// every synthetic-check engine test, whose failure would say nothing about the
+// actual collision.
 func TestRunWithExplicitChecksIsIndependentOfRegistryErr(t *testing.T) {
 	prev := registryErrs
 	registryErrs = append(append([]error(nil), registryErrs...), errors.New("synthetic registry corruption"))

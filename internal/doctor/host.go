@@ -28,9 +28,11 @@ import (
 // Env, so "no shell execution, fixed help vocabulary" (§5, CLAUDE.md) stays
 // enforceable by type rather than by review. A1 executes nothing at all.
 //
-// Adding a method here breaks exactly two implementations, osEnv and MapEnv,
-// both in this package and both owned by A1's own files — never a Phase-B fake,
-// because every Phase-B fake is a MapEnv literal, which is data.
+// This interface is CLOSED in A1 (plan §1 rule 10). Adding a method breaks no
+// Phase-B fake — every Phase-B fake is a MapEnv literal, which is data — but it
+// does edit host.go and mapenv.go, two files shared by all nine Phase-B
+// branches. A step that believes it needs a new method stops and reports rather
+// than widening it.
 type Env interface {
 	// LookPath resolves a binary on PATH. Returns exec.ErrNotFound when absent.
 	// A1's env.container-backend; B1.
