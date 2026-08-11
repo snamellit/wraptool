@@ -29,7 +29,7 @@ first (the foundational wrapping model), then browse by area below.
 | `harness/microvm-sandbox-runtime.md` | harness | proposed | Investigate Docker Sandboxes microVMs as a harder container boundary |
 | `harness/unified-harness-pool.md` | harness | proposed | One version-locked harness pool for Guix and Dev Containers |
 | `webui/webui-management-completion.md` | webui | planned | Complete the operator Web UI for flag typing and policy management |
-| `webui/webui-accessibility-reachability.md` | webui | proposed | Accessibility and reachability of the operator Web UI |
+| `webui/webui-accessibility-reachability.md` | webui | proposed | Accessibility and reachability of the operator review UI |
 | `webui/webauthn-admin-auth.md` | webui | proposed | WebAuthn admin authentication |
 | `policy/flag-constraint-type-single-source.md` | policy | proposal | Single source of truth for flag-constraint types |
 | `policy/flag-type-inference.md` | policy | implemented | Flag value types come from the capability author, not a regex |
