@@ -90,7 +90,7 @@ host's; use option 1 or 2, which detect the host gateway for you.
 ## Review UI
 
 An optional operator-facing dashboard (bound to `127.0.0.1`, **not**
-AI-facing) reviews capability requests and provides full rule CRUD —
+agent-facing) reviews capability requests and provides full rule CRUD —
 edit a tool's allow/deny rules in the browser and the running server
 hot-reloads the change. See [`docs/web-ui.qmd`](docs/web-ui.qmd).
 

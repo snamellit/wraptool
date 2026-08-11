@@ -23,7 +23,7 @@ type Config struct {
 	MCPServers map[string]MCPServerConfig `yaml:"mcp_servers"`
 }
 
-// MCPConfig configures the AI-facing MCP listener and request audit log.
+// MCPConfig configures the agent-facing MCP listener and request audit log.
 type MCPConfig struct {
 	Transport     string `yaml:"transport"`
 	Listen        string `yaml:"listen"`

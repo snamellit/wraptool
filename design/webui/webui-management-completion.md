@@ -104,9 +104,9 @@ tool/page sharing the existing `editConfig` node-tree editor
   the per-directory env a developer gets on the CLI). See the note in
   `internal/config/tools.go` (`SetToolMetadata`).
 
-Whether any of these is *also* exposed as an MCP tool (AI-facing) vs. Web-UI-only
+Whether any of these is *also* exposed as an MCP tool (agent-facing) vs. Web-UI-only
 (operator-facing) follows the existing boundary: authoring/policy mutation is
-operator-gated and stays in the Web UI (bound to localhost, not AI-facing);
+operator-gated and stays in the Web UI (bound to localhost, not agent-facing);
 the AI's only write path remains `wraptool_request_capability` (propose, not
 apply). Stage 4 does **not** hand the AI a config-write tool.
 

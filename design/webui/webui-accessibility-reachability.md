@@ -13,7 +13,7 @@ Reachability and discoverability:
 
 - The review UI is a separate loopback HTTP listener (`admin.listen`),
   distinct from the MCP listener — `cmd/serve.go:384` `startWebUI`. It is
-  never AI-facing; it is the operator/host plane.
+  never agent-facing; it is the operator/host plane.
 - The default config (`internal/config/default_config.yaml:26`) ships the
   entire `admin:` block **commented out**. The UI is only auto-enabled by
   `wraptool up` (`cmd/up.go:131` `enableAdminDefault`), opt-out with
@@ -267,7 +267,7 @@ wraptool's core audience is exactly the SSH/tmux operator.
   and requestlog files the operator already owns. It does not speak HTTP,
   does not need the token. The review UI stays for the case where the operator
   is not the person at the terminal (the reason admin is separate from the
-  AI-facing MCP in the first place).
+  agent-facing MCP in the first place).
 - Hot-reload: the TUI watches the config and requestlog files directly
   (fsnotify, same debounce as the server's hot-reload) so an approval
   applied from the review UI appears in the TUI without restart, and vice
