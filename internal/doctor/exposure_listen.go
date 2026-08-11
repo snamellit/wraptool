@@ -219,18 +219,57 @@ func exposureListenIsWildcard(host string) bool {
 	return false
 }
 
+// exposureListenBindSet is what one listener's host actually binds to, per
+// the RULING in design §7.3: comparing bind SETS, not a loopback predicate.
+// A loopback predicate collapses every loopback address into one boolean, so
+// e.g. 127.0.0.1 and 127.0.0.2 (two distinct, non-colliding loopback IPs)
+// were indistinguishable from an actual collision. Wildcard is its own case
+// (overlaps everything), "localhost" expands to the two addresses it
+// actually resolves to at bind time, a parseable host is that one IP, and
+// anything else (a hostname doctor cannot and should not resolve — no DNS
+// lookups in a static check) is compared as a literal, case-insensitive
+// string against another hostname only.
+type exposureListenBindSet struct {
+	Wildcard bool
+	IPs      []net.IP
+	Hostname string // set only when Wildcard is false and IPs is empty
+}
+
+// exposureListenExpandHost builds host's exposureListenBindSet.
+func exposureListenExpandHost(host string) exposureListenBindSet {
+	if exposureListenIsWildcard(host) {
+		return exposureListenBindSet{Wildcard: true}
+	}
+	if host == "localhost" {
+		return exposureListenBindSet{IPs: []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}}
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return exposureListenBindSet{IPs: []net.IP{ip}}
+	}
+	return exposureListenBindSet{Hostname: host}
+}
+
 // exposureListenOverlap reports whether a and b — both already known to share
-// a port (the caller's job) — bind overlapping host sets. Reuses
-// config.ListenIsLoopback (via the full "host:port" listen string each addr
-// came from) for the loopback classification, rather than reimplementing it.
-func exposureListenOverlap(aListen, bListen string, a, b exposureListenAddr) bool {
-	if exposureListenIsWildcard(a.Host) || exposureListenIsWildcard(b.Host) {
+// a port (the caller's job) — bind overlapping host sets: a collision only
+// on a NON-EMPTY intersection of what each side actually binds, never on
+// both merely being "some loopback address".
+func exposureListenOverlap(a, b exposureListenAddr) bool {
+	aSet := exposureListenExpandHost(a.Host)
+	bSet := exposureListenExpandHost(b.Host)
+	if aSet.Wildcard || bSet.Wildcard {
 		return true
 	}
-	if config.ListenIsLoopback(aListen) && config.ListenIsLoopback(bListen) {
-		return true
+	if aSet.Hostname != "" || bSet.Hostname != "" {
+		return aSet.Hostname != "" && bSet.Hostname != "" && strings.EqualFold(aSet.Hostname, bSet.Hostname)
 	}
-	return strings.EqualFold(a.Host, b.Host)
+	for _, ai := range aSet.IPs {
+		for _, bi := range bSet.IPs {
+			if ai.Equal(bi) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // runExposureListenListenersCollide fails when mcp.listen and admin.listen
@@ -259,7 +298,7 @@ func runExposureListenListenersCollide(_ context.Context, in *Input) Result {
 	if mcpAddr.Port != adminAddr.Port {
 		return Pass()
 	}
-	if !exposureListenOverlap(cfg.MCP.Listen, cfg.Admin.Listen, mcpAddr, adminAddr) {
+	if !exposureListenOverlap(mcpAddr, adminAddr) {
 		return Pass()
 	}
 	return Found(Finding{

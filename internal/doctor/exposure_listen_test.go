@@ -276,6 +276,18 @@ func TestRunExposureListenListenersCollide(t *testing.T) {
 			want:        OutcomePass,
 		},
 		{
+			// Regression for the original false positive: a bare
+			// ListenIsLoopback(a) && ListenIsLoopback(b) predicate treated ANY
+			// two loopback addresses on the same port as colliding, even
+			// though 127.0.0.1 and 127.0.0.2 are distinct, non-overlapping
+			// bind addresses that both bind and run correctly. RULING:
+			// compare bind SETS (design §7.3), not a loopback predicate.
+			name:        "two DISTINCT loopback IPs, same port -> no collision",
+			mcpListen:   "127.0.0.1:8717",
+			adminListen: "127.0.0.2:8717",
+			want:        OutcomePass,
+		},
+		{
 			name:        "admin disabled -> no collision",
 			mcpListen:   "0.0.0.0:8717",
 			adminListen: "",
