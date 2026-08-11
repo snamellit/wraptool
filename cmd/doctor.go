@@ -87,6 +87,7 @@ func newDoctorCmdWithDeps(deps doctorDeps) *cobra.Command {
 		skip         []string
 		strict       bool
 		noProbe      bool
+		verifyPool   bool
 		workspaceDir string
 	)
 
@@ -123,12 +124,13 @@ not "conf") — it is not a prefix.`,
 				path = paths.DefaultConfigFile()
 			}
 			return runDoctor(cmd, deps, path, doctorRunFlags{
-				jsonOut:   jsonOut,
-				only:      only,
-				skip:      skip,
-				strict:    strict,
-				noProbe:   noProbe,
-				workspace: workspaceDir,
+				jsonOut:    jsonOut,
+				only:       only,
+				skip:       skip,
+				strict:     strict,
+				noProbe:    noProbe,
+				verifyPool: verifyPool,
+				workspace:  workspaceDir,
 			})
 		},
 	}
@@ -141,6 +143,7 @@ not "conf") — it is not a prefix.`,
 	cmd.Flags().BoolVar(&strict, "strict", false, "promote an unsuppressed warn finding to exit code 1; NOT a stable CI gate "+
 		"(a new check can ship as warn in any release) — gate CI on --only/--json instead, see §9.1")
 	cmd.Flags().BoolVar(&noProbe, "no-probe", false, "disable inert local execution of configured tool binaries (help/version probing)")
+	cmd.Flags().BoolVar(&verifyPool, "verify-pool", false, "additionally hash every file in the active harness generation and verify it against its receipt (slow: a node harness is 10k+ files)")
 	cmd.Flags().StringVar(&workspaceDir, "workspace", "", "workspace root for workspace-gated checks "+
 		"(default: walk upward from the current directory for .git or manifest.scm)")
 
@@ -150,12 +153,13 @@ not "conf") — it is not a prefix.`,
 // doctorRunFlags bundles A2's selection/output flags so runDoctor's signature
 // stays a fixed arity as more land in later steps.
 type doctorRunFlags struct {
-	jsonOut   bool
-	only      []string
-	skip      []string
-	strict    bool
-	noProbe   bool
-	workspace string
+	jsonOut    bool
+	only       []string
+	skip       []string
+	strict     bool
+	noProbe    bool
+	verifyPool bool
+	workspace  string
 }
 
 // runDoctor never calls config.EnsureConfigFile: serve and up scaffold a
@@ -186,6 +190,7 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string, flags doctorRun
 		ConfigPath: path,
 		Workspace:  workspace,
 		Probe:      !flags.noProbe,
+		VerifyPool: flags.verifyPool,
 	}
 
 	cfg, loadErr := deps.load(path)

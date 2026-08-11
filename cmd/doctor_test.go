@@ -559,3 +559,38 @@ func TestDoctorOnlySkipHelpTextsDoNotClaimPrefixMatching(t *testing.T) {
 		t.Errorf("ExitCode = %d, want 2", code)
 	}
 }
+
+// TestDoctorVerifyPoolFlagReachesInput pins the wiring the pool group depends
+// on: pool.generation-corrupt declares NeedsPoolVerify, so without this flag
+// the engine skips it with a canned reason naming a flag the CLI would then
+// reject.
+func TestDoctorVerifyPoolFlagReachesInput(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"absent", nil, false},
+		{"present", []string{"--verify-pool"}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got bool
+			deps := fakeDoctorDeps(
+				func(string) (*config.Config, error) { return nil, os.ErrNotExist },
+				[]doctor.Check{fakeDoctorCheck{
+					meta: doctor.Meta{ID: "env.probe", Needs: doctor.NeedsNothing, Summary: "synthetic test-only check"},
+					run: func(_ context.Context, in *doctor.Input) doctor.Result {
+						got = in.VerifyPool
+						return doctor.Pass()
+					},
+				}},
+			)
+			if _, err := runDoctorWithDeps(t, deps, tc.args...); err != nil {
+				t.Fatalf("doctor: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Input.VerifyPool = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

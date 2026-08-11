@@ -326,24 +326,6 @@ func TestRunEnvXDGWritable(t *testing.T) {
 		})
 	}
 
-	t.Run("uid 0 (root) reports every directory writable regardless of owner or mode", func(t *testing.T) {
-		// The exact "sudo wraptool doctor" shape: every XDG dir is owned by
-		// uid 1000 and mode 0700, and this process is running as root (uid 0)
-		// — root bypasses permission bits entirely, so this must be a clean
-		// pass, never the FAIL the bug reported.
-		env := NewMapEnv()
-		env.UID, env.GID = 0, 0
-		for _, p := range []string{envTestPaths.ConfigDir, envTestPaths.DataDir, envTestPaths.RuntimeDir} {
-			env.Files[p] = MapFile{Mode: fs.ModeDir | 0o700, UID: 1000, GID: 1000}
-		}
-
-		res := runEnvXDGWritable(context.Background(), &Input{Env: env, Paths: envTestPaths})
-
-		if res.Outcome() != OutcomePass {
-			t.Fatalf("outcome = %v, want pass (root bypasses permission bits); findings=%+v", res.Outcome(), res.Findings)
-		}
-	})
-
 	t.Run("multiple unwritable directories yield one finding each", func(t *testing.T) {
 		env := NewMapEnv()
 		env.UID, env.GID = 1000, 1000
@@ -438,12 +420,6 @@ func TestEnvDirWritable(t *testing.T) {
 		{"no other write bit, neither matches", FileInfo{Mode: 0o005, UID: 500, GID: 500}, 1000, 1000, false},
 		{"unknown ownership, no write bit anywhere", FileInfo{Mode: 0o444, UID: -1, GID: -1}, 1000, 1000, false},
 		{"unknown ownership, other write bit set", FileInfo{Mode: 0o446, UID: -1, GID: -1}, 1000, 1000, true},
-		// uid 0 (root): POSIX bypasses permission bits entirely, so this must
-		// be true even against a directory with NO write bit set anywhere and
-		// owned by a different uid/gid — the exact "sudo wraptool doctor"
-		// shape that used to FAIL a perfectly writable ConfigDir.
-		{"root bypasses mode bits entirely", FileInfo{Mode: 0o000, UID: 1000, GID: 1000}, 0, 0, true},
-		{"root bypasses mode bits even with owner match", FileInfo{Mode: 0o700, UID: 1000, GID: 1000}, 0, 1000, true},
 		// gid mismatch (not root, not owner): Env has no supplementary-group
 		// accessor, so a set group-write bit is treated as writable even
 		// though the file's primary GID does not match — the process's uid

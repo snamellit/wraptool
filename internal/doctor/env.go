@@ -273,10 +273,9 @@ func envNearestExistingAncestor(env Env, path string) (FileInfo, bool) {
 // syscall.Stat_t, e.g. a platform host_stat_other.go covers) it falls back to
 // "any write bit at all", which is the best a mode-bits-only signal can do.
 //
-// uid 0 (root) is an explicit case, checked before any mode bit: POSIX write
-// permission checks are bypassed entirely for root, so `sudo wraptool doctor`
-// auditing a 0700 directory owned by uid 1000 must never FAIL it as
-// unwritable — the process can write there regardless of what the mode says.
+// There is deliberately no uid 0 case: wraptool refuses to run as root before
+// any check executes (cmd/rootuser.go), so a root-shaped Input never reaches
+// here outside a unit test.
 //
 // gid membership is necessarily approximate: Env has no supplementary-group
 // accessor (host.go, CLOSED — plan §1 rule 10), only the primary gid, so a
@@ -286,9 +285,6 @@ func envNearestExistingAncestor(env Env, path string) (FileInfo, bool) {
 // operator may still reach it via a supplementary group this package cannot
 // see, and a false FAIL is worse than an occasional false PASS here.
 func envDirWritable(fi FileInfo, uid, gid int) bool {
-	if uid == 0 {
-		return true
-	}
 	perm := fi.Perm()
 	switch {
 	case !fi.OwnerKnown():
