@@ -21,10 +21,13 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pti/wraptool/internal/pool"
@@ -39,47 +42,137 @@ const (
 	poolDeprecatedFeature         CheckID = "pool.deprecated-feature"
 )
 
-func init() {
-	register(Meta{
-		ID:      poolHomePerms,
-		Needs:   NeedsModeBits,
-		Summary: "checks the harness pool's home/ tree for group- or other-readable permissions",
-	}, runPoolHomePerms)
-	register(Meta{
-		ID:      poolGenerationDigest,
-		Needs:   NeedsNothing,
-		Summary: "verifies each active harness generation's receipt digest against harness-lock.json",
-	}, runPoolGenerationDigest)
-	register(Meta{
+// poolHomePermsMeta, poolGenerationDigestMeta, ... are the checks' Meta
+// literals, named so pool_test.go's TestPoolCheckMeta can assert each check's
+// ID/Needs directly against the same literal init() registers — never through
+// Registered() (plan §1 rule 8: a test asserting a check's own behaviour must
+// not go through the shared registry, which by the time this package's other
+// eight Phase-B siblings have merged also contains every one of THEIR checks).
+var (
+	poolHomePermsMeta = Meta{
+		ID:    poolHomePerms,
+		Needs: NeedsModeBits,
+		Summary: "checks the harness pool's home/ tree for group- or other-readable " +
+			"credential-bearing files",
+	}
+	poolGenerationDigestMeta = Meta{
+		ID:    poolGenerationDigest,
+		Needs: NeedsNothing,
+		Summary: "verifies each active harness generation's directory name against its own receipt, " +
+			"distinguishing tampering from a rollback",
+	}
+	poolGenerationCorruptMeta = Meta{
 		ID:      poolGenerationCorrupt,
 		Needs:   NeedsPoolVerify,
 		Summary: "verifies each active harness generation's on-disk content against its receipt (--verify-pool)",
-	}, runPoolGenerationCorrupt)
-	register(Meta{
+	}
+	poolDevcontainerMountMissingMeta = Meta{
 		ID:      poolDevcontainerMountMissing,
 		Needs:   NeedsWorkspace,
 		Summary: "checks that devcontainer.json declares the harness pool runtime mount when one is needed",
-	}, runPoolDevcontainerMountMissing)
-	register(Meta{
+	}
+	poolDevcontainerMountWritableMeta = Meta{
 		ID:      poolDevcontainerMountWritable,
 		Needs:   NeedsWorkspace,
 		Summary: "checks that a declared harness pool runtime mount is genuinely read-only",
-	}, runPoolDevcontainerMountWritable)
-	register(Meta{
+	}
+	poolDeprecatedFeatureMeta = Meta{
 		ID:      poolDeprecatedFeature,
 		Needs:   NeedsWorkspace,
 		Summary: "checks devcontainer.json for the deprecated or sunset wraptool devcontainer feature",
-	}, runPoolDeprecatedFeature)
+	}
+)
+
+func init() {
+	register(poolHomePermsMeta, runPoolHomePerms)
+	register(poolGenerationDigestMeta, runPoolGenerationDigest)
+	register(poolGenerationCorruptMeta, runPoolGenerationCorrupt)
+	register(poolDevcontainerMountMissingMeta, runPoolDevcontainerMountMissing)
+	register(poolDevcontainerMountWritableMeta, runPoolDevcontainerMountWritable)
+	register(poolDeprecatedFeatureMeta, runPoolDeprecatedFeature)
 }
 
 // ---------------------------------------------------------------- pool.home-perms
 
+// poolMaxOffendingListed bounds how many offending paths pool.home-perms
+// names verbatim in Finding.Detail. A real pool's home/ tree can hold
+// thousands of entries (an npm-sourced harness's skills/cache directories);
+// naming every one of them produces an unreadable, single-line wall of text
+// whose primary fact — HOW MANY — gets buried. The count is always reported
+// in full; only the enumerated list is capped, with "and N more" naming the
+// remainder.
+const poolMaxOffendingListed = 5
+
+// poolMaxWalkDepth bounds the recursive descent into home/ (relative to
+// home/ itself, i.e. home/ is depth 0). Unbounded recursion is the same cost
+// concern design §7.9 uses to gate pool.generation-corrupt behind
+// --verify-pool, applied here to directory traversal rather than content
+// hashing: a pathological or maliciously deep tree must not make every
+// default `wraptool doctor` run scan without bound. Real credential state
+// (dotfiles, .config/<harness>/auth*) lives well within this depth.
+const poolMaxWalkDepth = 10
+
+// poolWalkSkipDirNames are directory basenames pruned from the walk
+// entirely — never descended into, never themselves checked. These hold
+// large volumes of ordinary cache/dependency files, never a harness's auth
+// state, so descending into them only adds cost without ever matching
+// poolIsCredentialPath.
+var poolWalkSkipDirNames = map[string]bool{
+	"node_modules": true,
+	".git":         true,
+	".cache":       true,
+	".npm":         true,
+}
+
+// poolIsCredentialPath reports whether relSlash — a home/-relative,
+// forward-slash path — names harness AUTH STATE specifically: the
+// architect-ruled scope for pool.home-perms (not every cache file under
+// .npm/.cache, which the check used to flag on every pool wraptool itself
+// creates via ensureHarnessPool's 0o755 os.MkdirAll — see this check's own
+// doc comment). Matches:
+//   - a basename of exactly ".credentials.json" (Claude's own auth file), or
+//     one containing "credential", "token", or "session" (case-insensitive)
+//     — opencode's auth.json is caught by the .config/*/auth* rule below,
+//     not this one;
+//   - any path with a ".config" segment followed, anywhere further down the
+//     path, by a segment whose name starts with "auth" (case-insensitive) —
+//     ".config/<harness>/auth*".
+func poolIsCredentialPath(relSlash string) bool {
+	segs := strings.Split(relSlash, "/")
+	base := strings.ToLower(segs[len(segs)-1])
+	if base == ".credentials.json" ||
+		strings.Contains(base, "credential") ||
+		strings.Contains(base, "token") ||
+		strings.Contains(base, "session") {
+		return true
+	}
+	for i, s := range segs {
+		if !strings.EqualFold(s, ".config") {
+			continue
+		}
+		for _, later := range segs[i+1:] {
+			if strings.HasPrefix(strings.ToLower(later), "auth") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // runPoolHomePerms walks the pool's home/ tree (recursively, symlinks never
 // followed or descended into — a symlink's own mode bits are meaningless on
-// most hosts and would otherwise produce a near-universal false positive)
-// looking for a group- or other-readable file or directory. home/ holds every
-// harness's auth state (tokens, credentials, skills) and is bind-mounted
-// read-write into every project container, so this is a fail, not a warn.
+// most hosts and would otherwise produce a near-universal false positive;
+// see poolWalkSkipDirNames/poolMaxWalkDepth for the traversal's cost bound)
+// looking for a group- or other-readable CREDENTIAL-BEARING file or
+// directory (poolIsCredentialPath) — never the whole tree, and never home/
+// itself: cmd/guixcontainer.go's ensureHarnessPool creates home/ with
+// os.MkdirAll(home, 0o755), so a bare "home/ is group-readable" fail fired on
+// every pool wraptool itself creates, directly contradicting
+// SeverityFail's own doc comment ("never fires on a configuration working as
+// designed"). Severity is warn, not fail: the remedy is a per-file chmod, not
+// a recursive one — `chmod -R go-rwx` on home/ can lock a devcontainer's
+// non-root user out of its own bind-mounted HOME (design §12.3's
+// `WRAPTOOL_HARNESS_HOME`), so this check deliberately never recommends it.
 func runPoolHomePerms(_ context.Context, in *Input) Result {
 	home := filepath.Join(in.Paths.PoolRoot, "home")
 	fi, err := in.Env.Stat(home)
@@ -91,38 +184,53 @@ func runPoolHomePerms(_ context.Context, in *Input) Result {
 	}
 
 	var offending []FileInfo
-	if fi.GroupOrOtherReadable() {
-		offending = append(offending, fi)
-	}
-	poolCollectReadable(in.Env, home, &offending)
+	poolCollectReadable(in.Env, home, home, 0, &offending)
 
 	if len(offending) == 0 {
 		return Pass()
 	}
 	sort.Slice(offending, func(i, j int) bool { return offending[i].Path < offending[j].Path })
 
-	parts := make([]string, len(offending))
-	for i, o := range offending {
+	listed := offending
+	more := 0
+	if len(listed) > poolMaxOffendingListed {
+		more = len(listed) - poolMaxOffendingListed
+		listed = listed[:poolMaxOffendingListed]
+	}
+	parts := make([]string, len(listed))
+	for i, o := range listed {
 		parts[i] = fmt.Sprintf("%s (mode %04o)", o.Path, o.Perm())
+	}
+	list := strings.Join(parts, ", ")
+	if more > 0 {
+		list = fmt.Sprintf("%s, and %d more", list, more)
 	}
 
 	return Found(Finding{
-		Severity: SeverityFail,
-		Title:    "Harness pool home/ is group- or other-readable",
+		Severity: SeverityWarn,
+		Title:    "Harness pool credential files are group- or other-readable",
 		Detail: fmt.Sprintf(
-			"%d path(s) under %s are group- or other-readable: %s — this tree holds every harness's auth "+
-				"state (tokens, credentials, skills) and is bind-mounted read-write into every project container",
-			len(offending), home, strings.Join(parts, ", ")),
-		Remedy: "chmod -R go-rwx " + home,
+			"%d credential-bearing path(s) under %s are group- or other-readable (%s) — these hold harness "+
+				"auth state (credentials, tokens, sessions) and home/ is bind-mounted read-write into every "+
+				"project container",
+			len(offending), home, list),
+		Remedy: "tighten permissions on the credential file(s) named above individually, e.g. `chmod go-rwx <path>` " +
+			"per file — do NOT chmod -R the whole home/ tree, which can lock a devcontainer's non-root user out " +
+			"of its bind-mounted HOME",
 		DocRef: "design/harness/unified-harness-pool.md",
 	})
 }
 
-// poolCollectReadable appends every group- or other-readable file/directory
-// under dir (recursively, best-effort: an unreadable subdirectory is skipped
-// rather than failing the whole walk) to out. Symlinked entries are neither
-// checked nor descended into.
-func poolCollectReadable(env Env, dir string, out *[]FileInfo) {
+// poolCollectReadable appends every group- or other-readable CREDENTIAL-
+// BEARING file/directory (poolIsCredentialPath, relative to home) under dir
+// (recursively, best-effort: an unreadable subdirectory is skipped rather
+// than failing the whole walk, and poolWalkSkipDirNames/poolMaxWalkDepth
+// bound the traversal's cost) to out. Symlinked entries are neither checked
+// nor descended into.
+func poolCollectReadable(env Env, home, dir string, depth int, out *[]FileInfo) {
+	if depth > poolMaxWalkDepth {
+		return
+	}
 	entries, err := env.ReadDir(dir)
 	if err != nil {
 		return
@@ -131,11 +239,18 @@ func poolCollectReadable(env Env, dir string, out *[]FileInfo) {
 		if e.IsSymlink() {
 			continue
 		}
-		if e.GroupOrOtherReadable() {
+		if e.IsDir() && poolWalkSkipDirNames[strings.ToLower(e.Name)] {
+			continue
+		}
+		rel, relErr := filepath.Rel(home, e.Path)
+		if relErr != nil {
+			rel = e.Path
+		}
+		if e.GroupOrOtherReadable() && poolIsCredentialPath(filepath.ToSlash(rel)) {
 			*out = append(*out, e)
 		}
 		if e.IsDir() {
-			poolCollectReadable(env, e.Path, out)
+			poolCollectReadable(env, home, e.Path, depth+1, out)
 		}
 	}
 }
@@ -211,12 +326,28 @@ func poolSortedPlatformKeys(m map[pool.PlatformKey]string) []pool.PlatformKey {
 	return out
 }
 
-// runPoolGenerationDigest is the cheap, always-on tamper check (design §7.9):
-// compares each active generation's OWN receipt.json ManifestDigest against
-// the digest harness-lock.json records for that (harness, platform) — the
-// same external anchor `gc` uses. The receipt lives inside the tree it
-// attests, so a tree-vs-receipt comparison alone cannot catch an attacker who
-// rewrites both; comparing against the lock (a separate file) can.
+// runPoolGenerationDigest is the cheap, always-on tamper check (design §7.9).
+// The receipt lives inside the tree it attests, so a naive tree-vs-receipt
+// comparison alone cannot catch an attacker who rewrites both; the
+// discriminator this check actually uses is the active generation's own
+// DIRECTORY NAME, which encodes the digest its receipt had at REALIZE time
+// (`pool.GenerationID`, `internal/pool/receipt.go`): recomputing
+// GenerationID(receipt.Harness, receipt.Version, platform,
+// receipt.ManifestDigest) and comparing it against the pointed-to directory
+// tells apart two very different conditions that a plain "does the receipt's
+// digest match harness-lock.json's recorded one" comparison conflates:
+//
+//   - the recomputed id does NOT match the directory name: receipt.json was
+//     rewritten in place without a matching rename — genuinely tampered, a
+//     fail. (An attacker who also renames the directory to match still
+//     cannot forge harness-lock.json's independent audit trail — that is a
+//     separate, unaddressed threat this check does not claim to cover.)
+//   - the recomputed id DOES match the directory name (this generation's
+//     content is exactly what its own receipt says) but that digest differs
+//     from harness-lock.json's CURRENTLY recorded one for this platform: an
+//     EARLIER generation is active — i.e. a legitimate
+//     `wraptool harness rollback` — reported as info, not a fail whose
+//     remedy would silently undo the rollback.
 //
 // A generation whose receipt.json is missing or unparseable is silently
 // skipped here (not this check's concern — mirrors internal/pool/gc.go's
@@ -240,21 +371,39 @@ func runPoolGenerationDigest(_ context.Context, in *Input) Result {
 		if err != nil {
 			continue
 		}
-		if receipt.ManifestDigest == e.RecordedDigest {
-			continue
+
+		expectedID, idErr := pool.GenerationID(receipt.Harness, receipt.Version, e.Platform, receipt.ManifestDigest)
+		switch {
+		case idErr != nil || expectedID != e.GenerationID:
+			detail := fmt.Sprintf(
+				"%s (%s): active generation directory %s does not match the generation id its own receipt.json "+
+					"would produce (harness=%s version=%s digest=%s) — the receipt may have been rewritten "+
+					"without a matching rename",
+				e.Harness, e.Platform, e.GenerationID, receipt.Harness, receipt.Version, receipt.ManifestDigest)
+			if idErr != nil {
+				detail += fmt.Sprintf(" (recomputing the generation id failed: %v)", idErr)
+			}
+			findings = append(findings, Finding{
+				Severity: SeverityFail,
+				Title:    "Active harness generation does not match its own receipt",
+				Detail:   detail,
+				Location: receiptPath,
+				Remedy: fmt.Sprintf(
+					"run `wraptool harness sync --platform %s` to rebuild %s, or investigate before trusting this generation",
+					e.Platform, e.Harness),
+			})
+		case receipt.ManifestDigest != e.RecordedDigest:
+			findings = append(findings, Finding{
+				Severity: SeverityInfo,
+				Title:    "An earlier harness generation is active",
+				Detail: fmt.Sprintf(
+					"%s (%s): active generation %s's digest %s differs from harness-lock.json's currently "+
+						"recorded digest %s for this platform, but the generation's own content matches its "+
+						"receipt — this looks like a deliberate `wraptool harness rollback`, not tampering",
+					e.Harness, e.Platform, e.GenerationID, receipt.ManifestDigest, e.RecordedDigest),
+				Location: receiptPath,
+			})
 		}
-		findings = append(findings, Finding{
-			Severity: SeverityFail,
-			Title:    "Active harness generation digest does not match the pool lock",
-			Detail: fmt.Sprintf(
-				"%s (%s): active generation %s's receipt records digest %s, but harness-lock.json records %s "+
-					"for this platform — the tree may have been tampered with",
-				e.Harness, e.Platform, e.GenerationID, receipt.ManifestDigest, e.RecordedDigest),
-			Location: receiptPath,
-			Remedy: fmt.Sprintf(
-				"run `wraptool harness sync --platform %s` to rebuild %s, or investigate before trusting this generation",
-				e.Platform, e.Harness),
-		})
 	}
 	return Found(findings...)
 }
@@ -263,6 +412,13 @@ func runPoolGenerationDigest(_ context.Context, in *Input) Result {
 // pool.VerifyGenerationTree sha256-hashes every file in an active generation's
 // tree, which is 10k+ files and hundreds of MB for a node harness — far too
 // slow for a default run (design §7.9), hence NeedsPoolVerify.
+//
+// doctor never takes the pool lock (design §7.9's own header note), so a
+// concurrent `wraptool harness gc` can remove or restrict this generation's
+// tree mid-scan; ScanGenerationFiles/VerifyGenerationTree surface that as a
+// plain I/O error (fs.ErrNotExist/fs.ErrPermission), which is a RACE, not
+// corruption, and is silently skipped rather than reported as a fail whose
+// remedy would tell the operator to rebuild a perfectly healthy pool.
 func runPoolGenerationCorrupt(_ context.Context, in *Input) Result {
 	entries, pp, skip, ok := poolActiveGenerationEntries(in)
 	if !ok {
@@ -281,6 +437,9 @@ func runPoolGenerationCorrupt(_ context.Context, in *Input) Result {
 			continue
 		}
 		if err := pool.VerifyGenerationTree(genDir, receipt); err != nil {
+			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, fs.ErrPermission) {
+				continue
+			}
 			findings = append(findings, Finding{
 				Severity: SeverityFail,
 				Title:    "Active harness generation tree does not match its receipt",
@@ -318,19 +477,42 @@ func poolDevcontainerConfigPaths(workspace string) []string {
 	}
 }
 
+// poolDevcontainerFile pairs one devcontainer config file's content with the
+// path it was read from — both .devcontainer/devcontainer.json and
+// .devcontainer.json are accepted (poolDevcontainerConfigPaths), and every
+// finding below carries WHICH one it actually read into Finding.Location
+// rather than leaving the operator to guess.
+type poolDevcontainerFile struct {
+	Path string
+	Data []byte
+}
+
 // poolReadDevcontainerFiles reads every existing devcontainer config file in
 // workspace via Env (never os directly). found is false when neither exists,
 // which every caller here treats as Skipped — the devcontainer runtime does
 // not apply to this workspace at all.
-func poolReadDevcontainerFiles(env Env, workspace string) (files [][]byte, found bool) {
+func poolReadDevcontainerFiles(env Env, workspace string) (files []poolDevcontainerFile, found bool) {
 	for _, p := range poolDevcontainerConfigPaths(workspace) {
 		data, err := env.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		files = append(files, data)
+		files = append(files, poolDevcontainerFile{Path: p, Data: data})
 	}
 	return files, len(files) > 0
+}
+
+// poolFilePaths returns the sorted, comma-joined paths of files — used as a
+// finding's Location when a check is reporting on an ABSENCE across every
+// devcontainer config file it consulted, rather than a specific offending
+// entry in one of them.
+func poolFilePaths(files []poolDevcontainerFile) string {
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.Path
+	}
+	sort.Strings(paths)
+	return strings.Join(paths, ", ")
 }
 
 // poolDevcontainerDoc is the subset of devcontainer.json this file cares
@@ -443,10 +625,13 @@ const (
 )
 
 // poolClassifyMount finds the first mounts-array entry (across every parsed
-// devcontainer config file) targeting containerTarget and classifies it.
-func poolClassifyMount(files [][]byte, containerTarget string) poolMountState {
-	for _, data := range files {
-		doc, ok := poolParseDevcontainerDoc(data)
+// devcontainer config file) targeting containerTarget and classifies it,
+// along with the path of the file that entry was found in ("" when absent —
+// callers reporting an absence use poolFilePaths over every file consulted
+// instead, since there is no single offending file to name).
+func poolClassifyMount(files []poolDevcontainerFile, containerTarget string) (state poolMountState, path string) {
+	for _, f := range files {
+		doc, ok := poolParseDevcontainerDoc(f.Data)
 		if !ok {
 			continue
 		}
@@ -458,24 +643,35 @@ func poolClassifyMount(files [][]byte, containerTarget string) poolMountState {
 					continue
 				}
 				if fields["type"] == "bind" && (flags["readonly"] || flags["ro"]) {
-					return poolMountReadOnly
+					return poolMountReadOnly, f.Path
 				}
-				return poolMountReadWrite
+				return poolMountReadWrite, f.Path
 			case map[string]any:
 				if t, _ := v["target"].(string); t == containerTarget {
-					return poolMountReadWrite
+					return poolMountReadWrite, f.Path
 				}
 			}
 		}
 	}
-	return poolMountAbsent
+	return poolMountAbsent, ""
 }
 
 // poolRuntimeMountSnippet is the exact `mounts` string entry to recommend:
-// read-only, source = this host's real, ToSlash'd pool runtime path.
-// Mirrors cmd/up.go's devcontainerRuntimeMountSnippet.
+// read-only, source = this host's real, ToSlash'd pool runtime path. Mirrors
+// cmd/up.go's devcontainerRuntimeMountSnippet, INCLUDING its unsafe-character
+// guard: a source containing ',', '"', or '\' cannot be embedded verbatim in
+// this illustrative, human-pasted mounts-string form without corrupting it
+// (a comma misparses as the CSV field separator; a quote or backslash needs
+// JSON escaping this snippet doesn't do), so refuse to print a broken one and
+// name the exact escaping problem instead (via strconv.Quote, which shows the
+// correctly escaped form). Vanishingly rare in practice — it needs a pool
+// root path containing one of these characters on a POSIX host.
 func poolRuntimeMountSnippet(runtimeDir string) string {
 	src := filepath.ToSlash(runtimeDir)
+	if strings.ContainsAny(src, `,"\`) {
+		return fmt.Sprintf("<cannot render a mounts snippet: pool runtime path %s needs manual escaping (contains "+
+			"a comma, quote, or backslash) — add it to \"mounts\" by hand>", strconv.Quote(src))
+	}
 	return "source=" + src + ",target=" + poolDevcontainerRuntimeTarget + ",type=bind,readonly"
 }
 
@@ -512,15 +708,20 @@ func poolAnyActivePointer(env Env, poolRoot string) bool {
 // pointer exists) but the workspace's devcontainer.json declares no mount at
 // the runtime target at all. Mirrors cmd/up.go's own verify-only notice
 // (`wraptool up` never injects this mount itself, §12.2).
+//
+// No active pointer at all means there is no pool-locked runtime for the
+// mount to carry — Skipped, not Pass: §6 reserves Pass ("checked, clean") for
+// a check that actually looked at its subject and found nothing wrong, and
+// there is no devcontainer posture to check when there is no pool.
 func runPoolDevcontainerMountMissing(_ context.Context, in *Input) Result {
 	if !poolAnyActivePointer(in.Env, in.Paths.PoolRoot) {
-		return Pass()
+		return Skipped("no active harness pool generation for any platform")
 	}
 	files, found := poolReadDevcontainerFiles(in.Env, in.Workspace)
 	if !found {
 		return Skipped("no .devcontainer/devcontainer.json in this workspace")
 	}
-	if poolClassifyMount(files, poolDevcontainerRuntimeTarget) != poolMountAbsent {
+	if state, _ := poolClassifyMount(files, poolDevcontainerRuntimeTarget); state != poolMountAbsent {
 		return Pass()
 	}
 
@@ -531,8 +732,9 @@ func runPoolDevcontainerMountMissing(_ context.Context, in *Input) Result {
 		Detail: fmt.Sprintf(
 			"a harness has an active pool-locked generation, but devcontainer.json declares no mount at %s",
 			poolDevcontainerRuntimeTarget),
-		Remedy: fmt.Sprintf("add this entry to \"mounts\": %q", poolRuntimeMountSnippet(runtimeDir)),
-		DocRef: "docs/devcontainers.qmd",
+		Location: poolFilePaths(files),
+		Remedy:   fmt.Sprintf("add this entry to \"mounts\": %q", poolRuntimeMountSnippet(runtimeDir)),
+		DocRef:   "docs/devcontainers.qmd",
 	})
 }
 
@@ -542,15 +744,19 @@ func runPoolDevcontainerMountMissing(_ context.Context, in *Input) Result {
 // runtime/ tree would let one project's container rewrite the dispatcher
 // scripts every OTHER project's container executes (§5) — the same case
 // cmd/up.go's own notice begins "SECURITY:" for.
+//
+// See runPoolDevcontainerMountMissing's doc comment for why no active
+// pointer is Skipped rather than Pass.
 func runPoolDevcontainerMountWritable(_ context.Context, in *Input) Result {
 	if !poolAnyActivePointer(in.Env, in.Paths.PoolRoot) {
-		return Pass()
+		return Skipped("no active harness pool generation for any platform")
 	}
 	files, found := poolReadDevcontainerFiles(in.Env, in.Workspace)
 	if !found {
 		return Skipped("no .devcontainer/devcontainer.json in this workspace")
 	}
-	if poolClassifyMount(files, poolDevcontainerRuntimeTarget) != poolMountReadWrite {
+	state, path := poolClassifyMount(files, poolDevcontainerRuntimeTarget)
+	if state != poolMountReadWrite {
 		return Pass()
 	}
 
@@ -564,8 +770,9 @@ func runPoolDevcontainerMountWritable(_ context.Context, in *Input) Result {
 				"harness pool would be writable from inside this project's container, letting it rewrite the "+
 				"dispatcher scripts every OTHER project's container executes",
 			poolDevcontainerRuntimeTarget),
-		Remedy: fmt.Sprintf("replace it with this read-only string-form entry in \"mounts\": %q", poolRuntimeMountSnippet(runtimeDir)),
-		DocRef: "design/harness/unified-harness-pool.md",
+		Location: path,
+		Remedy:   fmt.Sprintf("replace it with this read-only string-form entry in \"mounts\": %q", poolRuntimeMountSnippet(runtimeDir)),
+		DocRef:   "design/harness/unified-harness-pool.md",
 	})
 }
 
@@ -603,24 +810,39 @@ func poolFeatureDeprecation(ref string) (reason string, deprecated bool) {
 	}
 }
 
+// poolDeprecatedRef is one deprecated/sunset features-map key found in one
+// devcontainer config file, paired with the file it was found in.
+type poolDeprecatedRef struct {
+	Ref  string
+	Path string
+}
+
 // poolDeprecatedFeatureRefs returns every deprecated/sunset features-map key
-// found across files, sorted and deduplicated.
-func poolDeprecatedFeatureRefs(files [][]byte) []string {
+// found across files, sorted by Ref and deduplicated (first file found in
+// wins the Path, when the same ref appears in more than one file — a
+// deliberately unlikely edge case since a workspace normally has only one
+// devcontainer config file).
+func poolDeprecatedFeatureRefs(files []poolDevcontainerFile) []poolDeprecatedRef {
 	seen := map[string]bool{}
-	var out []string
-	for _, data := range files {
-		doc, ok := poolParseDevcontainerDoc(data)
+	var out []poolDeprecatedRef
+	for _, f := range files {
+		doc, ok := poolParseDevcontainerDoc(f.Data)
 		if !ok {
 			continue
 		}
+		var refs []string
 		for ref := range doc.Features {
+			refs = append(refs, ref)
+		}
+		sort.Strings(refs)
+		for _, ref := range refs {
 			if _, bad := poolFeatureDeprecation(ref); bad && !seen[ref] {
 				seen[ref] = true
-				out = append(out, ref)
+				out = append(out, poolDeprecatedRef{Ref: ref, Path: f.Path})
 			}
 		}
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
 	return out
 }
 
@@ -638,12 +860,13 @@ func runPoolDeprecatedFeature(_ context.Context, in *Input) Result {
 	}
 
 	findings := make([]Finding, 0, len(refs))
-	for _, ref := range refs {
-		reason, _ := poolFeatureDeprecation(ref)
+	for _, r := range refs {
+		reason, _ := poolFeatureDeprecation(r.Ref)
 		findings = append(findings, Finding{
 			Severity: SeverityWarn,
 			Title:    "devcontainer.json pins a deprecated wraptool feature",
-			Detail:   fmt.Sprintf("features key %q pins %s", ref, reason),
+			Detail:   fmt.Sprintf("features key %q pins %s", r.Ref, reason),
+			Location: r.Path,
 			Remedy:   fmt.Sprintf("update the feature reference to %q (see design/harness/unified-harness-pool.md §12.3)", poolCurrentFeatureRef),
 			DocRef:   "docs/devcontainers.qmd",
 		})

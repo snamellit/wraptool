@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,7 +19,9 @@ func TestRunPoolHomePerms(t *testing.T) {
 		name        string
 		build       func(env *MapEnv)
 		wantOutcome Outcome
-		wantPaths   []string // exact set of offending paths named in Detail, order-independent
+		wantCount   int      // exact offending count, when wantOutcome == OutcomeFinding
+		wantPaths   []string // paths that MUST be named in Detail
+		wantAbsent  []string // paths that must NOT be named in Detail
 	}{
 		{
 			name:        "no pool yet",
@@ -37,19 +40,80 @@ func TestRunPoolHomePerms(t *testing.T) {
 			build: func(env *MapEnv) {
 				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o700}
 				env.Files["/pool/home/.claude"] = MapFile{Mode: fs.ModeDir | 0o700}
-				env.Files["/pool/home/.claude/credentials.json"] = MapFile{Mode: 0o600, Data: []byte("{}")}
+				env.Files["/pool/home/.claude/.credentials.json"] = MapFile{Mode: 0o600, Data: []byte("{}")}
 			},
 			wantOutcome: OutcomePass,
 		},
 		{
-			name: "offending file and offending home dir itself",
+			// BLOCKER 1: cmd/guixcontainer.go's ensureHarnessPool creates
+			// home/ with os.MkdirAll(home, 0o755) on every host — that alone
+			// must never be a finding, or this check fails on every pool
+			// wraptool itself created (SeverityFail's own doc comment: "never
+			// fires on a configuration working as designed").
+			name: "home/ itself is 0755 (as ensureHarnessPool creates it), no credential files exposed",
 			build: func(env *MapEnv) {
-				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755} // offending: other-readable
-				env.Files["/pool/home/.claude"] = MapFile{Mode: fs.ModeDir | 0o700}
-				env.Files["/pool/home/.claude/credentials.json"] = MapFile{Mode: 0o644, Data: []byte("{}")} // offending
+				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.claude"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.claude/.credentials.json"] = MapFile{Mode: 0o600, Data: []byte("{}")}
+			},
+			wantOutcome: OutcomePass,
+		},
+		{
+			name: "a world-readable credential file is offending, the home dir itself is not",
+			build: func(env *MapEnv) {
+				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.claude"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.claude/.credentials.json"] = MapFile{Mode: 0o644, Data: []byte("{}")}
 			},
 			wantOutcome: OutcomeFinding,
-			wantPaths:   []string{"/pool/home", "/pool/home/.claude/credentials.json"},
+			wantCount:   1,
+			wantPaths:   []string{"/pool/home/.claude/.credentials.json"},
+			wantAbsent:  []string{"/pool/home (mode", "/pool/home/.claude (mode"},
+		},
+		{
+			name: "a world-readable non-credential file under a scoped dir is not flagged",
+			build: func(env *MapEnv) {
+				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.claude"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.claude/settings.json"] = MapFile{Mode: 0o644, Data: []byte("{}")}
+			},
+			wantOutcome: OutcomePass,
+		},
+		{
+			name: "cache files under .npm/.cache are never flagged, even when world-readable",
+			build: func(env *MapEnv) {
+				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.npm"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.npm/_cacache"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.npm/_cacache/index-v5"] = MapFile{Mode: 0o644, Data: []byte("x")}
+				env.Files["/pool/home/.cache"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.cache/some-file"] = MapFile{Mode: 0o644, Data: []byte("x")}
+			},
+			wantOutcome: OutcomePass,
+		},
+		{
+			name: "a token/session-named file anywhere in the tree is flagged",
+			build: func(env *MapEnv) {
+				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.opencode"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.opencode/session.json"] = MapFile{Mode: 0o644, Data: []byte("{}")}
+			},
+			wantOutcome: OutcomeFinding,
+			wantCount:   1,
+			wantPaths:   []string{"/pool/home/.opencode/session.json"},
+		},
+		{
+			name: ".config/*/auth* is flagged regardless of nesting depth beneath it",
+			build: func(env *MapEnv) {
+				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.config"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.config/opencode"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/pool/home/.config/opencode/auth"] = MapFile{Mode: fs.ModeDir | 0o700} // itself not offending
+				env.Files["/pool/home/.config/opencode/auth/store.json"] = MapFile{Mode: 0o644, Data: []byte("{}")}
+			},
+			wantOutcome: OutcomeFinding,
+			wantCount:   1,
+			wantPaths:   []string{"/pool/home/.config/opencode/auth/store.json"},
 		},
 		{
 			name: "symlinked entry is neither checked nor descended into",
@@ -63,7 +127,7 @@ func TestRunPoolHomePerms(t *testing.T) {
 			name: "unreadable subdirectory is skipped, not fatal",
 			build: func(env *MapEnv) {
 				env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o700}
-				env.Files["/pool/home/normal.txt"] = MapFile{Mode: 0o644} // still offending
+				env.Files["/pool/home/.credentials.json"] = MapFile{Mode: 0o644} // still offending
 				// "/pool/home/ghost" is referenced by nothing, so ReadDir would
 				// never even be called on it here — this case exists to document
 				// that poolCollectReadable tolerates a ReadDir error rather than
@@ -71,7 +135,8 @@ func TestRunPoolHomePerms(t *testing.T) {
 				// isn't: MapEnv has no permission-denied simulation).
 			},
 			wantOutcome: OutcomeFinding,
-			wantPaths:   []string{"/pool/home/normal.txt"},
+			wantCount:   1,
+			wantPaths:   []string{"/pool/home/.credentials.json"},
 		},
 	}
 
@@ -92,15 +157,84 @@ func TestRunPoolHomePerms(t *testing.T) {
 				t.Fatalf("got %d findings, want 1", len(res.Findings))
 			}
 			f := res.Findings[0]
-			if f.Severity != SeverityFail {
-				t.Errorf("severity = %v, want fail", f.Severity)
+			if f.Severity != SeverityWarn {
+				t.Errorf("severity = %v, want warn", f.Severity)
+			}
+			if tc.wantCount > 0 && !strings.Contains(f.Detail, strconv.Itoa(tc.wantCount)) {
+				t.Errorf("Detail %q does not name the count %d", f.Detail, tc.wantCount)
+			}
+			if strings.Contains(f.Remedy, "chmod -R go-rwx /pool/home") {
+				t.Errorf("Remedy %q recommends a recursive chmod on the whole home/ tree", f.Remedy)
 			}
 			for _, p := range tc.wantPaths {
 				if !strings.Contains(f.Detail, p) {
 					t.Errorf("Detail %q does not mention offending path %q", f.Detail, p)
 				}
 			}
+			for _, p := range tc.wantAbsent {
+				if strings.Contains(f.Detail, p) {
+					t.Errorf("Detail %q unexpectedly mentions %q", f.Detail, p)
+				}
+			}
 		})
+	}
+}
+
+// TestRunPoolHomePermsCapsEnumeration is BLOCKER 3: a real pool's home/ tree
+// can hold thousands of offending entries, and joining every one of them
+// into a single Finding.Detail line makes the count — the actually
+// actionable fact — impossible to find. The listed entries are capped at
+// poolMaxOffendingListed, with the remainder folded into "and N more", and
+// the full count is always reported.
+func TestRunPoolHomePermsCapsEnumeration(t *testing.T) {
+	env := NewMapEnv()
+	env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
+	const total = poolMaxOffendingListed + 7
+	for i := range total {
+		p := filepath.Join("/pool/home", "token-"+string(rune('a'+i))+".json")
+		env.Files[p] = MapFile{Mode: 0o644, Data: []byte("{}")}
+	}
+	in := &Input{Env: env, GOOS: "linux", Paths: HostPaths{PoolRoot: "/pool"}}
+
+	res := runPoolHomePerms(context.Background(), in)
+	if res.Outcome() != OutcomeFinding {
+		t.Fatalf("outcome = %v, want finding", res.Outcome())
+	}
+	f := res.Findings[0]
+	if !strings.Contains(f.Detail, strconv.Itoa(total)) {
+		t.Errorf("Detail %q does not name the full count %d", f.Detail, total)
+	}
+	more := total - poolMaxOffendingListed
+	if !strings.Contains(f.Detail, "and "+strconv.Itoa(more)+" more") {
+		t.Errorf("Detail %q does not fold the remainder into \"and %d more\"", f.Detail, more)
+	}
+}
+
+// TestPoolIsCredentialPath pins the scoped predicate BLOCKER 1 introduced:
+// harness auth state, never every readable file under home/.
+func TestPoolIsCredentialPath(t *testing.T) {
+	cases := []struct {
+		rel  string
+		want bool
+	}{
+		{".credentials.json", true},
+		{".claude/.credentials.json", true},
+		{".opencode/session.json", true},
+		{".opencode/token", true},
+		{"some/deep/path/my-credentials-backup", true},
+		{".config/opencode/auth.json", true},
+		{".config/opencode/auth/store.json", true},
+		{".config/opencode/auth/nested/deep/store.json", true},
+		{".claude/settings.json", false},
+		{".npm/_cacache/index-v5/aa", false},
+		{".cache/some-file", false},
+		{".config/opencode/config.json", false},
+		{"skills/some-skill/SKILL.md", false},
+	}
+	for _, tc := range cases {
+		if got := poolIsCredentialPath(tc.rel); got != tc.want {
+			t.Errorf("poolIsCredentialPath(%q) = %v, want %v", tc.rel, got, tc.want)
+		}
 	}
 }
 
@@ -259,7 +393,13 @@ func TestRunPoolGenerationDigest(t *testing.T) {
 		}
 	})
 
-	t.Run("digest mismatch is a tamper fail", func(t *testing.T) {
+	// BLOCKER 2: after a genuine `wraptool harness rollback`, the active
+	// generation's digest legitimately differs from the lock's CURRENTLY
+	// recorded one, but the generation's own content still matches its own
+	// receipt (its directory name still encodes exactly this digest) — the
+	// architect-ruled discriminator. That must be reported as info about a
+	// rollback, never a fail whose remedy would silently undo it.
+	t.Run("digest differs from the lock but matches the generation's own name: a rollback, reported as info", func(t *testing.T) {
 		root := t.TempDir()
 		genID, digest := poolTestSeedGeneration(t, root, "claude", "1.2.3", poolTestKey, "v1")
 		poolTestActivate(t, root, "claude", poolTestKey, genID)
@@ -278,11 +418,72 @@ func TestRunPoolGenerationDigest(t *testing.T) {
 			t.Fatalf("got %d findings, want 1", len(res.Findings))
 		}
 		f := res.Findings[0]
-		if f.Severity != SeverityFail {
-			t.Errorf("severity = %v, want fail", f.Severity)
+		if f.Severity != SeverityInfo {
+			t.Errorf("severity = %v, want info", f.Severity)
 		}
 		if !strings.Contains(f.Detail, digest) || !strings.Contains(f.Detail, recorded) {
 			t.Errorf("Detail %q does not name both digests", f.Detail)
+		}
+		if !strings.Contains(f.Detail, "rollback") {
+			t.Errorf("Detail %q does not say this looks like a rollback", f.Detail)
+		}
+		if f.Remedy != "" {
+			t.Errorf("Remedy = %q, want empty — a rollback info finding must not tell the operator to undo it", f.Remedy)
+		}
+	})
+
+	// BLOCKER 2's genuine-tampering side: receipt.json rewritten to describe
+	// DIFFERENT, self-consistent content (a valid digest for its own Files,
+	// so it passes UnmarshalReceipt's Validate) WITHOUT renaming the
+	// generation directory to match. The directory name still encodes the
+	// ORIGINAL digest, so recomputing the generation id from the rewritten
+	// receipt no longer matches it — this is what the directory-name
+	// cross-check exists to catch.
+	t.Run("receipt rewritten without a matching rename is a tamper fail", func(t *testing.T) {
+		root := t.TempDir()
+		genID, digest := poolTestSeedGeneration(t, root, "claude", "1.2.3", poolTestKey, "v1")
+		poolTestActivate(t, root, "claude", poolTestKey, genID)
+		poolTestWriteLock(t, root, poolTestLock("claude", poolTestKey, digest))
+
+		fakeFiles := []pool.ReceiptFile{{Path: "bin/other", Executable: true, Size: 4, SHA256: strings.Repeat("1", 64)}}
+		fakeDigest, err := pool.ManifestDigest(fakeFiles)
+		if err != nil {
+			t.Fatalf("pool.ManifestDigest: %v", err)
+		}
+		if fakeDigest == digest {
+			t.Fatal("test fixture collision: fabricated digest must differ from the real one")
+		}
+		tampered := &pool.Receipt{
+			SchemaVersion:  pool.ReceiptSchemaVersion,
+			Harness:        "claude",
+			Version:        "1.2.3",
+			Platform:       poolTestKey,
+			RecipeRevision: "sha256:" + strings.Repeat("c", 64),
+			LockEntryHash:  "sha256:" + strings.Repeat("d", 64),
+			Backend:        pool.ReceiptBackend{Name: "fake"},
+			Files:          fakeFiles,
+			ManifestDigest: fakeDigest,
+		}
+		data, err := tampered.Marshal()
+		if err != nil {
+			t.Fatalf("Receipt.Marshal: %v", err)
+		}
+		receiptPath := filepath.Join(root, "runtime", "generations", genID, "receipt.json")
+		if err := os.WriteFile(receiptPath, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		in := &Input{Env: NewOSEnv(nil), GOOS: "linux", Paths: HostPaths{PoolRoot: root}}
+		res := runPoolGenerationDigest(context.Background(), in)
+		if res.Outcome() != OutcomeFinding {
+			t.Fatalf("outcome = %v, want finding", res.Outcome())
+		}
+		if len(res.Findings) != 1 {
+			t.Fatalf("got %d findings, want 1", len(res.Findings))
+		}
+		f := res.Findings[0]
+		if f.Severity != SeverityFail {
+			t.Errorf("severity = %v, want fail", f.Severity)
 		}
 		if f.Location == "" {
 			t.Error("Location is empty, want the mismatching receipt's path")
@@ -360,6 +561,62 @@ func TestRunPoolGenerationCorrupt(t *testing.T) {
 			t.Fatalf("outcome = %v, want pass (findings=%v)", res.Outcome(), res.Findings)
 		}
 	})
+
+	// MINOR: doctor never takes the pool lock (design §7.9), so a concurrent
+	// `wraptool harness gc` can remove the generation's tree between reading
+	// its receipt and scanning its content. That is a race, not corruption,
+	// and must not surface as a fail whose remedy tells the operator to
+	// rebuild a perfectly healthy pool.
+	t.Run("generation directory removed mid-scan (concurrent gc) is silently skipped, not a fail", func(t *testing.T) {
+		root := t.TempDir()
+		genID, digest := poolTestSeedGeneration(t, root, "claude", "1.2.3", poolTestKey, "v1")
+		poolTestActivate(t, root, "claude", poolTestKey, genID)
+		poolTestWriteLock(t, root, poolTestLock("claude", poolTestKey, digest))
+
+		genDir := filepath.Join(root, "runtime", "generations", genID)
+		receiptPath := filepath.Join(genDir, "receipt.json")
+		receiptData, err := os.ReadFile(receiptPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Simulate the exact race window: receipt.json was already read
+		// successfully (cached below, standing in for that earlier read),
+		// but by the time pool.VerifyGenerationTree scans genDir's content —
+		// a concurrent `harness gc` — the whole tree is gone.
+		if err := os.RemoveAll(genDir); err != nil {
+			t.Fatal(err)
+		}
+
+		in := &Input{
+			Env:   poolTestCachedReadFileEnv{Env: NewOSEnv(nil), path: receiptPath, data: receiptData},
+			GOOS:  "linux",
+			Paths: HostPaths{PoolRoot: root}, VerifyPool: true,
+		}
+		res := runPoolGenerationCorrupt(context.Background(), in)
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("outcome = %v, want pass (findings=%v)", res.Outcome(), res.Findings)
+		}
+	})
+}
+
+// poolTestCachedReadFileEnv wraps a real Env but serves ONE path's content
+// from an in-memory cache instead of the real filesystem — the seam this
+// package's race-window tests need: a caller that reads a file via Env
+// successfully, after which the real, on-disk tree it names is removed
+// (mirroring a concurrent `harness gc`) before a SIBLING call that touches
+// the real filesystem directly (pool.VerifyGenerationTree, which is not
+// Env-mediated — see host.go's Env doc comment on that sanctioned exception).
+type poolTestCachedReadFileEnv struct {
+	Env
+	path string
+	data []byte
+}
+
+func (e poolTestCachedReadFileEnv) ReadFile(p string) ([]byte, error) {
+	if p == e.path {
+		return append([]byte(nil), e.data...), nil
+	}
+	return e.Env.ReadFile(p)
 }
 
 // ---------------------------------------------------------------- devcontainer mount checks
@@ -388,7 +645,10 @@ func TestRunPoolDevcontainerMountMissing(t *testing.T) {
 		body        string // "" means no devcontainer.json at all
 		wantOutcome Outcome
 	}{
-		{name: "no active pointer", activate: false, wantOutcome: OutcomePass},
+		// §6: silence means checked-and-clean. With no active pointer there
+		// is no pool-locked runtime for the mount to carry — nothing was
+		// checked, so this is Skipped, not Pass.
+		{name: "no active pointer", activate: false, wantOutcome: OutcomeSkipped},
 		{name: "active, no devcontainer.json", activate: true, wantOutcome: OutcomeSkipped},
 		{
 			name: "active, mount absent", activate: true,
@@ -432,6 +692,11 @@ func TestRunPoolDevcontainerMountMissing(t *testing.T) {
 			if !strings.Contains(f.Remedy, "readonly") {
 				t.Errorf("Remedy %q does not mention readonly", f.Remedy)
 			}
+			// MINOR: name WHICH file was read (both .devcontainer/devcontainer.json
+			// and .devcontainer.json are accepted).
+			if f.Location != poolTestConfigPath {
+				t.Errorf("Location = %q, want %q", f.Location, poolTestConfigPath)
+			}
 		})
 	}
 }
@@ -443,7 +708,7 @@ func TestRunPoolDevcontainerMountWritable(t *testing.T) {
 		body        string
 		wantOutcome Outcome
 	}{
-		{name: "no active pointer", activate: false, wantOutcome: OutcomePass},
+		{name: "no active pointer", activate: false, wantOutcome: OutcomeSkipped},
 		{name: "active, no devcontainer.json", activate: true, wantOutcome: OutcomeSkipped},
 		{
 			name: "active, mount absent", activate: true,
@@ -491,6 +756,9 @@ func TestRunPoolDevcontainerMountWritable(t *testing.T) {
 			}
 			if !strings.HasPrefix(f.Title, "SECURITY:") {
 				t.Errorf("Title %q does not begin with SECURITY:", f.Title)
+			}
+			if f.Location != poolTestConfigPath {
+				t.Errorf("Location = %q, want %q", f.Location, poolTestConfigPath)
 			}
 		})
 	}
@@ -552,6 +820,9 @@ func TestRunPoolDeprecatedFeature(t *testing.T) {
 			if !strings.Contains(f.Detail, tc.wantRef) {
 				t.Errorf("Detail %q does not mention ref %q", f.Detail, tc.wantRef)
 			}
+			if f.Location != poolTestConfigPath {
+				t.Errorf("Location = %q, want %q", f.Location, poolTestConfigPath)
+			}
 		})
 	}
 }
@@ -604,5 +875,60 @@ func TestPoolFeatureDeprecation(t *testing.T) {
 		if got != tc.deprecated {
 			t.Errorf("poolFeatureDeprecation(%q) deprecated=%v, want %v", tc.ref, got, tc.deprecated)
 		}
+	}
+}
+
+// TestPoolRuntimeMountSnippetRejectsUnsafeChars is the MINOR fix porting
+// cmd/up.go's devcontainerRuntimeMountSnippet unsafe-character guard: a pool
+// root path containing a comma, quote, or backslash cannot be embedded in
+// the comma-separated mounts string form without corrupting it, so the
+// snippet must refuse to render one rather than emit a broken suggestion.
+func TestPoolRuntimeMountSnippetRejectsUnsafeChars(t *testing.T) {
+	got := poolRuntimeMountSnippet("/pool, evil/runtime")
+	if strings.Contains(got, "target=") {
+		t.Errorf("snippet %q was rendered despite an unsafe source path", got)
+	}
+	if !strings.Contains(got, "cannot render") {
+		t.Errorf("snippet %q does not explain the escaping problem", got)
+	}
+
+	safe := poolRuntimeMountSnippet("/pool/runtime")
+	if !strings.HasPrefix(safe, "source=/pool/runtime,target=") {
+		t.Errorf("safe snippet = %q, want a normal mounts entry", safe)
+	}
+}
+
+// ---------------------------------------------------------------- Meta (Needs) pinning
+
+// TestPoolCheckMeta pins every check's ID and Needs against the SAME Meta
+// literal init() registers (poolHomePermsMeta etc.), never through
+// Registered() (plan §1 rule 8): once this package's eight sibling Phase-B
+// files have all merged, Registered() carries every one of THEIR checks too,
+// so an assertion against it would not be testing THIS file's own behaviour
+// in isolation. Without this, e.g. dropping NeedsPoolVerify from
+// pool.generation-corrupt (making it hash the whole pool tree on every
+// default run) would leave every other test in this file green.
+func TestPoolCheckMeta(t *testing.T) {
+	cases := []struct {
+		meta      Meta
+		wantID    CheckID
+		wantNeeds Requirement
+	}{
+		{poolHomePermsMeta, poolHomePerms, NeedsModeBits},
+		{poolGenerationDigestMeta, poolGenerationDigest, NeedsNothing},
+		{poolGenerationCorruptMeta, poolGenerationCorrupt, NeedsPoolVerify},
+		{poolDevcontainerMountMissingMeta, poolDevcontainerMountMissing, NeedsWorkspace},
+		{poolDevcontainerMountWritableMeta, poolDevcontainerMountWritable, NeedsWorkspace},
+		{poolDeprecatedFeatureMeta, poolDeprecatedFeature, NeedsWorkspace},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.wantID), func(t *testing.T) {
+			if tc.meta.ID != tc.wantID {
+				t.Errorf("ID = %q, want %q", tc.meta.ID, tc.wantID)
+			}
+			if tc.meta.Needs != tc.wantNeeds {
+				t.Errorf("Needs = %v, want %v", tc.meta.Needs, tc.wantNeeds)
+			}
+		})
 	}
 }
