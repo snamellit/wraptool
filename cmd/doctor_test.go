@@ -560,6 +560,75 @@ func TestDoctorOnlySkipHelpTextsDoNotClaimPrefixMatching(t *testing.T) {
 	}
 }
 
+// TestDoctorSuppressionEndToEnd is C2's own wiring test, following the same
+// lesson C1's review flagged: the single line that installs
+// doctor.ApplySuppression in runDoctor is otherwise covered by nothing —
+// every internal/doctor test calls ApplySuppression directly, so deleting
+// the wiring line in cmd/doctor.go would leave every test in the repository
+// green. It seeds the MapEnv with the config bytes exactly the way C1's
+// review prescribed for the Locator wiring, so a `# doctor:ignore` comment
+// in a REAL config file suppresses a REAL warn finding through the full
+// `wraptool doctor` command path, in both human and --json output.
+func TestDoctorSuppressionEndToEnd(t *testing.T) {
+	const configYAML = `
+tools:
+  git:
+    allow:
+      # doctor:ignore policy.dangerous-flag -- reviewed 2026-08, value is fixed by the wrapper
+      - subcommand: [pull]
+        flags: ["-c"]
+`
+	warnCheck := fakeDoctorCheck{
+		meta: doctor.Meta{ID: "policy.dangerous-flag", Needs: doctor.NeedsNothing, Summary: "synthetic test-only check"},
+		run: func(context.Context, *doctor.Input) doctor.Result {
+			return doctor.Found(doctor.Finding{
+				Severity: doctor.SeverityWarn, Title: "t", Detail: "danger -c", Remedy: "fix it",
+				Path: doctor.At("tools", "git", "allow").Item("subcommand", "pull").Key("flags").Elem("-c"),
+			})
+		},
+	}
+	env := doctor.NewMapEnv()
+	env.Files["/some/path.yaml"] = doctor.MapFile{Data: []byte(configYAML)}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{warnCheck})
+	deps.env = func() doctor.Env { return env }
+
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml")
+	if err != nil {
+		t.Fatalf("expected exit 0 (a suppressed warn never fails the run), got err: %v", err)
+	}
+	if strings.Contains(out, "danger -c") {
+		t.Errorf("a suppressed finding's Detail leaked into the human report: %s", out)
+	}
+	if !strings.Contains(out, "1 warnings (1 suppressed)") {
+		t.Errorf("missing suppressed footer accounting, got: %s", out)
+	}
+
+	jsonOut, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--json")
+	if err != nil {
+		t.Fatalf("expected exit 0, got err: %v", err)
+	}
+	var got struct {
+		Summary struct {
+			Suppressed int `json:"suppressed"`
+		} `json:"summary"`
+		Findings []struct {
+			Detail            string `json:"detail"`
+			Suppressed        bool   `json:"suppressed"`
+			SuppressionReason string `json:"suppression_reason"`
+		} `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &got); err != nil {
+		t.Fatalf("decoding: %v\noutput was:\n%s", err, jsonOut)
+	}
+	if got.Summary.Suppressed != 1 {
+		t.Errorf("summary.suppressed = %d, want 1", got.Summary.Suppressed)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].Detail != "danger -c" ||
+		!got.Findings[0].Suppressed || got.Findings[0].SuppressionReason != "reviewed 2026-08, value is fixed by the wrapper" {
+		t.Errorf("findings = %+v, want one suppressed finding present with the ignore comment's reason", got.Findings)
+	}
+}
+
 // TestDoctorVerifyPoolFlagReachesInput pins the wiring the pool group depends
 // on: pool.generation-corrupt declares NeedsPoolVerify, so without this flag
 // the engine skips it with a canned reason naming a flag the CLI would then

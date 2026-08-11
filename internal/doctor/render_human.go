@@ -62,6 +62,13 @@ func renderHeader(w io.Writer, r Report) error {
 func renderBody(w io.Writer, r Report) error {
 	byGroup := make(map[Group][]Finding, len(groupOrder))
 	for _, f := range r.Findings {
+		// C2 (§6.2): a suppressed finding is counted (renderFooter's
+		// Summary.Suppressed parenthetical already reflects it) but never
+		// printed. r.Findings itself is left untouched — RenderJSON renders
+		// the SAME Report and must still emit it with "suppressed": true.
+		if f.Suppressed {
+			continue
+		}
 		g := f.ID.Group()
 		byGroup[g] = append(byGroup[g], f)
 	}
