@@ -112,19 +112,101 @@ transport, and no admin listener — so every `runtime.*` check except
 `bind-divergence`, plus the uid-dependent ownership and cache rules, has no data
 source.
 
-Required: extend it to a key=value set adding `uid`, `config_path`,
-`transport`, `admin_listen`, `started_at`, `config_loaded_at` (updated on every
-successful reload, which is what makes stale-policy detection possible), and
-`path` (the server's `PATH`, since `executor.childPath` resolves tool runtime
-deps against it, `internal/executor/executor.go:28-38`). The format is already
-owned in one place and `up` is its only current reader, so this is additive and
-self-contained.
+Scoped below. It is small, self-contained, and useful independently of doctor
+(`server status` gains the same information).
 
-Also required: `up`'s pidfile-liveness check must be reusable, because a state
-file survives an uncatchable exit — removal is a `defer` plus a SIGINT/SIGTERM
-handler (`cmd/serve.go:202,209`), neither of which runs on SIGKILL or power
-loss. Every `runtime.*` check is gated on a live pid **and** on
-`config_path` matching the config doctor is auditing.
+**Fields.** Every one is `effective` state — what this process is actually
+doing — never what the config file says.
+
+| Key | Type | Source | Consumer |
+|---|---|---|---|
+| `listen` | string | `cfg.MCP.Listen` post-override | existing (`runningMatches`) |
+| `auth` | bool | `cfg.MCP.AuthTokenFile != ""` | existing |
+| `transport` | string | `cfg.MCP.Transport` | `runtime.*` gating |
+| `admin_listen` | string | `cfg.Admin.Listen` | `exposure.admin-*` effective check |
+| `uid` | int | `os.Getuid()` | `runtime.uid`, `exposure.token-owner`, `--write-cache` gate |
+| `config_path` | string | `EvalSymlinks(Abs(configPath))` | gates every `runtime.*` check |
+| `path` | string | `os.Getenv("PATH")` | `env.path-differs-from-server` |
+| `started_at` | RFC3339 | process start | report header |
+| `config_loaded_at` | RFC3339 | last **successful** load or reload | `runtime.stale-policy` |
+
+**Write sites.** Two, both already single-writer within the serve process:
+
+1. `cmd/serve.go:199` — initial write, unchanged in placement.
+2. `cmd/reload.go:71` `reloadConfig`, on the success path only. Both reload
+   triggers funnel through it (file watch at `reload.go:60`, SIGHUP at
+   `cmd/platform_unix.go:40`), so it is the single hook. A **failed** reload must
+   not touch the file — that is precisely the state `runtime.stale-policy`
+   detects.
+
+The reload write updates `config_loaded_at` and nothing else. The process does
+not rebind on reload, so `listen`/`auth`/`transport`/`admin_listen` must keep
+their start-time values even if the new config changes them; refreshing them
+from the reloaded config would report a bind that is not in effect — inverting
+the check's purpose.
+
+**Presence versus zero value.** `uid` cannot be decoded into a plain `int`:
+`0` is root, a legitimate value, and also the zero value that an absent key
+yields. The reader must track which keys were present — parse into a
+`map[string]string` and expose typed accessors returning `(value, ok)`. Every
+consumer treats absent as *unknown* and skips, never as a value.
+
+**Wire format.** Keep `key=value` lines; the existing reader already ignores
+unknown keys and unparseable lines (`cmd/server.go:173-188`), so an older
+wraptool reads a newer file without error. `strings.Cut` on the first `=` keeps
+values containing `=` intact (PATH entries can). Newlines are the one hazard —
+a POSIX filename may contain one, so `config_path` could corrupt the file.
+Escape `\n` and `\\` on write, unescape on read. Do **not** switch to JSON: an
+older `readServeState` would fail to parse it, `runningMatches` would return
+false, and every `up` against a running server would needlessly restart it.
+
+**Atomicity.** `writeServeState` currently uses `os.WriteFile`
+(`cmd/server.go:160`). Once the file is rewritten on every reload while doctor
+and `up` may be reading it, a torn read becomes reachable. Switch to
+write-temp-then-rename in the same directory. `internal/pool` already has this
+helper shape; either lift it or write the four-line local version.
+
+**Compatibility.** `runningMatches` compares named fields explicitly
+(`cmd/up.go:350-357`), not struct equality, and every construction site uses
+field names (`cmd/up.go:280`, `cmd/serve.go:199`, `cmd/server_test.go`), so
+adding fields breaks nothing. It must keep comparing only `listen` and `auth`:
+adding `config_path` or `uid` to that comparison would make `up` restart a
+perfectly good server whenever it was started from a different config path.
+
+**Liveness.** A state file survives an uncatchable exit — removal is a `defer`
+plus the SIGINT/SIGTERM handler (`cmd/serve.go:202,209`), neither of which runs
+on SIGKILL, OOM-kill, or power loss. Every `runtime.*` check is gated on
+`processAlive(pid)` (already in `cmd/server.go`, used by `server status`) **and**
+on `config_path` matching the config being audited. Without both gates doctor
+would report a dead server's bind as live.
+
+**Reachability.** The file lives in `paths.RuntimeDir()` (`cmd/server.go:153`),
+which is per-process XDG (`internal/paths/paths.go:48-53`). A server running as
+a service user writes somewhere the operator cannot read, so doctor sees no
+state and skips every `runtime.*` check — correct behaviour, and the reason
+§5.2 refuses to infer "same user" from an absent file.
+
+**Security.** No secrets are added: `auth` stays a bool, never the token or its
+path contents. `path` and `config_path` disclose filesystem layout, which is
+already the case for the pidfile's directory; the file stays `0600` inside a
+`0700` runtime dir.
+
+**Windows.** `os.Getuid()` returns `-1`; omit the key rather than writing it,
+and the ownership checks stay `skipped` there (§12).
+
+**Tests.** Extend `cmd/server_test.go`: round-trip all fields; an old-format
+file (only `listen`/`auth`) reads with the rest absent-not-zero, including
+`uid` distinguishable from root; a value containing `=`, and one containing a
+newline, survive; `runningMatches` still matches on `listen`+`auth` alone when
+the new fields differ; a failed reload leaves `config_loaded_at` unchanged
+while a successful one advances it; a concurrent read during rewrite never
+observes a partial file.
+
+**Not in scope.** `server status` could print the effective state instead of
+re-probing — a natural follow-up, but it changes user-visible output and is not
+needed by doctor.
+
+---
 
 `config.Validate` returning a single error (it returns at the first failure at
 every step, `internal/config/validate.go:26-97`) is a related but separate gap:
