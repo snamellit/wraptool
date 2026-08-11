@@ -330,6 +330,11 @@ func TestReloadConfigConfigLoadedAt(t *testing.T) {
 	if err := writeServeState(initial); err != nil {
 		t.Fatal(err)
 	}
+	// Stand in for serve's own startup write: only the process that owns the
+	// state file may update it on reload, so a test exercising reloadConfig has
+	// to claim that ownership the way serve does.
+	markServeStateOwned()
+	t.Cleanup(func() { serveStateOwned.Store(false) })
 
 	// Corrupt the config: reload must fail without touching serve state at all.
 	if err := os.WriteFile(configPath, []byte("not: [valid yaml"), 0o644); err != nil {
