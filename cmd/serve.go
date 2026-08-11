@@ -220,6 +220,7 @@ func runServe(configPath string, ov serveOverrides) error {
 		}); err != nil {
 			return err
 		}
+		markServeStateOwned()
 		defer removeServeState()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, terminationSignals()...)

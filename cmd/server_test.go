@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
@@ -358,5 +359,54 @@ func TestReloadConfigConfigLoadedAt(t *testing.T) {
 	}
 	if got2.Listen != initial.Listen || got2.Auth != initial.Auth || got2.Transport != initial.Transport {
 		t.Errorf("successful reload changed bind/auth/transport, want unchanged: %+v", got2)
+	}
+}
+
+// TestUpdateServeStateConfigLoadedAtRequiresOwnership pins the invariant that
+// makes the reload hook safe. The state file is one well-known path in the XDG
+// runtime dir, but not every wraptool process writes one — a per-session
+// transport hot-reloads its own config without ever owning the file. Without
+// the ownership gate, that process's reload stamps config_loaded_at into a
+// long-running server's state, recording a load that server never performed
+// and destroying the signal runtime.stale-policy reads.
+func TestUpdateServeStateConfigLoadedAtRequiresOwnership(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	const original = "2020-01-01T00:00:00Z"
+	if err := writeServeState(serveState{
+		Listen:         "127.0.0.1:8717",
+		Auth:           true,
+		ConfigLoadedAt: original,
+	}); err != nil {
+		t.Fatalf("writeServeState: %v", err)
+	}
+
+	// A process that did not write this file must not touch it, however many
+	// times it reloads.
+	serveStateOwned.Store(false)
+	updateServeStateConfigLoadedAt(time.Date(2030, 6, 1, 0, 0, 0, 0, time.UTC))
+
+	got, err := readServeState()
+	if err != nil {
+		t.Fatalf("readServeState: %v", err)
+	}
+	if got.ConfigLoadedAt != original {
+		t.Errorf("a non-owning process rewrote config_loaded_at: got %q, want %q", got.ConfigLoadedAt, original)
+	}
+
+	// The owning process does update it, and leaves every other field alone.
+	markServeStateOwned()
+	t.Cleanup(func() { serveStateOwned.Store(false) })
+	updateServeStateConfigLoadedAt(time.Date(2030, 6, 1, 0, 0, 0, 0, time.UTC))
+
+	got, err = readServeState()
+	if err != nil {
+		t.Fatalf("readServeState: %v", err)
+	}
+	if got.ConfigLoadedAt != "2030-06-01T00:00:00Z" {
+		t.Errorf("owning process did not advance config_loaded_at: got %q", got.ConfigLoadedAt)
+	}
+	if got.Listen != "127.0.0.1:8717" || !got.Auth {
+		t.Errorf("reload update disturbed effective state: %+v", got)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
@@ -239,17 +240,40 @@ func serveStateWriteLine(b *strings.Builder, key, val string) {
 	b.WriteByte('\n')
 }
 
+// serveStateOwned records that THIS process wrote the serve state file at
+// startup, and is the invariant that makes the reload update safe: the state
+// file is a single well-known path in the XDG runtime dir, but not every
+// wraptool process writes one. A per-session transport is excluded from the
+// pidfile/state write entirely, yet it still hot-reloads its own config — so a
+// reload hook that simply read-modify-wrote whatever file happened to be there
+// would stamp config_loaded_at into a DIFFERENT, long-running server's state,
+// recording a load that server never performed and destroying exactly the
+// signal runtime.stale-policy reads.
+//
+// Bounding it by ownership rather than by naming the transports that do not
+// write state also closes the read-modify-write's second hazard for free: only
+// the process that wrote every key can rewrite them, so no binary can drop a
+// key its own reader does not know.
+var serveStateOwned atomic.Bool
+
+// markServeStateOwned is called once, immediately after the startup write
+// succeeds.
+func markServeStateOwned() { serveStateOwned.Store(true) }
+
 // updateServeStateConfigLoadedAt refreshes only config_loaded_at in the serve
 // state file, on a successful reload (cmd/reload.go's reloadConfig, success
 // path only). The process does not rebind on reload, so every other field —
 // especially Listen/Auth/Transport/AdminListen — must keep its start-time
 // value; a failed reload must not call this at all, since an untouched
 // timestamp is exactly the stale-policy signal runtime.stale-policy needs.
+//
+// A no-op unless this process owns the state file (serveStateOwned).
 func updateServeStateConfigLoadedAt(now time.Time) {
+	if !serveStateOwned.Load() {
+		return
+	}
 	s, err := readServeState()
 	if err != nil {
-		// No state file to update (e.g. the stdio transport, which never
-		// writes one — reload still fires for it via SIGHUP/file-watch).
 		return
 	}
 	s.ConfigLoadedAt = now.Format(time.RFC3339)
