@@ -25,11 +25,11 @@ type HostPaths struct {
 	// root-parameterized — they resolve through paths.DataDir() directly
 	// (internal/pool/layout.go), so calling e.g. pool.HomeDir() from a check
 	// would read the REAL host's $XDG_DATA_HOME even under a MapEnv-backed unit
-	// test. Only the pool.PoolPaths-TAKING functions (ActiveGeneration,
-	// VerifyGenerationTree) are root-parameterized; B8 builds its own
-	// pool.PoolPaths from this field, never by calling pool's zero-arg
-	// accessors directly (enforced by invariants_test.go's
-	// forbiddenHostSelectors).
+	// test. Only the root-parameterized functions are safe: ActiveGeneration and
+	// GenerationVersion take a pool.PoolPaths (build one from this field), while
+	// VerifyGenerationTree takes an explicit root string directly. B8 uses
+	// these, never pool's zero-arg accessors (enforced by invariants_test.go's
+	// invariantsForbiddenHostSelectors).
 	PoolRoot string
 }
 
@@ -283,6 +283,13 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 	have := provides(in)
 	aborted := false
 	var abortedAfter CheckID
+	// cutShort counts checks actually skipped BECAUSE of an abort (the `if
+	// aborted` branch below), which is the only thing Report.Aborted means:
+	// at least one selected check that would otherwise have run did not.
+	// Deciding it at the moment an abort is triggered is wrong when the
+	// aborting check is the last one selected — nothing was cut short, so the
+	// "Checks after this point did not run." banner would be false.
+	cutShort := 0
 
 	for _, c := range selected {
 		m := c.Meta()
@@ -292,6 +299,7 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 			r.Skipped = append(r.Skipped, SkipRecord{ID: m.ID, Reason: reason})
 			r.Outcomes = append(r.Outcomes, CheckOutcome{ID: m.ID, Outcome: OutcomeSkipped, Skip: reason})
 			r.Summary.Skipped++
+			cutShort++
 			continue
 		}
 
@@ -307,15 +315,13 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 
 		if reason := validateResult(m.ID, res); reason != "" {
 			// A malformed Result is untrustworthy: record THIS check as skipped
-			// (never publish whatever it returned) and every remaining selected
-			// check as not run, same as the Result.Fatal path below — then fall
-			// through to sortFindings/countSeverities so the footer matches the
-			// (findings-so-far) body instead of an early, uncounted `return r`
-			// that both violates Summary's own documented invariants (doctor.go
-			// Summary doc comment) and publishes findings out of canonical order.
+			// (never publish whatever it returned), abort the run so every
+			// remaining selected check is also skipped, and still fall through
+			// to sortFindings/countSeverities — an early, uncounted `return r`
+			// here would violate Summary's own documented invariants (see the
+			// Summary doc comment) and publish findings out of canonical order.
 			r.Incomplete = true
 			r.IncompleteReason = reason
-			r.Aborted = true
 			r.Skipped = append(r.Skipped, SkipRecord{ID: m.ID, Reason: reason})
 			r.Outcomes = append(r.Outcomes, CheckOutcome{ID: m.ID, Outcome: OutcomeSkipped, Skip: reason})
 			r.Summary.Skipped++
@@ -329,8 +335,15 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 
 		switch outcome {
 		case OutcomeSkipped:
-			co.Skip = res.SkipReason
-			r.Skipped = append(r.Skipped, SkipRecord{ID: m.ID, Reason: res.SkipReason})
+			// res.SkipReason is empty for a Fatal-with-no-findings Result (see
+			// Result.Outcome): fall back to the Fatal error text so this
+			// check's own skip record still says something.
+			reason := res.SkipReason
+			if reason == "" && res.Fatal != nil {
+				reason = res.Fatal.Error()
+			}
+			co.Skip = reason
+			r.Skipped = append(r.Skipped, SkipRecord{ID: m.ID, Reason: reason})
 			r.Summary.Skipped++
 		case OutcomePass:
 			r.Summary.Pass++
@@ -356,11 +369,11 @@ func Run(ctx context.Context, in *Input, opts RunOptions) Report {
 		if res.Fatal != nil {
 			r.Incomplete = true
 			r.IncompleteReason = res.Fatal.Error()
-			r.Aborted = true
 			aborted = true
 			abortedAfter = m.ID
 		}
 	}
+	r.Aborted = cutShort > 0
 
 	// An unreadable config makes the report incomplete even though A1 has no
 	// check to say so yet (that is B2's config.parse, via Result.Fatal — once

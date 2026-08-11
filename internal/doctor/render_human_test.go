@@ -8,10 +8,10 @@ import (
 
 func TestRenderHumanGoldenReport(t *testing.T) {
 	checks := []Check{
-		findingCheck("policy.dangerous", SeverityFail, "git -c core.sshCommand is allowed"),
-		findingCheck("config.loose-perm", SeverityWarn, "config.yaml is group-writable"),
-		findingCheck("env.container-backend", SeverityInfo, "found: docker (/usr/bin/docker)"),
-		skippedCheck("tools.binary-writable", "no readable config file"),
+		doctorFindingCheck("policy.dangerous", SeverityFail, "git -c core.sshCommand is allowed"),
+		doctorFindingCheck("config.loose-perm", SeverityWarn, "config.yaml is group-writable"),
+		doctorFindingCheck("env.container-backend", SeverityInfo, "found: docker (/usr/bin/docker)"),
+		doctorSkippedCheck("tools.binary-writable", "no readable config file"),
 	}
 	in := &Input{Env: NewMapEnv(), GOOS: "linux", ConfigPath: "/home/user/.config/wraptool/config.yaml", ConfigState: ConfigLoaded}
 	r := Run(context.Background(), in, RunOptions{Checks: checks})
@@ -58,7 +58,7 @@ func TestRenderHumanAbsentConfigHeader(t *testing.T) {
 		Env: NewMapEnv(), GOOS: "linux",
 		ConfigPath:  "/home/user/.config/wraptool/config.yaml",
 		ConfigState: ConfigAbsent,
-	}, RunOptions{Checks: []Check{findingCheck("env.container-backend", SeverityInfo, "none found on PATH")}})
+	}, RunOptions{Checks: []Check{doctorFindingCheck("env.container-backend", SeverityInfo, "none found on PATH")}})
 
 	var buf strings.Builder
 	if err := RenderHuman(&buf, r); err != nil {
@@ -137,8 +137,8 @@ func TestRenderHumanFooterOmitsSuppressedParentheticalWhenZero(t *testing.T) {
 }
 
 func TestRenderHumanNeverMentionsStdioTransport(t *testing.T) {
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: []Check{
-		findingCheck("env.container-backend", SeverityInfo, "found: docker (/usr/bin/docker)"),
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: []Check{
+		doctorFindingCheck("env.container-backend", SeverityInfo, "found: docker (/usr/bin/docker)"),
 	}})
 	var buf strings.Builder
 	if err := RenderHuman(&buf, r); err != nil {

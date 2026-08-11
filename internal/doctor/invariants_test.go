@@ -41,20 +41,19 @@ func TestRegistryIsWellFormed(t *testing.T) {
 	}
 }
 
-// invariantInputs is the pair every registry-wide invariant test runs against:
-// a virgin host (no config, no workspace — "wraptool doctor is safe as the
-// very first command a new user runs") AND a fully-populated host (every
-// optional Requirement bit satisfied). Six of nine Phase-B groups are
-// config-gated (Meta.Needs&NeedsConfig != 0): running ONLY the virgin case
-// would leave them permanently untested by these invariants, and running
-// every check unconditionally against the virgin Input — ignoring Needs
-// entirely — is what made A1's original invariant tests panic on nil
-// in.Config, because the engine's own documented guarantee (Run: "a check
-// whose Needs are unmet is never invoked") does not hold for a caller that
-// calls c.Run directly instead of going through Run. Both cases below gate on
-// the same provides()/Needs check the engine itself uses, so a check is only
-// ever invoked here under an Input it actually declared it could handle.
-func invariantInputs() []struct {
+// invariantsInputCases is the pair every registry-wide invariant test runs
+// against: a virgin host (no config yet, but the real HostPaths a host
+// always has — see invariantsVirginInput) AND a fully-populated host (every
+// optional Requirement bit satisfied, invariantsFullyPopulatedInput). Six of
+// nine Phase-B groups are config-gated (Meta.Needs&NeedsConfig != 0): running
+// ONLY the virgin case would leave them permanently untested by these
+// invariants. Both cases gate check selection on the same provides()/Needs
+// test the engine itself uses (invariantsChecksSatisfying), so a check is
+// only ever invoked here under an Input it actually declared it could
+// handle — the engine's own documented guarantee (Run: "a check whose Needs
+// are unmet is never invoked") applies just as much to a test calling c.Run
+// directly as to Run itself.
+func invariantsInputCases() []struct {
 	name string
 	in   *Input
 } {
@@ -62,42 +61,98 @@ func invariantInputs() []struct {
 		name string
 		in   *Input
 	}{
-		{"virgin", &Input{
-			Env:        NewMapEnv(),
-			GOOS:       "linux",
-			ConfigPath: "/home/user/.config/wraptool/config.yaml",
-		}},
-		{"fully-populated", fullyPopulatedInput()},
+		{"virgin", invariantsVirginInput()},
+		{"fully-populated", invariantsFullyPopulatedInput()},
 	}
 }
 
-// fullyPopulatedInput satisfies every Requirement bit doctor.go's provides()
-// knows about, so a config-gated (or workspace-gated, probe-gated,
-// pool-verify-gated) check gets exercised by the registry-wide invariants too
-// — not just the checks that happen to need nothing.
-func fullyPopulatedInput() *Input {
+// invariantsHostPaths is the HostPaths literal shared by both invariant
+// cases: a real host, virgin or not, always has these (cmd/doctor.go
+// populates Paths unconditionally, before ever looking at ConfigState) —
+// only ConfigState/Config distinguish "no config yet" from "fully set up".
+// A check gated on NeedsPoolVerify with no other config dependency (§7.9's
+// pool.generation-digest) resolves its own pool.PoolPaths from
+// Input.Paths.PoolRoot; an empty PoolRoot there would silently resolve a
+// root-parameterized pool call to a RELATIVE path and read the real
+// filesystem from underneath a MapEnv-backed unit test.
+var invariantsHostPaths = HostPaths{
+	ConfigDir:  "/home/user/.config/wraptool",
+	DataDir:    "/home/user/.local/share/wraptool",
+	CacheDir:   "/home/user/.cache/wraptool",
+	RuntimeDir: "/run/user/1000/wraptool",
+	PoolRoot:   "/home/user/.local/share/wraptool/harness-pool",
+}
+
+// invariantsVirginInput is a host before any config exists — "virgin" means
+// no config, never no paths.
+func invariantsVirginInput() *Input {
 	return &Input{
-		Env:  NewMapEnv(),
-		GOOS: "linux",
-		Paths: HostPaths{
-			ConfigDir:  "/home/user/.config/wraptool",
-			DataDir:    "/home/user/.local/share/wraptool",
-			CacheDir:   "/home/user/.cache/wraptool",
-			RuntimeDir: "/run/user/1000/wraptool",
-			PoolRoot:   "/home/user/.local/share/wraptool/harness-pool",
+		Env:        NewMapEnv(),
+		GOOS:       "linux",
+		Paths:      invariantsHostPaths,
+		ConfigPath: "/home/user/.config/wraptool/config.yaml",
+	}
+}
+
+// invariantsFullyPopulatedInput satisfies every Requirement bit doctor.go's
+// provides() knows about, so a config-gated (or workspace-gated, probe-gated,
+// pool-verify-gated) check gets exercised by the registry-wide invariants too
+// — not just the checks that happen to need nothing. Config carries three
+// tools and two mcp_servers entries (map iteration order has too few
+// permutations to reliably trip TestChecksAreDeterministic with only two —
+// three keys gives an unsorted range six orderings to differ across, not
+// two), a non-loopback mcp.listen and an auth_token_file: a config-gated
+// check that ranges over cfg.Tools/cfg.MCPServers without sorting keys, or
+// that only reaches its real logic past a non-empty-listen/non-empty-token
+// branch, needs more than one entry and a non-default listener to ever be
+// exercised at all.
+func invariantsFullyPopulatedInput() *Input {
+	return &Input{
+		Env:   NewMapEnv(),
+		GOOS:  "linux",
+		Paths: invariantsHostPaths,
+		Config: &config.Config{
+			MCP: config.MCPConfig{
+				Listen:        "0.0.0.0:8717",
+				AuthTokenFile: "/home/user/.config/wraptool/mcp-token",
+			},
+			Tools: map[string]config.ToolConfig{
+				"git": {
+					Binary: "/usr/bin/git",
+					Allow:  []config.AllowRule{{Subcommand: []string{"pull"}}},
+				},
+				"kubectl": {
+					Binary: "/usr/bin/kubectl",
+					Allow:  []config.AllowRule{{Subcommand: []string{"get", "pods"}}},
+				},
+				"gcloud": {
+					Binary: "/usr/bin/gcloud",
+					Allow:  []config.AllowRule{{Subcommand: []string{"compute", "instances", "list"}}},
+				},
+			},
+			MCPServers: map[string]config.MCPServerConfig{
+				"filesystem": {
+					Command: "/usr/bin/mcp-filesystem",
+					Allow:   []config.MCPAllowRule{{Tool: "read_file"}},
+				},
+				"github": {
+					Command: "/usr/bin/mcp-github",
+					Allow:   []config.MCPAllowRule{{Tool: "list_issues"}},
+				},
+			},
 		},
 		ConfigPath:  "/home/user/.config/wraptool/config.yaml",
 		ConfigState: ConfigLoaded,
-		Config:      &config.Config{},
 		Workspace:   "/home/user/project",
 		Probe:       true,
 		VerifyPool:  true,
 	}
 }
 
-// checksSatisfying returns Registered() filtered to the checks in's Input can
-// actually satisfy — the same gate doctor.Run applies via provides()/Needs.
-func checksSatisfying(in *Input) []Check {
+// invariantsChecksSatisfying returns Registered() filtered to the checks
+// in's Input can actually satisfy — the same gate doctor.Run applies via
+// provides()/Needs.
+func invariantsChecksSatisfying(in *Input) []Check {
 	have := provides(in)
 	var out []Check
 	for _, c := range Registered() {
@@ -109,13 +164,13 @@ func checksSatisfying(in *Input) []Check {
 }
 
 // TestChecksSurviveAVirginHost runs every registered check whose Needs it can
-// satisfy against BOTH a virgin host and a fully-populated one (see
-// invariantInputs), so no check is ever invoked under an Input it did not
-// declare it could handle, and no check escapes coverage just because it
+// satisfy against BOTH a virgin host and a fully-populated one
+// (invariantsInputCases), so no check is ever invoked under an Input it did
+// not declare it could handle, and no check escapes coverage just because it
 // happens to be config/workspace/probe/pool-gated.
 func TestChecksSurviveAVirginHost(t *testing.T) {
-	for _, tc := range invariantInputs() {
-		for _, c := range checksSatisfying(tc.in) {
+	for _, tc := range invariantsInputCases() {
+		for _, c := range invariantsChecksSatisfying(tc.in) {
 			m := c.Meta()
 			t.Run(tc.name+"/"+string(m.ID), func(t *testing.T) {
 				defer func() {
@@ -138,10 +193,11 @@ func TestChecksSurviveAVirginHost(t *testing.T) {
 // TestChecksAreDeterministic runs each registered check (whose Needs the
 // Input satisfies) twice against the same Input and requires an identical
 // Result both times. Catches the likeliest defect class: ranging over a Go
-// map (e.g. cfg.Tools) without sorting keys.
+// map (e.g. cfg.Tools) without sorting keys — which needs >= 2 map entries to
+// ever be able to fail, hence invariantsFullyPopulatedInput's Tools/MCPServers.
 func TestChecksAreDeterministic(t *testing.T) {
-	for _, tc := range invariantInputs() {
-		for _, c := range checksSatisfying(tc.in) {
+	for _, tc := range invariantsInputCases() {
+		for _, c := range invariantsChecksSatisfying(tc.in) {
 			m := c.Meta()
 			t.Run(tc.name+"/"+string(m.ID), func(t *testing.T) {
 				r1 := c.Run(context.Background(), tc.in)
@@ -156,14 +212,14 @@ func TestChecksAreDeterministic(t *testing.T) {
 
 // TestFindingsAreWellFormed checks the shape of every finding a registered
 // check emits directly (i.e. before the engine's Location/ID stamping), under
-// both invariantInputs cases: valid Severity, non-empty Title/Detail, a
+// both invariantsInputCases: valid Severity, non-empty Title/Detail, a
 // Remedy for fail/warn, never both Path and Location set by the check itself
 // (RULING R5 — that field is engine-owned for config findings), and — plan §1
 // rule 9 — a check must never hand-roll a config Location by echoing
 // in.ConfigPath into it; it must set Path so C1 can resolve a real file:line.
 func TestFindingsAreWellFormed(t *testing.T) {
-	for _, tc := range invariantInputs() {
-		for _, c := range checksSatisfying(tc.in) {
+	for _, tc := range invariantsInputCases() {
+		for _, c := range invariantsChecksSatisfying(tc.in) {
 			m := c.Meta()
 			res := c.Run(context.Background(), tc.in)
 			for i, f := range res.Findings {
@@ -191,18 +247,18 @@ func TestFindingsAreWellFormed(t *testing.T) {
 	}
 }
 
-// doctorHostAllowlist names the files permitted to touch the real host
+// invariantsHostAllowlist names the files permitted to touch the real host
 // directly. Every other file in this package must go through Env.
-var doctorHostAllowlist = map[string]bool{
+var invariantsHostAllowlist = map[string]bool{
 	"host.go":            true,
 	"host_stat_unix.go":  true,
 	"host_stat_other.go": true,
 	"mapenv.go":          true,
 }
 
-// forbiddenHostSelectors: package identifier -> selector names forbidden on
-// that package. A nil/empty slice means every selector on that package is
-// forbidden.
+// invariantsForbiddenHostSelectors: package identifier -> selector names
+// forbidden on that package. A nil/empty slice means every selector on that
+// package is forbidden.
 //
 // The "pool" entries are internal/pool's zero-argument, HOST-ROOTED layout
 // accessors (internal/pool/layout.go): every one of them resolves through
@@ -211,11 +267,11 @@ var doctorHostAllowlist = map[string]bool{
 // $XDG_DATA_HOME even under a MapEnv-backed unit test and this guard test
 // still passes unless the selector itself is named here. Deliberately NOT
 // listed: pool.LegacyRemovedMarkerFileAt (takes an explicit root) and every
-// pool.PoolPaths-TAKING function (ActiveGeneration, VerifyGenerationTree,
-// GenerationVersion, ...) — those ARE root-parameterized and are exactly how
-// B8 is meant to reach the pool, building its own pool.PoolPaths from
-// Input.Paths.PoolRoot.
-var forbiddenHostSelectors = map[string][]string{
+// root-parameterized pool function — ActiveGeneration/GenerationVersion (take
+// a pool.PoolPaths) and VerifyGenerationTree (takes an explicit root string)
+// — those ARE root-parameterized and are exactly how B8 is meant to reach the
+// pool, building its own pool.PoolPaths from Input.Paths.PoolRoot.
+var invariantsForbiddenHostSelectors = map[string][]string{
 	"os":      nil,
 	"exec":    nil,
 	"syscall": nil,
@@ -237,8 +293,12 @@ var forbiddenHostSelectors = map[string][]string{
 // TestChecksDoNotTouchTheRealHost statically rejects direct host access
 // (os./exec./syscall./paths./time.Now/filepath.EvalSymlinks/pool's zero-arg
 // layout accessors) outside the allowlisted files, so a check can only reach
-// the host through Env (or a root-parameterized pool.PoolPaths call) — which
-// is what makes MapEnv-backed unit tests trustworthy for every future check.
+// the host through Env (or a root-parameterized pool call) — which is what
+// makes MapEnv-backed unit tests trustworthy for every future check. It does
+// NOT see through a check that instead calls a sibling package's own
+// host-touching function (config.LoadStrict/Validate, introspect.CacheStamp)
+// — host.go's Env doc comment names that sanctioned, but untestable-by-this-
+// guard, exception.
 func TestChecksDoNotTouchTheRealHost(t *testing.T) {
 	dir := "."
 	entries, err := os.ReadDir(dir)
@@ -252,7 +312,7 @@ func TestChecksDoNotTouchTheRealHost(t *testing.T) {
 		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if doctorHostAllowlist[name] {
+		if invariantsHostAllowlist[name] {
 			continue
 		}
 
@@ -270,54 +330,102 @@ func TestChecksDoNotTouchTheRealHost(t *testing.T) {
 			if !ok {
 				return true
 			}
-			names, forbidden := forbiddenHostSelectors[id.Name]
+			names, forbidden := invariantsForbiddenHostSelectors[id.Name]
 			if !forbidden {
 				return true
 			}
 			if len(names) == 0 || slices.Contains(names, sel.Sel.Name) {
 				pos := fset.Position(sel.Pos())
-				t.Errorf("%s: direct host access %s.%s — must go through Env (or a root-parameterized pool.PoolPaths call)", pos, id.Name, sel.Sel.Name)
+				t.Errorf("%s: direct host access %s.%s — must go through Env (or a root-parameterized pool call)", pos, id.Name, sel.Sel.Name)
 			}
 			return true
 		})
 	}
 }
 
-// doctorFoundationFiles are A1's own seam files — the engine, types, and human
-// renderer — exempt from the group-file naming convention (plan §1 rule 7)
-// because they ARE the shared seam, not a Phase-B/C/D check group.
-var doctorFoundationFiles = map[string]bool{
+// invariantsFoundationFiles are A1/A2's own seam files, plus the two DATA-only
+// files the plan's file map calls out by name — none of these is a Phase-B/
+// C/D check group, so none carries a per-group identifier prefix and none is
+// scanned by TestGroupFileIdentifiersArePrefixedWithFileGroup:
+//
+//   - finding.go, doctor.go, render_human.go, host.go, host_stat_unix.go,
+//     host_stat_other.go, mapenv.go: the engine/type seam itself.
+//   - render_json.go (A2): the --json report renderer, a sibling of
+//     render_human.go, not a check group.
+//   - toolknowledge.go (D0): "table shape + data, no checks yet" per plan §2 —
+//     a lookup table, not a file that calls register().
+var invariantsFoundationFiles = map[string]bool{
 	"finding.go":         true,
 	"doctor.go":          true,
 	"render_human.go":    true,
+	"render_json.go":     true,
 	"host.go":            true,
 	"host_stat_unix.go":  true,
 	"host_stat_other.go": true,
 	"mapenv.go":          true,
+	"toolknowledge.go":   true,
 }
 
-// filePrefix derives the naming-convention prefix for a group file: the
-// FIRST underscore-delimited segment of its base name, e.g. "env.go" -> "env",
-// "config_load.go" / "config_perms.go" -> "config", "mcpservers.go" ->
-// "mcpservers" (no underscore). Two files that share this coarse prefix AND
-// land in the SAME parallel wave (exposure_listen.go/exposure_files.go;
-// tools.go/mcpservers.go are Group `tools` but do NOT share this file-derived
-// prefix, so they are naturally disjoint) must extend it with their own
-// distinguishing segment (exposureListen*/exposureFiles*) — see plan §1 rule
-// 7. This check enforces the coarse, mechanically-verifiable half; the finer
-// per-file disambiguation for same-prefix parallel files is reviewer-enforced.
-func filePrefix(filename string) string {
+// invariantsGroupStem returns the group-identifying stem a group file shares
+// with its own test file: the .go suffix and a trailing _test removed, so
+// "tools.go" and "tools_test.go" (and "invariants_test.go" itself) resolve to
+// the same stem and therefore the same required prefix — this is what makes
+// plan §1 rule 7 cover a step's own test file at zero extra cost to the
+// author: name your test file the normal way and it is already covered.
+func invariantsGroupStem(filename string) string {
 	stem := strings.TrimSuffix(filename, ".go")
+	stem = strings.TrimSuffix(stem, "_test")
+	return stem
+}
+
+// invariantsFilePrefix derives the MECHANICAL prefix for a group stem: its
+// first `_`-delimited segment ("env" -> "env", "config_load"/"config_perms"
+// -> "config", "mcpservers" -> "mcpservers", no underscore to cut at). Two
+// files that share this coarse prefix AND land in the SAME parallel wave
+// (exposure_listen.go/exposure_files.go; policy_*.go) must extend it with
+// their own distinguishing segment (exposureListen*/exposureFiles*) per plan
+// §1 rule 7 — reviewer-enforced, not mechanical.
+func invariantsFilePrefix(stem string) string {
 	seg, _, _ := strings.Cut(stem, "_")
 	return seg
 }
 
+// invariantsFilePrefixOverrides names the stems (see invariantsGroupStem)
+// whose natural, idiomatic Go identifiers do not literally contain the
+// mechanical invariantsFilePrefix derivation: a plural file name with
+// singular helpers (tools.go's runToolBinaryExecutable), a compound name
+// whose real group is its shorter head noun (mcpservers.go's
+// mcpServerCommand). Every stem here is drawn verbatim from plan §2's file
+// map, so a Phase-B/C/D author never edits this table themselves — their
+// file's entry already exists before their branch does.
+var invariantsFilePrefixOverrides = map[string][]string{
+	"tools":      {"tool"},
+	"mcpservers": {"mcp"},
+	"locate":     {"locate", "yaml"},
+	"suppress":   {"suppress", "ignore"},
+}
+
+// invariantsRequiredPrefixes returns the set of prefixes an unexported
+// top-level identifier in filename may reference, per plan §1 rule 7.
+func invariantsRequiredPrefixes(filename string) []string {
+	stem := invariantsGroupStem(filename)
+	if p, ok := invariantsFilePrefixOverrides[stem]; ok {
+		return p
+	}
+	return []string{invariantsFilePrefix(stem)}
+}
+
 // TestGroupFileIdentifiersArePrefixedWithFileGroup enforces plan §1 rule 7: a
-// package-level name collision between two concurrently authored group files
-// is invisible to git and merges cleanly, breaking only on the merge commit.
-// An unexported identifier must contain its file's own group prefix
-// (case-insensitively — this also matches rule 8's `run<Something>` check
-// functions, e.g. runEnvContainerBackend, not only a literal string prefix).
+// package-level name collision between two concurrently authored files —
+// INCLUDING their own _test.go files, the one namespace every one of the nine
+// Phase-B authors is guaranteed to touch — is invisible to git and merges
+// cleanly, breaking only on the merge commit. An unexported identifier must
+// contain at least one of its file's allowed prefixes (invariantsRequiredPrefixes,
+// case-insensitively — this also matches rule 8's `run<Something>` check
+// functions, e.g. runEnvContainerBackend, not only a literal string prefix),
+// over every .go file in the package except invariantsFoundationFiles. This
+// file's own helpers (below) are covered too, at the "invariants" prefix its
+// own stem derives — modeling the rule rather than being exempt from it.
 func TestGroupFileIdentifiersArePrefixedWithFileGroup(t *testing.T) {
 	dir := "."
 	entries, err := os.ReadDir(dir)
@@ -328,38 +436,46 @@ func TestGroupFileIdentifiersArePrefixedWithFileGroup(t *testing.T) {
 	fset := token.NewFileSet()
 	for _, e := range entries {
 		name := e.Name()
-		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if e.IsDir() || !strings.HasSuffix(name, ".go") {
 			continue
 		}
-		if doctorFoundationFiles[name] {
+		if invariantsFoundationFiles[name] {
 			continue
 		}
 
-		prefix := strings.ToLower(filePrefix(name))
+		prefixes := invariantsRequiredPrefixes(name)
 		file, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
 		if err != nil {
 			t.Fatalf("parsing %s: %v", name, err)
 		}
 
 		for _, decl := range file.Decls {
-			for _, id := range topLevelIdents(decl) {
+			for _, id := range invariantsTopLevelIdents(decl) {
 				if id.Name == "init" || id.Name == "_" || ast.IsExported(id.Name) {
 					continue
 				}
-				if !strings.Contains(strings.ToLower(id.Name), prefix) {
+				lower := strings.ToLower(id.Name)
+				ok := false
+				for _, p := range prefixes {
+					if strings.Contains(lower, p) {
+						ok = true
+						break
+					}
+				}
+				if !ok {
 					pos := fset.Position(id.Pos())
-					t.Errorf("%s: unexported identifier %q does not reference its file's %q group prefix (plan §1 rule 7)", pos, id.Name, prefix)
+					t.Errorf("%s: unexported identifier %q does not reference any of its file's %q group prefixes (plan §1 rule 7)", pos, id.Name, prefixes)
 				}
 			}
 		}
 	}
 }
 
-// topLevelIdents extracts the identifier(s) a top-level declaration introduces
-// into package scope: one name for a func/type, one name per spec for a
-// var/const block (including grouped `var a, b = ...`). A method (non-nil
-// Recv) introduces no package-scope name and is skipped.
-func topLevelIdents(decl ast.Decl) []*ast.Ident {
+// invariantsTopLevelIdents extracts the identifier(s) a top-level declaration
+// introduces into package scope: one name for a func/type, one name per spec
+// for a var/const block (including grouped `var a, b = ...`). A method
+// (non-nil Recv) introduces no package-scope name and is skipped.
+func invariantsTopLevelIdents(decl ast.Decl) []*ast.Ident {
 	switch d := decl.(type) {
 	case *ast.FuncDecl:
 		if d.Recv != nil {

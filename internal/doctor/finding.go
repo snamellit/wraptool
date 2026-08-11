@@ -131,7 +131,9 @@ var idPattern = regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z0-9]+(-[a-z0-9]+)*$`)
 //
 // Deliberately NOT a bit: "a live server". runtime.stale-pidfile (§7.5) fires
 // precisely when the pid is DEAD, so gating it on liveness would suppress the
-// check. B9 reads Input.Server itself.
+// check. There is also deliberately no Input.Server field: B9 reads and
+// decodes serve.state itself, via Input.Paths.RuntimeDir + Env.ReadFile,
+// entirely inside runtime.go (see doctor.go's Input doc comment).
 type Requirement uint8
 
 const (
@@ -366,13 +368,18 @@ func Abort(err error, f ...Finding) Result {
 	return Result{Findings: f, Fatal: err}
 }
 
-// Outcome derives this result's per-check Outcome.
+// Outcome derives this result's per-check Outcome. A Fatal Result with no
+// findings (Abort's findings parameter is variadic, so this is legal) is
+// OutcomeSkipped, never OutcomePass: the check that aborted the whole run
+// must not be reported as having passed.
 func (r Result) Outcome() Outcome {
 	switch {
 	case r.SkipReason != "":
 		return OutcomeSkipped
 	case len(r.Findings) > 0:
 		return OutcomeFinding
+	case r.Fatal != nil:
+		return OutcomeSkipped
 	default:
 		return OutcomePass
 	}

@@ -26,25 +26,42 @@ review.
 6. **A step that discovers a design error stops and reports it** rather than
    widening. The design note is wrong often enough (two adversarial passes
    found real breakage) that this will happen.
-7. **Prefix every unexported identifier with its file's own group prefix**
+7. **Prefix every unexported identifier — in your group file AND its own
+   `_test.go`, no exceptions — with your file's own group prefix**
    (`internal/doctor/env.go`'s `envBackends`, `envDescribeBackends`,
-   `runEnvContainerBackend` — never a bare `describeBackends`). A package-level
-   name collision between two concurrently authored group files is invisible
-   to git and merges cleanly; it breaks only on the merge commit, with a
-   redeclaration error that names neither author. The prefix is the file's own
-   name (its first `_`-delimited segment: `config_load.go`/`config_perms.go`
-   -> `config`, `exposure_listen.go`/`exposure_files.go` -> `exposure`), not
-   the report `Group` — two files can share a `Group` and still land
-   concurrently (`tools.go`/`mcpservers.go` are both group `tools`;
-   `exposure_listen.go`/`exposure_files.go` are both group `exposure`). When
-   your file's prefix collides with another file landing in the SAME parallel
-   wave, extend it with your file's own distinguishing segment
-   (`exposureListen*`/`exposureFiles*`) rather than relying on the shared,
-   coarser one. `internal/doctor/invariants_test.go`'s
+   `runEnvContainerBackend`, and `env_test.go`'s `envSplitBackendDetail` —
+   never a bare `describeBackends` or `splitBackendDetail`). A package-level
+   name collision between two concurrently authored files is invisible to git
+   and merges cleanly; it breaks only on the merge commit, with a
+   redeclaration error that names neither author — and the package's shared
+   `_test.go` namespace is where a generic helper name (`check`, `virginInput`)
+   is likeliest of all to collide, since it is the one file every one of the
+   nine Phase-B authors is guaranteed to write. The prefix is the file's own
+   name (its first `_`-delimited segment, `.go`/`_test.go` stripped:
+   `config_load.go`/`config_load_test.go` -> `config`,
+   `exposure_listen.go` -> `exposure`), not the report `Group` — two files can
+   share a `Group` and still land concurrently (`tools.go`/`mcpservers.go` are
+   both group `tools`; `exposure_listen.go`/`exposure_files.go` are both group
+   `exposure`). If that mechanical first-segment prefix does not fit your
+   file's natural, idiomatic naming (a plural file name over singular
+   helpers, a compound name whose real group is its shorter head noun),
+   `internal/doctor/invariants_test.go`'s `invariantsFilePrefixOverrides`
+   table already names the prefix to use for every file in §2's map — it
+   exists before your branch does, so you never edit that test file yourself
+   to add an entry. When your prefix collides with another file landing in
+   the SAME parallel wave, extend it with your file's own distinguishing
+   segment (`exposureListen*`/`exposureFiles*`) rather than relying on the
+   shared, coarser one — reviewer-enforced, not mechanical.
+   `internal/doctor/invariants_test.go`'s
    `TestGroupFileIdentifiersArePrefixedWithFileGroup` mechanically enforces the
-   coarse half of this rule (identifier contains its file's group prefix,
-   case-insensitively, so `run<Group>...` check functions pass too); the finer
-   same-prefix-same-wave disambiguation is reviewer-enforced.
+   coarse half of this rule, over every `.go` file in the package INCLUDING
+   `_test.go` ones (identifier contains one of its file's allowed prefixes,
+   case-insensitively, so `run<Group>...` check functions pass too), except
+   the seam/foundation/data-only files named in `invariantsFoundationFiles`
+   (`finding.go`, `doctor.go`, `render_human.go`, `render_json.go`, `host.go`,
+   `host_stat_unix.go`, `host_stat_other.go`, `mapenv.go`, `toolknowledge.go`
+   — never a check group, so never scanned); the finer same-prefix-same-wave
+   disambiguation is reviewer-enforced.
 8. **A check's `RunFunc` is a named, package-level function** (`runFoo`, per
    rule 7), tested by calling it directly with a hand-built `*Input` — never a
    closure defined inside `init()`, and no test asserts over the global
@@ -72,7 +89,12 @@ review.
     is a file shared by all nine Phase-B branches, so an author who adds a bit
     or a method to unblock their own check puts every other branch in
     conflict with theirs. This is rule 6 applied to the two shared vocabulary
-    types specifically.
+    types specifically. A check is not limited to `Env`, though: `host.go`'s
+    `Env` doc comment names the sanctioned sibling-package escape hatches
+    (`config.Load`/`LoadStrict`/`Validate`, `introspect.CacheStamp`,
+    `requestlog`'s readers) that touch the real filesystem themselves — a
+    check using one of these is tested against a `t.TempDir()` fixture tree,
+    never a `MapEnv` (design §12).
 
 ## 2. File map
 
@@ -82,7 +104,13 @@ internal/doctor/
   doctor.go           A1  engine: run order, selection, summary
   render_human.go     A1  human report
   render_json.go      A2  --json
-  env.go              B1  env.*
+  host.go             A1  Env interface (CLOSED, rule 10), osEnv, FileInfo
+  mapenv.go           A1  MapEnv: the fake every Phase-B/C/D unit test builds
+  invariants_test.go  A1  registry-wide invariants every check is covered by
+                          automatically (naming, determinism, well-formed
+                          findings, no direct host access) — read, never
+                          edited, by B1..B9/C1/C2/D0..D4
+  env.go              A1 (env.container-backend), extended by B1 with env.*
   config_load.go      B2  config.parse, config.validate
   config_perms.go     B3  config.file-perms, dir-perms, symlinked, file-readable-secrets
   exposure_listen.go  B4  listener/bind checks
@@ -111,7 +139,7 @@ that may run at the same time because their file sets are disjoint.
 
 | Step | Lands | Files | Depends | Demo |
 |---|---|---|---|---|
-| **A1** | Engine + CLI + human renderer + exit codes 0/1/2. Types: `Severity`, `Outcome`, `Finding`, `Check`, `register()`. One check: `env.container-backend` (info). Config is loaded leniently and passed to checks; a missing config is `info`, not an error. | `finding.go`, `doctor.go`, `render_human.go`, `cmd/doctor.go` | — | `wraptool doctor` prints one info line and exits 0 |
+| **A1** | Engine + CLI + human renderer + exit codes 0/1/2. Types: `Severity`, `Outcome`, `Finding`, `Check`, `register()`. The `Env`/`FileInfo` host seam (real `osEnv` + the `MapEnv` fake every later step's unit tests build) and the registry-wide invariant tests every check is covered by automatically. One check: `env.container-backend` (info). Config is loaded leniently and passed to checks; a missing config is `info`, not an error. | `finding.go`, `doctor.go`, `render_human.go`, `host.go`, `host_stat_unix.go`, `host_stat_other.go`, `mapenv.go`, `env.go`, `invariants_test.go`, `cmd/doctor.go`, `cmd/exit.go`, `main.go` (exit-code plumbing) | — | `wraptool doctor` prints one info line and exits 0 |
 | **A2** | `--json`, `--only`, `--skip`, `--strict`, `--no-probe`, `--workspace` (via `os.Stat` walk, never `git rev-parse`). Summary arithmetic incl. `skipped`. | `render_json.go`, `doctor.go`, `cmd/doctor.go` | A1 | `wraptool doctor --json` emits the schema |
 
 A1 is the only step whose review matters structurally — it fixes the seam every
@@ -141,10 +169,13 @@ defeats a later step (C1) with no error at all.
 B9 is deliberately here, not in Phase E: the design's most valuable single
 check needs no prerequisite at all.
 
-**Windows handling** lands with whichever of B3/B5/B6 goes first: a shared
-`skipIfNoModeBits()` helper in that step's file, moved to `doctor.go` by the
-second one that needs it. Small, deliberate duplication beats a blocking
-dependency.
+**Windows handling** needs no per-step helper and no `doctor.go` edit: a
+permission-bit check declares `Needs: NeedsModeBits` in its `Meta`, and the
+engine skips it with the canned reason ("file permission bits are not
+meaningful on this platform", `finding.go`'s `requirementReasons`) whenever
+`Input.GOOS == "windows"` (`provides()`, `doctor.go`). This bit already exists
+in A1 for exactly this reason — B3/B5/B6 each just set it, with no
+coordination between them needed at all.
 
 ### Phase C — locations and suppression (2 steps, serial)
 

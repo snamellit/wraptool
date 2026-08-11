@@ -41,12 +41,12 @@ func TestRunEnvContainerBackendAllSubsets(t *testing.T) {
 				t.Errorf("mask %03b: remedy set=%v, anyPresent=%v", mask, f.Remedy != "", anyPresent)
 			}
 
-			// Assert on the rendered SEGMENTS, not mere substring presence: a
-			// regression that swapped envDescribeBackends' present/absent
-			// arguments (reporting a found backend as "not found" and vice
-			// versa) must fail this test. found/notFound below are the exact
-			// "found: "/"not found: " segments of Detail.
-			found, notFound := splitBackendDetail(t, f.Detail)
+			// Assert on the rendered SEGMENTS, not mere substring presence: this
+			// must fail if a backend that IS present ever renders in the "not
+			// found" segment (or vice versa) — swapped present/absent arguments
+			// are otherwise invisible to a plain substring check. found/notFound
+			// below are the exact "found: "/"not found: " segments of Detail.
+			found, notFound := envSplitBackendDetail(t, f.Detail)
 			for _, b := range envBackends {
 				if want[b] != slices.Contains(found, b) {
 					t.Errorf("mask %03b: detail %q — found segment %v, want %q present=%v", mask, f.Detail, found, b, want[b])
@@ -59,18 +59,18 @@ func TestRunEnvContainerBackendAllSubsets(t *testing.T) {
 	}
 }
 
-// splitBackendDetail parses envDescribeBackends' rendered Detail back into its
-// "found: a, b" and "not found: c" backend lists, so the test can assert each
-// backend landed on the correct side rather than merely appearing somewhere in
-// the string.
-func splitBackendDetail(t *testing.T, detail string) (found, notFound []string) {
+// envSplitBackendDetail parses envDescribeBackends' rendered Detail back into
+// its "found: a, b" and "not found: c" backend lists, so the test can assert
+// each backend landed on the correct side rather than merely appearing
+// somewhere in the string.
+func envSplitBackendDetail(t *testing.T, detail string) (found, notFound []string) {
 	t.Helper()
 	for _, seg := range strings.Split(detail, "; ") {
 		switch {
 		case strings.HasPrefix(seg, "found: "):
-			found = parseBackendNames(strings.TrimPrefix(seg, "found: "))
+			found = envParseBackendNames(strings.TrimPrefix(seg, "found: "))
 		case strings.HasPrefix(seg, "not found: "):
-			notFound = parseBackendNames(strings.TrimPrefix(seg, "not found: "))
+			notFound = envParseBackendNames(strings.TrimPrefix(seg, "not found: "))
 		case seg == "none found on PATH":
 			// no present backends; found stays nil
 		default:
@@ -80,9 +80,9 @@ func splitBackendDetail(t *testing.T, detail string) (found, notFound []string) 
 	return found, notFound
 }
 
-// parseBackendNames strips each entry's " (path)" suffix (present backends
+// envParseBackendNames strips each entry's " (path)" suffix (present backends
 // are rendered as "guix (/opt/bin/guix)") to recover the bare name.
-func parseBackendNames(list string) []string {
+func envParseBackendNames(list string) []string {
 	parts := strings.Split(list, ", ")
 	out := make([]string, len(parts))
 	for i, p := range parts {
@@ -92,17 +92,10 @@ func parseBackendNames(list string) []string {
 	return out
 }
 
-func TestEnvContainerBackendRegistered(t *testing.T) {
-	found := false
-	for _, c := range Registered() {
-		if c.Meta().ID == envContainerBackend {
-			found = true
-			if c.Meta().Needs != NeedsNothing {
-				t.Errorf("env.container-backend must need nothing, got %v", c.Meta().Needs)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("env.container-backend is not registered")
-	}
-}
+// env.container-backend's registration presence and Meta shape (a non-empty
+// Summary, a known group, needing nothing) are already covered registry-WIDE
+// by TestRegistryIsWellFormed (invariants_test.go) and
+// TestChecksSurviveAVirginHost's virgin-host case (which only reaches this
+// check at all because it needs nothing) — asserting them again here, over
+// the global Registered(), is exactly what plan §1 rule 8 forbids for a
+// check's OWN behaviour.

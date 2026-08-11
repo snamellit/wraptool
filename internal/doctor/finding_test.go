@@ -7,12 +7,12 @@ import (
 	"testing"
 )
 
-// withCleanRegistry gives a test its own empty registry state (registry,
+// findingWithCleanRegistry gives a test its own empty registry state (registry,
 // regSites, registryErrs) and restores the real, package-init-populated state
 // afterward. Every test in this package shares one process, so registering a
 // deliberately-broken check without this would poison every later test that
 // asserts RegistryErr() == nil.
-func withCleanRegistry(t *testing.T) {
+func findingWithCleanRegistry(t *testing.T) {
 	t.Helper()
 	origRegistry, origSites, origErrs := registry, regSites, registryErrs
 	registry = nil
@@ -24,7 +24,7 @@ func withCleanRegistry(t *testing.T) {
 }
 
 func TestRegisterRecordsDuplicateIDWithBothSites(t *testing.T) {
-	withCleanRegistry(t)
+	findingWithCleanRegistry(t)
 
 	m := Meta{ID: "env.dup-test", Needs: NeedsNothing, Summary: "first"}
 	registerCheck(funcCheck{meta: m, run: func(_ context.Context, in *Input) Result { return Pass() }}, "file_a.go:10")
@@ -43,9 +43,9 @@ func TestRegisterRecordsDuplicateIDWithBothSites(t *testing.T) {
 }
 
 func TestRegisterRecordsMalformedID(t *testing.T) {
-	withCleanRegistry(t)
+	findingWithCleanRegistry(t)
 
-	registerCheck(funcCheck{meta: Meta{ID: "NotDotted", Needs: NeedsNothing, Summary: "x"}, run: passRun}, "site:1")
+	registerCheck(funcCheck{meta: Meta{ID: "NotDotted", Needs: NeedsNothing, Summary: "x"}, run: findingPassRun}, "site:1")
 
 	if RegistryErr() == nil {
 		t.Fatal("expected a registry error for a malformed ID")
@@ -56,9 +56,9 @@ func TestRegisterRecordsMalformedID(t *testing.T) {
 }
 
 func TestRegisterRecordsUnknownGroup(t *testing.T) {
-	withCleanRegistry(t)
+	findingWithCleanRegistry(t)
 
-	registerCheck(funcCheck{meta: Meta{ID: "nosuchgroup.thing", Needs: NeedsNothing, Summary: "x"}, run: passRun}, "site:1")
+	registerCheck(funcCheck{meta: Meta{ID: "nosuchgroup.thing", Needs: NeedsNothing, Summary: "x"}, run: findingPassRun}, "site:1")
 
 	if RegistryErr() == nil {
 		t.Fatal("expected a registry error for an unknown group")
@@ -66,9 +66,9 @@ func TestRegisterRecordsUnknownGroup(t *testing.T) {
 }
 
 func TestRegisterRecordsEmptySummary(t *testing.T) {
-	withCleanRegistry(t)
+	findingWithCleanRegistry(t)
 
-	registerCheck(funcCheck{meta: Meta{ID: "env.no-summary", Needs: NeedsNothing, Summary: "  "}, run: passRun}, "site:1")
+	registerCheck(funcCheck{meta: Meta{ID: "env.no-summary", Needs: NeedsNothing, Summary: "  "}, run: findingPassRun}, "site:1")
 
 	if RegistryErr() == nil {
 		t.Fatal("expected a registry error for an empty Summary")
@@ -76,21 +76,21 @@ func TestRegisterRecordsEmptySummary(t *testing.T) {
 }
 
 func TestRegisterDoesNotPanic(t *testing.T) {
-	withCleanRegistry(t)
+	findingWithCleanRegistry(t)
 	// A malformed registration must be RECORDED, never panic — register()
 	// runs from init() at package load, and a panic there bricks every
 	// importer of the package, including serve/up/harness.
-	registerCheck(funcCheck{meta: Meta{}, run: passRun}, "site:1")
+	registerCheck(funcCheck{meta: Meta{}, run: findingPassRun}, "site:1")
 }
 
-func passRun(_ context.Context, _ *Input) Result { return Pass() }
+func findingPassRun(_ context.Context, _ *Input) Result { return Pass() }
 
 func TestRegisteredIsGroupThenIDOrdered(t *testing.T) {
-	withCleanRegistry(t)
+	findingWithCleanRegistry(t)
 
 	ids := []CheckID{"policy.b", "env.z", "config.a", "env.a", "tools.a"}
 	for _, id := range ids {
-		registerCheck(funcCheck{meta: Meta{ID: id, Summary: "x"}, run: passRun}, "site")
+		registerCheck(funcCheck{meta: Meta{ID: id, Summary: "x"}, run: findingPassRun}, "site")
 	}
 	if err := RegistryErr(); err != nil {
 		t.Fatalf("unexpected registry error: %v", err)
@@ -139,6 +139,15 @@ func TestResultConstructors(t *testing.T) {
 	}
 	if len(ab.Findings) != 1 {
 		t.Errorf("Abort(): findings not preserved")
+	}
+	if o := ab.Outcome(); o != OutcomeFinding {
+		t.Errorf("Abort(err, f): got outcome %q, want finding (a finding was reported)", o)
+	}
+
+	// Abort's findings parameter is variadic: a check may abort with none at
+	// all. That check must never be reported as having passed.
+	if o := Abort(err).Outcome(); o != OutcomeSkipped {
+		t.Errorf("Abort(err): got outcome %q, want skipped, never pass", o)
 	}
 }
 

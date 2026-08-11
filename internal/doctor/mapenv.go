@@ -134,6 +134,12 @@ func (m *MapEnv) ReadDir(path string) ([]FileInfo, error) {
 		}
 		seen[child] = true
 		if fi, err := m.Lstat(child); err == nil {
+			// Re-root onto the REQUESTED path, not the resolved one: osEnv.ReadDir
+			// (host.go) joins filepath.Join(path, e.Name()), so a caller walking a
+			// symlinked directory must see entries rooted at the path it asked
+			// for, not the link's target, or a finding's Location/Detail built
+			// from fi.Path diverges between MapEnv and the real host.
+			fi.Path = filepath.Join(path, filepath.Base(child))
 			out = append(out, fi)
 		}
 	}

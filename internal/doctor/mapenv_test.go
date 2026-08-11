@@ -149,6 +149,12 @@ func TestMapEnvReadDirFollowsSymlinkedDirectory(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name != "a.txt" {
 		t.Fatalf("ReadDir through a symlinked directory: got %+v, want [a.txt]", entries)
 	}
+	// Path must be rooted at the REQUESTED path (/link/dir), matching
+	// osEnv.ReadDir — not at the link's target (/real/dir), which is what
+	// collect() returns before re-rooting.
+	if entries[0].Path != "/link/dir/a.txt" {
+		t.Errorf("ReadDir through a symlinked directory: entries[0].Path = %q, want %q", entries[0].Path, "/link/dir/a.txt")
+	}
 }
 
 func TestMapEnvGetenvGetuidNowProcessAlive(t *testing.T) {

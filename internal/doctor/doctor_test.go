@@ -8,25 +8,25 @@ import (
 	"testing"
 )
 
-func check(id CheckID, needs Requirement, run RunFunc) Check {
+func doctorCheck(id CheckID, needs Requirement, run RunFunc) Check {
 	return funcCheck{meta: Meta{ID: id, Needs: needs, Summary: "test check " + string(id)}, run: run}
 }
 
-func passCheck(id CheckID) Check {
-	return check(id, NeedsNothing, func(context.Context, *Input) Result { return Pass() })
+func doctorPassCheck(id CheckID) Check {
+	return doctorCheck(id, NeedsNothing, func(context.Context, *Input) Result { return Pass() })
 }
 
-func findingCheck(id CheckID, sev Severity, detail string) Check {
-	return check(id, NeedsNothing, func(context.Context, *Input) Result {
+func doctorFindingCheck(id CheckID, sev Severity, detail string) Check {
+	return doctorCheck(id, NeedsNothing, func(context.Context, *Input) Result {
 		return Found(Finding{Severity: sev, Title: "t", Detail: detail, Remedy: "fix it"})
 	})
 }
 
-func skippedCheck(id CheckID, reason string) Check {
-	return check(id, NeedsNothing, func(context.Context, *Input) Result { return Skipped("%s", reason) })
+func doctorSkippedCheck(id CheckID, reason string) Check {
+	return doctorCheck(id, NeedsNothing, func(context.Context, *Input) Result { return Skipped("%s", reason) })
 }
 
-func virginInput() *Input {
+func doctorVirginInput() *Input {
 	return &Input{Env: NewMapEnv(), GOOS: "linux", ConfigState: ConfigAbsent}
 }
 
@@ -34,13 +34,13 @@ func virginInput() *Input {
 
 func TestRunOrderingIsTotalAndPermutationInvariant(t *testing.T) {
 	checks := []Check{
-		findingCheck("policy.b", SeverityWarn, "z-detail"),
-		findingCheck("policy.a", SeverityFail, "a-detail"),
-		findingCheck("env.a", SeverityWarn, "a-detail"),
-		findingCheck("config.a", SeverityInfo, "a-detail"),
+		doctorFindingCheck("policy.b", SeverityWarn, "z-detail"),
+		doctorFindingCheck("policy.a", SeverityFail, "a-detail"),
+		doctorFindingCheck("env.a", SeverityWarn, "a-detail"),
+		doctorFindingCheck("config.a", SeverityInfo, "a-detail"),
 	}
 
-	r1 := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
+	r1 := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
 
 	// Reverse the input order — RunOptions.Checks is re-sorted by the engine,
 	// and the resulting Findings order must be identical regardless.
@@ -48,7 +48,7 @@ func TestRunOrderingIsTotalAndPermutationInvariant(t *testing.T) {
 	for i, c := range checks {
 		reversed[len(checks)-1-i] = c
 	}
-	r2 := Run(context.Background(), virginInput(), RunOptions{Checks: reversed})
+	r2 := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: reversed})
 
 	if r1.Incomplete {
 		t.Fatalf("r1 unexpectedly Incomplete: %s", r1.IncompleteReason)
@@ -80,13 +80,13 @@ func TestRunOrderingIsTotalAndPermutationInvariant(t *testing.T) {
 
 func TestSummaryArithmeticOneOfEachOutcome(t *testing.T) {
 	checks := []Check{
-		passCheck("env.pass"),
-		findingCheck("env.find", SeverityWarn, "d"),
-		skippedCheck("env.skip", "no binary"),
-		check("env.needs-workspace", NeedsWorkspace, func(context.Context, *Input) Result { return Pass() }),
+		doctorPassCheck("env.pass"),
+		doctorFindingCheck("env.find", SeverityWarn, "d"),
+		doctorSkippedCheck("env.skip", "no binary"),
+		doctorCheck("env.needs-workspace", NeedsWorkspace, func(context.Context, *Input) Result { return Pass() }),
 	}
 
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
 
 	if r.Summary.Total != len(checks) {
 		t.Fatalf("Total = %d, want %d", r.Summary.Total, len(checks))
@@ -116,10 +116,10 @@ func TestEachRequirementBitSkipsWithCannedReason(t *testing.T) {
 	for _, bit := range []Requirement{NeedsConfig, NeedsWorkspace, NeedsModeBits, NeedsProbe, NeedsPoolVerify} {
 		bit := bit
 		t.Run(fmt.Sprintf("%d", bit), func(t *testing.T) {
-			c := check("env.needs", bit, func(context.Context, *Input) Result { return Pass() })
-			// virginInput provides none of the optional bits and is GOOS linux
-			// (so NeedsModeBits IS satisfied) — build an input that satisfies
-			// nothing so every bit is legitimately missing.
+			c := doctorCheck("env.needs", bit, func(context.Context, *Input) Result { return Pass() })
+			// doctorVirginInput provides none of the optional bits and is GOOS
+			// linux (so NeedsModeBits IS satisfied) — build an input that
+			// satisfies nothing so every bit is legitimately missing.
 			in := &Input{Env: NewMapEnv(), GOOS: "windows"}
 			r := Run(context.Background(), in, RunOptions{Checks: []Check{c}})
 
@@ -141,15 +141,15 @@ func TestEachRequirementBitSkipsWithCannedReason(t *testing.T) {
 func TestFatalAbortsRemainderAndPreservesArithmetic(t *testing.T) {
 	fatalErr := errors.New("config is unparseable")
 	checks := []Check{
-		passCheck("env.a"),
-		check("config.abort", NeedsNothing, func(context.Context, *Input) Result {
+		doctorPassCheck("env.a"),
+		doctorCheck("config.abort", NeedsNothing, func(context.Context, *Input) Result {
 			return Abort(fatalErr, Finding{Severity: SeverityFail, Title: "t", Detail: "d", Remedy: "fix"})
 		}),
-		passCheck("tools.c"),
-		passCheck("tools.d"),
+		doctorPassCheck("tools.c"),
+		doctorPassCheck("tools.d"),
 	}
 
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
 
 	if !r.Incomplete {
 		t.Fatal("expected Incomplete = true")
@@ -182,6 +182,41 @@ func TestFatalAbortsRemainderAndPreservesArithmetic(t *testing.T) {
 	}
 }
 
+// TestAbortOfTheLastSelectedCheckIsNotReportedAborted covers the case
+// TestFatalAbortsRemainderAndPreservesArithmetic does not: the aborting check
+// is the LAST one selected, so nothing was actually cut short and
+// Report.Aborted (which drives RenderHuman's "Checks after this point did not
+// run.") must be false, even though Incomplete is still true.
+func TestAbortOfTheLastSelectedCheckIsNotReportedAborted(t *testing.T) {
+	fatalErr := errors.New("boom")
+	checks := []Check{
+		doctorPassCheck("env.a"),
+		doctorCheck("config.abort", NeedsNothing, func(context.Context, *Input) Result {
+			return Abort(fatalErr)
+		}),
+	}
+
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
+
+	if !r.Incomplete {
+		t.Fatal("expected Incomplete = true")
+	}
+	if r.Aborted {
+		t.Error("expected Aborted = false: config.abort was the last selected check, nothing was cut short")
+	}
+	// The aborting check itself must never be counted as passed (see
+	// Result.Outcome's doc comment): Abort with no findings is Skipped.
+	if r.Summary.Pass != 1 {
+		t.Errorf("Summary.Pass = %d, want 1 (env.a only)", r.Summary.Pass)
+	}
+	if r.Summary.Skipped != 1 {
+		t.Errorf("Summary.Skipped = %d, want 1 (config.abort itself)", r.Summary.Skipped)
+	}
+	if got := r.Summary.Pass + r.Summary.WithFindings + r.Summary.Skipped; got != r.Summary.Total {
+		t.Errorf("Pass+WithFindings+Skipped = %d, want Total = %d", got, r.Summary.Total)
+	}
+}
+
 // TestRunWithExplicitChecksIsIndependentOfRegistryErr covers the ONE collision
 // two parallel Phase-B authors can create that git merges cleanly: a
 // duplicate check ID. Before this fix, a global RegistryErr() short-circuited
@@ -195,12 +230,12 @@ func TestRunWithExplicitChecksIsIndependentOfRegistryErr(t *testing.T) {
 	registryErrs = append(append([]error(nil), registryErrs...), errors.New("synthetic registry corruption"))
 	t.Cleanup(func() { registryErrs = prev })
 
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: []Check{passCheck("env.a")}})
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: []Check{doctorPassCheck("env.a")}})
 	if r.Incomplete {
 		t.Fatalf("Run with explicit Checks must be independent of a global registry error, got Incomplete: %s", r.IncompleteReason)
 	}
 
-	r2 := Run(context.Background(), virginInput(), RunOptions{})
+	r2 := Run(context.Background(), doctorVirginInput(), RunOptions{})
 	if !r2.Incomplete {
 		t.Fatal("Run with Checks == nil (falls back to Registered()) must still honor RegistryErr()")
 	}
@@ -240,23 +275,20 @@ func TestRunNilInputOrEnvDoesNotPanic(t *testing.T) {
 // -------------------------------------------------------------- validation
 
 // TestEmptySeverityYieldsIncompleteNotMisorderedReport puts a legitimate,
-// finding-emitting check BEFORE the malformed one on purpose: with the
-// malformed check first (as an earlier version of this test had it), an early,
-// uncounted `return r` on the invalid-Result path is indistinguishable from
-// the correct behaviour, because there is nothing published yet either way.
-// With a real finding already collected, the bug is observable: Summary's own
+// finding-emitting check BEFORE the malformed one, so the invariant it proves
+// is observable: with a real finding already collected, Summary's own
 // documented invariants (Fail+Warn+Info == len(Findings),
 // Pass+WithFindings+Skipped == Total) must still hold, and the published
 // finding must still be in canonical (sorted) order.
 func TestEmptySeverityYieldsIncompleteNotMisorderedReport(t *testing.T) {
 	checks := []Check{
-		findingCheck("env.good", SeverityFail, "a real, well-formed finding"),
-		check("tools.bad", NeedsNothing, func(context.Context, *Input) Result {
+		doctorFindingCheck("env.good", SeverityFail, "a real, well-formed finding"),
+		doctorCheck("tools.bad", NeedsNothing, func(context.Context, *Input) Result {
 			return Found(Finding{Title: "t", Detail: "d"}) // Severity left zero-value
 		}),
-		passCheck("tools.z"), // never runs: aborted by tools.bad
+		doctorPassCheck("tools.z"), // never runs: aborted by tools.bad
 	}
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
 	if !r.Incomplete {
 		t.Fatal("expected Incomplete = true for an invalid severity")
 	}
@@ -279,11 +311,11 @@ func TestEmptySeverityYieldsIncompleteNotMisorderedReport(t *testing.T) {
 
 func TestUnregisteredExplicitFindingIDIsIncomplete(t *testing.T) {
 	checks := []Check{
-		check("env.bad", NeedsNothing, func(context.Context, *Input) Result {
+		doctorCheck("env.bad", NeedsNothing, func(context.Context, *Input) Result {
 			return Found(Finding{ID: "drift.no-such-check", Severity: SeverityWarn, Title: "t", Detail: "d", Remedy: "x"})
 		}),
 	}
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
 	if !r.Incomplete {
 		t.Fatal("expected Incomplete = true for an unregistered explicit finding ID")
 	}
@@ -292,16 +324,16 @@ func TestUnregisteredExplicitFindingIDIsIncomplete(t *testing.T) {
 // -------------------------------------------------------------- selection
 
 func TestSelectionUnknownSelectorIsAnError(t *testing.T) {
-	checks := []Check{passCheck("env.a")}
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks, Only: []string{"no-such-group"}})
+	checks := []Check{doctorPassCheck("env.a")}
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks, Only: []string{"no-such-group"}})
 	if !r.Incomplete {
 		t.Fatal("expected Incomplete = true for an unknown --only selector")
 	}
 }
 
 func TestSelectionDeselectedChecksAreExcludedNotSkipped(t *testing.T) {
-	checks := []Check{passCheck("env.a"), passCheck("tools.b")}
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks, Only: []string{"env"}})
+	checks := []Check{doctorPassCheck("env.a"), doctorPassCheck("tools.b")}
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks, Only: []string{"env"}})
 
 	if r.Summary.Total != 1 {
 		t.Fatalf("Total = %d, want 1 (deselected checks must not be counted at all)", r.Summary.Total)
@@ -315,8 +347,8 @@ func TestSelectionDeselectedChecksAreExcludedNotSkipped(t *testing.T) {
 }
 
 func TestSelectionSkipWinsOverOnly(t *testing.T) {
-	checks := []Check{passCheck("env.a"), passCheck("env.b")}
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks, Only: []string{"env"}, Skip: []string{"env.a"}})
+	checks := []Check{doctorPassCheck("env.a"), doctorPassCheck("env.b")}
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks, Only: []string{"env"}, Skip: []string{"env.a"}})
 	if r.Summary.Total != 1 || r.Outcomes[0].ID != "env.b" {
 		t.Errorf("got total=%d outcomes=%+v, want just env.b selected", r.Summary.Total, r.Outcomes)
 	}
@@ -351,8 +383,8 @@ func TestExitCodeMatrix(t *testing.T) {
 // -------------------------------------------------------------- ID stamping
 
 func TestFindingIDIsStampedFromCheckMetaWhenEmpty(t *testing.T) {
-	checks := []Check{findingCheck("env.x", SeverityInfo, "d")}
-	r := Run(context.Background(), virginInput(), RunOptions{Checks: checks})
+	checks := []Check{doctorFindingCheck("env.x", SeverityInfo, "d")}
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks})
 	if len(r.Findings) != 1 || r.Findings[0].ID != "env.x" {
 		t.Errorf("got %+v, want ID stamped as env.x", r.Findings)
 	}

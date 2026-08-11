@@ -9,9 +9,19 @@ import (
 )
 
 // Env is the injected host environment: every syscall-shaped thing a check may
-// do. A check that calls os.Stat / os.Getenv / exec.LookPath / time.Now /
-// filepath.EvalSymlinks / paths.* DIRECTLY is a bug, and
-// TestChecksDoNotTouchTheRealHost fails the build for it.
+// do DIRECTLY. A check that calls os.Stat / os.Getenv / exec.LookPath /
+// time.Now / filepath.EvalSymlinks / paths.* directly (bypassing Env) is a
+// bug, and TestChecksDoNotTouchTheRealHost fails the build for it.
+//
+// Sanctioned exception (design §11): a check MAY call a sibling package's own
+// host-touching function instead of going through Env —
+// config.Load/LoadStrict/Validate (which os.Stat token files and tool
+// binaries directly, internal/config/validate.go), introspect.CacheStamp, and
+// requestlog's readers. TestChecksDoNotTouchTheRealHost cannot see through a
+// call like that, so a check using one of these is untestable against a
+// MapEnv and MUST be tested against a t.TempDir() fixture tree instead (see
+// plan §1 rule 10) — never asserted "no real filesystem" the way every other
+// check is.
 //
 // Every method is total and cheap. Nothing here EXECUTES a program: probing is
 // Phase F and arrives as an Input field, deliberately NOT as an Exec method on
