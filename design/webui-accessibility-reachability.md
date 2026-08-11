@@ -142,8 +142,8 @@ scrolls away. Two additions, both opt-in or on-demand:
    after `ensureServer` succeeds and the review UI's listener is confirmed
    bound.
    Does **not** auto-open by default (see §3).
-4. **`wraptool server status`** — extend to also probe and report the admin
-   listener, and print `admin ui: <url>` when reachable. This closes the
+4. **`wraptool server status`** — extend to also probe and report the review
+   UI listener, and print `review ui: <url>` when reachable. This closes the
    "I ran status and learned nothing about the UI" gap. No token printed by
    `status` (it is a health check, not an auth helper) — just whether the
    listener is up and on what address.

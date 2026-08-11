@@ -98,7 +98,7 @@ request. Appearing in `available` grants nothing: the subcommand is
 still denied until an operator approves it below. The catalog comes
 from cache-backed introspection. A missing or stale cache may run the
 tool with a fixed `-h`, `--help`, or `help` argv; no argument from the
-AI ever reaches that command line.
+agent ever reaches that command line.
 
 ### Operator workflow
 
