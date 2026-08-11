@@ -11,8 +11,11 @@ wraptool config validate
 wraptool server status
 ```
 
-`up` requires an existing config and its server orchestration requires
-`mcp.transport: sse`. Detached-server logs are under the wraptool XDG data
+A missing config is not the cause: `up` scaffolds a starter one and continues.
+The failures that do stop it are a config that exists but does not load —
+invalid YAML, or a value the validator rejects — and an `mcp.transport` that is
+not `sse`, which its server orchestration requires. `wraptool config validate`
+reports both. Detached-server logs are under the wraptool XDG data
 directory, normally `~/.local/share/wraptool/logs/serve.log` on Linux. Treat the
 log as sensitive because it can contain the admin click-through token.
 
