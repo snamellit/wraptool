@@ -227,13 +227,42 @@ func TestRunExposureFilesUnixSocketDir(t *testing.T) {
 			wantOutcome: OutcomePass,
 		},
 		{
-			name: "a STALE socket FILE itself is world-writable: flagged regardless of parent",
+			// The original bug: envNearestExistingAncestor was called with the
+			// SOCKET PATH itself, so once the socket exists the walk Stats it
+			// FIRST and never reaches the parent directory at all — the check
+			// judged the opposite of its subject. This case pins the fix: an
+			// EXISTING socket with a wide-open, non-sticky parent must still be
+			// flagged, because it is the directory chain (not the socket file's
+			// own mode) that governs whether another local user can unlink,
+			// replace, or race the socket.
+			name: "socket exists, parent dir is world-writable and not sticky: still flagged",
+			cfg:  &config.Config{MCP: config.MCPConfig{Transport: "unix", Listen: "/run/wraptool/wraptool.sock"}},
+			build: func(env *MapEnv) {
+				env.Files["/run/wraptool"] = MapFile{Mode: fs.ModeDir | 0o777}
+				env.Files["/run/wraptool/wraptool.sock"] = MapFile{Mode: fs.ModeSocket | 0o600}
+			},
+			wantOutcome: OutcomeFinding,
+		},
+		{
+			name: "socket exists, parent dir is world-writable but STICKY (e.g. /tmp): never flagged",
 			cfg:  &config.Config{MCP: config.MCPConfig{Transport: "unix", Listen: "/tmp/wraptool.sock"}},
 			build: func(env *MapEnv) {
 				env.Files["/tmp"] = MapFile{Mode: fs.ModeDir | fs.ModeSticky | 0o777}
-				env.Files["/tmp/wraptool.sock"] = MapFile{Mode: fs.ModeSocket | 0o777}
+				env.Files["/tmp/wraptool.sock"] = MapFile{Mode: fs.ModeSocket | 0o600}
 			},
-			wantOutcome: OutcomeFinding,
+			wantOutcome: OutcomePass,
+		},
+		{
+			// The check's subject is the directory chain, never the socket
+			// file's own mode (design §7.3): a permissive socket file mode
+			// under an otherwise-secure directory is not this check's concern.
+			name: "socket file itself is world-writable but parent dir is 0700 (secure): not flagged",
+			cfg:  &config.Config{MCP: config.MCPConfig{Transport: "unix", Listen: "/run/wraptool/wraptool.sock"}},
+			build: func(env *MapEnv) {
+				env.Files["/run/wraptool"] = MapFile{Mode: fs.ModeDir | 0o700}
+				env.Files["/run/wraptool/wraptool.sock"] = MapFile{Mode: fs.ModeSocket | 0o777}
+			},
+			wantOutcome: OutcomePass,
 		},
 	}
 	for _, tc := range cases {

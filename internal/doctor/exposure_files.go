@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 
 	"github.com/pti/wraptool/internal/config"
@@ -250,11 +251,21 @@ func runExposureFilesTokenWeak(_ context.Context, in *Input) Result {
 
 // runExposureFilesUnixSocketDir applies only under unix transport (§7.3:
 // gated on transport, mirroring exposure.sse-non-loopback's own gating
-// rationale — a socket path is not a network listen address). Existence of
-// the socket itself is not required (`serve` creates it at bind,
-// cmd/serve.go's serveUnix) — envNearestExistingAncestor (env.go, already
-// merged) walks up to whichever ancestor DOES exist, exactly as
-// env.xdg-writable does.
+// rationale — a socket path is not a network listen address). The subject is
+// the DIRECTORY CHAIN, per §7.3's literal wording ("the nearest existing
+// ancestor of the socket path" — an ancestor of it, never the path itself):
+// another local user's ability to unlink, rename, or race the socket is
+// governed by who can write the directory that CONTAINS it, not by the
+// socket's own mode. It therefore walks from filepath.Dir(sock), not from
+// sock — `serve` creates the socket file at bind (cmd/serve.go's serveUnix),
+// so in the common case (server already started) sock exists, and Stat-ing
+// it first would make envNearestExistingAncestor return the socket file's
+// own FileInfo on its very first step, which means the directory chain is
+// NEVER examined once the socket exists — checking the opposite of the
+// check's stated subject in exactly the state this check runs in most
+// often. Existence of the socket itself is still not required either way
+// (envNearestExistingAncestor, env.go, already merged, walks up to whichever
+// ancestor DOES exist, exactly as env.xdg-writable does).
 //
 // A DIRECTORY ancestor carrying the sticky bit (fs.ModeSticky, e.g. /tmp) is
 // deliberately never flagged even when group/other-writable: the sticky bit
@@ -262,10 +273,7 @@ func runExposureFilesTokenWeak(_ context.Context, in *Input) Result {
 // file they do not own within it, which is the actual hijack/race this check
 // exists to catch — flagging /tmp unconditionally would fire SeverityFail on
 // a configuration working as designed (a real, common socket location),
-// which SeverityFail's own doc comment forbids. The exception is for
-// DIRECTORIES only: a stale SOCKET FILE itself being group/other-writable is
-// a genuine exposure regardless of any sticky bit on its parent, since unix
-// socket connect() permission is governed by the socket file's own mode.
+// which SeverityFail's own doc comment forbids.
 func runExposureFilesUnixSocketDir(_ context.Context, in *Input) Result {
 	if in.Config.MCP.Transport != "unix" {
 		return Skipped("mcp.transport is not unix")
@@ -275,7 +283,7 @@ func runExposureFilesUnixSocketDir(_ context.Context, in *Input) Result {
 		return Skipped("mcp.listen is not set")
 	}
 
-	fi, ok := envNearestExistingAncestor(in.Env, sock)
+	fi, ok := envNearestExistingAncestor(in.Env, filepath.Dir(sock))
 	if !ok {
 		return Skipped("no existing ancestor found for %s", sock)
 	}
