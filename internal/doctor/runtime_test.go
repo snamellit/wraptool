@@ -98,6 +98,42 @@ func TestRunRuntimeStalePIDFileMalformedContent(t *testing.T) {
 	}
 }
 
+// TestRunRuntimeStalePIDFileZeroPID pins runtimeReadPID's own doc comment: a
+// pidfile of literally "0" parses fine as an int, but Env.ProcessAlive's real
+// implementation is `syscall.Kill(pid, 0)`, and kill(0, 0) signals the
+// caller's OWN process group and returns nil — so an ungated pid 0 would
+// read back as "alive" here even though it names no real process. Treated as
+// a parse failure, same as non-numeric content, never reaching ProcessAlive.
+func TestRunRuntimeStalePIDFileZeroPID(t *testing.T) {
+	env := NewMapEnv()
+	runtimeSetPIDFile(env, "0\n")
+
+	res := runRuntimeStalePIDFile(context.Background(), runtimeTestInput(env, nil))
+	if res.Outcome() != OutcomeSkipped {
+		t.Fatalf("pid 0: outcome %v, want skipped (never asserted as a value)", res.Outcome())
+	}
+	if res.SkipReason == "" {
+		t.Error("pid 0: SkipReason must explain why")
+	}
+}
+
+// TestRunRuntimeStalePIDFileDetailOmitsPath locks in that Detail no longer
+// repeats the pidfile path already carried in Location (the renderer prints
+// Location itself, so a Detail duplicating it prints the path twice on one
+// line).
+func TestRunRuntimeStalePIDFileDetailOmitsPath(t *testing.T) {
+	env := NewMapEnv()
+	runtimeSetPIDFile(env, "4412\n")
+	// Deliberately no env.Pids[4412] entry: ProcessAlive reports false.
+
+	res := runRuntimeStalePIDFile(context.Background(), runtimeTestInput(env, nil))
+	path := runtimePIDFilePath(runtimeTestInput(env, nil))
+	f := res.Findings[0]
+	if strings.Contains(f.Detail, path) {
+		t.Errorf("Detail %q repeats the pidfile path already in Location %q", f.Detail, f.Location)
+	}
+}
+
 // ---------------------------------------------------------- bind-divergence
 
 func runtimeCfg(listen, authTokenFile string) *config.Config {
@@ -110,9 +146,16 @@ func TestRunRuntimeBindDivergenceNoLiveServer(t *testing.T) {
 		env  *MapEnv
 	}{
 		{"no pidfile at all", NewMapEnv()},
-		{"pidfile present but dead", func() *MapEnv {
+		{"pidfile present but dead, with a state file that would otherwise diverge", func() *MapEnv {
+			// A mutation that deletes the `|| !in.Env.ProcessAlive(pid)` liveness
+			// gate must turn this red, not stay green by falling through to a
+			// LATER guard — so this fixture writes a serve.state whose listen
+			// genuinely diverges from cfg (unlike the sibling "no pidfile" case,
+			// which would still skip on the "no serve.state" guard alone).
 			e := NewMapEnv()
 			runtimeSetPIDFile(e, "4412\n")
+			// Deliberately no env.Pids[4412] entry: ProcessAlive reports false.
+			runtimeSetServeState(e, "listen=0.0.0.0:9999\nauth=false\n")
 			return e
 		}()},
 	}
@@ -121,6 +164,9 @@ func TestRunRuntimeBindDivergenceNoLiveServer(t *testing.T) {
 			res := runRuntimeBindDivergence(context.Background(), runtimeTestInput(tc.env, runtimeCfg("127.0.0.1:8717", "")))
 			if res.Outcome() != OutcomeSkipped {
 				t.Fatalf("outcome %v, want skipped", res.Outcome())
+			}
+			if res.SkipReason != "no live server process recorded" {
+				t.Fatalf("SkipReason %q, want the liveness-gate reason (not a later guard)", res.SkipReason)
 			}
 		})
 	}
@@ -162,18 +208,21 @@ func TestRunRuntimeBindDivergenceMatchingListenIsPass(t *testing.T) {
 	}
 }
 
-func TestRunRuntimeBindDivergenceEmptyConfigListenIsPass(t *testing.T) {
-	// A config with no MCP.Listen at all cannot meaningfully diverge — asserting
-	// a fail from an unset comparison value would be a false positive that is
-	// really config.validate's job, not this check's.
+func TestRunRuntimeBindDivergenceEmptyConfigListenIsSkipped(t *testing.T) {
+	// A config with no MCP.Listen at all (an explicit `mcp.transport: sse`
+	// with no listen leaves Config.MCP.Listen empty — applyDefaults only
+	// fills it when Transport itself is empty) gives this check nothing to
+	// compare the running server's bind against: it could not evaluate the
+	// case, which is "skipped", not "checked and found no divergence" —
+	// mirroring the state.Listen == "" branch one line above it.
 	env := NewMapEnv()
 	runtimeSetPIDFile(env, "4412\n")
 	env.Pids[4412] = true
 	runtimeSetServeState(env, "listen=0.0.0.0:8717\nauth=true\n")
 
 	res := runRuntimeBindDivergence(context.Background(), runtimeTestInput(env, runtimeCfg("", "")))
-	if res.Outcome() != OutcomePass {
-		t.Fatalf("empty config listen: outcome %v, want pass", res.Outcome())
+	if res.Outcome() != OutcomeSkipped {
+		t.Fatalf("empty config listen: outcome %v, want skipped", res.Outcome())
 	}
 }
 
@@ -217,46 +266,51 @@ func TestRunRuntimeBindDivergenceUnauthenticatedWideningIsFail(t *testing.T) {
 	}
 }
 
-func TestRunRuntimeBindDivergenceOtherShapesAreFail(t *testing.T) {
+// TestRunRuntimeBindDivergenceOtherShapesAreWarn covers the ARCHITECT RULING
+// (design §7.5's preamble requires a config_path match this Phase-1 check
+// cannot make — see runRuntimeBindDivergence's doc comment): SeverityFail is
+// reserved for an unauthenticated listener reachable off-host, which is
+// dangerous no matter which config started the server. Every other
+// divergence — including shapes the design's own table would otherwise call
+// `fail` — is SeverityWarn here, because today's serve.state cannot confirm
+// the running server was started from the config under audit, and a
+// same-config false FAIL would tell an operator to stop a server that is
+// correctly serving a different config.
+func TestRunRuntimeBindDivergenceOtherShapesAreWarn(t *testing.T) {
 	cases := []struct {
-		name         string
-		cfgListen    string
-		stateListen  string
-		auth         bool
-		wantSeverity Severity
-		wantOutcome  Outcome
+		name        string
+		cfgListen   string
+		stateListen string
+		auth        bool
 	}{
 		{
-			name:         "authenticated but different port (not up's transformation)",
-			cfgListen:    "127.0.0.1:8717",
-			stateListen:  "0.0.0.0:9999",
-			auth:         true,
-			wantSeverity: SeverityFail,
-			wantOutcome:  OutcomeFinding,
+			name:        "authenticated but different port (not up's transformation)",
+			cfgListen:   "127.0.0.1:8717",
+			stateListen: "0.0.0.0:9999",
+			auth:        true,
 		},
 		{
-			name:         "authenticated but different host, not the wildcard",
-			cfgListen:    "127.0.0.1:8717",
-			stateListen:  "10.0.0.5:8717",
-			auth:         true,
-			wantSeverity: SeverityFail,
-			wantOutcome:  OutcomeFinding,
+			name:        "authenticated but different host, not the wildcard",
+			cfgListen:   "127.0.0.1:8717",
+			stateListen: "10.0.0.5:8717",
+			auth:        true,
 		},
 		{
-			name:         "config listen was already non-loopback",
-			cfgListen:    "0.0.0.0:8717",
-			stateListen:  "0.0.0.0:9000",
-			auth:         true,
-			wantSeverity: SeverityFail,
-			wantOutcome:  OutcomeFinding,
+			name:        "config listen was already non-loopback",
+			cfgListen:   "0.0.0.0:8717",
+			stateListen: "0.0.0.0:9000",
+			auth:        true,
 		},
 		{
-			name:         "unix socket path, divergent, unauthenticated",
-			cfgListen:    "/run/wraptool/wraptool.sock",
-			stateListen:  "/run/wraptool/other.sock",
-			auth:         false,
-			wantSeverity: SeverityFail,
-			wantOutcome:  OutcomeFinding,
+			// A unix socket is filesystem-permission guarded, not a network
+			// listener (config.Validate agrees: its own auth requirement is
+			// gated on transport == "sse", not "unix") — this check cannot
+			// confirm network exposure from a value that does not even parse
+			// as host:port, so it never asserts SeverityFail from it.
+			name:        "unix socket path, divergent, unauthenticated",
+			cfgListen:   "/run/wraptool/wraptool.sock",
+			stateListen: "/run/wraptool/other.sock",
+			auth:        false,
 		},
 	}
 	for _, tc := range cases {
@@ -271,11 +325,38 @@ func TestRunRuntimeBindDivergenceOtherShapesAreFail(t *testing.T) {
 			runtimeSetServeState(env, "listen="+tc.stateListen+"\nauth="+authStr+"\n")
 
 			res := runRuntimeBindDivergence(context.Background(), runtimeTestInput(env, runtimeCfg(tc.cfgListen, "")))
-			if res.Outcome() != tc.wantOutcome {
-				t.Fatalf("outcome %v, want %v", res.Outcome(), tc.wantOutcome)
+			if res.Outcome() != OutcomeFinding {
+				t.Fatalf("outcome %v, want finding", res.Outcome())
 			}
-			if got := res.Findings[0].Severity; got != tc.wantSeverity {
-				t.Errorf("severity %v, want %v", got, tc.wantSeverity)
+			f := res.Findings[0]
+			if f.Severity != SeverityWarn {
+				t.Errorf("severity %v, want warn", f.Severity)
+			}
+			if !strings.Contains(f.Detail, "serve.state records no config path") {
+				t.Errorf("Detail %q does not state the config_path limitation", f.Detail)
+			}
+		})
+	}
+}
+
+// TestRuntimeListenIsNetworkNonLoopbackTable exercises the network-exposure
+// predicate that gates SeverityFail directly.
+func TestRuntimeListenIsNetworkNonLoopbackTable(t *testing.T) {
+	cases := []struct {
+		name   string
+		listen string
+		want   bool
+	}{
+		{"wildcard host", "0.0.0.0:8717", true},
+		{"LAN ip", "10.0.0.5:8717", true},
+		{"loopback ip", "127.0.0.1:8717", false},
+		{"localhost spelling", "localhost:8717", false},
+		{"unix socket path does not parse as host:port", "/run/wraptool/wraptool.sock", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := runtimeListenIsNetworkNonLoopback(tc.listen); got != tc.want {
+				t.Errorf("runtimeListenIsNetworkNonLoopback(%q) = %v, want %v", tc.listen, got, tc.want)
 			}
 		})
 	}

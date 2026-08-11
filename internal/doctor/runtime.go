@@ -65,6 +65,11 @@ func runtimeServeStatePath(in *Input) string {
 // has never run `serve`. present=true with a non-nil err means the file
 // exists but its content did not parse as a pid: reported, never silently
 // treated as pid 0 (which Env.ProcessAlive could conceivably answer for).
+// A pid <= 0 is treated the same as a parse failure: 0 or a negative number
+// parses fine as an int, but Env.ProcessAlive's real implementation is
+// `syscall.Kill(pid, 0)`, and kill(0, 0) signals the caller's own process
+// group rather than reporting "no such process" — so a literal "0" in the
+// pidfile must never reach that call.
 func runtimeReadPID(in *Input) (pid int, present bool, err error) {
 	path := runtimePIDFilePath(in)
 	b, readErr := in.Env.ReadFile(path)
@@ -75,6 +80,9 @@ func runtimeReadPID(in *Input) (pid int, present bool, err error) {
 		return 0, false, readErr
 	}
 	n, parseErr := strconv.Atoi(strings.TrimSpace(string(b)))
+	if parseErr == nil && n <= 0 {
+		parseErr = fmt.Errorf("pid %d is not a valid process id", n)
+	}
 	if parseErr != nil {
 		return 0, true, fmt.Errorf("pidfile %s does not contain a valid pid: %w", path, parseErr)
 	}
@@ -108,7 +116,7 @@ func runRuntimeStalePIDFile(_ context.Context, in *Input) Result {
 	return Found(Finding{
 		Severity: SeverityWarn,
 		Title:    "Stale pidfile",
-		Detail:   fmt.Sprintf("%s names pid %d, which is not running", path, pid),
+		Detail:   fmt.Sprintf("names pid %d, which is not running", pid),
 		Location: path,
 		Remedy:   "run `wraptool server stop` to clear it, or start the server with `wraptool up` / `wraptool server start`",
 	})
@@ -156,10 +164,18 @@ func runtimeParseServeState(b []byte) runtimeServeState {
 //
 // Gated on a LIVE pid (via Env.ProcessAlive): serve.state survives SIGKILL,
 // so its mere presence proves nothing about whether the recorded bind is
-// still in effect. Today's serve.state carries no config_path, so — unlike
-// the design's general §7.5 gating note — this check cannot additionally
-// confirm the state file belongs to THIS config; that confirmation is Phase
-// 2 (E1/E2), once §4.1 lands.
+// still in effect. Today's serve.state carries no config_path (that is
+// Phase 2, §4.1/E0), so this check cannot confirm the running server was
+// even started from the config under audit — `wraptool up` starts one
+// shared server from the XDG config, and `wraptool doctor --config
+// ./project.yaml` audits a different file entirely, which diverges by
+// design. Severity reflects that: SeverityFail is reserved for the one
+// shape that is dangerous no matter which config started the server — an
+// unauthenticated listener reachable off-host — because leaving that as a
+// mere warning would let a genuinely exposed, credential-backed server pass
+// doctor clean. Every other divergence is SeverityWarn, and its Detail says
+// so explicitly rather than implying doctor confirmed a same-config
+// mismatch it cannot confirm.
 func runRuntimeBindDivergence(_ context.Context, in *Input) Result {
 	pid, present, err := runtimeReadPID(in)
 	if !present || err != nil || !in.Env.ProcessAlive(pid) {
@@ -176,11 +192,21 @@ func runRuntimeBindDivergence(_ context.Context, in *Input) Result {
 	}
 
 	cfgListen := in.Config.MCP.Listen
-	if cfgListen == "" || state.Listen == cfgListen {
+	if cfgListen == "" {
+		// An explicit `mcp.transport: sse` with no listen leaves this empty
+		// (applyDefaults only fills it when Transport itself is empty) — this
+		// check has nothing to compare the running server's bind against, so
+		// it could not evaluate the case, not "checked and found no divergence".
+		return Skipped("config does not record an mcp.listen to compare against")
+	}
+	if state.Listen == cfgListen {
 		return Pass()
 	}
 
 	detail := fmt.Sprintf("server listens on %s, config says %s", state.Listen, cfgListen)
+	const limitation = " Today's serve.state records no config path, so this compares against " +
+		"whichever config the running server was started from — the divergence is expected if that " +
+		"was a different config (e.g. a shared server from `wraptool up` audited with `--config`)."
 
 	if runtimeIsUpBindAdjustment(cfgListen, state) {
 		return Found(Finding{
@@ -192,12 +218,46 @@ func runRuntimeBindDivergence(_ context.Context, in *Input) Result {
 		})
 	}
 
+	if !state.Auth && runtimeListenIsNetworkNonLoopback(state.Listen) {
+		return Found(Finding{
+			Severity: SeverityFail,
+			Title:    "Server bind differs from config",
+			Detail:   detail + ". The running server is an unauthenticated listener reachable off-host — dangerous regardless of which config started it.",
+			Remedy:   "restart the server (`wraptool server stop` then `wraptool up` / `wraptool server start`) so it picks up the configured bind, or set mcp.auth_token_file",
+		})
+	}
+
 	return Found(Finding{
-		Severity: SeverityFail,
+		Severity: SeverityWarn,
 		Title:    "Server bind differs from config",
-		Detail:   detail + fmt.Sprintf(" (authenticated=%v). This is not `up`'s known bind adjustment.", state.Auth),
-		Remedy:   "restart the server (`wraptool server stop` then `wraptool up` / `wraptool server start`) so it picks up the configured bind",
+		Detail:   detail + fmt.Sprintf(" (authenticated=%v). This is not `up`'s known bind adjustment.", state.Auth) + limitation,
+		Remedy:   "if this server was started from the config under audit, restart it (`wraptool server stop` then `wraptool up` / `wraptool server start`) so it picks up the configured bind",
 	})
+}
+
+// runtimeListenIsNetworkNonLoopback reports whether listen names a network
+// address — host:port — that is reachable off-host. Unlike
+// config.ListenIsLoopback (which treats an unparsable value as "the whole
+// string is the host" so it can classify a bare hostname), this helper
+// requires a genuine host:port split to succeed before calling anything
+// non-loopback: a unix socket path has no port and does not parse, and this
+// check must never assert a network-exposure verdict about a value it could
+// not confirm is even a network address (unix sockets are filesystem-perms
+// guarded, not this check's concern — config.Validate agrees, gating its
+// own auth requirement on transport == "sse").
+func runtimeListenIsNetworkNonLoopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return true // wildcard bind
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !ip.IsLoopback()
 }
 
 // runtimeIsUpBindAdjustment reports whether state matches
