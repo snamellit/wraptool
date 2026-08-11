@@ -177,58 +177,112 @@ var mcpFloatingVersionTags = map[string]bool{
 	"rc":     true,
 }
 
-// mcpFirstNonFlagArg returns the first element of args that does not start
-// with "-", and whether one was found. This is the FALLBACK spec source —
-// npx/uvx invocations that name the package as a bare positional (no
-// -p/--package/--from) conventionally place it immediately after any
-// leading flags (`-y`) — used only when mcpSpecArg finds no explicit
-// spec-naming flag; see mcpSpecArg's doc comment for why the flag case must
-// be handled first. A full argv parser modeling every runner flag's arity is
-// still out of scope for a doctor heuristic (this check's severity is fail
-// because an unpinned fetch-execute IS the danger regardless of parse
-// precision, not because the parse itself is exhaustive).
-func mcpFirstNonFlagArg(args []string) (string, bool) {
+// mcpNpxValuelessFlags and mcpUvxValuelessFlags are the switches (no value
+// argument follows) each runner documents, per runner since a bare "-y" for
+// npx and a bare "--refresh" for uvx are meaningless to the OTHER runner.
+// mcpFirstNonFlagArg's positional fallback may skip over any of these ahead
+// of the first positional without losing track of what's the spec — see its
+// own doc comment for why every OTHER leading flag stops the scan instead.
+var (
+	mcpNpxValuelessFlags = map[string]bool{
+		"-y": true, "--yes": true, "--no": true,
+		"-q": true, "--quiet": true, "--silent": true,
+	}
+	mcpUvxValuelessFlags = map[string]bool{
+		"--refresh": true, "--no-cache": true, "--isolated": true,
+		"--offline": true, "--quiet": true, "--native-tls": true,
+	}
+)
+
+// mcpKnownValuelessFlags returns the runner-appropriate switch set for base
+// (mcpFetchRunners' key), or nil for an unrecognized runner.
+func mcpKnownValuelessFlags(base string) map[string]bool {
+	switch base {
+	case "npx":
+		return mcpNpxValuelessFlags
+	case "uvx":
+		return mcpUvxValuelessFlags
+	default:
+		return nil
+	}
+}
+
+// mcpFirstNonFlagArg returns the first element of args that names the
+// package spec by npx/uvx's implicit "bare positional" convention, and
+// whether one could be identified. This is the FALLBACK spec source, used
+// only when mcpSpecArg finds no explicit spec-naming flag.
+//
+// The scan is deliberately CONSERVATIVE (ruling B7-1): every argument ahead
+// of the first positional must be either a joined "--flag=value" spelling
+// (the value travels with its own flag, so it can never be mistaken for the
+// spec) or one of base's KNOWN valueless switches (mcpKnownValuelessFlags).
+// The first time an unrecognized bare "-"/"--" flag is seen, the scan stops
+// and returns ok=false rather than guessing — a value-taking flag this
+// check does not model (`--python 3.12`, `--with requests`, uv's own `-p`
+// short form for `--python`) would otherwise hand back its OWN value as the
+// "package spec", which is a false positive, not a missed detection. An
+// unidentifiable spec is not evidence of an unpinned one (Finding.Severity's
+// own doc comment: SeverityFail must never fire on a guess).
+func mcpFirstNonFlagArg(base string, args []string) (string, bool) {
+	valueless := mcpKnownValuelessFlags(base)
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {
 			return a, true
 		}
+		if strings.Contains(a, "=") {
+			continue // joined --flag=value spelling; the value stays with its own flag
+		}
+		if valueless[a] {
+			continue
+		}
+		return "", false // unrecognized flag ahead of the first positional: cannot identify the spec
 	}
 	return "", false
 }
 
-// mcpHasFlag reports whether args contains any of names verbatim.
-func mcpHasFlag(args []string, names ...string) bool {
-	for _, a := range args {
-		for _, n := range names {
-			if a == n {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// mcpSpecFlags are the flags npx (`-p`/`--package`) and uvx (`--from`)
-// document as explicitly naming the package spec, as opposed to the
-// implicit "first positional" convention. When one of these is present its
+// mcpNpxSpecFlags and mcpUvxSpecFlags are the flags each runner documents as
+// explicitly naming the package spec, as opposed to the implicit "first
+// positional" convention: npx's `-p`/`--package`, uv's `--from`. Kept PER
+// RUNNER, not a single shared list, because uv's own `-p`/`--python` short
+// flag collides literally with npx's `-p`/`--package` — treating "-p" as a
+// universal spec flag would misread `uvx -p 3.12 ruff`'s Python-version
+// value as the package spec, the exact false-positive class ruling B7-1
+// exists to close. When one of a runner's own spec flags is present, its
 // VALUE is the package spec — never the trailing "bin name" positional
 // uvx's `--from PKG CMD` form carries (CMD selects which entry point of PKG
 // to run; it is not a package spec at all and must never be evaluated as
 // one), and never some earlier, unrelated flag's own value either.
-var mcpSpecFlags = []string{"-p", "--package", "--from"}
+var (
+	mcpNpxSpecFlags = []string{"-p", "--package"}
+	mcpUvxSpecFlags = []string{"--from"}
+)
 
-// mcpSpecArg returns the package-spec argument for an npx/uvx invocation,
-// and whether one was found: the value of an explicit -p/--package/--from
-// flag (both the split "--from X" and the joined "--from=X" spelling) when
-// one names the spec directly, else the first non-flag positional
-// (mcpFirstNonFlagArg) — npx/uvx's implicit convention absent such a flag.
-// A recognized flag present with no value after it (a malformed
-// invocation) yields ok=false rather than guessing: this check cannot know
-// what spec, if any, was intended, and SeverityFail must never fire on a
-// guess (Finding.Severity's own doc comment).
-func mcpSpecArg(args []string) (spec string, ok bool) {
+// mcpRunnerSpecFlags returns base's own spec-naming flags (mcpNpxSpecFlags /
+// mcpUvxSpecFlags), or nil for an unrecognized runner.
+func mcpRunnerSpecFlags(base string) []string {
+	switch base {
+	case "npx":
+		return mcpNpxSpecFlags
+	case "uvx":
+		return mcpUvxSpecFlags
+	default:
+		return nil
+	}
+}
+
+// mcpSpecArg returns the package-spec argument for an npx/uvx invocation
+// (base is the runner's basename, mcpFetchRunners' key), and whether one was
+// found: the value of base's own explicit spec flag (both the split
+// "--from X" and the joined "--from=X" spelling) when one names the spec
+// directly, else the first non-flag positional (mcpFirstNonFlagArg) —
+// npx/uvx's implicit convention absent such a flag. A recognized flag
+// present with no value after it (a malformed invocation) yields ok=false
+// rather than guessing: this check cannot know what spec, if any, was
+// intended, and SeverityFail must never fire on a guess (Finding.Severity's
+// own doc comment).
+func mcpSpecArg(base string, args []string) (spec string, ok bool) {
 	for i, a := range args {
-		for _, flag := range mcpSpecFlags {
+		for _, flag := range mcpRunnerSpecFlags(base) {
 			if a == flag {
 				if i+1 < len(args) {
 					return args[i+1], true
@@ -240,7 +294,7 @@ func mcpSpecArg(args []string) (spec string, ok bool) {
 			}
 		}
 	}
-	return mcpFirstNonFlagArg(args)
+	return mcpFirstNonFlagArg(base, args)
 }
 
 // mcpSpecPinned reports whether spec — a package-runner argument, e.g.
@@ -322,24 +376,28 @@ func mcpPinExample(command, spec string) string {
 
 // mcpUnpinnedSpec returns the offending package spec and true when srv's
 // command/args match design §7.4's fetch-and-execute shape with no version
-// pin: an npx invocation carrying `-y`/`--yes` (npx's own non-interactive
-// auto-install flag — without it npx would block on a confirmation prompt no
-// spawned MCP server child ever gets to answer, so an npx call with no -y is
-// not a live "runs unattended" risk this check can confirm), or ANY uvx
-// invocation (uv tool run has no such interactive gate to begin with, so its
-// mere use with an unpinned spec is already the risk). The candidate spec
-// itself comes from mcpSpecArg, not a bare positional scan — see its doc
-// comment for why an explicit -p/--package/--from flag's value must win over
-// any positional guess.
+// pin: ANY npx or uvx invocation, regardless of `-y`/`--yes`.
+//
+// This check used to gate npx on `-y`/`--yes` being present, on the premise
+// that npx without it "would block on a confirmation prompt" a spawned MCP
+// server child could never answer. That premise is false (ruling B7-2):
+// measured directly against the built binary with stdin redirected from
+// /dev/null — internal/mcpproxy's own spawn shape, no TTY — `npx cowsay hi
+// </dev/null` printed npm's install warning and RAN, with no prompt. With no
+// TTY, npm's exec confirmation prompt has nothing to block on and proceeds
+// non-interactively, so an unpinned npx server with NO `-y` at all was
+// silently passing this check while remaining exactly as dangerous as one
+// that carries it. The candidate spec itself comes from mcpSpecArg, not a
+// bare positional scan — see its doc comment for why an explicit spec
+// flag's value must win over any positional guess, and mcpFirstNonFlagArg's
+// for why an unrecognized flag ahead of the positional yields no spec at
+// all rather than a guess.
 func mcpUnpinnedSpec(command string, args []string) (spec string, unpinned bool) {
 	base := strings.ToLower(filepath.Base(command))
 	if !mcpFetchRunners[base] {
 		return "", false
 	}
-	if base == "npx" && !mcpHasFlag(args, "-y", "--yes") {
-		return "", false
-	}
-	spec, found := mcpSpecArg(args)
+	spec, found := mcpSpecArg(base, args)
 	if !found {
 		return "", false
 	}
@@ -358,17 +416,23 @@ func runMcpServerArgsUnpinned(_ context.Context, in *Input) Result {
 			continue
 		}
 		path := At("mcp_servers", name, "args").Elem(spec)
+		base := strings.ToLower(filepath.Base(srv.Command))
+		detail := fmt.Sprintf(
+			"mcp_servers.%s runs %s %s with package spec %q, which has no pinned version — this fetches and "+
+				"executes whatever code the registry currently serves for that name at every serve start, with "+
+				"this server's own env (including any env_files credentials) available to it. An absolute, "+
+				"existing command alone (tools.mcp-server-command) does not close this: %s itself is the "+
+				"fetch-and-execute vector",
+			name, srv.Command, strings.Join(srv.Args, " "), spec, filepath.Base(srv.Command))
+		if base == "npx" {
+			detail += ". npm proceeds non-interactively even without --yes because the spawned child has no " +
+				"TTY to prompt on — an npx invocation with no -y/--yes is not a lesser risk"
+		}
 		findings = append(findings, Finding{
 			Severity: SeverityFail,
 			Title:    "MCP server runs an unpinned package",
-			Detail: fmt.Sprintf(
-				"mcp_servers.%s runs %s %s with package spec %q, which has no pinned version — this fetches and "+
-					"executes whatever code the registry currently serves for that name at every serve start, with "+
-					"this server's own env (including any env_files credentials) available to it. An absolute, "+
-					"existing command alone (tools.mcp-server-command) does not close this: %s itself is the "+
-					"fetch-and-execute vector",
-				name, srv.Command, strings.Join(srv.Args, " "), spec, filepath.Base(srv.Command)),
-			Path: path,
+			Detail:   detail,
+			Path:     path,
 			Remedy: fmt.Sprintf(
 				"pin an exact version in the package spec (e.g. %s), or install the server locally and "+
 					"point mcp_servers.%s.command at its absolute binary path instead of %s",

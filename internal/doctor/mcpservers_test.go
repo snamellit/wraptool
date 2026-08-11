@@ -197,66 +197,123 @@ func TestMcpSpecPinned(t *testing.T) {
 
 // ---------------------------------------------------------------- mcpSpecArg
 
-// TestMcpSpecArg exercises ruling B7(b): an explicit -p/--package/--from
-// flag's VALUE is the package spec, not the trailing "bin name" positional
-// uvx's "--from PKG CMD" form carries, and not some earlier, unrelated
-// flag's own value — in both the split "--from X" and joined "--from=X"
-// spellings.
+// TestMcpSpecArg exercises ruling B7(b): an explicit spec flag's VALUE is
+// the package spec, not the trailing "bin name" positional uvx's "--from
+// PKG CMD" form carries, and not some earlier, unrelated flag's own value —
+// in both the split "--from X" and joined "--from=X" spellings. It also
+// exercises ruling B7-1: the fallback positional scan is conservative, and
+// each runner's spec flags are recognized only for that runner (uv's own
+// "-p"/"--python" short flag must never be misread as npx's "-p"/"--package"
+// spec flag, the same false-positive class as the "--python"/"--with" repro).
 func TestMcpSpecArg(t *testing.T) {
 	tests := []struct {
 		name      string
+		base      string
 		args      []string
 		wantSpec  string
 		wantFound bool
 	}{
 		{
 			name:      "uvx --from value, distinct trailing bin name",
+			base:      "uvx",
 			args:      []string{"--from", "black==24.4.2", "black"},
 			wantSpec:  "black==24.4.2",
 			wantFound: true,
 		},
 		{
 			name:      "uvx --from value unpinned, distinct trailing bin name",
+			base:      "uvx",
 			args:      []string{"--from", "black", "black-cli"},
 			wantSpec:  "black",
 			wantFound: true,
 		},
 		{
 			name:      "uvx --from=value joined spelling",
+			base:      "uvx",
 			args:      []string{"--from=mcp-server-git==2024.11.5", "mcp-server-git"},
 			wantSpec:  "mcp-server-git==2024.11.5",
 			wantFound: true,
 		},
 		{
 			name:      "npx -p value, distinct trailing bin name",
+			base:      "npx",
 			args:      []string{"-p", "left-pad@1.3.0", "left-pad-cli"},
 			wantSpec:  "left-pad@1.3.0",
 			wantFound: true,
 		},
 		{
 			name:      "npx --package=value joined spelling",
+			base:      "npx",
 			args:      []string{"--package=left-pad@1.3.0", "left-pad-cli"},
 			wantSpec:  "left-pad@1.3.0",
 			wantFound: true,
 		},
 		{
 			name:      "no spec-naming flag: falls back to first non-flag positional",
+			base:      "npx",
 			args:      []string{"-y", "left-pad@1.3.0"},
 			wantSpec:  "left-pad@1.3.0",
 			wantFound: true,
 		},
 		{
 			name:      "--from with no value at all: not found, no guess",
+			base:      "uvx",
 			args:      []string{"--from"},
 			wantSpec:  "",
 			wantFound: false,
 		},
+		// Ruling B7-1's own repro: uvx's documented `uvx --python 3.10 ruff`
+		// form must never yield "3.10" as the spec.
+		{
+			name:      "uvx --python value ahead of positional: unidentifiable, no guess",
+			base:      "uvx",
+			args:      []string{"--python", "3.12", "mcp-server-git==2024.11.5"},
+			wantSpec:  "",
+			wantFound: false,
+		},
+		{
+			name:      "uvx --with value ahead of positional: unidentifiable, no guess",
+			base:      "uvx",
+			args:      []string{"--with", "requests", "ruff"},
+			wantSpec:  "",
+			wantFound: false,
+		},
+		// uv's own "-p" short form for "--python" must not be misread as
+		// npx's "-p" spec flag (mcpRunnerSpecFlags is per-runner).
+		{
+			name:      "uvx -p (python short flag, not npx's package flag): unidentifiable, no guess",
+			base:      "uvx",
+			args:      []string{"-p", "3.12", "ruff"},
+			wantSpec:  "",
+			wantFound: false,
+		},
+		{
+			name:      "uvx --python=value joined spelling ahead of positional: skipped, positional found",
+			base:      "uvx",
+			args:      []string{"--python=3.12", "ruff"},
+			wantSpec:  "ruff",
+			wantFound: true,
+		},
+		{
+			name:      "npx --with value ahead of positional: unidentifiable, no guess",
+			base:      "npx",
+			args:      []string{"--with", "typescript", "left-pad"},
+			wantSpec:  "",
+			wantFound: false,
+		},
+		{
+			name:      "uvx known valueless flags ahead of positional: skipped",
+			base:      "uvx",
+			args:      []string{"--refresh", "--no-cache", "--isolated", "--offline", "--quiet", "--native-tls", "ruff"},
+			wantSpec:  "ruff",
+			wantFound: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			spec, found := mcpSpecArg(tc.args)
+			spec, found := mcpSpecArg(tc.base, tc.args)
 			if found != tc.wantFound || spec != tc.wantSpec {
-				t.Errorf("mcpSpecArg(%v) = (%q, %v), want (%q, %v)", tc.args, spec, found, tc.wantSpec, tc.wantFound)
+				t.Errorf("mcpSpecArg(%q, %v) = (%q, %v), want (%q, %v)", tc.base, tc.args, spec, found, tc.wantSpec, tc.wantFound)
 			}
 		})
 	}
@@ -273,12 +330,30 @@ func TestMcpUnpinnedSpec(t *testing.T) {
 		{"npx with -y and unpinned: fires", "npx", []string{"-y", "@foo/bar"}, "@foo/bar", true},
 		{"npx with --yes and unpinned: fires", "npx", []string{"--yes", "left-pad"}, "left-pad", true},
 		{"npx with -y and pinned: does not fire", "npx", []string{"-y", "left-pad@1.3.0"}, "", false},
-		{"npx without -y: does not fire (would block on a prompt)", "npx", []string{"@foo/bar"}, "", false},
+		// Ruling B7-2: npx with NO -y/--yes at all still fires. Measured
+		// against the built binary with stdin=/dev/null (internal/mcpproxy's
+		// own spawn shape, no TTY): `npx cowsay hi </dev/null` printed npm's
+		// install warning and RAN with no prompt — the old "-y gate" premise
+		// ("would block on a confirmation prompt") is false, and this is the
+		// exact reported false-NEGATIVE (a silently-passing dangerous config).
+		{"npx WITHOUT -y/--yes and unpinned: still fires (no TTY, no prompt to block on)", "npx", []string{"@foo/bar"}, "@foo/bar", true},
+		{"npx without -y, pinned: does not fire", "npx", []string{"left-pad@1.3.0"}, "", false},
 		{"uvx unpinned, no flag needed: fires", "uvx", []string{"ruff"}, "ruff", true},
 		{"uvx pinned: does not fire", "uvx", []string{"ruff@0.4.4"}, "", false},
 		{"absolute path to npx still matches by basename", "/usr/local/bin/npx", []string{"-y", "left-pad"}, "left-pad", true},
 		{"unrelated runner: never fires", "node", []string{"-y", "left-pad"}, "", false},
 		{"npx with -y but no non-flag arg: does not fire", "npx", []string{"-y"}, "", false},
+		// Ruling B7-1's own repro (uvx's documented `uvx --python 3.10 ruff`
+		// form): a value-taking flag this check does not model must never
+		// hand back its own value as the spec.
+		{
+			"uvx --python value ahead of positional spec: does not fire (unidentifiable, not evidence of unpinned)",
+			"uvx", []string{"--python", "3.12", "mcp-server-git==2024.11.5"}, "", false,
+		},
+		{
+			"uvx --with value ahead of positional spec: does not fire (unidentifiable)",
+			"uvx", []string{"--with", "requests", "ruff"}, "", false,
+		},
 		// Ruling B7: uv's documented pin form (PEP 440 "==") must not be
 		// misread as unpinned just because it carries no npm-style "@".
 		{
@@ -392,6 +467,68 @@ func TestRunMcpServerArgsUnpinnedUvxRemedyUsesPEP440Syntax(t *testing.T) {
 	}
 	if strings.Contains(f.Remedy, "@<version>") {
 		t.Errorf("Remedy %q wrongly suggests npm pin syntax for a uvx invocation", f.Remedy)
+	}
+}
+
+// TestRunMcpServerArgsUnpinnedNpxWithoutYesStillFires is the exact reported
+// false-NEGATIVE shape (ruling B7-2): an npx invocation with NO -y/--yes at
+// all used to silently pass this check on the premise that npx would block
+// on a confirmation prompt no spawned child could answer. That premise is
+// false — measured against the built binary with stdin=/dev/null
+// (internal/mcpproxy's own spawn shape): `npx cowsay hi </dev/null` printed
+// npm's install warning and RAN, no prompt. An unpinned npx server with no
+// -y fetches and executes remote code at every serve start exactly like one
+// that carries -y, so this must fire, and the Detail must say why no TTY
+// changes nothing.
+func TestRunMcpServerArgsUnpinnedNpxWithoutYesStillFires(t *testing.T) {
+	in := &Input{
+		Env: NewMapEnv(),
+		Config: &config.Config{MCPServers: map[string]config.MCPServerConfig{
+			"fetch": {Command: "/usr/bin/npx", Args: []string{"@modelcontextprotocol/server-fetch"}},
+		}},
+	}
+
+	res := runMcpServerArgsUnpinned(context.Background(), in)
+
+	if len(res.Findings) != 1 {
+		t.Fatalf("got %d findings, want 1: %+v", len(res.Findings), res.Findings)
+	}
+	f := res.Findings[0]
+	if f.Severity != SeverityFail {
+		t.Errorf("severity = %v, want fail", f.Severity)
+	}
+	if !strings.Contains(f.Detail, "non-interactively") || !strings.Contains(f.Detail, "no TTY") {
+		t.Errorf("Detail %q does not explain that npm proceeds non-interactively with no TTY", f.Detail)
+	}
+}
+
+// TestRunMcpServerArgsUnpinnedUnidentifiableSpecDoesNotFire is the exact
+// reported false-POSITIVE shape (ruling B7-1), reproduced against the built
+// binary: `uvx --python 3.12 mcp-server-git==2024.11.5` — uv's own
+// documented `uvx --python 3.10 ruff` form — used to fire with package spec
+// "3.12" (the --python VALUE, not the actual spec) and remedy
+// "3.12==<version>". A value-taking flag this check does not model must
+// never be mistaken for the spec; an unidentifiable spec is not evidence of
+// an unpinned one, so this must emit NOTHING.
+func TestRunMcpServerArgsUnpinnedUnidentifiableSpecDoesNotFire(t *testing.T) {
+	in := &Input{
+		Env: NewMapEnv(),
+		Config: &config.Config{MCPServers: map[string]config.MCPServerConfig{
+			"git": {
+				Command: "/usr/bin/uvx",
+				Args:    []string{"--python", "3.12", "mcp-server-git==2024.11.5"},
+			},
+			"lint": {
+				Command: "/usr/bin/uvx",
+				Args:    []string{"--with", "requests", "ruff"},
+			},
+		}},
+	}
+
+	res := runMcpServerArgsUnpinned(context.Background(), in)
+
+	if res.Outcome() != OutcomePass {
+		t.Fatalf("outcome = %v, want pass: %+v", res.Outcome(), res.Findings)
 	}
 }
 
