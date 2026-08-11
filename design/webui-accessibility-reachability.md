@@ -1,17 +1,17 @@
-# Design: accessibility and reachability of the operator Web UI
+# Design: accessibility and reachability of the operator review UI
 
 Status: **proposed**. This note captures an accessibility audit of the
-existing Web UI (`internal/webui`) plus the operator-facing question of how
+existing review UI (`internal/webui`) plus the operator-facing question of how
 the UI is *reached* and *discovered*, and evaluates two additional surfaces
 (auto-opening a browser, a TUI) against the project's constraints. It does
-not change the Web UI's security model — see `design/webauthn-admin-auth.md`
+not change the review UI's security model — see `design/webauthn-admin-auth.md`
 for the authentication boundary, which this note assumes stays as designed.
 
 ## 0. What we have today
 
 Reachability and discoverability:
 
-- The admin UI is a separate loopback HTTP listener (`admin.listen`),
+- The review UI is a separate loopback HTTP listener (`admin.listen`),
   distinct from the MCP listener — `cmd/serve.go:384` `startWebUI`. It is
   never AI-facing; it is the operator/host plane.
 - The default config (`internal/config/default_config.yaml:26`) ships the
@@ -25,12 +25,12 @@ Reachability and discoverability:
   sets the session cookie. After that line scrolls off the terminal there is
   no way to recover the URL without re-reading the token file.
 - `wraptool server status` (`cmd/server.go:33`) probes the **MCP** listener
-  only. It never reports the admin listener, the token file, or the URL. An
-  operator running `status` to "is the server healthy?" gets no hint that the
+  only. It never reports the review UI's listener, the token file, or the URL.
+  An operator running `status` to "is the server healthy?" gets no hint that the
   UI exists.
 - There is no `wraptool admin …` subcommand. The only CLI path to acting on
   requests is `cmd/requests.go` (`approve --apply` etc.), which edits the
-  config directly and never touches the Web UI.
+  config directly and never touches the review UI.
 - Auth: token via `?token=` query, login form, or `Bearer` for scripts. The
   token file must live outside the workspace (`cmd/up.go:120`
   `validatePathOutsideWorkspace`) so a credential-bearing container cannot
@@ -77,7 +77,7 @@ The site itself (`internal/webui/templates/*.html`):
   a security note, not strictly a11y, but it shares a fix window with the
   form-label work because both touch the same forms.
 
-## 1. Stage A — accessibility fixes to the existing Web UI (do first)
+## 1. Stage A — accessibility fixes to the existing review UI (do first)
 
 Smallest, highest-leverage, zero new dependencies. Helps every audience
 (browser user, future TUI user migrating from the browser, anyone using a
@@ -135,11 +135,12 @@ scrolls away. Two additions, both opt-in or on-demand:
    everything else composes.
 2. **`wraptool admin open`** — `admin url` plus `xdg-open`/`open`/`start`
    of that URL. Guarded: silent no-op when there is no `DISPLAY`/`WAYLAND_DISPLAY`
-   (Linux), no `BROWSER`, stdin/stdout not a TTY, or the admin listener is
+   (Linux), no `BROWSER`, stdin/stdout not a TTY, or the review UI's listener is
    not confirmed up. Never errors the parent command on failure to open —
    prints the URL regardless so the operator has a fallback.
 3. **`wraptool up --open`** — opt-in flag, default off. Runs `admin open`
-   after `ensureServer` succeeds and the admin listener is confirmed bound.
+   after `ensureServer` succeeds and the review UI's listener is confirmed
+   bound.
    Does **not** auto-open by default (see §3).
 4. **`wraptool server status`** — extend to also probe and report the admin
    listener, and print `admin ui: <url>` when reachable. This closes the
@@ -164,7 +165,7 @@ is the headline reachability lever.
 - Closes the discoverability gap entirely: the operator no longer needs to
   read a log line or know where the token file is. The browser tab *is* the
   entry. This matters most for non-CLI-native operators, which is precisely
-  who the Web UI exists to serve versus `requests approve`.
+  who the review UI exists to serve versus `requests approve`.
 - Matches `wraptool up`'s existing "bring you to your workspace" posture —
   it already prints `container runtime: guix` and drops you somewhere.
 - Cheap: the token is already in the printed URL, so `xdg-open` of that
@@ -183,7 +184,7 @@ is the headline reachability lever.
   per §2, an opt-in (`--open`).
 - Race: the listener must be confirmed up *before* opening, or the tab
   points at a dead URL. `startWebUI` runs in a goroutine; `admin open` must
-  dial the admin listener before launching the browser, retrying briefly.
+  dial the review UI's listener before launching the browser, retrying briefly.
 - Token hygiene: embedding the bearer token in a browser URL persists it
   into browser history and browser profile state. The printed-URL approach
   already does this; auto-open doubles down. Acceptable for loopback but
@@ -232,10 +233,10 @@ wraptool's core audience is exactly the SSH/tmux operator.
   round-trip, no leaving the session that has the failing agent in it.
 - The data layer is already clean and presentation-agnostic:
   `requestlog.Store` (append-only JSONL, `ListRequests`/`ListToolCalls`)
-  and `config.ApplyRequest`/`AddRule`/`UpdateRule`/`DeleteRule`. The Web UI
+  and `config.ApplyRequest`/`AddRule`/`UpdateRule`/`DeleteRule`. The review UI
   is a thin presenter over these. A TUI is a *second* presenter over the
   same store — no new business logic, no new auth boundary (it is a local
-  process reading the same files the Web UI serves), no HTTP. The a11y work
+  process reading the same files the review UI serves), no HTTP. The a11y work
   in Stage A is largely orthogonal; the TUI is keyboard-first by
   construction.
 - It sidesteps the browser's accessibility gaps entirely for its audience,
@@ -251,41 +252,41 @@ wraptool's core audience is exactly the SSH/tmux operator.
   (operator overrides) have direct TUI analogues and should be designed
   together so the two presenters share a common "edit flag types" call
   rather than two bespoke implementations.
-- Color status must not be color-only in the TUI either — the Web UI's
+- Color status must not be color-only in the TUI either — the review UI's
   text+badge convention translates directly to text+symbol (`● pending`,
   `✓ approved`, `✗ denied`).
 
 **Scope of the TUI**
 - Subcommand `wraptool admin tui` (composes with `admin url`/`open`; the
   `admin` parent gets `url`/`open`/`tui`).
-- Screens mirroring the Web UI's three tabs: **Requests** (list + Approve
+- Screens mirroring the review UI's three tabs: **Requests** (list + Approve
   with flag-type editing + Deny with reason), **Rules** (list + Add/Update/
   Delete over `config.AddRule`/`UpdateRule`/`DeleteRule`), **Calls** (audit
   log with allowed/denied filter).
 - No new auth boundary: the TUI runs as the operator, reading the config
   and requestlog files the operator already owns. It does not speak HTTP,
-  does not need the token. The Web UI stays for the case where the operator
+  does not need the token. The review UI stays for the case where the operator
   is not the person at the terminal (the reason admin is separate from the
   AI-facing MCP in the first place).
 - Hot-reload: the TUI watches the config and requestlog files directly
   (fsnotify, same debounce as the server's hot-reload) so an approval
-  applied from the Web UI appears in the TUI without restart, and vice
+  applied from the review UI appears in the TUI without restart, and vice
   versa.
 
 **Non-goals for the TUI**
-- Replacing the Web UI. The two coexist; the TUI serves the
-  always-in-terminal operator, the Web UI serves the
+- Replacing the review UI. The two coexist; the TUI serves the
+  always-in-terminal operator, the review UI serves the
   at-the-keyboard-but-not-in-tmux operator.
 - Speaking the MCP protocol. The TUI is admin-plane only.
 - Remote operation. The TUI is local-first; remote admin stays HTTP.
 
 ## 6. Suggested sequencing
 
-1. **Stage A** — Web UI a11y fixes (labels, `aria-label` on `.cmd`,
+1. **Stage A** — review UI a11y fixes (labels, `aria-label` on `.cmd`,
    `role="alert"` on flash, `:focus-visible`, skip-link, `SameSite`+CSRF).
    ~1 day, zero new deps, helps every audience.
 2. **Stage B** — `wraptool admin url` / `admin open` / `wraptool up --open`
-   (opt-in) / `server status` reports the admin listener. Reachability
+   (opt-in) / `server status` reports the review UI's listener. Reachability
    without surprise. ~150 lines + tests.
 3. **Stage C** — `wraptool admin tui` over the existing Store and config
    editor APIs. Real value for the core SSH/tmux audience; the a11y fix in
@@ -295,4 +296,4 @@ wraptool's core audience is exactly the SSH/tmux operator.
 
 Stages A and B are independent and can land in either order. Stage C
 depends on Stage A's flag-type-editing decisions being made once (so the
-TUI and Web UI share the editing call) but not on Stage A's markup work.
+TUI and review UI share the editing call) but not on Stage A's markup work.
