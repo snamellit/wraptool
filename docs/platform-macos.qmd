@@ -52,11 +52,18 @@ With Homebrew:
 
 ```bash
 brew tap pti/wraptool https://forge.snamellit.com/pti/homebrew-wraptool.git
+brew trust pti/wraptool
 brew install pti/wraptool/wraptool
 wraptool version
 ```
 
 Later upgrades are then `brew update && brew upgrade pti/wraptool/wraptool`.
+
+Do not skip `brew trust`. Homebrew does not trust a third-party tap by default,
+and an untrusted tap is *skipped with a warning* during `brew update` rather
+than reported as an error — so upgrades silently stop arriving. See [Trusting
+the tap](installation.qmd#trusting-the-tap) for what trust grants and how to
+verify the formula before granting it.
 
 Or follow [Installation](installation.qmd) — the Linux/macOS release script
 detects `darwin` and installs to `~/.local/bin`. Then:
