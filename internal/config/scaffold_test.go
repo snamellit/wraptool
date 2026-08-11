@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -153,5 +155,73 @@ func TestRenderDefaultConfigSubstitutesConfigDir(t *testing.T) {
 	if !strings.Contains(out, want) {
 		// Not Linux; accept the xdg config home whatever it is on this host.
 		t.Logf("rendered scaffold does not contain the Linux config path; this host's config dir differs (expected on macOS/Windows)")
+	}
+}
+
+// TestScaffoldHardensGitEnv guards the mandatory command-scope git settings in
+// the starter config. wraptool runs git on the host, in a working tree the AI
+// can write to, so a hostile .git/config or .git/hooks would otherwise execute
+// code as the operator on the next `git pull` (post-merge hooks, core.fsmonitor).
+// GIT_CONFIG_* is command scope, which outranks the repository's own config —
+// a global setting cannot defend against a hostile repo. Losing these silently
+// reintroduces that path on every fresh install, so assert them here.
+func TestScaffoldHardensGitEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if _, err := EnsureConfigFile(path); err != nil {
+		t.Fatalf("EnsureConfigFile: %v", err)
+	}
+	// LoadStrict, not Validate: this assertion is about the env block and must
+	// not depend on git existing on the host.
+	cfg, err := LoadStrict(path)
+	if err != nil {
+		t.Fatalf("LoadStrict on generated config: %v", err)
+	}
+	git, ok := cfg.Tools["git"]
+	if !ok {
+		t.Fatalf("generated config missing the git tool; tools=%v", cfg.Tools)
+	}
+	env, err := git.ResolvedEnv()
+	if err != nil {
+		t.Fatalf("ResolvedEnv: %v", err)
+	}
+
+	// Both settings must be present, whatever index they occupy.
+	keys := map[string]string{}
+	for k, v := range env {
+		if idx, found := strings.CutPrefix(k, "GIT_CONFIG_KEY_"); found {
+			keys[v] = env["GIT_CONFIG_VALUE_"+idx]
+		}
+	}
+	hooks, ok := keys["core.hooksPath"]
+	if !ok {
+		t.Errorf("scaffold lost core.hooksPath; git would run hooks from the working tree. env=%v", env)
+	} else if !filepath.IsAbs(hooks) || strings.Contains(hooks, "__CONFIG_DIR__") {
+		t.Errorf("core.hooksPath = %q, want an absolute, substituted path", hooks)
+	}
+	if got, ok := keys["core.fsmonitor"]; !ok || got != "false" {
+		t.Errorf("core.fsmonitor = %q (present=%v), want \"false\"", got, ok)
+	}
+
+	// GIT_CONFIG_COUNT must equal the number of contiguous indexed pairs: git
+	// reads indices 0..COUNT-1 and ignores the rest, so a pair added without
+	// bumping the count is silently inert.
+	count := env["GIT_CONFIG_COUNT"]
+	n, err := strconv.Atoi(count)
+	if err != nil {
+		t.Fatalf("GIT_CONFIG_COUNT = %q, want an integer: %v", count, err)
+	}
+	for i := range n {
+		if _, ok := env[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)]; !ok {
+			t.Errorf("GIT_CONFIG_COUNT=%d but GIT_CONFIG_KEY_%d is missing", n, i)
+		}
+		if _, ok := env[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)]; !ok {
+			t.Errorf("GIT_CONFIG_COUNT=%d but GIT_CONFIG_VALUE_%d is missing", n, i)
+		}
+	}
+	if _, ok := env[fmt.Sprintf("GIT_CONFIG_KEY_%d", n)]; ok {
+		t.Errorf("GIT_CONFIG_KEY_%d exists but GIT_CONFIG_COUNT=%d, so git ignores it", n, n)
+	}
+	if len(keys) != n {
+		t.Errorf("%d indexed key/value pairs but GIT_CONFIG_COUNT=%d", len(keys), n)
 	}
 }
