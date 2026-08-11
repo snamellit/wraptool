@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -14,11 +15,14 @@ import (
 // on exactly this passthrough.
 func TestRenderJSONSchemaFields(t *testing.T) {
 	r := Report{
-		Schema:     SchemaVersion,
-		Version:    "0.5.1",
-		ConfigPath: "/home/user/.config/wraptool/config.yaml",
-		Probed:     true,
-		Summary:    Summary{Fail: 2, Warn: 5, Suppressed: 1, Info: 3, Pass: 22, Skipped: 6},
+		Schema:           SchemaVersion,
+		Version:          "0.5.1",
+		ConfigPath:       "/home/user/.config/wraptool/config.yaml",
+		ConfigState:      ConfigLoaded,
+		Probed:           true,
+		Incomplete:       true,
+		IncompleteReason: "doctor: unknown check or group \"bogus\"",
+		Summary:          Summary{Fail: 2, Warn: 5, Suppressed: 1, Info: 3, Pass: 22, Skipped: 6},
 		Findings: []Finding{
 			{
 				ID: "policy.dangerous-flag", Severity: SeverityWarn,
@@ -41,13 +45,16 @@ func TestRenderJSONSchemaFields(t *testing.T) {
 	}
 
 	var got struct {
-		Schema          int          `json:"schema"`
-		ConfigPath      string       `json:"config_path"`
-		WraptoolVersion string       `json:"wraptool_version"`
-		Probed          bool         `json:"probed"`
-		Summary         Summary      `json:"summary"`
-		Findings        []Finding    `json:"findings"`
-		Skipped         []SkipRecord `json:"skipped"`
+		Schema           int          `json:"schema"`
+		ConfigPath       string       `json:"config_path"`
+		WraptoolVersion  string       `json:"wraptool_version"`
+		Probed           bool         `json:"probed"`
+		Incomplete       bool         `json:"incomplete"`
+		IncompleteReason string       `json:"incomplete_reason"`
+		ConfigState      string       `json:"config_state"`
+		Summary          Summary      `json:"summary"`
+		Findings         []Finding    `json:"findings"`
+		Skipped          []SkipRecord `json:"skipped"`
 	}
 	if err := json.Unmarshal([]byte(buf.String()), &got); err != nil {
 		t.Fatalf("decoding RenderJSON output: %v\noutput was:\n%s", err, buf.String())
@@ -64,6 +71,18 @@ func TestRenderJSONSchemaFields(t *testing.T) {
 	}
 	if !got.Probed {
 		t.Error("probed = false, want true")
+	}
+	// item 9: incomplete/incomplete_reason/config_state are additive wire
+	// fields (schema stays 1) so a --json consumer never mistakes an
+	// incomplete run for a clean one just by reading stdout.
+	if !got.Incomplete {
+		t.Error("incomplete = false, want true")
+	}
+	if got.IncompleteReason != r.IncompleteReason {
+		t.Errorf("incomplete_reason = %q, want %q", got.IncompleteReason, r.IncompleteReason)
+	}
+	if got.ConfigState != string(ConfigLoaded) {
+		t.Errorf("config_state = %q, want %q", got.ConfigState, string(ConfigLoaded))
 	}
 	if got.Summary != r.Summary {
 		t.Errorf("summary = %+v, want %+v", got.Summary, r.Summary)
@@ -139,6 +158,104 @@ func TestRenderJSONThroughRun(t *testing.T) {
 	}
 	if len(got.Skipped) != 1 || got.Skipped[0].ID != "tools.binary-writable" {
 		t.Errorf("skipped = %+v, want one tools.binary-writable record", got.Skipped)
+	}
+}
+
+// TestRenderJSONIncompleteRunSurfacesIncompleteFields is item 9's core case:
+// `doctor --only bogus --json` must not write a clean all-zero report to
+// stdout. An unknown --only selector makes Run itself return an Incomplete
+// report (TestSelectionUnknownSelectorIsAnError pins that at the engine
+// level); this test pins that the JSON wire format actually carries it.
+func TestRenderJSONIncompleteRunSurfacesIncompleteFields(t *testing.T) {
+	checks := []Check{doctorPassCheck("env.a")}
+	r := Run(context.Background(), doctorVirginInput(), RunOptions{Checks: checks, Only: []string{"no-such-group"}})
+	if !r.Incomplete || r.IncompleteReason == "" {
+		t.Fatalf("precondition failed: Run did not return an Incomplete report: %+v", r)
+	}
+
+	var buf strings.Builder
+	if err := RenderJSON(&buf, r); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+
+	var got struct {
+		Incomplete       bool   `json:"incomplete"`
+		IncompleteReason string `json:"incomplete_reason"`
+	}
+	if err := json.Unmarshal([]byte(buf.String()), &got); err != nil {
+		t.Fatalf("decoding: %v\noutput was:\n%s", err, buf.String())
+	}
+	if !got.Incomplete {
+		t.Errorf("incomplete = false, want true — a --json consumer parsing stdout must see this run did not complete")
+	}
+	if got.IncompleteReason != r.IncompleteReason {
+		t.Errorf("incomplete_reason = %q, want %q", got.IncompleteReason, r.IncompleteReason)
+	}
+}
+
+// TestRenderJSONConfigStateRoundTrips pins config_state for all three
+// ConfigState members (doctor.go's closed enum), since it is emitted as a
+// bare string on the wire.
+func TestRenderJSONConfigStateRoundTrips(t *testing.T) {
+	for _, cs := range []ConfigState{ConfigLoaded, ConfigAbsent, ConfigUnreadable} {
+		cs := cs
+		t.Run(string(cs), func(t *testing.T) {
+			var buf strings.Builder
+			if err := RenderJSON(&buf, Report{Schema: SchemaVersion, ConfigState: cs}); err != nil {
+				t.Fatalf("RenderJSON: %v", err)
+			}
+			var got struct {
+				ConfigState string `json:"config_state"`
+			}
+			if err := json.Unmarshal([]byte(buf.String()), &got); err != nil {
+				t.Fatalf("decoding: %v", err)
+			}
+			if got.ConfigState != string(cs) {
+				t.Errorf("config_state = %q, want %q", got.ConfigState, string(cs))
+			}
+		})
+	}
+}
+
+// TestRenderJSONDoesNotEscapeHTML pins item 8: json.Encoder's default
+// SetEscapeHTML(true) turns the ASCII characters less-than, greater-than,
+// and ampersand into \uXXXX escapes, which is wrong for doctor's report — it
+// is never embedded in HTML, and a Detail or Remedy legitimately contains a
+// shell redirect or comparison (e.g. `git -c core.sshCommand=…`, or a flag
+// pattern like `foo > bar`).
+func TestRenderJSONDoesNotEscapeHTML(t *testing.T) {
+	const detail = "value <redirect> & \"quoted\" here"
+	const remedy = "use a < b or a > b"
+	r := Report{
+		Schema: SchemaVersion,
+		Findings: []Finding{
+			{ID: "policy.dangerous-flag", Severity: SeverityWarn, Title: "t", Detail: detail, Remedy: remedy},
+		},
+	}
+	var buf strings.Builder
+	if err := RenderJSON(&buf, r); err != nil {
+		t.Fatalf("RenderJSON: %v", err)
+	}
+	out := buf.String()
+	// SetEscapeHTML(true)'s default output would contain these \uXXXX escape
+	// sequences instead of the literal characters; their absence is exactly
+	// what SetEscapeHTML(false) buys. Built from rune codes, not written as
+	// literal escape text, so nothing in this source file could be mistaken
+	// for (or silently normalized into) the character it denotes.
+	lessThanEscape := "\\u" + fmt.Sprintf("%04x", '<')
+	greaterThanEscape := "\\u" + fmt.Sprintf("%04x", '>')
+	ampersandEscape := "\\u" + fmt.Sprintf("%04x", '&')
+	for _, escaped := range []string{lessThanEscape, greaterThanEscape, ampersandEscape} {
+		if strings.Contains(out, escaped) {
+			t.Errorf("output contains %s, want SetEscapeHTML(false) to leave the literal character unescaped: %s", escaped, out)
+		}
+	}
+	// The literal, unescaped characters must round-trip through Detail/Remedy.
+	if !strings.Contains(out, `"detail": "value <redirect> & \"quoted\" here"`) {
+		t.Errorf("Detail did not round-trip with literal <, >, & characters: %s", out)
+	}
+	if !strings.Contains(out, `"remedy": "use a < b or a > b"`) {
+		t.Errorf("Remedy did not round-trip with literal <, > characters: %s", out)
 	}
 }
 

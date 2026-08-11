@@ -169,6 +169,11 @@ func init() {
 // probe (`selectRuntime`'s "auto" branch): guix on PATH AND a manifest.scm at
 // the workspace root. Silent otherwise — this is informational, not a
 // judgement about the absence of either.
+//
+// The Detail is deliberately qualified to "under --runtime=auto (the
+// default)": selectRuntime only runs this probe for mode "" or "auto" — an
+// explicit `--runtime=devcontainer` bypasses it entirely, so a flat "wraptool
+// up will use the guix runtime" would be wrong for that invocation.
 func runEnvGuixRuntimeSelected(_ context.Context, in *Input) Result {
 	if _, err := in.Env.LookPath("guix"); err != nil {
 		return Pass()
@@ -179,8 +184,8 @@ func runEnvGuixRuntimeSelected(_ context.Context, in *Input) Result {
 	return Found(Finding{
 		Severity: SeverityInfo,
 		Title:    "guix runtime will auto-select",
-		Detail: fmt.Sprintf("guix is on PATH and %s has manifest.scm — `wraptool up` will use the guix runtime",
-			in.Workspace),
+		Detail: fmt.Sprintf("guix is on PATH and %s has manifest.scm — under --runtime=auto (the default), "+
+			"`wraptool up` will use the guix runtime", in.Workspace),
 		DocRef: "docs/isolated-environments.md",
 	})
 }
@@ -234,8 +239,11 @@ func runEnvXDGWritable(_ context.Context, in *Input) Result {
 		findings = append(findings, Finding{
 			Severity: SeverityFail,
 			Title:    "XDG directory not writable",
+			// fi.Mode, not fi.Perm(): Perm() clears the type bits, so a
+			// directory would render as "-r-x------" — a leading dash reading
+			// as a regular file in the operator-facing report.
 			Detail: fmt.Sprintf("%s dir %s: nearest existing ancestor %s (mode %s) is not writable",
-				d.label, d.path, fi.Path, fi.Perm()),
+				d.label, d.path, fi.Path, fi.Mode),
 			Remedy: fmt.Sprintf("make %s writable by the current user, or point the relevant XDG_* variable elsewhere", fi.Path),
 		})
 	}
@@ -264,7 +272,23 @@ func envNearestExistingAncestor(env Env, path string) (FileInfo, bool) {
 // other bit. When ownership is unknown (FileInfo.OwnerKnown() false — no
 // syscall.Stat_t, e.g. a platform host_stat_other.go covers) it falls back to
 // "any write bit at all", which is the best a mode-bits-only signal can do.
+//
+// uid 0 (root) is an explicit case, checked before any mode bit: POSIX write
+// permission checks are bypassed entirely for root, so `sudo wraptool doctor`
+// auditing a 0700 directory owned by uid 1000 must never FAIL it as
+// unwritable — the process can write there regardless of what the mode says.
+//
+// gid membership is necessarily approximate: Env has no supplementary-group
+// accessor (host.go, CLOSED — plan §1 rule 10), only the primary gid, so a
+// mismatch there does not prove the operator lacks group access. A set
+// group-write bit is therefore treated as writable even when gid does not
+// match the file's own primary GID (the "default" branch below) — the
+// operator may still reach it via a supplementary group this package cannot
+// see, and a false FAIL is worse than an occasional false PASS here.
 func envDirWritable(fi FileInfo, uid, gid int) bool {
+	if uid == 0 {
+		return true
+	}
 	perm := fi.Perm()
 	switch {
 	case !fi.OwnerKnown():
@@ -274,6 +298,9 @@ func envDirWritable(fi FileInfo, uid, gid int) bool {
 	case gid >= 0 && fi.GID == gid:
 		return perm&0o020 != 0
 	default:
+		if perm&0o020 != 0 {
+			return true // group-write bit set; a supplementary group might match
+		}
 		return perm&0o002 != 0
 	}
 }
