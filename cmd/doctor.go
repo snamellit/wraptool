@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -153,7 +152,7 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string) error {
 // exit 2 (so main.go's stderr line names the actual cause).
 func incompleteCause(r doctor.Report) error {
 	if r.Incomplete {
-		return fmt.Errorf("%s", r.IncompleteReason)
+		return errors.New(r.IncompleteReason)
 	}
 	return nil
 }

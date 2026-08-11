@@ -136,6 +136,11 @@ func TestDoctorConfigPathPrecedence(t *testing.T) {
 
 	t.Run("default", func(t *testing.T) {
 		gotPath = ""
+		// WRAPTOOL_CONFIG is a documented, supported user env var — clear it so
+		// this subtest asserts flag-absent, env-absent behaviour instead of
+		// whatever the ambient environment (a developer machine, a CI runner
+		// that exports it) happens to hold.
+		t.Setenv("WRAPTOOL_CONFIG", "")
 		if _, err := runDoctorWithDeps(t, deps); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -172,6 +177,27 @@ func TestDoctorNeverMentionsStdioTransport(t *testing.T) {
 	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out, "stdio") {
+		t.Errorf("doctor output must never name the stdio MCP transport, got: %s", out)
+	}
+}
+
+// TestDoctorProductionWiringRunsRealRegistry leaves doctorDeps.checks nil, so
+// doctor.Run falls back to the real doctor.Registered() — every other cmd-level
+// test injects an explicit (possibly empty) check slice and therefore never
+// exercises the production wiring at all (acceptance criterion #2: "wraptool
+// doctor prints one info line"). The Env is still MapEnv-backed (no PATH
+// binaries populated), so the one shipped check's output is deterministic
+// across CI runners.
+func TestDoctorProductionWiringRunsRealRegistry(t *testing.T) {
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, nil)
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "info  env.container-backend") {
+		t.Errorf("missing the real env.container-backend line from the production check registry, got: %s", out)
 	}
 	if strings.Contains(out, "stdio") {
 		t.Errorf("doctor output must never name the stdio MCP transport, got: %s", out)

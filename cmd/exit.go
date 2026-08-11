@@ -26,6 +26,12 @@ func (e *ExitError) Unwrap() error { return e.Err }
 // process exit status. A nil-Err *ExitError (doctor's "the report you just
 // read has fail findings" case) exits with its Code and prints nothing extra
 // — main.go only prints err.Error() when it is non-empty.
+//
+// Precondition: callers pass a non-nil err (main.go only calls this inside
+// its `if err := ...Execute(); err != nil` branch). ExitCode(nil) returns 1,
+// not 0 — nil is never "clean success" in this function's contract, only "no
+// *ExitError to inspect", so a caller that skipped the err != nil guard would
+// get a wrong-but-safe exit code rather than a false success.
 func ExitCode(err error) int {
 	var e *ExitError
 	if errors.As(err, &e) && e.Code != 0 {
