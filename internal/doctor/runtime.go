@@ -9,16 +9,24 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/pti/wraptool/internal/config"
 )
 
-// This file ships the part of §7.5's runtime.* group that works against
-// TODAY's serve.state, which records exactly two keys (listen=, auth=;
-// cmd/server.go:writeServeState). §4.1's uid/config_path/config_loaded_at
-// extension is Phase 2 (E0/E1/E2) and is deliberately NOT read here — a key
-// this file does not recognize is simply absent, never a value (parsed
-// tolerantly, mirroring cmd/server.go's own reader).
+// This file ships §7.5's runtime.* group. Phase 1 (B9) shipped against a
+// serve.state carrying exactly two keys (listen=, auth=); E0 landed §4.1's
+// extension (uid/config_path/path/started_at/config_loaded_at/transport/
+// admin_listen — cmd/server.go's writeServeState/readServeState), and this
+// file's E1/E2 revision reads the rest of it: runRuntimeUID and
+// runRuntimeStalePolicy below, plus env.go's env.path-differs-from-server and
+// exposure_files.go's exposure.token-owner (both in this same package, so
+// they call runtimeLiveMatchingState directly rather than duplicating its
+// gate). runRuntimeBindDivergence deliberately still does NOT gate on
+// config_path — see its own doc comment for why that stays a Phase-1
+// decision rather than being widened here. A key this file does not
+// recognize is simply absent, never a value (parsed tolerantly, mirroring
+// cmd/server.go's own reader).
 //
 // Per Input's own doc comment there is no Input.Server field: B9 sits inside
 // the nine-way parallel wave and cannot widen the shared Input type, so this
@@ -28,6 +36,8 @@ import (
 const (
 	runtimeStalePIDFile   CheckID = "runtime.stale-pidfile"
 	runtimeBindDivergence CheckID = "runtime.bind-divergence"
+	runtimeUID            CheckID = "runtime.uid"
+	runtimeStalePolicy    CheckID = "runtime.stale-policy"
 )
 
 func init() {
@@ -41,6 +51,16 @@ func init() {
 		Needs:   NeedsConfig,
 		Summary: "compares the running server's effective bind to the config",
 	}, runRuntimeBindDivergence)
+	register(Meta{
+		ID:      runtimeUID,
+		Needs:   NeedsNothing,
+		Summary: "reports the uid the server runs as, when recorded",
+	}, runRuntimeUID)
+	register(Meta{
+		ID:      runtimeStalePolicy,
+		Needs:   NeedsNothing,
+		Summary: "warns when the config file changed since the server's last successful load",
+	}, runRuntimeStalePolicy)
 }
 
 // runtimePIDFileName / runtimeServeStateName are cmd/server.go's own file
@@ -123,21 +143,47 @@ func runRuntimeStalePIDFile(_ context.Context, in *Input) Result {
 }
 
 // runtimeServeState is this file's own decode of cmd/server.go's key=value
-// serve.state wire format. Absent keys decode to the zero value and are never
-// distinguished from "recorded as false/empty" here — today's writer emits
-// only listen=/auth=, so that ambiguity is inherent to Phase 1 and is exactly
-// what §4.1's config_path extension (Phase 2, NOT this step) exists to close.
+// serve.state wire format (§4.1). Absent keys decode to the zero value and
+// are never distinguished from "recorded as false/empty" here EXCEPT uid
+// (see below) — an old-format state file (written before E0) simply lacks
+// the Phase 2 keys, and every consumer of those fields treats that the same
+// as "unknown", skipping rather than asserting a value.
+//
+// uid mirrors cmd/server.go's own serveState.UID(): it cannot be a plain
+// int, since 0 is root, a legitimate value, and also the zero value an
+// absent "uid" key would decode to. It is tracked with its own presence flag
+// and read back only through UID(), so a consumer can never mistake
+// "unknown" (an old-format state file, or Windows — cmd/server.go's
+// effectiveUID omits the key there since os.Getuid() is meaningless) for
+// "root".
 type runtimeServeState struct {
 	Listen string
 	Auth   bool
+
+	Transport      string
+	AdminListen    string
+	ConfigPath     string // EvalSymlinks(Abs(...)) as written; see runtimeResolvedConfigPath
+	Path           string // the server's PATH at start
+	StartedAt      string // RFC3339, process start
+	ConfigLoadedAt string // RFC3339, last successful load or reload
+
+	uid    int
+	hasUID bool
 }
+
+// UID returns the uid this server is running as and whether it was recorded.
+func (s runtimeServeState) UID() (uid int, ok bool) { return s.uid, s.hasUID }
 
 // runtimeParseServeState mirrors cmd/server.go's readServeState: unknown keys
 // and unparseable lines are ignored, so a newer or older serve.state is read
 // without error (the same forward/backward compatibility cmd's own reader
-// relies on).
+// relies on). Values are collected into a map first, then unescaped and
+// assigned by key — mirroring cmd/server.go's own two-pass structure, which
+// is what lets uid's presence (as opposed to its zero value) survive the
+// same "value or absent" ambiguity every other field's Go zero value already
+// resolves for free.
 func runtimeParseServeState(b []byte) runtimeServeState {
-	var s runtimeServeState
+	m := make(map[string]string)
 	for _, line := range strings.Split(string(b), "\n") {
 		if line == "" {
 			continue
@@ -146,14 +192,103 @@ func runtimeParseServeState(b []byte) runtimeServeState {
 		if !ok {
 			continue
 		}
-		switch key {
-		case "listen":
-			s.Listen = val
-		case "auth":
-			s.Auth = val == "true"
+		m[key] = runtimeUnescapeServeStateValue(val)
+	}
+
+	s := runtimeServeState{
+		Listen:         m["listen"],
+		Auth:           m["auth"] == "true",
+		Transport:      m["transport"],
+		AdminListen:    m["admin_listen"],
+		ConfigPath:     m["config_path"],
+		Path:           m["path"],
+		StartedAt:      m["started_at"],
+		ConfigLoadedAt: m["config_loaded_at"],
+	}
+	if v, present := m["uid"]; present {
+		if n, err := strconv.Atoi(v); err == nil {
+			s.uid, s.hasUID = n, true
 		}
 	}
 	return s
+}
+
+// runtimeUnescapeServeStateValue mirrors cmd/server.go's serveStateUnescape
+// exactly: this file cannot import cmd (cmd imports doctor, not the other
+// way around — see this file's own header), so it re-implements the inverse
+// of writeServeState's escaping here rather than depending on it. A newline
+// is the one hazard a POSIX filename may contain (config_path, path are both
+// filesystem-derived), so `\n`/`\\` are the two escapes to undo.
+func runtimeUnescapeServeStateValue(v string) string {
+	if !strings.Contains(v, `\`) {
+		return v
+	}
+	var b strings.Builder
+	for i := 0; i < len(v); i++ {
+		if v[i] == '\\' && i+1 < len(v) {
+			switch v[i+1] {
+			case 'n':
+				b.WriteByte('\n')
+				i++
+				continue
+			case '\\':
+				b.WriteByte('\\')
+				i++
+				continue
+			}
+		}
+		b.WriteByte(v[i])
+	}
+	return b.String()
+}
+
+// runtimeResolvedConfigPath resolves in.ConfigPath the same way
+// cmd/server.go's effectiveConfigPath resolved it when writing config_path:
+// EvalSymlinks, best-effort. in.ConfigPath is already filepath.Abs'd
+// (cmd/doctor.go), so only the symlink-resolution step remains here — a path
+// that does not exist (or cannot be resolved for any other reason) compares
+// by its already-absolute form, exactly like effectiveConfigPath's own
+// fallback.
+func runtimeResolvedConfigPath(in *Input) string {
+	if resolved, err := in.Env.EvalSymlinks(in.ConfigPath); err == nil {
+		return resolved
+	}
+	return in.ConfigPath
+}
+
+// runtimeLiveMatchingState is the shared gate every Phase 2 serve.state
+// consumer in this package starts from — runRuntimeUID and
+// runRuntimeStalePolicy below, plus env.go's env.path-differs-from-server and
+// exposure_files.go's exposure.token-owner (same package, so they call this
+// directly rather than duplicating it). Design §7.5's own preamble: gated on
+// a LIVE pid AND on config_path resolving to the SAME file as the config
+// under audit — the state file survives SIGKILL, so its mere presence proves
+// nothing, and a shared server started from a different config is not this
+// audit's concern to report on. skip is "" on success; a non-empty skip is
+// the reason to hand to Skipped() verbatim.
+//
+// Deliberately duplicates (rather than factors out) runRuntimeBindDivergence's
+// own "live pid, read serve.state" prologue: that function is Phase 1,
+// already reviewed and tested against its own documented limitation, and
+// reworking it to share this helper is a behavior-risking refactor this step
+// was not asked to make.
+func runtimeLiveMatchingState(in *Input) (state runtimeServeState, skip string) {
+	pid, present, err := runtimeReadPID(in)
+	if !present || err != nil || !in.Env.ProcessAlive(pid) {
+		return runtimeServeState{}, "no live server process recorded"
+	}
+	b, readErr := in.Env.ReadFile(runtimeServeStatePath(in))
+	if readErr != nil {
+		return runtimeServeState{}, "no server state recorded"
+	}
+	state = runtimeParseServeState(b)
+	if state.ConfigPath == "" {
+		return runtimeServeState{}, "server state does not record a config path"
+	}
+	if state.ConfigPath != runtimeResolvedConfigPath(in) {
+		return runtimeServeState{}, "server was started from a different config"
+	}
+	return state, ""
 }
 
 // runRuntimeBindDivergence is design §7.5's sharpest single check:
@@ -281,4 +416,77 @@ func runtimeIsUpBindAdjustment(cfgListen string, state runtimeServeState) bool {
 		return false
 	}
 	return state.Listen == net.JoinHostPort("0.0.0.0", port)
+}
+
+// ------------------------------------------------------------- runtime.uid
+
+// runRuntimeUID is always SeverityInfo (§7.5): it reports state, never a
+// judgement — the ownership checks that DO judge (exposure.token-owner,
+// exposure_files.go) read the same uid via runtimeLiveMatchingState
+// themselves. Gated on runtimeLiveMatchingState, then further on the uid key
+// itself being present: it is absent from an old-format state file (written
+// before E0) and on Windows (cmd/server.go's effectiveUID omits it there),
+// and absent means UNKNOWN, never 0/root — wraptool refuses to run as root
+// before any check executes (cmd/rootuser.go), so a recorded uid 0 is
+// unreachable outside a test fixture, but this check must still never
+// *assert* root from data it does not have.
+func runRuntimeUID(_ context.Context, in *Input) Result {
+	state, skip := runtimeLiveMatchingState(in)
+	if skip != "" {
+		return Skipped("%s", skip)
+	}
+	uid, ok := state.UID()
+	if !ok {
+		return Skipped("server state does not record a uid")
+	}
+	return Found(Finding{
+		Severity: SeverityInfo,
+		Title:    "Server runs as",
+		Detail:   fmt.Sprintf("uid %d", uid),
+	})
+}
+
+// -------------------------------------------------------- runtime.stale-policy
+
+// runRuntimeStalePolicy compares the audited config file's mtime to the
+// server's own config_loaded_at (E0's reload hook,
+// cmd/server.go:updateServeStateConfigLoadedAt): cmd/reload.go's
+// reloadConfig only advances that timestamp on a SUCCESSFUL reload, so a
+// parse or validate failure leaves it untouched — a clean file can therefore
+// sit on disk while the server keeps enforcing the OLD, possibly weaker,
+// policy in memory.
+//
+// Deliberately NOT gated on NeedsConfig: the exact case this check exists to
+// catch is a config the operator just broke, which fails doctor's OWN
+// lenient load too (in.ConfigState != ConfigLoaded) — gating on a successful
+// local parse would suppress the finding in precisely the situation it is
+// for. It reads in.ConfigPath's mtime directly instead.
+func runRuntimeStalePolicy(_ context.Context, in *Input) Result {
+	state, skip := runtimeLiveMatchingState(in)
+	if skip != "" {
+		return Skipped("%s", skip)
+	}
+	if state.ConfigLoadedAt == "" {
+		return Skipped("server state does not record a config load time")
+	}
+	loadedAt, err := time.Parse(time.RFC3339, state.ConfigLoadedAt)
+	if err != nil {
+		return Skipped("server state config_loaded_at does not parse as RFC3339: %s", err)
+	}
+	fi, statErr := in.Env.Stat(in.ConfigPath)
+	if statErr != nil {
+		return Skipped("could not stat config file: %s", statErr)
+	}
+	if !fi.ModTime.After(loadedAt) {
+		return Pass()
+	}
+	return Found(Finding{
+		Severity: SeverityWarn,
+		Title:    "Config changed since the server's last successful load",
+		Detail: fmt.Sprintf("config mtime %s is newer than the server's last successful load at %s — reload keeps the OLD "+
+			"policy on any parse or validate failure, so a clean file on disk can coexist with a weaker policy in memory",
+			fi.ModTime.Format(time.RFC3339), loadedAt.Format(time.RFC3339)),
+		Remedy: "check the server log for a reload error, then send SIGHUP (or restart the server) once it is fixed",
+		DocRef: "docs/configuration.qmd",
+	})
 }

@@ -267,6 +267,55 @@ func envNearestExistingAncestor(env Env, path string) (FileInfo, bool) {
 	}
 }
 
+// ------------------------------------------------- env.path-differs-from-server
+
+const envPathDiffersFromServer CheckID = "env.path-differs-from-server"
+
+func init() {
+	register(Meta{
+		ID:      envPathDiffersFromServer,
+		Needs:   NeedsNothing,
+		Summary: "reports when doctor's PATH differs from the running server's recorded PATH",
+	}, runEnvPathDiffersFromServer)
+}
+
+// runEnvPathDiffersFromServer is SeverityInfo, never warn: a divergence is
+// often legitimate (a different login shell, a service manager's own
+// environment) and this check cannot judge which PATH is "correct" — only
+// that executor.childPath (internal/executor/executor.go) resolves a
+// configured tool's runtime dependencies against the SERVER's PATH, so
+// doctor cannot verify them from its own shell (§5.1) and reports the
+// divergence rather than asserting a false verdict either way. It also
+// explains why a probed subcommand may execute a different PLUGIN binary
+// than the server would (§5.1's kubectl-<sub> example): doctor's own probe
+// runs on doctor's PATH, not the server's.
+//
+// Gated on runtimeLiveMatchingState (runtime.go, same package): a dead or
+// foreign-config server's recorded PATH is not this doctor run's own PATH to
+// compare against.
+func runEnvPathDiffersFromServer(_ context.Context, in *Input) Result {
+	state, skip := runtimeLiveMatchingState(in)
+	if skip != "" {
+		return Skipped("%s", skip)
+	}
+	if state.Path == "" {
+		return Skipped("server state does not record a PATH")
+	}
+	doctorPath := in.Env.Getenv("PATH")
+	if doctorPath == state.Path {
+		return Pass()
+	}
+	return Found(Finding{
+		Severity: SeverityInfo,
+		Title:    "doctor's PATH differs from the server's",
+		Detail: fmt.Sprintf("doctor PATH=%s; server PATH=%s — executor.childPath resolves a configured tool's runtime "+
+			"dependencies against the SERVER's PATH, so doctor cannot verify them from its own shell, and a probed "+
+			"subcommand may execute a different plugin binary than the server would", doctorPath, state.Path),
+		Remedy: "if a tool behaves differently under the server than under a manual probe, compare the two PATHs directly",
+		DocRef: "docs/configuration.qmd",
+	})
+}
+
 // envDirWritable decides writability from the classic owner/group/other rule:
 // the owner bit if uid matches, else the group bit if gid matches, else the
 // other bit. When ownership is unknown (FileInfo.OwnerKnown() false — no
