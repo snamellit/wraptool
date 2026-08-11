@@ -477,7 +477,14 @@ func runRuntimeStalePolicy(_ context.Context, in *Input) Result {
 	if statErr != nil {
 		return Skipped("could not stat config file: %s", statErr)
 	}
-	if !fi.ModTime.After(loadedAt) {
+	// Compare at the resolution config_loaded_at actually HAS. cmd/server.go
+	// records it with RFC3339's whole-second precision, while a file mtime
+	// carries nanoseconds — so a file saved 400ms before a successful reload
+	// reads as "newer than the load" forever, and the check would tell an
+	// operator their server is enforcing a stale policy immediately after a
+	// reload that worked. Truncating the mtime, rather than special-casing a
+	// tolerance window, keeps the comparison exact at the precision available.
+	if !fi.ModTime.Truncate(time.Second).After(loadedAt) {
 		return Pass()
 	}
 	return Found(Finding{

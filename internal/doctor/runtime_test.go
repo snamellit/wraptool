@@ -735,3 +735,38 @@ func TestRunRuntimeStalePolicy(t *testing.T) {
 		}
 	})
 }
+
+// TestRuntimeStalePolicyIgnoresSubSecondMtime pins the resolution mismatch that
+// made this check warn after every successful reload: cmd/server.go records
+// config_loaded_at at whole-second RFC3339 precision, while a file mtime carries
+// nanoseconds, so a config saved a fraction of a second before the load that
+// read it is not stale.
+func TestRuntimeStalePolicyIgnoresSubSecondMtime(t *testing.T) {
+	loaded := time.Date(2026, 8, 11, 12, 0, 5, 0, time.UTC)
+
+	cases := []struct {
+		name  string
+		mtime time.Time
+		want  Outcome
+	}{
+		{"saved within the same second as the load", loaded.Add(400 * time.Millisecond), OutcomePass},
+		{"saved exactly at the recorded load time", loaded, OutcomePass},
+		{"saved before the load", loaded.Add(-2 * time.Second), OutcomePass},
+		{"genuinely edited after the load", loaded.Add(30 * time.Second), OutcomeFinding},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const cfgPath = "/etc/wraptool/config.yaml"
+			env := NewMapEnv()
+			runtimeSetPIDFile(env, "4412\n")
+			env.Pids[4412] = true
+			runtimeSetServeState(env, "listen=127.0.0.1:8717\nauth=true\nconfig_path="+cfgPath+
+				"\nconfig_loaded_at="+loaded.Format(time.RFC3339)+"\n")
+			env.Files[cfgPath] = MapFile{Mode: 0o600, ModTime: tc.mtime}
+			res := runRuntimeStalePolicy(context.Background(), runtimeTestInputWithConfigPath(env, nil, cfgPath))
+			if res.Outcome() != tc.want {
+				t.Errorf("outcome = %v, want %v (findings=%+v, skip=%q)", res.Outcome(), tc.want, res.Findings, res.SkipReason)
+			}
+		})
+	}
+}
