@@ -206,11 +206,17 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string, flags doctorRun
 		in.ConfigState, in.ConfigErr = doctor.ConfigUnreadable, loadErr
 	}
 
+	// C1: resolve every finding's Path to a real file:line by parsing the
+	// same bytes just read above. NewLocator degrades to a no-op Locator
+	// (never a panic, never a guessed line) when ConfigRaw is nil/unreadable/
+	// unparseable, so this is safe to wire unconditionally on every path
+	// above, including ConfigAbsent/ConfigUnreadable.
 	report := doctor.Run(cmd.Context(), in, doctor.RunOptions{
-		Checks: deps.checks,
-		Only:   flags.only,
-		Skip:   flags.skip,
-		Strict: flags.strict,
+		Checks:  deps.checks,
+		Only:    flags.only,
+		Skip:    flags.skip,
+		Strict:  flags.strict,
+		Locator: doctor.NewLocator(path, in.ConfigRaw),
 	})
 
 	render := deps.render
