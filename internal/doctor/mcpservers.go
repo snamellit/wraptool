@@ -207,39 +207,6 @@ func mcpKnownValuelessFlags(base string) map[string]bool {
 	}
 }
 
-// mcpFirstNonFlagArg returns the first element of args that names the
-// package spec by npx/uvx's implicit "bare positional" convention, and
-// whether one could be identified. This is the FALLBACK spec source, used
-// only when mcpSpecArg finds no explicit spec-naming flag.
-//
-// The scan is deliberately CONSERVATIVE (ruling B7-1): every argument ahead
-// of the first positional must be either a joined "--flag=value" spelling
-// (the value travels with its own flag, so it can never be mistaken for the
-// spec) or one of base's KNOWN valueless switches (mcpKnownValuelessFlags).
-// The first time an unrecognized bare "-"/"--" flag is seen, the scan stops
-// and returns ok=false rather than guessing — a value-taking flag this
-// check does not model (`--python 3.12`, `--with requests`, uv's own `-p`
-// short form for `--python`) would otherwise hand back its OWN value as the
-// "package spec", which is a false positive, not a missed detection. An
-// unidentifiable spec is not evidence of an unpinned one (Finding.Severity's
-// own doc comment: SeverityFail must never fire on a guess).
-func mcpFirstNonFlagArg(base string, args []string) (string, bool) {
-	valueless := mcpKnownValuelessFlags(base)
-	for _, a := range args {
-		if !strings.HasPrefix(a, "-") {
-			return a, true
-		}
-		if strings.Contains(a, "=") {
-			continue // joined --flag=value spelling; the value stays with its own flag
-		}
-		if valueless[a] {
-			continue
-		}
-		return "", false // unrecognized flag ahead of the first positional: cannot identify the spec
-	}
-	return "", false
-}
-
 // mcpNpxSpecFlags and mcpUvxSpecFlags are the flags each runner documents as
 // explicitly naming the package spec, as opposed to the implicit "first
 // positional" convention: npx's `-p`/`--package`, uv's `--from`. Kept PER
@@ -270,31 +237,96 @@ func mcpRunnerSpecFlags(base string) []string {
 	}
 }
 
-// mcpSpecArg returns the package-spec argument for an npx/uvx invocation
-// (base is the runner's basename, mcpFetchRunners' key), and whether one was
-// found: the value of base's own explicit spec flag (both the split
-// "--from X" and the joined "--from=X" spelling) when one names the spec
-// directly, else the first non-flag positional (mcpFirstNonFlagArg) —
-// npx/uvx's implicit convention absent such a flag. A recognized flag
-// present with no value after it (a malformed invocation) yields ok=false
-// rather than guessing: this check cannot know what spec, if any, was
-// intended, and SeverityFail must never fire on a guess (Finding.Severity's
-// own doc comment).
+// mcpSpecArg returns the package-spec argument for an npx/uvx invocation (base
+// is the runner's basename) and whether one could be identified at all.
+//
+// ONE bounded left-to-right walk that STOPS at the first bare positional. That
+// bound is the whole point: everything after the spec belongs to the spawned
+// SERVER, not to the runner, so an unbounded scan reads the child's own flags
+// as if they were the runner's — a pinned `npx -y pkg@1.0.0 --package foo`
+// would otherwise report foo as its package spec. The same defect was fixed
+// twice before, once for the positional scan and once for the flag scan; a
+// single bounded pass is what makes it unreachable rather than relocated.
+//
+// At each argument, in order:
+//   - -- ends the runner's own arguments: the spec cannot be identified.
+//   - a bare positional IS the spec (npx/uvx's implicit convention).
+//   - a joined --flag=value: the value travels with its own flag, so it can
+//     never be mistaken for the spec; it is the spec only if the flag is one of
+//     base's own spec flags.
+//   - one of base's spec flags: its VALUE is the spec.
+//   - one of base's KNOWN valueless switches: skipped.
+//   - anything else — an unrecognized bare flag — stops the walk with ok=false.
+//     An unidentifiable spec is not evidence of an unpinned one, and reporting
+//     a guess is how this check twice told operators their pinned invocation
+//     was unpinned.
 func mcpSpecArg(base string, args []string) (spec string, ok bool) {
-	for i, a := range args {
-		for _, flag := range mcpRunnerSpecFlags(base) {
-			if a == flag {
-				if i+1 < len(args) {
-					return args[i+1], true
-				}
-				return "", false
-			}
-			if val, hasVal := strings.CutPrefix(a, flag+"="); hasVal {
-				return val, true
+	specFlags := mcpRunnerSpecFlags(base)
+	valueless := mcpKnownValuelessFlags(base)
+	isSpecFlag := func(a string) bool {
+		for _, f := range specFlags {
+			if a == f {
+				return true
 			}
 		}
+		return false
 	}
-	return mcpFirstNonFlagArg(base, args)
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			return "", false
+		case !strings.HasPrefix(a, "-"):
+			return a, true
+		}
+		if flag, val, joined := strings.Cut(a, "="); joined {
+			if isSpecFlag(flag) {
+				return val, true
+			}
+			continue
+		}
+		if isSpecFlag(a) {
+			if i+1 < len(args) {
+				return args[i+1], true
+			}
+			return "", false
+		}
+		if valueless[a] {
+			continue
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// mcpRangeVersion reports whether an npm version is a RANGE or wildcard rather
+// than an exact version. "@*", "@^1.2.0", "@>=1.0" and "@1.x" resolve to
+// whatever the registry serves at that moment, which is the same moving target
+// "@latest" names — the dist-tag list alone let every one of them through.
+func mcpRangeVersion(version string) bool {
+	if strings.ContainsAny(version, "*^~><| ") {
+		return true
+	}
+	for _, seg := range strings.Split(version, ".") {
+		if seg == "x" || seg == "X" {
+			return true
+		}
+	}
+	return false
+}
+
+// mcpLocalSpec reports whether spec names a local directory or tarball rather
+// than a registry package. `npx ./local-server` contacts no registry, so the
+// finding's central claim — that this fetches whatever the registry currently
+// serves — would be false of it, and a check may not assert what it cannot know.
+//
+// Keyed on the PREFIX only. A generic "contains a separator" rule is wrong:
+// every scoped npm package name carries one ("@scope/name"), so it would
+// exempt the most common registry spec there is.
+func mcpLocalSpec(spec string) bool {
+	return strings.HasPrefix(spec, ".") || strings.HasPrefix(spec, "/") ||
+		strings.HasPrefix(spec, "~") || strings.HasPrefix(spec, "\\")
 }
 
 // mcpSpecPinned reports whether spec — a package-runner argument, e.g.
@@ -316,7 +348,10 @@ func mcpSpecPinned(spec string) bool {
 	if !ok || version == "" {
 		return false
 	}
-	return !mcpFloatingVersionTags[strings.ToLower(version)]
+	if mcpFloatingVersionTags[strings.ToLower(version)] {
+		return false
+	}
+	return !mcpRangeVersion(version)
 }
 
 // mcpPEP440ExactPinned reports whether spec carries a PEP 440 exact-version
@@ -393,7 +428,7 @@ func mcpPinExample(command, spec string) string {
 // for why an unrecognized flag ahead of the positional yields no spec at
 // all rather than a guess.
 func mcpUnpinnedSpec(command string, args []string) (spec string, unpinned bool) {
-	base := strings.ToLower(filepath.Base(command))
+	base := mcpRunnerBase(command)
 	if !mcpFetchRunners[base] {
 		return "", false
 	}
@@ -401,10 +436,32 @@ func mcpUnpinnedSpec(command string, args []string) (spec string, unpinned bool)
 	if !found {
 		return "", false
 	}
-	if mcpSpecPinned(spec) {
+	if mcpLocalSpec(spec) || mcpSpecPinned(spec) {
 		return "", false
 	}
 	return spec, true
+}
+
+// mcpRunnerBase reduces a command path to the runner name mcpFetchRunners is
+// keyed on. The executable-suffix strip is what makes the check work on
+// Windows at all: npm ships npx.cmd/npx.ps1 there, so the runner IS "npx.cmd"
+// — and unlike a permission check this one declares no NeedsModeBits, so
+// without the strip it would not be skipped with a reason, it would silently
+// pass on the exact shape it exists to catch.
+func mcpRunnerBase(command string) string {
+	// Cut on both separators, not filepath.Base alone: doctor may run on Linux
+	// against a config authored on Windows, where filepath.Base never splits a
+	// backslash path and would hand back the whole string.
+	base := strings.ToLower(filepath.Base(command))
+	if i := strings.LastIndexByte(base, '\\'); i >= 0 {
+		base = base[i+1:]
+	}
+	for _, ext := range []string{".cmd", ".exe", ".bat", ".ps1"} {
+		if trimmed, cut := strings.CutSuffix(base, ext); cut {
+			return trimmed
+		}
+	}
+	return base
 }
 
 func runMcpServerArgsUnpinned(_ context.Context, in *Input) Result {
@@ -416,7 +473,7 @@ func runMcpServerArgsUnpinned(_ context.Context, in *Input) Result {
 			continue
 		}
 		path := At("mcp_servers", name, "args").Elem(spec)
-		base := strings.ToLower(filepath.Base(srv.Command))
+		base := mcpRunnerBase(srv.Command)
 		detail := fmt.Sprintf(
 			"mcp_servers.%s runs %s %s with package spec %q, which has no pinned version — this fetches and "+
 				"executes whatever code the registry currently serves for that name at every serve start, with "+

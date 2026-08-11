@@ -659,3 +659,71 @@ func TestRunMcpDangerousToolNoneMatch(t *testing.T) {
 		t.Fatalf("outcome = %v, want pass: %+v", res.Outcome(), res.Findings)
 	}
 }
+
+// TestMcpSpecArgStopsAtTheFirstPositional pins the bound that makes the
+// spec scan correct rather than merely fixed: arguments after the spec belong
+// to the spawned SERVER, so a spec flag appearing among them is the child's,
+// not the runner's. This defect was closed twice before — once for the
+// positional scan, once for the flag scan — and relocated each time.
+func TestMcpSpecArgStopsAtTheFirstPositional(t *testing.T) {
+	cases := []struct {
+		name     string
+		base     string
+		args     []string
+		wantSpec string
+		wantOK   bool
+	}{
+		{"child flag after the spec is not the spec", "npx", []string{"-y", "pkg@1.0.0", "--package", "child-arg"}, "pkg@1.0.0", true},
+		{"uvx --from wins ahead of the bin name", "uvx", []string{"--from", "mcp-server-git==1.0", "mcp-server-git"}, "mcp-server-git==1.0", true},
+		{"uvx --python value is not the spec", "uvx", []string{"--python", "3.12", "mcp-server-git==2024.11.5"}, "", false},
+		{"npx unknown flag ahead of the positional", "npx", []string{"--unknown-thing", "value", "pkg"}, "", false},
+		{"joined spelling keeps its value with its flag", "uvx", []string{"--python=3.12", "mcp-server-git==1.0"}, "mcp-server-git==1.0", true},
+		{"joined spec flag yields its value", "uvx", []string{"--from=pkg==1.0", "bin"}, "pkg==1.0", true},
+		{"double dash ends the runner's own arguments", "npx", []string{"--", "pkg"}, "", false},
+		{"bare positional is the spec", "npx", []string{"-y", "@scope/name@1.2.3"}, "@scope/name@1.2.3", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, ok := mcpSpecArg(tc.base, tc.args)
+			if spec != tc.wantSpec || ok != tc.wantOK {
+				t.Errorf("mcpSpecArg(%q, %v) = (%q, %v), want (%q, %v)", tc.base, tc.args, spec, ok, tc.wantSpec, tc.wantOK)
+			}
+		})
+	}
+}
+
+// TestMcpSpecPinnedRejectsRanges: an npm range resolves to whatever the
+// registry serves at that moment, which is the moving target "@latest" names.
+// The dist-tag list alone let every one of these through.
+func TestMcpSpecPinnedRejectsRanges(t *testing.T) {
+	unpinned := []string{"@foo/bar@*", "@foo/bar@>=1.0.0", "@foo/bar@~1.2", "@foo/bar@^1.2.3", "@foo/bar@1.x", "@foo/bar@latest"}
+	for _, spec := range unpinned {
+		if mcpSpecPinned(spec) {
+			t.Errorf("mcpSpecPinned(%q) = true, want false (a range is not a pin)", spec)
+		}
+	}
+	for _, spec := range []string{"@foo/bar@1.2.3", "pkg@0.0.1", "mcp-server-git==2024.11.5"} {
+		if !mcpSpecPinned(spec) {
+			t.Errorf("mcpSpecPinned(%q) = false, want true", spec)
+		}
+	}
+}
+
+// TestMcpUnpinnedSpecLocalAndWindows covers the two shapes that made the check
+// say something false and say nothing at all, respectively.
+func TestMcpUnpinnedSpecLocalAndWindows(t *testing.T) {
+	// A local path contacts no registry, so the finding's central claim would
+	// be false of it.
+	for _, spec := range []string{"./local-server", "/opt/server", "~/src/server"} {
+		if _, unpinned := mcpUnpinnedSpec("/usr/bin/npx", []string{"-y", spec}); unpinned {
+			t.Errorf("mcpUnpinnedSpec(npx, %q) reported unpinned; a local path fetches nothing", spec)
+		}
+	}
+	// On Windows the runner IS npx.cmd, and this check declares no
+	// NeedsModeBits, so without the suffix strip it silently passes there.
+	for _, cmd := range []string{`C:\npm\npx.cmd`, "/usr/bin/npx.exe", `C:\npm\NPX.CMD`, "/usr/bin/uvx.exe"} {
+		if _, unpinned := mcpUnpinnedSpec(cmd, []string{"@foo/bar"}); !unpinned {
+			t.Errorf("mcpUnpinnedSpec(%q, unpinned spec) reported nothing; the runner name was not recognized", cmd)
+		}
+	}
+}
