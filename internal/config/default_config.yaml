@@ -81,4 +81,31 @@ tools:
       GIT_CONFIG_KEY_1: core.fsmonitor
       GIT_CONFIG_VALUE_1: "false"
     allow:
+      # Both reach the network with your credentials, and neither carries any
+      # flags: with no `flags:` list, only -h/--help are accepted, so there is
+      # nothing for a caller to smuggle in. Add flags deliberately, one at a
+      # time, and read the -c warning above before you do.
       - subcommand: [pull]
+      - subcommand: [fetch]
+
+      # `fetch` is the safer of the two. `pull` also merges and checks out,
+      # which is what runs .gitattributes filter and merge drivers — and those
+      # the env block above does NOT disable. The hardened profile in
+      # design/git-execution-hardening.md §4 therefore replaces a host-side
+      # pull with `wraptool: git fetch` followed by an ordinary `git merge`
+      # inside your container, where no host credentials exist. `pull` stays
+      # here because it is the obvious first thing to try; prefer fetch.
+
+      # Pushing WRITES to the remote as you, and its effects leave your
+      # machine. Uncomment deliberately. The denies are not optional: --force
+      # and --force-with-lease destroy history, and --receive-pack and --exec
+      # name a program for the far end to run.
+      # - subcommand: [push]
+      #   deny_flags: ["--force", "--force-with-lease", "--receive-pack",
+      #                "--exec", "--recurse-submodules", "--signed"]
+
+      # `clone` is deliberately absent. It is the one transport subcommand
+      # where the agent chooses BOTH the remote URL and the destination path,
+      # so it can reach hosts you did not intend and write a tree outside any
+      # worktree. It is also where Git's clone-time CVEs live. Add it only if
+      # you need it, and see design/git-execution-hardening.md first.

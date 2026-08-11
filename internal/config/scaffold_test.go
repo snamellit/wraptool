@@ -102,8 +102,30 @@ func TestEnsureConfigFileProducesValidConfig(t *testing.T) {
 	if !filepath.IsAbs(git.Binary) {
 		t.Errorf("git binary %q is not absolute", git.Binary)
 	}
-	if len(git.Allow) != 1 || len(git.Allow[0].Subcommand) != 1 || git.Allow[0].Subcommand[0] != "pull" {
-		t.Errorf("git allow rules = %+v, want a single [pull]", git.Allow)
+	// The starter allows exactly the two read-only transport subcommands. push
+	// and clone are present only as commented examples: push writes to the
+	// remote as the operator, and clone lets the caller choose both the remote
+	// URL and the destination path. Neither may become active by accident.
+	allowed := map[string]bool{}
+	for _, rule := range git.Allow {
+		if len(rule.Subcommand) != 1 {
+			t.Errorf("starter allow rule %+v is not a single subcommand", rule)
+			continue
+		}
+		allowed[rule.Subcommand[0]] = true
+	}
+	for _, want := range []string{"pull", "fetch"} {
+		if !allowed[want] {
+			t.Errorf("starter config does not allow %q; allow=%+v", want, git.Allow)
+		}
+	}
+	for _, unwanted := range []string{"push", "clone"} {
+		if allowed[unwanted] {
+			t.Errorf("starter config allows %q, which must stay commented out", unwanted)
+		}
+	}
+	if len(allowed) != 2 {
+		t.Errorf("starter config allows %d subcommands, want exactly pull and fetch: %+v", len(allowed), git.Allow)
 	}
 }
 
