@@ -46,13 +46,14 @@ func TestRunPolicyFlagsUnpatternedValue(t *testing.T) {
 		wantPath   string
 	}{
 		{
-			name: "bare unconstrained value flag: fires",
+			name: "declared string flag with no pattern: fires",
 			tools: map[string]config.ToolConfig{
 				"git": {
 					Binary: "/usr/bin/git",
 					Allow: []config.AllowRule{{
-						Subcommand: []string{"fetch"},
-						Flags:      []string{"--depth"},
+						Subcommand:      []string{"fetch"},
+						Flags:           []string{"--depth"},
+						FlagConstraints: map[string]config.FlagConstraint{"--depth": {Type: config.ConstraintString}},
 					}},
 				},
 			},
@@ -163,15 +164,17 @@ func TestRunPolicyFlagsUnpatternedValue(t *testing.T) {
 				"kubectl": {
 					Binary: "/usr/bin/kubectl",
 					Allow: []config.AllowRule{{
-						Subcommand: []string{"logs"},
-						Flags:      []string{"--tail"},
+						Subcommand:      []string{"logs"},
+						Flags:           []string{"--tail"},
+						FlagConstraints: map[string]config.FlagConstraint{"--tail": {Type: config.ConstraintString}},
 					}},
 				},
 				"git": {
 					Binary: "/usr/bin/git",
 					Allow: []config.AllowRule{{
-						Subcommand: []string{"fetch"},
-						Flags:      []string{"--depth"},
+						Subcommand:      []string{"fetch"},
+						Flags:           []string{"--depth"},
+						FlagConstraints: map[string]config.FlagConstraint{"--depth": {Type: config.ConstraintString}},
 					}},
 				},
 			},
@@ -502,7 +505,11 @@ func TestPolicyFlagsValueTaking(t *testing.T) {
 		constraints map[string]config.FlagConstraint
 		want        bool
 	}{
-		{name: "no constraint, ordinary name: value-taking by default", flag: "--depth", want: true},
+		// Untyped is not evidence of a value: most flags in a real config carry no
+		// flag_constraints entry at all, and guessing here produced nine false
+		// findings on an ordinary git status/log/diff policy.
+		{name: "no constraint: unknown, so not confirmed", flag: "--depth", want: false},
+		{name: "constraint without a type: unknown, so not confirmed", flag: "--depth", constraints: map[string]config.FlagConstraint{"--depth": {Max: policyFlagsIntPtr(100)}}, want: false},
 		{name: "well-known boolean name", flag: "--force", want: false},
 		{name: "explicit boolean type", flag: "--short", constraints: map[string]config.FlagConstraint{"--short": {Type: config.ConstraintBoolean}}, want: false},
 		{name: "explicit string type", flag: "--branch", constraints: map[string]config.FlagConstraint{"--branch": {Type: config.ConstraintString}}, want: true},

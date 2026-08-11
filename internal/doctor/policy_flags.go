@@ -39,7 +39,6 @@ import (
 	"strings"
 
 	"github.com/pti/wraptool/internal/config"
-	"github.com/pti/wraptool/internal/mcptools"
 )
 
 const (
@@ -119,17 +118,31 @@ func policyFlagsNeutralized(rule config.AllowRule, flag string) bool {
 
 // ---------------------------------------------------------------- policy.unpatterned-value-flag
 
-// policyFlagsValueTaking reports whether flag is confidently value-taking —
-// i.e. NOT confirmed boolean by mcptools.IsBooleanFlag, this file's only
-// available oracle (see the file doc comment for why introspection is not
-// one yet). IsBooleanFlag itself already resolves an explicitly typed
-// flag from config.FlagConstraint.Type.Kind() (the single source of truth,
-// design/policy/flag-constraint-type-single-source.md) before falling back
-// to a well-known switch name/prefix heuristic for an untyped one — so a
-// flag this function calls value-taking is never one flag_constraints or a
-// well-known switch shape already said was boolean.
+// policyFlagsValueTaking reports whether flag is CONFIRMED to take a value,
+// which today means exactly one thing: flag_constraints declares
+// `type: string` for it.
+//
+// The inverse test — "anything mcptools.IsBooleanFlag does not confirm boolean
+// takes a value" — is what this check shipped with, and it was wrong in the
+// way that discredits a heuristic group entirely. IsBooleanFlag's non-explicit
+// path knows seven well-known names plus a few prefixes, so every ordinary
+// switch outside that list was declared value-taking: a plausible git
+// status/log/diff policy allowing --short, --porcelain, --oneline, --graph,
+// --stat, --all, --staged, --cached and --name-only produced nine findings,
+// every one false, and each one's remedy ("add a pattern") would have BROKEN
+// the config — an anchored pattern cannot match the empty value a bare switch
+// carries, so the call starts failing closed.
+//
+// The absence of a type is not evidence of a value: config.ApplyRequest writes
+// flag_constraints only when the capability request carried a flag_types map,
+// so most flags in a real config are simply untyped. An untyped flag therefore
+// yields NO finding. Phase F widens the oracle honestly, by adding
+// introspection's own flag types (design/policy/flag-type-inference.md), whose
+// placeholder-aware default already reports "unknown" rather than guessing —
+// and unknown must stay silent here too.
 func policyFlagsValueTaking(flag string, constraints map[string]config.FlagConstraint) bool {
-	return !mcptools.IsBooleanFlag(flag, constraints)
+	c, ok := constraints[flag]
+	return ok && c.Type == config.ConstraintString
 }
 
 // policyFlagsHasPatternOrNonString reports whether flag's constraint (if
@@ -175,17 +188,19 @@ func runPolicyFlagsUnpatternedValue(_ context.Context, in *Input) Result {
 					Severity: SeverityWarn,
 					Title:    "Allowed value-taking flag has no pattern",
 					Detail: fmt.Sprintf(
-						"tools.%s's allow rule for %q permits flag %q, which takes a value, with neither a "+
-							"`pattern` nor a non-string `type` — its value passes to the wrapped tool unconstrained "+
-							"(security audit F2's residue: an allowlisted value flag with no pattern is a free-form "+
-							"value)",
+						"tools.%s's allow rule for %q permits flag %q, which flag_constraints declares as "+
+							"`type: string` but leaves without a `pattern` — its value passes to the wrapped tool "+
+							"unconstrained (security audit F2's residue: an allowlisted value flag with no pattern "+
+							"is a free-form value)",
 						name, subcommand, flag),
 					Path: At("tools", name, "allow").Item("subcommand", subcommand).Key("flags").Elem(flag),
 					Remedy: fmt.Sprintf(
-						"add a `pattern` (or a non-string `type`, e.g. integer with min/max) to "+
-							"flag_constraints[%q] under tools.%s's %q allow rule, or move %q to deny_flags if it "+
-							"should never be permitted",
-						flag, name, subcommand, flag),
+						"add a `pattern` to flag_constraints[%q] under tools.%s's %q allow rule (or a "+
+							"non-string `type` such as integer with min/max if that fits the value better), or "+
+							"move %q to deny_flags if it should never be permitted. If %q is actually a bare "+
+							"switch, `type: boolean` is the correct fix — a pattern would reject its empty value "+
+							"and start failing the call closed",
+						flag, name, subcommand, flag, flag),
 					DocRef: "docs/configuration.qmd",
 				})
 			}
