@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -32,6 +33,14 @@ type doctorDeps struct {
 	// (doctorDetectWorkspace). Injected, like everything else here, so a cmd
 	// test is never at the mercy of the actual process cwd.
 	getwd func() (string, error)
+	// detectWorkspace performs the upward `.git`/`manifest.scm` walk used when
+	// no explicit --workspace is given (doctorDetectWorkspace in production).
+	// Injected so a test can bound the walk to its own fixture tree instead of
+	// the real host filesystem: a t.TempDir() is not guaranteed isolated from
+	// an ancestor `.git`/`manifest.scm` (e.g. TMPDIR configured under a
+	// git-managed $HOME), which would otherwise make the walk find a marker no
+	// test created.
+	detectWorkspace func(dir string) string
 	// checks overrides the registered check set passed to doctor.Run. Nil in
 	// every production doctorDeps (defaultDoctorDeps leaves it unset, so
 	// doctor.Run falls back to doctor.Registered() as normal). A cmd-level
@@ -59,11 +68,12 @@ func defaultDoctorDeps() doctorDeps {
 				PoolRoot:   pool.Root(),
 			}
 		},
-		load:       config.Load,
-		goos:       runtime.GOOS,
-		render:     doctor.RenderHuman,
-		renderJSON: doctor.RenderJSON,
-		getwd:      os.Getwd,
+		load:            config.Load,
+		goos:            runtime.GOOS,
+		render:          doctor.RenderHuman,
+		renderJSON:      doctor.RenderJSON,
+		getwd:           os.Getwd,
+		detectWorkspace: doctorDetectWorkspace,
 	}
 }
 
@@ -99,8 +109,10 @@ Exit codes:
 --config resolves like 'wraptool config validate': the flag, then
 $WRAPTOOL_CONFIG, then the default config location.
 
---only/--skip accept a comma-separated list of check IDs or group prefixes
-(e.g. "--only env" or "--only env,config"); --skip wins over --only.`,
+--only/--skip accept a comma-separated list of check IDs or group names
+(e.g. "--only env" or "--only env,config"); --skip wins over --only. A group
+name must match one of the report's section names exactly (e.g. "config",
+not "conf") — it is not a prefix.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := configPath
@@ -124,8 +136,8 @@ $WRAPTOOL_CONFIG, then the default config location.
 	cmd.Flags().StringVarP(&configPath, "config", "c", "", "path to config file (default: "+paths.DefaultConfigFile()+")")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the report as JSON (see design/doctor/wraptool-doctor.md §9); "+
 		"check IDs are a stability/compatibility surface, an ID's severity may still change between releases")
-	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these check IDs or group prefixes (comma-separated, e.g. \"env\" or \"env,config\")")
-	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these check IDs or group prefixes (comma-separated); wins over --only")
+	cmd.Flags().StringSliceVar(&only, "only", nil, "run only these check IDs or exact group names (comma-separated, e.g. \"env\" or \"env,config\")")
+	cmd.Flags().StringSliceVar(&skip, "skip", nil, "skip these check IDs or exact group names (comma-separated); wins over --only")
 	cmd.Flags().BoolVar(&strict, "strict", false, "promote an unsuppressed warn finding to exit code 1; NOT a stable CI gate "+
 		"(a new check can ship as warn in any release) — gate CI on --only/--json instead, see §9.1")
 	cmd.Flags().BoolVar(&noProbe, "no-probe", false, "disable inert local execution of configured tool binaries (help/version probing)")
@@ -156,12 +168,23 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string, flags doctorRun
 
 	env := deps.env()
 
+	workspace, wsErr := doctorResolveWorkspace(deps, flags.workspace)
+	if wsErr != nil {
+		// An explicit --workspace that does not exist is a usage error, not a
+		// finding: silently falling back to "no workspace" would satisfy
+		// NeedsWorkspace against nothing and let a workspace-gated check (e.g.
+		// env.no-backend-with-project) run against a directory that was never
+		// actually checked, producing a false finding instead of telling the
+		// operator their flag was wrong.
+		return &ExitError{Code: 2, Err: wsErr}
+	}
+
 	in := &doctor.Input{
 		Env:        env,
 		Paths:      deps.paths(),
 		GOOS:       deps.goos,
 		ConfigPath: path,
-		Workspace:  doctorResolveWorkspace(deps, flags.workspace),
+		Workspace:  workspace,
 		Probe:      !flags.noProbe,
 	}
 
@@ -188,6 +211,9 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string, flags doctorRun
 	render := deps.render
 	if flags.jsonOut {
 		render = deps.renderJSON
+		if render == nil {
+			render = doctor.RenderJSON // no-panic fallback; every production doctorDeps sets this already
+		}
 	}
 
 	// Render BEFORE deciding the exit code, and on every path including
@@ -203,23 +229,45 @@ func runDoctor(cmd *cobra.Command, deps doctorDeps, path string, flags doctorRun
 	return nil
 }
 
-// doctorResolveWorkspace returns explicit's value verbatim when set, else
-// walks upward from deps.getwd() for a project-root marker
-// (doctorDetectWorkspace). A getwd failure or no marker found yields "", which
-// the engine already handles: workspace-gated checks are skipped with a
-// canned reason (NeedsWorkspace, design §5/§10).
-func doctorResolveWorkspace(deps doctorDeps, explicit string) string {
+// doctorResolveWorkspace returns explicit's value, resolved to an absolute
+// path and STAT'd, when set; else it walks upward from deps.getwd() for a
+// project-root marker (deps.detectWorkspace). An explicit path that does not
+// exist, or is not a directory, is a usage error naming the path — see the
+// caller in runDoctor for why silently treating it as "no workspace" is
+// wrong. A getwd failure or no marker found during auto-detection still
+// yields ("", nil): the engine already handles that case, skipping
+// workspace-gated checks with a canned reason (NeedsWorkspace, design
+// §5/§10).
+func doctorResolveWorkspace(deps doctorDeps, explicit string) (string, error) {
 	if explicit != "" {
-		if abs, err := filepath.Abs(explicit); err == nil {
-			return abs
+		abs := explicit
+		if a, err := filepath.Abs(explicit); err == nil {
+			abs = a
 		}
-		return explicit
+		fi, err := os.Stat(abs)
+		if err != nil {
+			return "", fmt.Errorf("--workspace %s: %w", explicit, err)
+		}
+		if !fi.IsDir() {
+			return "", fmt.Errorf("--workspace %s: not a directory", explicit)
+		}
+		return abs, nil
 	}
-	wd, err := deps.getwd()
+
+	getwd := deps.getwd
+	if getwd == nil {
+		getwd = os.Getwd // no-panic fallback: every production doctorDeps sets this already
+	}
+	wd, err := getwd()
 	if err != nil {
-		return ""
+		return "", nil
 	}
-	return doctorDetectWorkspace(wd)
+
+	detect := deps.detectWorkspace
+	if detect == nil {
+		detect = doctorDetectWorkspace // no-panic fallback: every production doctorDeps sets this already
+	}
+	return detect(wd), nil
 }
 
 // doctorDetectWorkspace walks upward from dir for a `.git` or `manifest.scm`
@@ -228,9 +276,17 @@ func doctorResolveWorkspace(deps doctorDeps, explicit string) string {
 // gitToplevel), but doctor may not shell out at all (design §5). Returns ""
 // when no marker is found before reaching the filesystem root.
 func doctorDetectWorkspace(dir string) string {
+	return doctorDetectWorkspaceWith(dir, fileExists)
+}
+
+// doctorDetectWorkspaceWith is doctorDetectWorkspace with an injectable
+// existence probe, so a test can bound the walk to its own fixture tree
+// instead of the real host filesystem — see doctorDeps.detectWorkspace's doc
+// comment for why that matters.
+func doctorDetectWorkspaceWith(dir string, exists func(string) bool) string {
 	dir = filepath.Clean(dir)
 	for {
-		if fileExists(filepath.Join(dir, ".git")) || fileExists(filepath.Join(dir, "manifest.scm")) {
+		if exists(filepath.Join(dir, ".git")) || exists(filepath.Join(dir, "manifest.scm")) {
 			return dir
 		}
 		parent := filepath.Dir(dir)

@@ -649,6 +649,9 @@ policy
   "config_path": "/home/user/.config/wraptool/config.yaml",
   "wraptool_version": "0.5.1",
   "probed": true,
+  "incomplete": false,
+  "incomplete_reason": "",
+  "config_state": "loaded",
   "summary": {"fail": 2, "warn": 5, "suppressed": 1, "info": 3, "pass": 22, "skipped": 6},
   "findings": [
     {
@@ -669,6 +672,17 @@ policy
 
 `suppressed` counts a subset of `warn`. `schema` is versioned independently of
 the wraptool version.
+
+`incomplete`/`incomplete_reason`/`config_state` are additive (wave-1 followups
+item 9) and do not bump `schema`: without them, a run that could not complete
+(an unknown `--only` selector, an unreadable config, an internal error) still
+wrote a structurally clean, all-zero report to stdout, with the cause named
+only on stderr and the exit code — a CI consumer that parses stdout without
+also checking the process exit code would read `wraptool doctor --only bogus
+--json` as a passing run. `incomplete` mirrors `Report.Incomplete`,
+`incomplete_reason` mirrors `Report.IncompleteReason` (empty when
+`incomplete` is false), and `config_state` is one of `"loaded"`, `"absent"`,
+or `"unreadable"` (§10.1's three states — `"absent"` is not an error).
 
 ### 9.1 ID stability and CI gating
 
