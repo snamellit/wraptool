@@ -3,9 +3,12 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,12 +46,14 @@ var fakeDoctorHostPaths = doctor.HostPaths{
 
 func fakeDoctorDeps(load func(string) (*config.Config, error), checks []doctor.Check) doctorDeps {
 	return doctorDeps{
-		env:    func() doctor.Env { return doctor.NewMapEnv() },
-		paths:  func() doctor.HostPaths { return fakeDoctorHostPaths },
-		load:   load,
-		goos:   "linux",
-		render: doctor.RenderHuman,
-		checks: checks,
+		env:        func() doctor.Env { return doctor.NewMapEnv() },
+		paths:      func() doctor.HostPaths { return fakeDoctorHostPaths },
+		load:       load,
+		goos:       "linux",
+		render:     doctor.RenderHuman,
+		renderJSON: doctor.RenderJSON,
+		getwd:      func() (string, error) { return "/home/user/project", nil },
+		checks:     checks,
 	}
 }
 
@@ -214,5 +219,198 @@ func TestDoctorProductionWiringRunsRealRegistry(t *testing.T) {
 	}
 	if strings.Contains(out, "stdio") {
 		t.Errorf("doctor output must never name the stdio MCP transport, got: %s", out)
+	}
+}
+
+// -------------------------------------------------------------- A2 flags
+
+func TestDoctorJSONFlagRendersJSONNotHuman(t *testing.T) {
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{})
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var decoded map[string]any
+	if jsonErr := json.Unmarshal([]byte(out), &decoded); jsonErr != nil {
+		t.Fatalf("--json output did not decode as JSON: %v\noutput: %s", jsonErr, out)
+	}
+	if decoded["schema"] == nil {
+		t.Errorf("missing schema field, got: %s", out)
+	}
+	if strings.Contains(out, "wraptool doctor —") {
+		t.Errorf("--json output must not contain the human header, got: %s", out)
+	}
+}
+
+func TestDoctorOnlyAndSkipFlagsSelectChecks(t *testing.T) {
+	checks := []doctor.Check{
+		fakeDoctorCheck{meta: doctor.Meta{ID: "env.a", Needs: doctor.NeedsNothing, Summary: "s"},
+			run: func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() }},
+		fakeDoctorCheck{meta: doctor.Meta{ID: "env.b", Needs: doctor.NeedsNothing, Summary: "s"},
+			run: func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() }},
+		fakeDoctorCheck{meta: doctor.Meta{ID: "tools.c", Needs: doctor.NeedsNothing, Summary: "s"},
+			run: func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() }},
+	}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, checks)
+
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--only", "env", "--skip", "env.a", "--json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var decoded struct {
+		Summary struct {
+			Pass int `json:"pass"`
+		} `json:"summary"`
+	}
+	if jsonErr := json.Unmarshal([]byte(out), &decoded); jsonErr != nil {
+		t.Fatalf("decoding --json output: %v", jsonErr)
+	}
+	// --only env selects env.a/env.b; --skip env.a then wins, leaving env.b
+	// as the only selected (and passing) check.
+	if decoded.Summary.Pass != 1 {
+		t.Errorf("pass = %d, want 1 (only env.b selected)", decoded.Summary.Pass)
+	}
+}
+
+func TestDoctorSelectionUnknownTokenExitsTwo(t *testing.T) {
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{})
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--only", "no-such-group")
+	if err == nil {
+		t.Fatal("expected a non-nil error for an unknown --only selector")
+	}
+	if code := ExitCode(err); code != 2 {
+		t.Errorf("ExitCode = %d, want 2", code)
+	}
+	if !strings.Contains(out, "could not complete") {
+		t.Errorf("missing incomplete banner: %s", out)
+	}
+}
+
+func TestDoctorStrictPromotesWarnToExitOne(t *testing.T) {
+	warn := fakeDoctorCheck{
+		meta: doctor.Meta{ID: "policy.synthetic-warn", Needs: doctor.NeedsNothing, Summary: "s"},
+		run: func(context.Context, *doctor.Input) doctor.Result {
+			return doctor.Found(doctor.Finding{Severity: doctor.SeverityWarn, Title: "t", Detail: "d", Remedy: "fix it"})
+		},
+	}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{warn})
+
+	// Without --strict: exit 0.
+	if _, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml"); err != nil {
+		t.Fatalf("expected exit 0 without --strict, got: %v", err)
+	}
+	// With --strict: exit 1.
+	_, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--strict")
+	if err == nil {
+		t.Fatal("expected a non-nil error under --strict with an unsuppressed warn")
+	}
+	if code := ExitCode(err); code != 1 {
+		t.Errorf("ExitCode = %d, want 1", code)
+	}
+}
+
+func TestDoctorNoProbeFlagGatesProbeRequiringChecks(t *testing.T) {
+	probeCheck := fakeDoctorCheck{
+		meta: doctor.Meta{ID: "drift.synthetic", Needs: doctor.NeedsProbe, Summary: "s"},
+		run:  func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() },
+	}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{probeCheck})
+
+	// Default (no --no-probe): the check runs and passes.
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "1 passed") {
+		t.Errorf("expected the probe-requiring check to run by default, got: %s", out)
+	}
+
+	// --no-probe: the check is skipped instead.
+	out, err = runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--no-probe")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "1 skipped") {
+		t.Errorf("expected the probe-requiring check to be skipped under --no-probe, got: %s", out)
+	}
+}
+
+func TestDoctorWorkspaceFlagExplicitOverridesAutoDetect(t *testing.T) {
+	wsCheck := fakeDoctorCheck{
+		meta: doctor.Meta{ID: "env.needs-workspace", Needs: doctor.NeedsWorkspace, Summary: "s"},
+		run:  func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() },
+	}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{wsCheck})
+
+	dir := t.TempDir()
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml", "--workspace", dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "1 passed") {
+		t.Errorf("expected the workspace-gated check to run with an explicit --workspace, got: %s", out)
+	}
+}
+
+func TestDoctorWorkspaceAutoDetectFindsGitRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "a", "b")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	wsCheck := fakeDoctorCheck{
+		meta: doctor.Meta{ID: "env.needs-workspace", Needs: doctor.NeedsWorkspace, Summary: "s"},
+		run:  func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() },
+	}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{wsCheck})
+	deps.getwd = func() (string, error) { return sub, nil }
+
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "1 passed") {
+		t.Errorf("expected the workspace-gated check to run once .git is found walking up from cwd, got: %s", out)
+	}
+}
+
+func TestDoctorWorkspaceNoMarkerFoundSkipsWorkspaceGatedChecks(t *testing.T) {
+	wsCheck := fakeDoctorCheck{
+		meta: doctor.Meta{ID: "env.needs-workspace", Needs: doctor.NeedsWorkspace, Summary: "s"},
+		run:  func(context.Context, *doctor.Input) doctor.Result { return doctor.Pass() },
+	}
+	deps := fakeDoctorDeps(func(string) (*config.Config, error) { return &config.Config{}, nil }, []doctor.Check{wsCheck})
+	deps.getwd = func() (string, error) { return t.TempDir(), nil } // no .git/manifest.scm anywhere above a fresh temp dir
+
+	out, err := runDoctorWithDeps(t, deps, "--config", "/some/path.yaml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "1 skipped") {
+		t.Errorf("expected the workspace-gated check to be skipped with no marker found, got: %s", out)
+	}
+}
+
+func TestDoctorDetectWorkspaceWalksUpward(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "manifest.scm"), []byte("()"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(root, "a", "b", "c")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := doctorDetectWorkspace(sub); got != root {
+		t.Errorf("doctorDetectWorkspace(%q) = %q, want %q", sub, got, root)
+	}
+}
+
+func TestDoctorDetectWorkspaceNoMarkerReturnsEmpty(t *testing.T) {
+	if got := doctorDetectWorkspace(t.TempDir()); got != "" {
+		t.Errorf("doctorDetectWorkspace with no marker = %q, want empty", got)
 	}
 }
