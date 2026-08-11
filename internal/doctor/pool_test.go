@@ -191,8 +191,9 @@ func TestRunPoolHomePermsCapsEnumeration(t *testing.T) {
 	env.Files["/pool/home"] = MapFile{Mode: fs.ModeDir | 0o755}
 	const total = poolMaxOffendingListed + 7
 	for i := range total {
-		p := filepath.Join("/pool/home", "token-"+string(rune('a'+i))+".json")
-		env.Files[p] = MapFile{Mode: 0o644, Data: []byte("{}")}
+		d := filepath.Join("/pool/home", "h"+string(rune('a'+i)))
+		env.Files[d] = MapFile{Mode: fs.ModeDir | 0o755}
+		env.Files[filepath.Join(d, ".credentials.json")] = MapFile{Mode: 0o644, Data: []byte("{}")}
 	}
 	in := &Input{Env: env, GOOS: "linux", Paths: HostPaths{PoolRoot: "/pool"}}
 
@@ -230,6 +231,15 @@ func TestPoolIsCredentialPath(t *testing.T) {
 		{".cache/some-file", false},
 		{".config/opencode/config.json", false},
 		{"skills/some-skill/SKILL.md", false},
+		// Observed on a real pool: every one of these was flagged by the
+		// original substring rule, and not one is a credential.
+		{".claude/plugins/marketplaces/x/plugins/learning-output-style/hooks-handlers/session-start.sh", false},
+		{".claude/plugins/marketplaces/x/plugins/security-guidance/hooks/session_state.py", false},
+		{".claude/plugins/marketplaces/x/plugins/session-report", false},
+		{".config/go/telemetry/local/upload.token", false},
+		// ...while the genuine articles still match.
+		{".gemini/antigravity-cli/antigravity-oauth-token", true},
+		{".ssh/id_ed25519", true},
 	}
 	for _, tc := range cases {
 		if got := poolIsCredentialPath(tc.rel); got != tc.want {

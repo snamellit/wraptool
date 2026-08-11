@@ -124,26 +124,59 @@ var poolWalkSkipDirNames = map[string]bool{
 	".npm":         true,
 }
 
+// poolCredentialBasenames are file names that hold harness auth state outright,
+// matched exactly (case-insensitively). An exact set rather than a substring
+// rule: `strings.Contains(base, "session")` flagged fifteen plugin hook
+// scripts and skill directories on a real pool (session-start.sh,
+// session_state.py, a session-report/ directory) while every actual credential
+// there was already 0600, and a warning listing only files that do not matter
+// is how an operator learns to ignore doctor.
+var poolCredentialBasenames = map[string]bool{
+	".credentials.json": true,
+	"credentials.json":  true,
+	"credentials":       true,
+	"auth.json":         true,
+	".netrc":            true,
+	".git-credentials":  true,
+	"token.json":        true,
+	".token":            true,
+	"token":             true,
+	"session.json":      true,
+	"id_rsa":            true,
+	"id_ed25519":        true,
+}
+
 // poolIsCredentialPath reports whether relSlash — a home/-relative,
 // forward-slash path — names harness AUTH STATE specifically: the
 // architect-ruled scope for pool.home-perms (not every cache file under
 // .npm/.cache, which the check used to flag on every pool wraptool itself
 // creates via ensureHarnessPool's 0o755 os.MkdirAll — see this check's own
 // doc comment). Matches:
-//   - a basename of exactly ".credentials.json" (Claude's own auth file), or
-//     one containing "credential", "token", or "session" (case-insensitive)
-//     — opencode's auth.json is caught by the .config/*/auth* rule below,
-//     not this one;
-//   - any path with a ".config" segment followed, anywhere further down the
-//     path, by a segment whose name starts with "auth" (case-insensitive) —
-//     ".config/<harness>/auth*".
+//   - an exact poolCredentialBasenames name;
+//   - a basename ending in ".pem" or ".key", or containing both "oauth" and
+//     "token" (the shape of antigravity-oauth-token);
+//   - any path with a ".config" segment followed, anywhere further down, by a
+//     segment whose name starts with "auth" (opencode's .config/opencode/auth.json).
+//
+// isDir callers pass false for directories: a 0755 directory is how every
+// harness lays its own config out, and the file inside is what carries the
+// secret.
 func poolIsCredentialPath(relSlash string) bool {
 	segs := strings.Split(relSlash, "/")
 	base := strings.ToLower(segs[len(segs)-1])
-	if base == ".credentials.json" ||
-		strings.Contains(base, "credential") ||
-		strings.Contains(base, "token") ||
-		strings.Contains(base, "session") {
+	if poolCredentialBasenames[base] {
+		return true
+	}
+	// "credential" in a name is a strong signal on its own (my-credentials-backup);
+	// "session" and "token" are NOT — plugin hooks named session-start.sh and Go's
+	// telemetry upload.token are why the exact-name set above exists.
+	if strings.Contains(base, "credential") {
+		return true
+	}
+	if strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") {
+		return true
+	}
+	if strings.Contains(base, "oauth") && strings.Contains(base, "token") {
 		return true
 	}
 	for i, s := range segs {
@@ -246,7 +279,10 @@ func poolCollectReadable(env Env, home, dir string, depth int, out *[]FileInfo) 
 		if relErr != nil {
 			rel = e.Path
 		}
-		if e.GroupOrOtherReadable() && poolIsCredentialPath(filepath.ToSlash(rel)) {
+		// Directories are never flagged: 0755 is how every harness lays its own
+		// config tree out, and the secret lives in the file inside, which this
+		// walk reaches on its own.
+		if !e.IsDir() && e.GroupOrOtherReadable() && poolIsCredentialPath(filepath.ToSlash(rel)) {
 			*out = append(*out, e)
 		}
 		if e.IsDir() {
