@@ -57,6 +57,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -221,6 +222,22 @@ func policySubcmdFlagNeutralized(rule config.AllowRule, flag string) bool {
 	return false
 }
 
+// policySubcmdReachable reports whether flag can actually be sent through rule
+// at all. whitelist denies any flag absent from the rule's own `flags`
+// allowlist (policy.go), which is the PRIMARY gate — deny_flags only subtracts
+// from it. Without this bound the check fired on wraptool's own documented git
+// push policy (`flags: ["--set-upstream"]`, `deny_flags: ["--force",
+// "--force-with-lease"]`, printed verbatim in four docs pages), telling the
+// operator that -f "still force-pushes" when the policy engine provably
+// rejects it.
+//
+// rule.Flags is authoritative here: doctor's lenient load has already run
+// applyDefaults, and SeedHelpFlags itself subtracts deny_flags, so what remains
+// is exactly what a caller may send.
+func policySubcmdReachable(rule config.AllowRule, flag string) bool {
+	return slices.Contains(rule.Flags, flag)
+}
+
 // policySubcmdIsPush reports whether subcommand names `git push` — its first
 // segment is "push". git push takes no further subcommand of its own, but
 // this is a prefix check (not an exact-length one) for the same reason
@@ -243,7 +260,7 @@ func runPolicySubcmdForcePush(_ context.Context, in *Input) Result {
 			}
 			var open []string
 			for _, f := range policySubcmdForcePushFlags {
-				if !policySubcmdFlagNeutralized(rule, f) {
+				if policySubcmdReachable(rule, f) && !policySubcmdFlagNeutralized(rule, f) {
 					open = append(open, f)
 				}
 			}

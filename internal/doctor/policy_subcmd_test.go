@@ -217,32 +217,58 @@ func TestRunPolicySubcmdForcePush(t *testing.T) {
 		wantOpen  []string // substrings expected in Detail when wantFinds == 1
 	}{
 		{
-			name:      "push allowed, no deny_flags at all: fires, all three spellings open",
-			rule:      config.AllowRule{Subcommand: []string{"push"}},
+			// Every force spelling is in the rule's own flags allowlist, so every
+			// one is reachable and none is denied.
+			name: "push allows all three force spellings, denies none: fires",
+			rule: config.AllowRule{
+				Subcommand: []string{"push"},
+				Flags:      []string{"--force", "--force-with-lease", "-f"},
+			},
 			wantFinds: 1,
 			wantOpen:  []string{"--force", "--force-with-lease", "-f"},
 		},
 		{
-			name: "push allowed, only --force denied: still fires (-f and --force-with-lease still open)",
+			name: "push allows all three, denies only --force: fires for the other two",
 			rule: config.AllowRule{
 				Subcommand: []string{"push"},
+				Flags:      []string{"--force", "--force-with-lease", "-f"},
 				DenyFlags:  []string{"--force"},
 			},
 			wantFinds: 1,
 			wantOpen:  []string{"--force-with-lease", "-f"},
 		},
 		{
-			name: "push allowed, all three spellings in deny_flags: legitimate, silent",
+			// wraptool's OWN documented git push policy, printed verbatim in
+			// docs/examples.qmd, docs/platform-linux.qmd, docs/platform-windows.qmd
+			// and docs/presentation.qmd. No force spelling is in flags, so whitelist
+			// rejects all three whatever deny_flags says.
+			name: "the documented push policy: no force spelling is even allowed, silent",
 			rule: config.AllowRule{
 				Subcommand: []string{"push"},
+				Flags:      []string{"--set-upstream"},
+				DenyFlags:  []string{"--force", "--force-with-lease"},
+			},
+			wantFinds: 0,
+		},
+		{
+			name:      "push with an empty flags allowlist: nothing is reachable, silent",
+			rule:      config.AllowRule{Subcommand: []string{"push"}},
+			wantFinds: 0,
+		},
+		{
+			name: "push allows all three but denies all three: legitimate, silent",
+			rule: config.AllowRule{
+				Subcommand: []string{"push"},
+				Flags:      []string{"--force", "--force-with-lease", "-f"},
 				DenyFlags:  []string{"--force", "--force-with-lease", "-f"},
 			},
 			wantFinds: 0,
 		},
 		{
-			name: "push allowed, all three spellings neutralized via flag_constraints.deny: legitimate, silent",
+			name: "push allows all three, neutralized via flag_constraints.deny: legitimate, silent",
 			rule: config.AllowRule{
 				Subcommand: []string{"push"},
+				Flags:      []string{"--force", "--force-with-lease", "-f"},
 				FlagConstraints: map[string]config.FlagConstraint{
 					"--force":            {Deny: true},
 					"--force-with-lease": {Deny: true},
@@ -252,9 +278,10 @@ func TestRunPolicySubcmdForcePush(t *testing.T) {
 			wantFinds: 0,
 		},
 		{
-			name: "push allowed, mixed deny_flags + flag_constraints covering all three: legitimate, silent",
+			name: "push allows all three, mixed deny_flags + flag_constraints: legitimate, silent",
 			rule: config.AllowRule{
 				Subcommand: []string{"push"},
+				Flags:      []string{"--force", "--force-with-lease", "-f"},
 				DenyFlags:  []string{"--force", "-f"},
 				FlagConstraints: map[string]config.FlagConstraint{
 					"--force-with-lease": {Deny: true},
