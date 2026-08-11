@@ -32,7 +32,7 @@ available to the container and grants every capability exposed on that listener.
 
 | Component | Responsibility |
 |---|---|
-| `cmd/serve.go` | Strict config load, transports, auth, admin listener, lifecycle |
+| `cmd/serve.go` | Strict config load, transports, auth, review UI's listener, lifecycle |
 | `internal/whitelist` | Default-deny CLI and upstream MCP policy evaluation |
 | `internal/executor` | Sanitization, explicit argv execution, environment, limits, scrubbing |
 | `internal/introspect` | Parse CLI help and cache generated schema metadata |
@@ -72,5 +72,5 @@ configured `working_dir`. Client-derived paths are checked against
 
 Tool policy and registrations hot-reload after strict parsing and validation.
 Invalid edits leave the previous policy active. Listener addresses, HTTP auth,
-CWD roots, the admin listener, and request-log location are startup state and
-require a restart when changed.
+CWD roots, the review UI's listener, and request-log location are startup state
+and require a restart when changed.

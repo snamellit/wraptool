@@ -38,8 +38,8 @@ properties combine into a serious threat surface.
 ## Split execution model
 
 You do not need wraptool to mediate every `git` invocation. Many
-operations are local-only and can run perfectly well inside the AI
-assistant's unprivileged container (which holds no secrets).
+operations are local-only and can run perfectly well inside the agent's
+unprivileged container (which holds no secrets).
 Restrict wraptool's surface to the operations that actually need
 host credentials.
 
@@ -450,7 +450,7 @@ Aggregated upstream announcements live at the
 
 ## Scope: what wraptool does and does not enforce
 
-Today, wraptool enforces **whitelisting and credential isolation at
+Today, wraptool enforces **policy and credential isolation at
 the command boundary**. It does not:
 
 - inspect repository configuration before launching `git`,

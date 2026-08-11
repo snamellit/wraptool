@@ -37,6 +37,7 @@ website:
           - configuration.qmd
           - cli-reference.qmd
           - mcp-integration.qmd
+          - terminology.qmd
       - href: security.qmd
         text: Security
       - text: Operations
@@ -70,6 +71,7 @@ website:
           - configuration.qmd
           - cli-reference.qmd
           - mcp-integration.qmd
+          - terminology.qmd
       - section: Trust boundary
         contents:
           - architecture.qmd

@@ -51,7 +51,7 @@ per-operation policy, output scrubbing, and the audit trail fill.
 | Boundary strength | microVM (hard) | user/mount namespaces or container (shared kernel) |
 | Credential model | proxied — agent *uses* credentials, scoped by the proxy | mediated — agent *requests operations*, never holds credentials |
 | Policy granularity | filesystem, network, secrets on/off | per-subcommand, per-flag, value constraints |
-| Audit | enterprise tier (Docker AI Governance) | built-in append-only event log + web UI, self-hosted |
+| Audit | enterprise tier (Docker AI Governance) | built-in append-only event log + review UI, self-hosted |
 | Approval workflow | none — grants are static | capability request → operator review → config merge |
 | Agent supply chain | installs whatever the agent's installer ships | version-locked harness pool: quarantine windows, receipts, rollback |
 | Toolchain reproducibility | image-dependent | same Guix manifest inside and outside the container |
@@ -64,7 +64,7 @@ per-operation policy, output scrubbing, and the audit trail fill.
 The approaches are complementary rather than competing. Sandboxes answers
 "how much damage can the agent do to my machine?" — the box. wraptool
 answers "what can the agent do *with my authority*?" — exactly the
-whitelist. Nothing prevents running wraptool's container runtime inside a
+policy. Nothing prevents running wraptool's container runtime inside a
 harder isolation boundary while wraptool keeps mediating the privileged
 operations; the policy, audit, and harness-pool supply-chain layers have
 no counterpart in the isolation-only model, and the microVM boundary has

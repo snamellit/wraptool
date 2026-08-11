@@ -1,6 +1,6 @@
 # Isolated Development Environments with wraptool
 
-This guide shows how to run your AI coding assistant in an isolated
+This guide shows how to run your coding agent in an isolated
 environment (container or Guix shell) while delegating credentialed CLI and
 local MCP-server access to wraptool running on the host, where credentials live.
 
@@ -32,18 +32,18 @@ local MCP-server access to wraptool running on the host, where credentials live.
 ```
 
 The key insight: **host CLI credentials never enter the isolated environment**.
-The AI assistant calls tools via MCP, wraptool validates the request against the
-whitelist, and executes the command on the host. Credentials deliberately owned
+The agent calls tools via MCP, wraptool validates the request against the
+policy, and executes the command on the host. Credentials deliberately owned
 by the harness, such as its pooled login state and MCP bearer token, are available
 inside the environment.
 
 Be clear on what this does and does not buy you. The container still has
 network access and the full source tree bind-mounted, and any code running in
-it can read the MCP config plus the bearer token and invoke the same
-whitelisted host tools the agent can. So wraptool protects **credentials**
-(SSH keys, gcloud/kube config, and privileged git like push stay on the host)
-and **bounds operations** by the whitelist policy — it does **not** protect
-source confidentiality or restrict network egress. For those, add container
+it can read the MCP config plus the bearer token and invoke the same host
+tools the agent can, if policy allows them. So wraptool protects
+**credentials** (SSH keys, gcloud/kube config, and privileged git like push
+stay on the host) and **bounds operations** by the policy — it does **not**
+protect source confidentiality or restrict network egress. For those, add container
 network controls of your own.
 
 For the Guix runtime specifically, `--network` shares the host network namespace,
@@ -371,7 +371,7 @@ itself (the scaffolder prefills them).
 `"connect": false` on the feature wires the MCP config yourself (e.g. host-side
 `wraptool init`) instead of at container-create.
 
-See [Dev containers for AI harnesses](devcontainers.qmd) for the full feature
+See [Dev containers for harnesses](devcontainers.qmd) for the full feature
 reference (every option, the base-image-plus-features rationale, and the
 `wraptool up`/`down` lifecycle).
 
@@ -387,7 +387,7 @@ current starting point.
 
 Before using this setup in production:
 
-- [ ] **Whitelist is minimal** — only allow subcommands the AI actually needs
+- [ ] **Policy is minimal** — only allow subcommands the agent actually needs
 - [ ] **Auth token is set** — for SSE transport, always use `auth_token_file`
 - [ ] **Socket permissions are restricted** — wraptool sets 0600 by default
 - [ ] **No credential files are mounted** — verify with `mount` inside the container
@@ -435,7 +435,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now wraptool
 ```
 
-Reload the whitelist config without restarting:
+Reload the policy without restarting:
 
 ```bash
 systemctl --user reload wraptool   # sends SIGHUP

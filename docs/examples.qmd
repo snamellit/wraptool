@@ -115,7 +115,7 @@ The upstream input schema and arguments pass through unchanged. MCP-server rules
 filter by exact tool name only; they do not provide CLI-style flag or argument
 constraints. Text results and errors are scrubbed, but non-text content is not,
 and proxied MCP output has no CLI-equivalent size cap. Capability requests and
-Web UI rule editing currently apply only to CLI rules.
+review UI rule editing currently apply only to CLI rules.
 :::
 
 See [MCP integration](mcp-integration.qmd#proxy-local-mcp-servers) for lifecycle

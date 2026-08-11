@@ -1,0 +1,96 @@
+---
+title: "Terminology"
+description: "The words wraptool's documentation uses for each concept, and the near-synonyms it avoids."
+---
+
+wraptool's documentation uses one name per concept. This page is that list.
+
+Read it as a glossary if you are new. If you are writing documentation, treat
+the **Preferred term** column as binding and see the style rules in
+[Contributing](contributing.qmd#documentation-style).
+
+## The actors
+
+The three most-confused words on this site. They are not synonyms and never
+substitute for each other.
+
+| Term | Means | Not |
+|---|---|---|
+| **agent** | The AI acting through a harness: it decides what to do and calls MCP tools | The program it runs in; the model weights |
+| **harness** | The CLI program or IDE integration the agent runs in — `claude`, `opencode`, `gemini`, `cursor`, `roo`, `pi`, `agy`. Version-locked in the harness pool | The AI itself; a container; a wrapper script |
+| **model** | The language model behind the agent. Use only when the point is genuinely about the model | The agent; the harness |
+
+Write **agent**, or **coding agent** on first use in a page. Do not write "the
+AI", "the assistant", "the coding assistant", or "the AI harness" — the last
+conflates two different things.
+
+## The boundary
+
+| Term | Means |
+|---|---|
+| **policy** | The rules in the configuration's `tools:` block that decide which operations are allowed. The user-facing name for what wraptool enforces |
+| **privileged operation** | An operation needing credentials, network access, or host authority the agent never holds. `git pull` is the canonical example |
+| **mediation** | wraptool's model: the agent requests an operation, wraptool executes it. Contrast with a credential **proxy**, where the agent holds and uses a credential |
+| **capability** | One allowed operation as seen by the agent, exposed as an MCP tool |
+| **approval** | An operator's decision on a capability request, made in the review UI |
+
+Write **policy**, not "whitelist", "ruleset", or "access rules" in prose.
+`whitelist` survives as a Go package name and in identifiers; it is not the
+word for the concept.
+
+Write **privileged operation**. Do not alternate with "protected operation" or
+"sensitive operation". Use **credentialed** only where the point is
+specifically about credentials rather than about privilege in general.
+
+## The processes
+
+| Term | Means |
+|---|---|
+| **server** | The wraptool MCP server process. Agent-facing. Started by `wraptool serve`, or by `wraptool up` on your behalf |
+| **review UI** | The operator-facing web interface for approving and denying capability requests. Host-facing, loopback only, never AI-facing |
+| **runtime** | The container the harness runs in: the Guix runtime or the Dev Container runtime |
+
+Write **review UI**. Do not write "Web UI", "admin UI", or "admin listener" —
+the first is vague about who it is for, and the other two suggest a general
+administration console rather than a request-review surface. Where the point is
+the network listener rather than the interface, write **the review UI's
+listener**.
+
+## The harness pool
+
+| Term | Means |
+|---|---|
+| **harness pool** | The version-locked store of harness installations shared across projects. **pool** alone is fine after first use on a page |
+| **lock** | The recorded resolution of a harness to exact versions and integrity hashes |
+| **resolve** | Turn a harness request into a lock. Needs the network |
+| **realize** | Build a generation from an existing lock. Offline |
+| **generation** | One immutable realized harness installation. Retained so `harness rollback` can return to it |
+| **receipt** | The record proving a generation was realized from its lock |
+| **quarantine** | The waiting period before a newly published version becomes eligible |
+| **provision** | Run resolve or realize through a backend — Guix, or Docker/Podman via the OCI provisioner |
+
+## Conventions
+
+- **wraptool** is lowercase, including at the start of a sentence. It names both
+  the project and the executable.
+- Command names are code-formatted and written as invoked: `wraptool up`,
+  `wraptool harness install`.
+- Harness names are code-formatted and lowercase: `claude`, `agy`.
+- Say **configuration** for the concept and `config.yaml` for the file. Avoid
+  "config" as a noun in prose; keep it in commands and paths where it is
+  literal.
+
+## For writers: preferred and avoided
+
+| Preferred | Avoid |
+|---|---|
+| agent, coding agent | the AI, the assistant, coding assistant, AI harness |
+| harness | wrapper, agent binary, tool |
+| policy | whitelist, ruleset, access rules |
+| privileged operation | protected operation, sensitive operation |
+| review UI | Web UI, admin UI, admin listener |
+| harness pool, pool | the harness store, the cache |
+| configuration | config (as a prose noun) |
+
+Adding a term is a documentation change like any other: put it in this table in
+the same commit that introduces it.

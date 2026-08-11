@@ -137,7 +137,7 @@ wraptool config validate
 
 ## 6. Scaffold the devcontainer with your harness
 
-Pick which coding assistant runs in the container and which languages the image
+Pick which coding agent runs in the container and which languages the image
 needs. This example wires the **agy** (Antigravity) harness with Go and Java.
 Install it into the shared pool once first — this is a host-side, developer-toolbox
 step, not something the container config does:
