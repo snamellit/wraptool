@@ -115,14 +115,21 @@ func (m *MapEnv) EvalSymlinks(path string) (string, error) {
 }
 
 func (m *MapEnv) ReadDir(path string) ([]FileInfo, error) {
-	dir, ok := m.Files[path]
+	// Resolve the directory itself through Links, like Stat/EvalSymlinks/
+	// ReadFile: a symlinked directory must be walkable the same way a
+	// symlinked file is readable.
+	final, err := m.resolve(path)
+	if err != nil {
+		return nil, &fs.PathError{Op: "readdir", Path: path, Err: err}
+	}
+	dir, ok := m.Files[final]
 	if !ok || !dir.Mode.IsDir() {
 		return nil, &fs.PathError{Op: "readdir", Path: path, Err: fs.ErrNotExist}
 	}
 	seen := map[string]bool{}
 	var out []FileInfo
 	collect := func(child string) {
-		if seen[child] || filepath.Dir(child) != path {
+		if seen[child] || filepath.Dir(child) != final {
 			return
 		}
 		seen[child] = true
@@ -140,8 +147,17 @@ func (m *MapEnv) ReadDir(path string) ([]FileInfo, error) {
 	return out, nil
 }
 
+// ReadFile follows m.Links like Stat/EvalSymlinks (and the real OS): a symlinked
+// config file (B3's config.symlinked, C1's ConfigRaw read) must Stat and
+// ReadFile through the same resolved path, or a fake built the "obvious" way —
+// Stat succeeding, ReadFile returning fs.ErrNotExist — diverges from osEnv,
+// whose os.ReadFile always follows symlinks.
 func (m *MapEnv) ReadFile(path string) ([]byte, error) {
-	mf, ok := m.Files[path]
+	final, err := m.resolve(path)
+	if err != nil {
+		return nil, &fs.PathError{Op: "open", Path: path, Err: err}
+	}
+	mf, ok := m.Files[final]
 	if !ok {
 		return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
 	}

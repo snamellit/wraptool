@@ -115,6 +115,42 @@ func TestMapEnvReadDir(t *testing.T) {
 	}
 }
 
+// TestMapEnvReadFileFollowsSymlink pins ReadFile to the same link-following
+// semantics as Stat/EvalSymlinks (and the real OS's os.ReadFile): a fake that
+// Stats a symlinked path successfully but fails to ReadFile it diverges from
+// osEnv and would surface as a mysterious failure inside a Phase-B branch that
+// cannot edit this shared file (e.g. B3's config.symlinked).
+func TestMapEnvReadFileFollowsSymlink(t *testing.T) {
+	m := NewMapEnv()
+	m.Files["/real/config.yaml"] = MapFile{Data: []byte("mcp: {}\n"), Mode: 0o600}
+	m.Links["/home/user/.config/wraptool/config.yaml"] = "/real/config.yaml"
+
+	got, err := m.ReadFile("/home/user/.config/wraptool/config.yaml")
+	if err != nil {
+		t.Fatalf("ReadFile through a symlink: %v", err)
+	}
+	if string(got) != "mcp: {}\n" {
+		t.Errorf("ReadFile through a symlink: got %q, want the target's content", got)
+	}
+}
+
+// TestMapEnvReadDirFollowsSymlinkedDirectory pins ReadDir's own directory
+// lookup to the same link-following semantics, symmetric with ReadFile.
+func TestMapEnvReadDirFollowsSymlinkedDirectory(t *testing.T) {
+	m := NewMapEnv()
+	m.Files["/real/dir"] = MapFile{Mode: fs.ModeDir | 0o755}
+	m.Files["/real/dir/a.txt"] = MapFile{Mode: 0o644, Data: []byte("a")}
+	m.Links["/link/dir"] = "/real/dir"
+
+	entries, err := m.ReadDir("/link/dir")
+	if err != nil {
+		t.Fatalf("ReadDir through a symlinked directory: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name != "a.txt" {
+		t.Fatalf("ReadDir through a symlinked directory: got %+v, want [a.txt]", entries)
+	}
+}
+
 func TestMapEnvGetenvGetuidNowProcessAlive(t *testing.T) {
 	m := NewMapEnv()
 	m.Vars["FOO"] = "bar"
