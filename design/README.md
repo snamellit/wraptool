@@ -36,6 +36,7 @@ first (the foundational wrapping model), then browse by area below.
 | `policy/security-audit-policy-enforcement.md` | policy | findings | Policy-enforcement perimeter & config fail-open surface (open) |
 | `policy/opt-in-documentation-tooling.md` | policy | proposal | Opt-in documentation tooling for development containers |
 | `doctor/wraptool-doctor.md` | doctor | proposed | `wraptool doctor` — dependency, posture, policy-lint and tool-drift preflight |
+| `doctor/implementation-plan.md` | doctor | proposed | Step-by-step delivery of `wraptool doctor`, each step shipping a working command |
 | `introspect/introspection-cache-invalidation.md` | introspect | implemented | Introspection cache invalidates on its real inputs |
 | `introspect/tool-descriptions-from-help.md` | introspect | decided | Tool descriptions come from `--help`, not config |
 | `audit/claude-audit.md` | audit | findings | Security audit — wraptool |
