@@ -178,13 +178,15 @@ var mcpFloatingVersionTags = map[string]bool{
 }
 
 // mcpFirstNonFlagArg returns the first element of args that does not start
-// with "-", and whether one was found. npx/uvx invocations conventionally
-// place the package spec immediately after any leading flags (`-y`), so this
-// is the arg both runners' own docs treat as "the package" — a full argv
-// parser modeling every runner flag's arity is out of scope for a doctor
-// heuristic (this check's severity is fail because an unpinned fetch-execute
-// IS the danger regardless of parse precision, not because the parse itself
-// is exhaustive).
+// with "-", and whether one was found. This is the FALLBACK spec source —
+// npx/uvx invocations that name the package as a bare positional (no
+// -p/--package/--from) conventionally place it immediately after any
+// leading flags (`-y`) — used only when mcpSpecArg finds no explicit
+// spec-naming flag; see mcpSpecArg's doc comment for why the flag case must
+// be handled first. A full argv parser modeling every runner flag's arity is
+// still out of scope for a doctor heuristic (this check's severity is fail
+// because an unpinned fetch-execute IS the danger regardless of parse
+// precision, not because the parse itself is exhaustive).
 func mcpFirstNonFlagArg(args []string) (string, bool) {
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {
@@ -206,20 +208,72 @@ func mcpHasFlag(args []string, names ...string) bool {
 	return false
 }
 
+// mcpSpecFlags are the flags npx (`-p`/`--package`) and uvx (`--from`)
+// document as explicitly naming the package spec, as opposed to the
+// implicit "first positional" convention. When one of these is present its
+// VALUE is the package spec — never the trailing "bin name" positional
+// uvx's `--from PKG CMD` form carries (CMD selects which entry point of PKG
+// to run; it is not a package spec at all and must never be evaluated as
+// one), and never some earlier, unrelated flag's own value either.
+var mcpSpecFlags = []string{"-p", "--package", "--from"}
+
+// mcpSpecArg returns the package-spec argument for an npx/uvx invocation,
+// and whether one was found: the value of an explicit -p/--package/--from
+// flag (both the split "--from X" and the joined "--from=X" spelling) when
+// one names the spec directly, else the first non-flag positional
+// (mcpFirstNonFlagArg) — npx/uvx's implicit convention absent such a flag.
+// A recognized flag present with no value after it (a malformed
+// invocation) yields ok=false rather than guessing: this check cannot know
+// what spec, if any, was intended, and SeverityFail must never fire on a
+// guess (Finding.Severity's own doc comment).
+func mcpSpecArg(args []string) (spec string, ok bool) {
+	for i, a := range args {
+		for _, flag := range mcpSpecFlags {
+			if a == flag {
+				if i+1 < len(args) {
+					return args[i+1], true
+				}
+				return "", false
+			}
+			if val, hasVal := strings.CutPrefix(a, flag+"="); hasVal {
+				return val, true
+			}
+		}
+	}
+	return mcpFirstNonFlagArg(args)
+}
+
 // mcpSpecPinned reports whether spec — a package-runner argument, e.g.
-// "@modelcontextprotocol/server-filesystem", "left-pad@1.3.0", "ruff@latest"
-// — names an exact, non-floating version. The version separator is the LAST
+// "@modelcontextprotocol/server-filesystem", "left-pad@1.3.0", "ruff@latest",
+// "mcp-server-git==2024.11.5" — names an exact, non-floating version. Two
+// ecosystems' pin syntax are recognized, since mcpFetchRunners covers both:
+// npm's (npx) trailing "@version", and PEP 440's (uvx/uv, pip) "==version" —
+// uv's own documented exact-pin form. The npm version separator is the LAST
 // "@" in spec, deliberately not the first: an npm-scoped package name itself
 // starts with "@" ("@scope/name"), so "@scope/name@1.2.3" must split after
 // "name", not at the scope marker, and "@scope/name" with no version at all
 // must not be misread as version "scope/name". A leading "@" at index 0 with
 // nothing else is therefore never treated as a version marker.
 func mcpSpecPinned(spec string) bool {
+	if mcpPEP440ExactPinned(spec) {
+		return true
+	}
 	_, version, ok := mcpSplitSpec(spec)
 	if !ok || version == "" {
 		return false
 	}
 	return !mcpFloatingVersionTags[strings.ToLower(version)]
+}
+
+// mcpPEP440ExactPinned reports whether spec carries a PEP 440 exact-version
+// pin — "==" is the only operator this check recognizes as pinned (uv/pip's
+// documented exact-pin form, e.g. "mcp-server-git==2024.11.5"); a range
+// operator ("mcp-server-git>=1.0") does not pin an exact version and is left
+// unpinned. The "==" must not be the very first rune (an empty package
+// name) and must have a non-empty version after it.
+func mcpPEP440ExactPinned(spec string) bool {
+	idx := strings.Index(spec, "==")
+	return idx > 0 && spec[idx+2:] != ""
 }
 
 // mcpSplitSpec splits spec into its bare package name and version, at the
@@ -235,17 +289,16 @@ func mcpSplitSpec(spec string) (name, version string, ok bool) {
 	return spec[:at], spec[at+1:], true
 }
 
-// mcpUnpinnedSpec returns the offending package spec and true when srv's
-// command/args match design §7.4's fetch-and-execute shape with no version
-// pin: an npx invocation carrying `-y`/`--yes` (npx's own non-interactive
-// auto-install flag — without it npx would block on a confirmation prompt no
-// spawned MCP server child ever gets to answer, so an npx call with no -y is
-// not a live "runs unattended" risk this check can confirm), or ANY uvx
-// invocation (uv tool run has no such interactive gate to begin with, so its
-// mere use with an unpinned spec is already the risk).
-// mcpSpecBase strips a version suffix (if any) off spec, for the remedy
-// text's "pin an exact version" suggestion.
+// mcpSpecBase strips a version pin (if any) off spec, for the remedy text's
+// "pin an exact version" suggestion — a PEP 440 "==version" suffix first
+// (mcpPEP440ExactPinned's marker), else an npm "@version" suffix
+// (mcpSplitSpec), so an unpinned spec that already carries a non-exact PEP
+// 440 operator ("mcp-server-git>=1.0") is not left dangling in front of a
+// remedy-appended pin.
 func mcpSpecBase(spec string) string {
+	if idx := strings.Index(spec, "=="); idx > 0 {
+		return spec[:idx]
+	}
 	name, _, ok := mcpSplitSpec(spec)
 	if !ok {
 		return spec
@@ -253,6 +306,31 @@ func mcpSpecBase(spec string) string {
 	return name
 }
 
+// mcpPinExample returns the runner-appropriate "pin an exact version"
+// example for spec's remedy text: PEP 440's "==version" for uvx, npm's
+// "@version" for npx — using the wrong ecosystem's syntax would itself
+// produce an invalid spec (ruling B7(c): the remedy must never append
+// "@<version>" onto a spec that already carries "==", which mixing syntaxes
+// unconditionally would risk).
+func mcpPinExample(command, spec string) string {
+	name := mcpSpecBase(spec)
+	if strings.ToLower(filepath.Base(command)) == "uvx" {
+		return name + "==<version>"
+	}
+	return name + "@<version>"
+}
+
+// mcpUnpinnedSpec returns the offending package spec and true when srv's
+// command/args match design §7.4's fetch-and-execute shape with no version
+// pin: an npx invocation carrying `-y`/`--yes` (npx's own non-interactive
+// auto-install flag — without it npx would block on a confirmation prompt no
+// spawned MCP server child ever gets to answer, so an npx call with no -y is
+// not a live "runs unattended" risk this check can confirm), or ANY uvx
+// invocation (uv tool run has no such interactive gate to begin with, so its
+// mere use with an unpinned spec is already the risk). The candidate spec
+// itself comes from mcpSpecArg, not a bare positional scan — see its doc
+// comment for why an explicit -p/--package/--from flag's value must win over
+// any positional guess.
 func mcpUnpinnedSpec(command string, args []string) (spec string, unpinned bool) {
 	base := strings.ToLower(filepath.Base(command))
 	if !mcpFetchRunners[base] {
@@ -261,7 +339,7 @@ func mcpUnpinnedSpec(command string, args []string) (spec string, unpinned bool)
 	if base == "npx" && !mcpHasFlag(args, "-y", "--yes") {
 		return "", false
 	}
-	spec, found := mcpFirstNonFlagArg(args)
+	spec, found := mcpSpecArg(args)
 	if !found {
 		return "", false
 	}
@@ -292,9 +370,9 @@ func runMcpServerArgsUnpinned(_ context.Context, in *Input) Result {
 				name, srv.Command, strings.Join(srv.Args, " "), spec, filepath.Base(srv.Command)),
 			Path: path,
 			Remedy: fmt.Sprintf(
-				"pin an exact version in the package spec (e.g. %s@<version>), or install the server locally and "+
+				"pin an exact version in the package spec (e.g. %s), or install the server locally and "+
 					"point mcp_servers.%s.command at its absolute binary path instead of %s",
-				mcpSpecBase(spec), name, filepath.Base(srv.Command)),
+				mcpPinExample(srv.Command, spec), name, filepath.Base(srv.Command)),
 			DocRef: "docs/configuration.qmd",
 		})
 	}
