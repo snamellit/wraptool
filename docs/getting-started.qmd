@@ -13,8 +13,7 @@ that OS** (macOS in particular puts it under `~/Library/Application Support`, no
 
 ## The recommended path: `wraptool up`
 
-Once wraptool is installed and you have a config, you don't wire anything by
-hand. In any git repo:
+Once wraptool is installed, you don't wire anything by hand. In any git repo:
 
 ```bash
 wraptool up
@@ -26,15 +25,20 @@ and `Authorization` header, brings up an **isolated container** (no credentials)
 and drops you into a shell. Bare `wraptool` in a repo does the same. Full detail
 in [§6 below](#one-command-per-project-wraptool-up).
 
-`up` needs **one thing up front**: an existing config. It calls `config.Load`
-before it does anything else, so with no config file it fails immediately —
-create one first (see [Create a config](#create-a-config)). After that, `up` is
-all you run.
+`up` needs **nothing up front**. If no config exists at the resolved path it
+writes a commented starter there first, logs where it landed, and carries on —
+it never overwrites a config you already have. That starter is deny-by-default
+and allows exactly two privileged operations, `git pull` and `git fetch`, so
+the very first run comes up working and already demonstrates something the
+agent cannot do for itself.
+
+Editing that policy to expose the tools you actually want is the next step, not
+a prerequisite: see [Create a config](#create-a-config).
 
 The sections below are the **manual / from-scratch** path — how the pieces fit
 when you want to build, configure, and connect a harness yourself. If you just
-ran `up`, skip to [§6](#one-command-per-project-wraptool-up) for its details; you
-only need the config section below.
+ran `up`, skip to [§6](#one-command-per-project-wraptool-up) for its details,
+and read [§2](#create-a-config) when you are ready to widen the policy.
 
 ## 1. Build (manual path)
 
@@ -57,8 +61,10 @@ guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wrapto
 You usually don't write this from scratch: on first run both `wraptool up` and
 `wraptool serve` **scaffold** a commented starter config at that path if none
 exists (never overwriting one that does) and log where it landed. The starter
-enables a single privileged tool — `git pull` — so the server comes up
-immediately; you then edit the file to expose the tools you want.
+enables two privileged operations — `git pull` and `git fetch` — so the server
+comes up immediately; you then edit the file to expose the tools you want.
+`push` ships commented out and `clone` is deliberately absent; the scaffold
+explains why at each.
 
 Only wrap commands that actually need wraptool. `git pull`, `git fetch`, and
 `git push` reach the network with your host credentials — which the agent never
@@ -179,8 +185,7 @@ prints one line per executed command with status and duration.
 
 ## 6. One command per project: `wraptool up`
 
-Once the config exists you don't start things by hand. In any git repository
-(or worktree) root:
+You don't start things by hand. In any git repository (or worktree) root:
 
 ```bash
 wraptool up
