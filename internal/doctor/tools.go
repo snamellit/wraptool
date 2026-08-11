@@ -221,13 +221,30 @@ func toolAncestorDirs(path string) []string {
 }
 
 // toolWritableSegments is the ordered list runToolBinaryWritable inspects:
-// every ancestor directory (root first, so the ROOT CAUSE — e.g. Homebrew's
-// group-writable /usr/local — is reported instead of a deeper, merely
-// downstream directory) followed by resolved itself, since a group/other
-// write bit on the FILE lets its content be rewritten in place even without
-// any directory permission at all.
-func toolWritableSegments(resolved string) []string {
-	return append(toolAncestorDirs(resolved), resolved)
+// the UNION (de-duplicated, root-most first) of the ancestor directories of
+// BOTH binary (as configured — the symlink itself, if tc.Binary names one)
+// and resolved (EvalSymlinks' target), followed by resolved itself. Checking
+// only resolved's ancestors misses the case that matters most: a
+// group/other-writable directory holding the SYMLINK — replace the link and
+// every invocation of the tool is hijacked, with resolved's own ancestor
+// chain (e.g. a clean /gnu/store/.../bin) never seeing it. The symlink node
+// itself is deliberately never Stat'd here: an lstat'd symlink is always
+// lrwxrwxrwx, which would false-positive on every symlinked binary
+// regardless of who can replace it — only its DIRECTORY entry matters, and
+// that directory is already the leaf of toolAncestorDirs(binary).
+func toolWritableSegments(binary, resolved string) []string {
+	var dirs []string
+	seen := make(map[string]bool)
+	for _, chain := range [][]string{toolAncestorDirs(binary), toolAncestorDirs(resolved)} {
+		for _, d := range chain {
+			if seen[d] {
+				continue
+			}
+			seen[d] = true
+			dirs = append(dirs, d)
+		}
+	}
+	return append(dirs, resolved)
 }
 
 // toolGroupLabel names a FileInfo's GID for a finding's Detail. There is no
@@ -242,11 +259,14 @@ func toolGroupLabel(gid int) string {
 }
 
 // runToolBinaryWritable fires on the FIRST group- or other-writable segment
-// (root to leaf) in a tool binary's resolved path — arbitrary code could be
-// substituted inside the credential boundary. warn, not fail (design §7.4):
-// Intel-macOS Homebrew makes /usr/local group-writable by design and the
-// repo ships a tap (README/docs), so this is a shape that is dangerous in
-// most deployments but legitimately unavoidable in some.
+// (root to leaf, across both tc.Binary's own ancestor chain and resolved's —
+// see toolWritableSegments) in a tool binary's path — arbitrary code could be
+// substituted inside the credential boundary, either by rewriting resolved
+// in place or by replacing the symlink named by binary: to point somewhere
+// else entirely. warn, not fail (design §7.4): Intel-macOS Homebrew makes
+// /usr/local group-writable by design and the repo ships a tap (README/docs),
+// so this is a shape that is dangerous in most deployments but legitimately
+// unavoidable in some.
 func runToolBinaryWritable(_ context.Context, in *Input) Result {
 	var findings []Finding
 	for _, name := range toolSortedNames(in.Config.Tools) {
@@ -255,7 +275,7 @@ func runToolBinaryWritable(_ context.Context, in *Input) Result {
 		if !ok {
 			continue
 		}
-		for _, seg := range toolWritableSegments(resolved) {
+		for _, seg := range toolWritableSegments(tc.Binary, resolved) {
 			fi, err := in.Env.Stat(seg)
 			if err != nil {
 				continue

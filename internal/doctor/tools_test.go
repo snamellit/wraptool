@@ -189,6 +189,29 @@ func TestRunToolBinaryWritable(t *testing.T) {
 			wantOutcome: OutcomeFinding,
 			wantSegment: "/usr/local/bin/git",
 		},
+		{
+			// Reproduces the reviewer's false negative: binary: names a
+			// symlink living in a 0777 directory, whose RESOLVED target
+			// lives under a perfectly clean tree. Inspecting only
+			// resolved's ancestors (the old behaviour) reported "0 failed,
+			// 0 warnings" here -- any local user can replace the symlink
+			// and own every invocation of the tool.
+			name: "binary is a symlink inside a world-writable directory, resolved target's tree is clean",
+			build: func(env *MapEnv) {
+				env.Files["/"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/usr"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/usr/local"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/usr/local/bin"] = MapFile{Mode: fs.ModeDir | 0o777} // world-writable: holds the symlink
+				env.Links["/usr/local/bin/git"] = "/gnu/store/xyz-git/bin/git"
+				env.Files["/gnu"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/gnu/store"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/gnu/store/xyz-git"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/gnu/store/xyz-git/bin"] = MapFile{Mode: fs.ModeDir | 0o755}
+				env.Files["/gnu/store/xyz-git/bin/git"] = MapFile{Mode: 0o755}
+			},
+			wantOutcome: OutcomeFinding,
+			wantSegment: "/usr/local/bin",
+		},
 	}
 	cfg := &config.Config{Tools: map[string]config.ToolConfig{
 		"git": {Binary: "/usr/local/bin/git"},
