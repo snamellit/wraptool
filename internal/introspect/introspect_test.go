@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pti/wraptool/internal/config"
@@ -255,4 +256,114 @@ func TestIntrospectCollectsCatalogWithoutAllowRules(t *testing.T) {
 	if got := schema.Available["issue"]; got != "manage issues" {
 		t.Errorf("issue description = %q, want %q", got, "manage issues")
 	}
+}
+
+// TestIntrospect_ParseOutcomeParsed covers items 4/5's happy path: a
+// subcommand whose help genuinely parses gets ParseOutcomeParsed and a
+// Coverage reflecting how much of the help's own flag vocabulary the parse
+// captured.
+func TestIntrospect_ParseOutcomeParsed(t *testing.T) {
+	isolateCacheDir(t)
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool")
+	help := "Usage: tool commit [OPTION]...\n\n" +
+		"  -a, --append   append to the file\n" +
+		"  -v, --verbose  explain what is being done\n"
+	script := "#!/bin/sh\ncat <<'HELP'\n" + help + "HELP\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &config.ToolConfig{Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"commit"}}}}
+	schema, err := Introspect(context.Background(), "tool", tc)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+
+	sub, ok := schema.Subcommands["commit"]
+	if !ok {
+		t.Fatal("expected a \"commit\" entry")
+	}
+	if sub.ParseOutcome != ParseOutcomeParsed {
+		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeParsed)
+	}
+	if sub.Coverage != 1.0 {
+		t.Errorf("Coverage = %v, want 1.0 (both flags in the help were captured)", sub.Coverage)
+	}
+	if len(sub.Flags) != 2 {
+		t.Errorf("got %d flags, want 2", len(sub.Flags))
+	}
+}
+
+// TestIntrospect_ParseOutcomeGarbage is the design's own worked example:
+// `git bogus -h` returns a 53-byte, one-line error message that clears
+// getHelp's 20-byte success threshold. Introspect must record
+// ParseOutcomeGarbage, not parse it as if it were real help.
+func TestIntrospect_ParseOutcomeGarbage(t *testing.T) {
+	isolateCacheDir(t)
+
+	garbage := readTestData(t, "git_bogus_h.txt")
+	if len(garbage) <= 20 {
+		t.Fatalf("test fixture bug: garbage fixture must clear the 20-byte threshold, got %d bytes", len(garbage))
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "git")
+	// Every help form (-h, --help, help <sub>) returns the same one-line
+	// error text — exactly what a genuinely nonexistent subcommand does.
+	script := "#!/bin/sh\nprintf '%s' " + shellQuote(garbage) + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &config.ToolConfig{Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"bogus"}}}}
+	schema, err := Introspect(context.Background(), "git", tc)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+
+	sub, ok := schema.Subcommands["bogus"]
+	if !ok {
+		t.Fatal("expected a \"bogus\" entry")
+	}
+	if sub.ParseOutcome != ParseOutcomeGarbage {
+		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeGarbage)
+	}
+	if len(sub.Flags) != 0 {
+		t.Errorf("garbage output must not be parsed into flags, got %v", sub.Flags)
+	}
+}
+
+// TestIntrospect_ParseOutcomeHelpFailed covers the third distinguishable
+// state: no help output was obtained at all (every form exits with nothing).
+func TestIntrospect_ParseOutcomeHelpFailed(t *testing.T) {
+	isolateCacheDir(t)
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool")
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &config.ToolConfig{Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"noop"}}}}
+	schema, err := Introspect(context.Background(), "tool", tc)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+
+	sub, ok := schema.Subcommands["noop"]
+	if !ok {
+		t.Fatal("expected a \"noop\" entry")
+	}
+	if sub.ParseOutcome != ParseOutcomeHelpFailed {
+		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeHelpFailed)
+	}
+}
+
+// shellQuote wraps s in single quotes for embedding in a generated shell
+// script's printf argument, escaping any single quote s itself contains.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

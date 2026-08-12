@@ -20,12 +20,45 @@ type Schema struct {
 	// AI can name a real subcommand in a capability request instead of guessing.
 	// Empty for tools whose help advertises no subcommands (most GNU tools).
 	Available map[string]string `json:"available,omitempty"`
+	// FormatVersion is the on-disk shape of this Schema, stamped by SaveCache
+	// on every write (a caller-supplied value is always overwritten — there is
+	// exactly one writer of truth). Bumped whenever Schema or Subcommand grows
+	// a field a pre-bump cache entry could be silently MISREAD under: a missing
+	// JSON field decodes to its Go zero value rather than erroring, which for
+	// Subcommand.Coverage/ParseOutcome (added at format 2, see their own doc
+	// comments) is indistinguishable from a genuine "probed and found nothing"
+	// result. LoadCache and LoadCacheStale both reject any Schema whose
+	// FormatVersion doesn't match schemaFormatVersion, forcing a full
+	// re-introspection instead of serving a schema shaped like an older
+	// format. See design/doctor/wraptool-doctor.md §4.2 item 4.
+	FormatVersion int `json:"format_version"`
 }
 
 // Subcommand describes a single subcommand of a CLI tool.
 type Subcommand struct {
 	Description string          `json:"description"`
 	Flags       map[string]Flag `json:"flags"`
+	// Coverage is the fraction of flag-shaped tokens found ANYWHERE in the
+	// subcommand's help text that ended up as a key in Flags — "how much of
+	// this help did I actually understand", not which parser ran. See
+	// flagCoverage's doc comment for why this replaces ParseResult.Confidence
+	// as the persisted quality signal (design/doctor/wraptool-doctor.md §4.2
+	// item 4): Confidence is a four-value step function of parser IDENTITY
+	// (0.3 fallback, 0.6/0.7 GNU, 0.8/0.9 git, gradated only by
+	// matchCount > 5) — `git log -h` parses 7 flags at the maximum 0.90 while
+	// missing --oneline/--graph/--pretty/--since/--author entirely, so
+	// thresholding on it produces maximum-confidence false positives.
+	// Confidence still decides which PARSER wins (BestParse); it is simply
+	// never persisted, because nothing downstream can act on "which parser"
+	// as a trust signal. Meaningless (0.0) unless ParseOutcome ==
+	// ParseOutcomeParsed — a caller MUST check ParseOutcome first.
+	Coverage float64 `json:"coverage"`
+	// ParseOutcome records how this subcommand's help was obtained and
+	// classified, so a caller can tell "verified: no flags" from "could not
+	// tell" — an empty Flags map alone is ambiguous between them. See
+	// ParseOutcome's own doc comment (design/doctor/wraptool-doctor.md §4.2
+	// item 5).
+	ParseOutcome ParseOutcome `json:"parse_outcome,omitempty"`
 }
 
 // Flag describes a single flag of a CLI subcommand.

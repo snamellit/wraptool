@@ -84,7 +84,7 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 	if err != nil {
 		return nil, fmt.Errorf("introspecting %s: %w", toolName, err)
 	}
-	validity := cacheValidity{
+	validity := CacheValidity{
 		ConfigHash:  configHash(tc),
 		NewestInput: newest,
 		TTL:         tc.Introspection.CacheTTL,
@@ -125,9 +125,24 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 		helpText, err := getHelp(ctx, tc, rule.Subcommand)
 		if err != nil {
 			log.Printf("introspect %s %s: help failed: %v", toolName, subcmdKey, err)
-			// Store an empty subcommand — we still know it exists.
+			// Store an empty subcommand — we still know it exists, but nothing
+			// was probed (ParseOutcomeHelpFailed): an absent flag here is
+			// "could not tell", never "confirmed absent".
 			schema.Subcommands[subcmdKey] = Subcommand{
-				Flags: make(map[string]Flag),
+				Flags:        make(map[string]Flag),
+				ParseOutcome: ParseOutcomeHelpFailed,
+			}
+			continue
+		}
+
+		if !looksLikeHelp(helpText) {
+			// getHelp's byte-length threshold cleared, but the output does not
+			// have the shape of a help page (e.g. `git bogus -h`'s one-line
+			// error text) — do not parse it as if it were one.
+			log.Printf("introspect %s %s: help output did not look like a help page, treating as garbage", toolName, subcmdKey)
+			schema.Subcommands[subcmdKey] = Subcommand{
+				Flags:        make(map[string]Flag),
+				ParseOutcome: ParseOutcomeGarbage,
 			}
 			continue
 		}
@@ -136,7 +151,10 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 		log.Printf("introspect %s %s: parsed %d flags (confidence %.2f)",
 			toolName, subcmdKey, len(result.Subcommand.Flags), result.Confidence)
 
-		schema.Subcommands[subcmdKey] = result.Subcommand
+		sub := result.Subcommand
+		sub.ParseOutcome = ParseOutcomeParsed
+		sub.Coverage = flagCoverage(helpText, sub.Flags)
+		schema.Subcommands[subcmdKey] = sub
 	}
 
 	// Load and merge overrides.
@@ -187,20 +205,70 @@ func getVersion(ctx context.Context, tc *config.ToolConfig) string {
 	if err != nil {
 		return ""
 	}
-	// Take just the first line.
-	if idx := strings.IndexByte(output, '\n'); idx > 0 {
-		return output[:idx]
-	}
-	return strings.TrimSpace(output)
+	return firstLine(output)
 }
 
-// runTool executes the tool binary with the given arguments.
+// firstLine returns the first line of s, trimmed — the version-string
+// convention getVersion and ProbeVersion both apply to a tool's --version
+// output (everything after the first line is typically copyright/build
+// detail neither cares about).
+func firstLine(s string) string {
+	if idx := strings.IndexByte(s, '\n'); idx > 0 {
+		return s[:idx]
+	}
+	return strings.TrimSpace(s)
+}
+
+// ProbeVersion runs a tool's --version probe with a caller-supplied
+// environment and returns its first line, mirroring getVersion but for a
+// caller outside this package's own cached Introspect path — a drift check
+// (design/doctor/wraptool-doctor.md §7.6 drift.tool-version-changed) needs
+// the INSTALLED tool's CURRENT version string to compare against the cached
+// one (LoadCacheStale), and must obtain it without touching the cache. See
+// RunProbe for env's meaning.
+func ProbeVersion(ctx context.Context, tc *config.ToolConfig, env []string) string {
+	output, err := RunProbe(ctx, tc, []string{"--version"}, env)
+	if err != nil {
+		return ""
+	}
+	return firstLine(output)
+}
+
+// runTool executes the tool binary with the given arguments, inheriting the
+// calling process's ENTIRE environment (cmd.Env left nil) — Introspect's own
+// existing behaviour, unchanged by RunProbe's addition.
 // It captures both stdout and stderr (some tools print help to stderr).
 func runTool(ctx context.Context, tc *config.ToolConfig, args []string) (string, error) {
+	return RunProbe(ctx, tc, args, nil)
+}
+
+// RunProbe executes the tool binary with args, using introspection's own
+// vocabulary (help/version forms, a per-tool catalog argv, or an
+// operator-authored subcommand from config — design/doctor/wraptool-doctor.md
+// §5.1's allowed list; RunProbe itself does not enforce that boundary, the
+// caller does, exactly as runTool always has). Both stdout and stderr are
+// captured and combined, since many tools print help to stderr; a non-zero
+// exit is not an error by itself (most --help paths exit non-zero) — RunProbe
+// only errors when there is no output at all to look at.
+//
+// env, in exec.Cmd.Env's own "KEY=value" form, REPLACES the child process's
+// entire environment when non-empty. An empty/nil env leaves cmd.Env unset —
+// exec.Cmd's documented default of inheriting the CALLING process's full
+// environment, which is Introspect's own existing behaviour (runTool passes
+// env == nil). A caller that must not hand the probe its own environment — an
+// operator's interactive shell, typically carrying GH_TOKEN/SSH_AUTH_SOCK/
+// cloud credentials (doctor; see design/doctor/wraptool-doctor.md §5.1) —
+// supplies one explicitly: typically executor.ChildEnv(binary, nil), an
+// explicitly nil RESOLVED env, since ChildEnv's second parameter is the
+// tool's OWN configured credentials, which a help probe must never receive.
+func RunProbe(ctx context.Context, tc *config.ToolConfig, args []string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, tc.Binary, args...)
+	if len(env) > 0 {
+		cmd.Env = env
+	}
 	output, err := cmd.CombinedOutput()
 
 	// Many tools exit non-zero for -h/--help. That's fine — we care about output.
