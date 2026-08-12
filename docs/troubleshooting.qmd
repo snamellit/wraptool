@@ -108,22 +108,33 @@ server is not listening where `config.yaml` says.
 it, and never writes that change back to `config.yaml`. Reading the file
 alone shows a safe loopback bind while the server actually listens off-host.
 
+There is a second cause, and doctor says so in the finding itself: the
+recorded server state does not include the configuration it was started from,
+so the check compares against whichever configuration the *running* server
+used. A shared server started by `wraptool up` from your XDG configuration,
+audited with `wraptool doctor --config ./project.yaml`, diverges by design.
+
 Check the severity doctor gave the finding:
 
-- **warn** — the divergence exactly matches `up`'s Dev Container adjustment:
-  widened from a loopback address to `0.0.0.0` on the same port, with an
-  auth token configured. Expected if you started the server with
-  `wraptool up`. No action needed.
-- **FAIL** — anything else, including an unauthenticated listener widened
-  off-host. Restart the server so it picks up the configured bind:
+- **FAIL** — the running server is an unauthenticated listener reachable
+  off-host. Fix this one: anyone who can route to that port reaches the
+  wrapped tools. Set `mcp.auth_token_file`, then restart the server.
+- **warn** — everything else, including `up`'s Dev Container adjustment
+  (loopback widened to `0.0.0.0` on the same port, with a token configured),
+  which is expected and needs no action.
 
-  ```bash
-  wraptool server stop
-  wraptool up
-  ```
+For a warn, read the address doctor prints before restarting anything. If the
+running server was started from the configuration you are auditing, restart it
+so it picks up the configured bind:
 
-  If the listener genuinely needs to stay reachable off-host, set
-  `mcp.auth_token_file` first.
+```bash
+wraptool server stop
+wraptool up
+```
+
+If it was started from a different configuration, the divergence is expected
+and stopping the server would interrupt whatever is using it. Audit that
+server with the configuration it was started from instead.
 
 ## `doctor` reports a stale policy
 
