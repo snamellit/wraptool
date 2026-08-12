@@ -105,9 +105,9 @@ policy:
 2 failed, 4 warnings, 3 info, 30 passed, 15 skipped.
 ```
 
-Findings on config values carry a `file:line` location, resolved against the
+Findings on configuration values carry a `file:line` location, resolved against the
 same YAML document the server would load — click through to the exact line
-that needs to change. A finding with no config location (a binary path, a
+that needs to change. A finding with no configuration location (a binary path, a
 socket directory, a host dependency) has none.
 
 ## Check groups
@@ -125,12 +125,13 @@ always the same word as the printed section title below (`pool` prints as
 | `exposure` | exposure | deployment posture and secrets | Transport and listen-address posture for the MCP listener and the review UI's listener (non-loopback binds, colliding listeners); token file permissions and strength; the request log's writability and permissions; `mcp.allowed_cwd_roots` left unset. |
 | `tools` | tools | tool and MCP server wiring | Whether each configured `binary`/`command` is executable, absolute, and not writable by a group or the world; `working_dir` and `env_files` sanity; an `mcp_servers` entry that spawns an `npx`/`uvx` child running an unpinned package spec, or that spawns a child with zero allow rules; a tool with zero allow rules (informational — this is the deliberate bootstrap state `wraptool_discover` exists to serve). |
 | `pool` | harness pool | the developer harness pool | Permissions on the pool's shared `home/` tree; whether an active generation's receipt digest matches the lock; whether a project's Dev Container declares the runtime mount, and declares it read-only; a Dev Container pinned to a deprecated harness pool feature. `--verify-pool` additionally hashes every file in the active generation against its receipt — slow, so it is opt-in. |
-| `runtime` | runtime | configuration vs. the running server | Whether a recorded PID file names a live process; whether the running server's effective listen address diverges from what the configuration says; the uid the server runs as; whether the configuration changed on disk since the server's last successful (re)load. Most of these are gated on a live server process recorded for the exact config being audited — with nothing running, they are reported `skipped`, not `pass`. |
-| `policy` | policy | policy-content lint | Heuristics over the `tools:`/`mcp_servers:` policy itself: value-taking flags with no `pattern`; flags that can execute a command or change configuration (`git -c`, `kubectl --kubeconfig`, and similar, per tool); subcommands that are shell-equivalent (`kubectl exec`) or mutate remote state; `git push` allowed with no `--force` deny; a deny rule that is a strict prefix of a longer allowed subcommand; an `mcp_servers` allow entry naming an upstream tool that looks like it executes or deletes. |
+| `runtime` | runtime | configuration vs. the running server | Whether a recorded PID file names a live process; whether the running server's effective listen address diverges from what the configuration says; the uid the server runs as; whether the configuration changed on disk since the server's last successful (re)load. Most of these are gated on a live server process recorded for the exact configuration being audited — with nothing running, they are reported `skipped`, not `pass`. |
+| `policy` | policy | policy-content lint | Heuristics over the `tools:`/`mcp_servers:` policy itself: flags declared `type: string` with no `pattern`; flags that name a program the tool then runs (`git --upload-pack`, `git --template`, `kubectl --kubeconfig`, and similar, per tool); subcommands that are shell-equivalent (`kubectl exec`) or mutate remote state; `git clone` allowed at all; `git push` allowed with no `--force` deny; a deny rule that is a strict prefix of a longer allowed subcommand; an `mcp_servers` allow entry naming an upstream tool that looks like it executes or deletes. Every per-tool flag listed is one the tool accepts *after* its subcommand — the only position wraptool can send a flag in. |
 
 `drift` — comparing policy against what the installed tool binaries actually
 support — is planned but not yet implemented; no `drift.*` checks are
-registered today.
+registered today. `--only drift` is still accepted, and selects nothing: never
+gate CI on it, or the gate passes without running a check.
 
 `--no-probe` is accepted and documented for forward compatibility with that
 group: as shipped, no check executes a configured tool binary (checks stat
@@ -149,7 +150,9 @@ A finding with no problem is not printed at all: silence means "checked,
 clean," never "did not look." A check that could not run (missing
 configuration, no workspace, `--no-probe`, permission bits that are not
 meaningful on this platform) reports `skipped` with a reason, and is counted
-separately from `passed`.
+separately from `passed`. The plain-text report shows the skipped count only;
+the per-check reasons are in `--json`'s `skipped` array, each with its check ID
+(`"no live server process recorded"`, for example).
 
 ## Exit codes
 
@@ -187,6 +190,9 @@ configuration:
 
 1 failed, 0 warnings, 2 info, 6 passed, 45 skipped.
 ```
+
+That transcript is stdout. The same cause is repeated on stderr, so a terminal
+shows it twice and a pipeline can read the report and the reason separately.
 
 ::: {.callout-warning title="--strict is not a stable CI gate"}
 `--strict` promotes every unsuppressed `warn` to exit code `1`. Do not pin CI
