@@ -116,7 +116,7 @@ func invariantsVirginInput() *Input {
 // probe-gated check reports its own honest "could not verify" instead of
 // executing anything for real. The basenames (git/kubectl/gcloud) are kept
 // so LookupToolKnowledge/ToolBasename-keyed logic (drift.go's
-// driftCatalogReason) still exercises its "known tool" branch.
+// driftCatalogAxis) still exercises its "known tool" branch.
 const invariantsMissingBinDir = invariantsFixtureRoot + "/missing-bin"
 
 // invariantsFullyPopulatedInput satisfies every Requirement bit doctor.go's

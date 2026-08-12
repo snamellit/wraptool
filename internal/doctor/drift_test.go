@@ -75,7 +75,7 @@ func driftFakeShellScript(t *testing.T, dir, name, stdout string) string {
 
 // driftGitCatalog is a git-shaped subcommand catalog listing, parseable by
 // introspect.BestParseSubcommands into a non-empty catalog — enough for
-// driftCatalogReason to accept a probe as trustworthy (Exhaustive == true).
+// driftCatalogAxis to accept a probe as trustworthy (Exhaustive == true).
 const driftGitCatalog = `usage: git <command> [<args>]
 
 These are common Git commands used in various situations:
@@ -84,6 +84,37 @@ These are common Git commands used in various situations:
    push       Update remote refs along with associated objects
    status     Show the working tree status
 `
+
+// driftMakeEligible temporarily adds basename to driftEligibleCatalogTools
+// for the duration of the test, restoring the map afterward. This is this
+// file's ONLY way to exercise the ELIGIBLE path of runDriftUnknownSubcommand
+// / driftCatalogAxis: design §7.6 F2 RULING 1's real allowlist is expected
+// to be empty (no real tool has been vetted yet), so a test that wants to
+// prove the ALLOWLIST-PRESENT mechanism itself works — as opposed to proving
+// it stays silent, which the other subtests already do against the real,
+// unmodified table — needs a synthetic, test-only entry. This is NOT a
+// production claim about the named tool's real catalog completeness (that
+// rule binds driftEligibleCatalogTools' PERMANENT contents, never a
+// t.Cleanup-scoped test fixture that never leaves this file).
+func driftMakeEligible(t *testing.T, basename string, entry driftCatalogEligible) {
+	t.Helper()
+	old, had := driftEligibleCatalogTools[basename]
+	driftEligibleCatalogTools[basename] = entry
+	t.Cleanup(func() {
+		if had {
+			driftEligibleCatalogTools[basename] = old
+		} else {
+			delete(driftEligibleCatalogTools, basename)
+		}
+	})
+}
+
+// driftGcloudLikeSentinel is a subcommand present in both driftGitCatalog and
+// driftGcloudLikeCatalog (which reuses driftGitCatalog's text verbatim) —
+// used as the Sentinel for driftMakeEligible's synthetic "gcloud" entries so
+// a real, exhaustive probe of that fixture text satisfies design §7.6
+// RULING 2 unless a subtest deliberately wants it not to.
+const driftGcloudLikeSentinel = "status"
 
 // driftInput builds a *Input suitable for driving runDriftToolVersionChanged/
 // runDriftUnverifiable directly (plan §1 rule 8: tested by calling the
@@ -678,18 +709,78 @@ func TestRunDriftUnverifiable(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("catalog exhaustive but not on the allowlist: driftReasonCatalogNotVetted names it (design §7.6 F2 RULING 1)", func(t *testing.T) {
+		// git is a REAL toolKnowledgeTable entry (driftCatalogExcludedTools,
+		// not driftEligibleCatalogTools) — no driftMakeEligible here. This is
+		// the exact fallthrough RULING 1 describes: "a tool absent from the
+		// list emits no absence claim, ever; it falls through to
+		// drift.unverifiable, with a reason saying its catalog has not been
+		// vetted for completeness."
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
+			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 1, CoverageFound: 1},
+		})
+		tools := map[string]config.ToolConfig{
+			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
+		}
+		res := runDriftUnverifiable(context.Background(), driftInput(tools))
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		d := res.Findings[0].Detail
+		if !strings.Contains(d, "could have supported a subcommand-absence claim only if this tool's catalog were vetted") {
+			t.Errorf("Detail %q missing the catalog-not-vetted reason: %s", d, d)
+		}
+		if !strings.Contains(d, `1 allow rule(s)`) {
+			t.Errorf("Detail %q should count the affected rule: %s", d, d)
+		}
+		// The tool-WIDE "subcommand catalog:" sentence must NOT also fire —
+		// git's parse itself is genuine (F1's bar); only the NEWER,
+		// absence-claim-specific bar is unmet.
+		if strings.Contains(d, "subcommand catalog:") {
+			t.Errorf("Detail %q should not carry the tool-wide catalog-dimension sentence — the parse itself was genuine: %s", d, d)
+		}
+	})
+
+	t.Run("catalog exhaustive, eligible, sentinel present: no driftReasonCatalogNotVetted", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", bin, "", map[string]introspect.Subcommand{
+			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 1, CoverageFound: 1},
+		})
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
+		}
+		res := runDriftUnverifiable(context.Background(), driftInput(tools))
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		d := res.Findings[0].Detail
+		if strings.Contains(d, "could have supported a subcommand-absence claim") {
+			t.Errorf("Detail %q should not carry the catalog-not-vetted reason once the tool is eligible: %s", d, d)
+		}
+	})
 }
 
 // ---------------------------------------------------------------- drift.unknown-subcommand
 
-// driftGcloudLikeCatalog is a NON-plugin-risky tool fixture: gcloud carries
-// no driftPluginRiskyTools entry (see that map's own doc comment), so it is
-// the tool this file uses to prove drift.unknown-subcommand actually FIRES —
-// git and kubectl, the two real tools THE GATE excludes, can only prove the
-// opposite (see the "plugin risk" subtests below). Reuses driftGitCatalog's
-// text (pull/push/status), which parses identically regardless of which
-// tool's CatalogArgv nominally produced it — ProbeCatalog does not care which
-// tool ran, only what came back.
+// driftGcloudLikeCatalog reuses driftGitCatalog's text (pull/push/status)
+// under a "gcloud" binary name — ProbeCatalog does not care which tool ran,
+// only what came back. gcloud is used throughout this file's ELIGIBLE-path
+// subtests specifically because it is a REAL toolKnowledgeTable entry
+// (driftCatalogExcludedTools, not driftEligibleCatalogTools — see that
+// map's own doc comment), so driftMakeEligible's synthetic override is
+// visibly test-only rather than accidentally shadowing a real claim about a
+// tool this file also uses elsewhere.
 const driftGcloudLikeCatalog = driftGitCatalog
 
 func TestRunDriftUnknownSubcommand(t *testing.T) {
@@ -719,12 +810,13 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		}
 	})
 
-	t.Run("git: plugin risk disqualifies it even for a genuine, exhaustively-probed typo", func(t *testing.T) {
-		// THE GATE's own point: an otherwise textbook-clean case (exhaustive
-		// probe, trusted cache, a subcommand that plainly is not in the
-		// catalog) must still produce NOTHING for git — driftPluginRiskyTools
-		// is measured evidence that git's catalog cannot be trusted to have
-		// enumerated everything "frobnicate" could have been.
+	t.Run("git: real allowlist is empty, so even a genuine, exhaustively-probed typo produces nothing", func(t *testing.T) {
+		// Design §7.6 F2 RULING 1's own point, against the REAL, unmodified
+		// driftEligibleCatalogTools (no driftMakeEligible here): an otherwise
+		// textbook-clean case (exhaustive probe, trusted cache, a subcommand
+		// that plainly is not in the catalog) must still produce NOTHING for
+		// git — git is not on the allowlist (driftCatalogExcludedTools names
+		// why), so no absence claim may be built from its catalog at all.
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
@@ -734,11 +826,11 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		}
 		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
 		if res.Outcome() != OutcomePass {
-			t.Fatalf("Outcome = %v, want pass (gate 2: git is in driftPluginRiskyTools): %+v", res.Outcome(), res.Findings)
+			t.Fatalf("Outcome = %v, want pass (gate 3: git is not in driftEligibleCatalogTools): %+v", res.Outcome(), res.Findings)
 		}
 	})
 
-	t.Run("kubectl: plugin risk disqualifies it too", func(t *testing.T) {
+	t.Run("kubectl: real allowlist is empty too", func(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "kubectl", driftGcloudLikeCatalog)
@@ -748,7 +840,7 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		}
 		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
 		if res.Outcome() != OutcomePass {
-			t.Fatalf("Outcome = %v, want pass (gate 2: kubectl is in driftPluginRiskyTools): %+v", res.Outcome(), res.Findings)
+			t.Fatalf("Outcome = %v, want pass (gate 3: kubectl is not in driftEligibleCatalogTools): %+v", res.Outcome(), res.Findings)
 		}
 	})
 
@@ -757,6 +849,11 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
 		driftSeedCache(t, "gcloud", bin, "", nil)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
 		}
@@ -805,6 +902,11 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
 		driftSeedCache(t, "gcloud", bin, "", nil)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			// "pull" is in driftGitCatalog/driftGcloudLikeCatalog; deeper segments
 			// are never checked by this check (design §5.3: first-segment only —
@@ -821,12 +923,18 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		driftIsolateCacheDir(t)
 		missing := filepath.Join(t.TempDir(), "gcloud")
 		driftSeedCache(t, "gcloud", missing, "", nil)
+		// Eligible, even — the probe fails before eligibility is ever consulted.
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			"gcloud": {Binary: missing, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
 		}
 		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
 		if res.Outcome() != OutcomePass {
-			t.Fatalf("Outcome = %v, want pass (gate 3: probe cannot run at all): %+v", res.Outcome(), res.Findings)
+			t.Fatalf("Outcome = %v, want pass (gate 2: probe cannot run at all): %+v", res.Outcome(), res.Findings)
 		}
 	})
 
@@ -834,6 +942,11 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
 		}
@@ -849,6 +962,11 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
 		otherBin := driftFakeShellScript(t, dir, "not-really-gcloud", driftGcloudLikeCatalog)
 		driftSeedCache(t, "gcloud", otherBin, "", nil)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
 		}
@@ -863,6 +981,11 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
 		driftSeedCache(t, "gcloud", bin, "", nil)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			"gcloud": {Binary: bin, Allow: []config.AllowRule{
 				{Subcommand: []string{"pull"}},        // in the catalog: no finding
@@ -888,12 +1011,36 @@ func TestRunDriftUnknownSubcommand(t *testing.T) {
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
 		driftSeedCache(t, "gcloud", bin, "", nil)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        driftGcloudLikeSentinel,
+		})
 		tools := map[string]config.ToolConfig{
 			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: nil}}},
 		}
 		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
 		if res.Outcome() != OutcomePass {
 			t.Fatalf("Outcome = %v, want pass: %+v", res.Outcome(), res.Findings)
+		}
+	})
+
+	t.Run("eligible but sentinel missing from probe: falls through, no finding (RULING 2)", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", bin, "", nil)
+		driftMakeEligible(t, "gcloud", driftCatalogEligible{
+			VersionMeasured: "synthetic test fixture",
+			Evidence:        "synthetic test fixture — see driftMakeEligible",
+			Sentinel:        "this-subcommand-is-not-in-the-fixture-catalog",
+		})
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 3: probe missing the vetted sentinel): %+v", res.Outcome(), res.Findings)
 		}
 	})
 }
@@ -910,14 +1057,66 @@ func TestDriftUnknownSubcommandVersionDisplay(t *testing.T) {
 	}
 }
 
-// TestDriftPluginRiskyToolsHasEvidence guards against a driftPluginRiskyTools
-// entry with an empty evidence string sneaking in — the map exists to be
-// read by a human (this file's own report, and any later maintainer), not
-// just by driftPluginRiskReason's boolean.
-func TestDriftPluginRiskyToolsHasEvidence(t *testing.T) {
-	for tool, reason := range driftPluginRiskyTools {
-		if strings.TrimSpace(reason) == "" {
-			t.Errorf("driftPluginRiskyTools[%q] has an empty evidence string", tool)
+// TestDriftEligibleCatalogToolsHaveEvidence guards against a
+// driftEligibleCatalogTools entry with an empty VersionMeasured, Evidence,
+// or Sentinel sneaking in — the map exists to be read by a human (this
+// file's own report, and any later maintainer) as much as by
+// driftCatalogEligibilityReason. driftEligibleCatalogTools is expected to be
+// empty today (design §7.6 F2 RULING 1), so this loop is a no-op now; it
+// stays as a regression guard for whenever a real entry is added.
+func TestDriftEligibleCatalogToolsHaveEvidence(t *testing.T) {
+	for basename, entry := range driftEligibleCatalogTools {
+		if strings.TrimSpace(entry.VersionMeasured) == "" {
+			t.Errorf("driftEligibleCatalogTools[%q].VersionMeasured is empty", basename)
+		}
+		if strings.TrimSpace(entry.Evidence) == "" {
+			t.Errorf("driftEligibleCatalogTools[%q].Evidence is empty", basename)
+		}
+		if strings.TrimSpace(entry.Sentinel) == "" {
+			t.Errorf("driftEligibleCatalogTools[%q].Sentinel is empty", basename)
+		}
+	}
+}
+
+// TestDriftCatalogEligibilityIsExplicit is design §7.6 F2 RULING 3's
+// structural guard: every toolKnowledgeTable entry with a non-empty
+// CatalogArgv must be accounted for in EXACTLY ONE of
+// driftEligibleCatalogTools (with evidence) or driftCatalogExcludedTools
+// (with a reason) — so a later CatalogArgv addition can never silently
+// grant drift.unknown-subcommand absence-claim authority by omission; the
+// reviewed decision is visible in this test, not implied by what a map
+// happens to leave out.
+func TestDriftCatalogEligibilityIsExplicit(t *testing.T) {
+	for basename, tk := range toolKnowledgeTable {
+		if len(tk.CatalogArgv) == 0 {
+			continue
+		}
+		_, eligible := driftEligibleCatalogTools[basename]
+		reason, excluded := driftCatalogExcludedTools[basename]
+		switch {
+		case eligible && excluded:
+			t.Errorf("%q is in BOTH driftEligibleCatalogTools and driftCatalogExcludedTools — pick one", basename)
+		case !eligible && !excluded:
+			t.Errorf("%q has a CatalogArgv but is in NEITHER driftEligibleCatalogTools nor "+
+				"driftCatalogExcludedTools — add it to one, with evidence or a reason, so the decision is "+
+				"reviewed rather than left to an omission", basename)
+		case excluded && strings.TrimSpace(reason) == "":
+			t.Errorf("driftCatalogExcludedTools[%q] has an empty reason", basename)
+		}
+	}
+
+	// The reverse direction: every entry in either map must correspond to a
+	// REAL toolKnowledgeTable entry with a CatalogArgv — a stale entry left
+	// behind by a later toolKnowledgeTable edit is exactly the kind of
+	// silent drift this test exists to catch.
+	for basename := range driftEligibleCatalogTools {
+		if tk, ok := LookupToolKnowledge(basename); !ok || len(tk.CatalogArgv) == 0 {
+			t.Errorf("driftEligibleCatalogTools has a stale entry %q with no matching toolKnowledgeTable CatalogArgv", basename)
+		}
+	}
+	for basename := range driftCatalogExcludedTools {
+		if tk, ok := LookupToolKnowledge(basename); !ok || len(tk.CatalogArgv) == 0 {
+			t.Errorf("driftCatalogExcludedTools has a stale entry %q with no matching toolKnowledgeTable CatalogArgv", basename)
 		}
 	}
 }
@@ -1001,9 +1200,12 @@ func TestDriftBuildUnverifiableFindingRefusesACauselessResult(t *testing.T) {
 // (/usr/bin/kubectl, /usr/bin/gcloud on most hosts), so they never reach the
 // "exhaustive catalog, seeded cache" branches this test does. gcloud is
 // included alongside git specifically so runDriftUnknownSubcommand is
-// exercised too: git is excluded by driftPluginRiskyTools (see that map's own
-// doc comment), so a git-only fixture would leave this new check permanently
-// silent here.
+// exercised too: git is not in driftEligibleCatalogTools (see
+// driftCatalogExcludedTools' own doc comment), so a git-only fixture would
+// leave this new check permanently silent here — gcloud is made eligible via
+// driftMakeEligible (a synthetic, test-only override; see that helper's own
+// doc comment) so a REAL finding from runDriftUnknownSubcommand is actually
+// validated below, not just an empty pass.
 func TestDriftFindingsAreWellFormed(t *testing.T) {
 	driftIsolateCacheDir(t)
 	dir := t.TempDir()
@@ -1013,6 +1215,11 @@ func TestDriftFindingsAreWellFormed(t *testing.T) {
 	})
 	gcloudBin := driftFakeShellScript(t, dir, "gcloud", driftGitCatalog)
 	driftSeedCache(t, "gcloud", gcloudBin, "", nil)
+	driftMakeEligible(t, "gcloud", driftCatalogEligible{
+		VersionMeasured: "synthetic test fixture",
+		Evidence:        "synthetic test fixture — see driftMakeEligible",
+		Sentinel:        driftGcloudLikeSentinel,
+	})
 	tools := map[string]config.ToolConfig{
 		"git": {
 			Binary: bin,
