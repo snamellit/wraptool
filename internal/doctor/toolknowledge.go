@@ -146,8 +146,10 @@ var toolKnowledgeTable = map[string]ToolKnowledge{
 	"git": {
 		// Subcommand flags only, and every one of these runs a program:
 		// --upload-pack/--receive-pack name the program git executes on the
-		// other end of a fetch/push, and --exec is push's alias for the latter.
-		DangerousFlags: stringSet("--upload-pack", "--receive-pack", "--exec"),
+		// other end of a fetch/push, --exec is push's alias for the latter, and
+		// --template picks a directory whose hooks are copied into the new
+		// repository, where a later git operation executes them.
+		DangerousFlags: stringSet("--upload-pack", "--receive-pack", "--exec", "--template"),
 		CatalogArgv:    []string{"help", "-a"},
 	},
 	"kubectl": {

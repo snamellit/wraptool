@@ -68,6 +68,7 @@ const (
 	policySubcmdShellEquivalent CheckID = "policy.shell-equivalent-subcommand"
 	policySubcmdMutating        CheckID = "policy.mutating-subcommand"
 	policySubcmdForcePush       CheckID = "policy.force-push-allowed"
+	policySubcmdCloneAllowed    CheckID = "policy.clone-allowed"
 )
 
 // policySubcmdShellEquivalentMeta, policySubcmdMutatingMeta, and
@@ -94,12 +95,18 @@ var (
 		Summary: "warns when `git push` is allowed with no deny_flags/flag_constraints covering " +
 			"--force/--force-with-lease/-f",
 	}
+	policySubcmdCloneAllowedMeta = Meta{
+		ID:      policySubcmdCloneAllowed,
+		Needs:   NeedsConfig,
+		Summary: "warns when git clone is allowed at all",
+	}
 )
 
 func init() {
 	register(policySubcmdShellEquivalentMeta, runPolicySubcmdShellEquivalent)
 	register(policySubcmdMutatingMeta, runPolicySubcmdMutating)
 	register(policySubcmdForcePushMeta, runPolicySubcmdForcePush)
+	register(policySubcmdCloneAllowedMeta, runPolicySubcmdCloneAllowed)
 }
 
 // policySubcmdSortedToolNames returns Input.Config.Tools' keys, sorted — the
@@ -279,6 +286,55 @@ func runPolicySubcmdForcePush(_ context.Context, in *Input) Result {
 				Remedy: fmt.Sprintf(
 					"add %s to tools.%s.allow's %q deny_flags (or set flag_constraints[<flag>].deny: true "+
 						"for each)", strings.Join(open, "/"), name, sub),
+				DocRef: "design/policy/security-audit-policy-enforcement.md",
+			})
+		}
+	}
+	return Found(findings...)
+}
+
+// ---------------------------------------------------------------- policy.clone-allowed
+
+// runPolicySubcmdCloneAllowed warns when a git tool allows `clone` at all.
+//
+// Unlike this file's other checks it does not judge a flag or a verb's blast
+// radius: it questions the capability itself. wraptool's own workflow never
+// needs it — bare `wraptool` and `wraptool up` both derive their workspace
+// from an already-checked-out repository (cmd/up.go's gitToplevel) — while
+// what clone grants is broad: a client-chosen URL fetched with the host's
+// credentials, a working tree written at a client-chosen path (unconstrained
+// whenever mcp.allowed_cwd_roots is empty, audit F5's default-open case), and
+// a fresh repository whose own config and hooks a later wrapped call runs.
+//
+// warn, not fail: an operator may have a reason, and this check cannot know
+// they do not. The remedy names the alternative rather than only the problem.
+func runPolicySubcmdCloneAllowed(_ context.Context, in *Input) Result {
+	var findings []Finding
+	for _, name := range policySubcmdSortedToolNames(in.Config.Tools) {
+		tc := in.Config.Tools[name]
+		if ToolBasename(tc.Binary) != "git" {
+			continue
+		}
+		for _, rule := range tc.Allow {
+			if len(rule.Subcommand) == 0 || rule.Subcommand[0] != "clone" {
+				continue
+			}
+			sub := strings.Join(rule.Subcommand, " ")
+			findings = append(findings, Finding{
+				Severity: SeverityWarn,
+				Title:    "git clone is allowed",
+				Detail: fmt.Sprintf(
+					"tools.%s.allow permits subcommand %q — cloning from inside the credential boundary "+
+						"fetches a client-chosen URL with the host's git credentials and writes a working tree "+
+						"at a client-chosen path, and the new repository's own hooks and config are then run by "+
+						"later wrapped calls. wraptool itself never needs it: wraptool up starts from a "+
+						"repository that is already checked out",
+					name, sub),
+				Path: At("tools", name, "allow").Item("subcommand", sub),
+				Remedy: fmt.Sprintf(
+					"remove the %q allow rule from tools.%s and clone on the host instead, where the intent "+
+						"is explicit and the credentials are already yours",
+					sub, name),
 				DocRef: "design/policy/security-audit-policy-enforcement.md",
 			})
 		}
