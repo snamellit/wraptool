@@ -42,6 +42,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/pti/wraptool/internal/config"
@@ -250,32 +251,54 @@ func runPolicygenericOverbroadPattern(_ context.Context, in *Input) Result {
 
 // ---------------------------------------------------------------- policy.unbounded-positional-count
 
+// policygenericMaxNamedSubcommands bounds how many subcommands one
+// unbounded-positional finding names verbatim before folding the rest into
+// "and N more". Same reasoning as pool.home-perms' cap: the count is the
+// actionable fact.
+const policygenericMaxNamedSubcommands = 5
+
+// runPolicygenericUnboundedPositionalCount reports ONE finding per tool, not
+// one per allow rule. arg_constraints is rarely set in practice, so per-rule
+// findings meant a real config produced a wall of near-identical warnings —
+// nine on the maintainer's own host, half of that report — which buries the
+// findings that name a specific, fixable hole. One line per tool says the same
+// thing and stays suppressible with a single `# doctor:ignore` on that tool.
 func runPolicygenericUnboundedPositionalCount(_ context.Context, in *Input) Result {
 	var findings []Finding
 	for _, name := range toolSortedNames(in.Config.Tools) {
 		tc := in.Config.Tools[name]
+		var unbounded []string
 		for _, rule := range tc.Allow {
 			if rule.ArgConstraints != nil {
 				continue
 			}
-			subcommand := strings.Join(rule.Subcommand, " ")
-			findings = append(findings, Finding{
-				Severity: SeverityWarn,
-				Title:    "allow rule has no positional argument count limit",
-				Detail: fmt.Sprintf(
-					"tools.%s's allow rule for subcommand %q sets no arg_constraints.positional_max, so "+
-						"whitelist places no limit at all on how many positional arguments a call may carry. "+
-						"This bounds COUNT ONLY — ArgConstraints has no content field, so even a positional_max "+
-						"would not constrain what those positional values ARE; audit F3 remains open upstream",
-					name, subcommand),
-				Path: At("tools", name, "allow").Item("subcommand", subcommand),
-				Remedy: fmt.Sprintf(
-					"add arg_constraints.positional_max to tools.%s's allow rule for %q if this subcommand should "+
-						"cap (or forbid) positional arguments",
-					name, subcommand),
-				DocRef: "design/doctor/wraptool-doctor.md",
-			})
+			unbounded = append(unbounded, strconv.Quote(strings.Join(rule.Subcommand, " ")))
 		}
+		if len(unbounded) == 0 {
+			continue
+		}
+		named := unbounded
+		suffix := ""
+		if len(named) > policygenericMaxNamedSubcommands {
+			suffix = fmt.Sprintf(", and %d more", len(named)-policygenericMaxNamedSubcommands)
+			named = named[:policygenericMaxNamedSubcommands]
+		}
+		findings = append(findings, Finding{
+			Severity: SeverityWarn,
+			Title:    "allow rules have no positional argument count limit",
+			Detail: fmt.Sprintf(
+				"%d of tools.%s's allow rules set no arg_constraints.positional_max (%s%s), so whitelist "+
+					"places no limit on how many positional arguments those calls may carry. This bounds "+
+					"COUNT ONLY — ArgConstraints has no content field, so even a positional_max would not "+
+					"constrain what those positional values ARE; audit F3 remains open upstream",
+				len(unbounded), name, strings.Join(named, ", "), suffix),
+			Path: At("tools", name, "allow"),
+			Remedy: fmt.Sprintf(
+				"add arg_constraints.positional_max to the tools.%s allow rules that should cap (or forbid) "+
+					"positional arguments",
+				name),
+			DocRef: "design/doctor/wraptool-doctor.md",
+		})
 	}
 	return Found(findings...)
 }

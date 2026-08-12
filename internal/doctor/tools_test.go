@@ -602,3 +602,33 @@ func TestToolCheckMeta(t *testing.T) {
 		})
 	}
 }
+
+// TestToolBinaryWritableExemptsStickyDirectories pins the ruling that keeps this
+// check usable on the platform wraptool itself is developed on. /gnu/store is
+// group-writable AND sticky by design, so without the exemption every tool on
+// every Guix or Nix host reports a finding forever — true of the mode bits,
+// false of the threat, since the sticky bit is precisely what prevents a
+// non-owner substituting someone else's entry.
+func TestToolBinaryWritableExemptsStickyDirectories(t *testing.T) {
+	build := func(mode fs.FileMode) *Input {
+		env := NewMapEnv()
+		env.Files["/store"] = MapFile{Mode: fs.ModeDir | mode}
+		env.Files["/store/bin"] = MapFile{Mode: fs.ModeDir | 0o755}
+		env.Files["/store/bin/git"] = MapFile{Mode: 0o755}
+		return &Input{
+			Env:    env,
+			GOOS:   "linux",
+			Config: &config.Config{Tools: map[string]config.ToolConfig{"git": {Binary: "/store/bin/git"}}},
+		}
+	}
+
+	sticky := runToolBinaryWritable(context.Background(), build(fs.ModeSticky|0o775))
+	if len(sticky.Findings) != 0 {
+		t.Errorf("a sticky group-writable directory is not substitutable: got %+v", sticky.Findings)
+	}
+
+	plain := runToolBinaryWritable(context.Background(), build(0o775))
+	if len(plain.Findings) != 1 {
+		t.Errorf("a plain group-writable directory still fires: got %d findings, want 1", len(plain.Findings))
+	}
+}

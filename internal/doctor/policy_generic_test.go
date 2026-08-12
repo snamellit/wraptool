@@ -369,7 +369,9 @@ func TestRunPolicygenericUnboundedPositionalCount(t *testing.T) {
 			if strings.Contains(f.Detail, "arg_constraints closes") {
 				t.Errorf("Detail must not imply arg_constraints closes the open gap: %q", f.Detail)
 			}
-			wantPath := At("tools", "git", "allow").Item("subcommand", "pull").String()
+			// The finding is per TOOL, not per rule, so it points at the allow
+			// block rather than one rule inside it.
+			wantPath := At("tools", "git", "allow").String()
 			if f.Path.String() != wantPath {
 				t.Errorf("Path = %q, want %q", f.Path.String(), wantPath)
 			}
@@ -495,5 +497,32 @@ func TestDenyPrefixGapExemptsAnExactDeny(t *testing.T) {
 		&Input{Env: NewMapEnv(), Config: &config.Config{Tools: rules([]string{"remote"}, []string{"remote", "set-url"})}})
 	if len(closed.Findings) != 0 {
 		t.Errorf("the longer subcommand is denied at exact length, so the gap is closed: got %+v", closed.Findings)
+	}
+}
+
+// TestUnboundedPositionalCountAggregatesPerTool pins the aggregation: a real
+// config rarely sets arg_constraints anywhere, so one finding per allow rule
+// produced a wall of near-identical warnings that buried the findings naming a
+// specific, fixable hole.
+func TestUnboundedPositionalCountAggregatesPerTool(t *testing.T) {
+	subs := []string{"push", "pull", "fetch", "branch", "checkout", "switch", "status"}
+	var rules []config.AllowRule
+	for _, s := range subs {
+		rules = append(rules, config.AllowRule{Subcommand: []string{s}})
+	}
+	in := &Input{Env: NewMapEnv(), Config: &config.Config{
+		Tools: map[string]config.ToolConfig{"git": {Allow: rules}},
+	}}
+
+	res := runPolicygenericUnboundedPositionalCount(context.Background(), in)
+	if len(res.Findings) != 1 {
+		t.Fatalf("got %d findings for one tool, want 1: %+v", len(res.Findings), res.Findings)
+	}
+	d := res.Findings[0].Detail
+	if !strings.Contains(d, "7 of tools.git's allow rules") {
+		t.Errorf("Detail does not lead with the count: %q", d)
+	}
+	if !strings.Contains(d, "and 2 more") {
+		t.Errorf("Detail does not fold the remainder past the cap: %q", d)
 	}
 }

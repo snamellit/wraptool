@@ -19,6 +19,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -311,6 +312,17 @@ func runToolBinaryWritable(_ context.Context, in *Input) Result {
 				continue
 			}
 			if !fi.GroupOrOtherWritable() {
+				continue
+			}
+			// A sticky directory is not substitutable: the sticky bit is exactly
+			// the mechanism that stops a non-owner renaming or unlinking someone
+			// else's entry, which is the substitution this check exists to catch.
+			// Without this, every tool on a Guix or Nix host reports a finding
+			// forever — /gnu/store is group-writable AND sticky (drwxrwxrwt) by
+			// design, so "resolves through a writable path" was true of the
+			// mode bits and false of the threat. Same ruling config.dir-perms
+			// already carries for the config directory.
+			if fi.Mode&fs.ModeSticky != 0 {
 				continue
 			}
 			detail := fmt.Sprintf(
