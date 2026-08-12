@@ -224,18 +224,34 @@ func TestRunPolicyFlagsDangerous(t *testing.T) {
 		wantSev   Severity
 	}{
 		{
-			name: "git -c, unpatterned: fires",
+			name: "git --upload-pack, unpatterned: fires",
 			tools: map[string]config.ToolConfig{
 				"git": {
 					Binary: "/usr/bin/git",
 					Allow: []config.AllowRule{{
 						Subcommand: []string{"pull"},
-						Flags:      []string{"-c"},
+						Flags:      []string{"--upload-pack"},
 					}},
 				},
 			},
 			wantFinds: 1,
 			wantSev:   SeverityWarn,
+		},
+		{
+			// executor.buildArgs emits flags after the subcommand, so this is
+			// `git switch -c <branch>` -- a branch name, not git's global
+			// config flag.
+			name: "git switch -c: a branch name, silent",
+			tools: map[string]config.ToolConfig{
+				"git": {
+					Binary: "/usr/bin/git",
+					Allow: []config.AllowRule{{
+						Subcommand: []string{"switch"},
+						Flags:      []string{"-c"},
+					}},
+				},
+			},
+			wantFinds: 0,
 		},
 		{
 			name: "kubectl --token, unpatterned: fires",
@@ -477,7 +493,10 @@ func TestPolicyFlagsDangerousReason(t *testing.T) {
 		wantReason  string
 		wantNoMatch bool
 	}{
-		{name: "tool-specific match wins", tk: gitTK, hasTK: true, flag: "-c", wantMatch: true},
+		{name: "tool-specific match wins", tk: gitTK, hasTK: true, flag: "--upload-pack", wantMatch: true},
+		// git -c is dangerous only BEFORE a subcommand, which executor.buildArgs
+		// cannot emit; after one it is git switch's branch-name flag.
+		{name: "a flag dangerous only pre-subcommand: no match", tk: gitTK, hasTK: true, flag: "-c", wantNoMatch: true},
 		{name: "unknown tool, generic shape matches", tk: ToolKnowledge{}, hasTK: false, flag: "--config-file", wantMatch: true},
 		{name: "unknown tool, no generic shape: no match", tk: ToolKnowledge{}, hasTK: false, flag: "--verbose", wantNoMatch: true},
 		{name: "known tool with empty DangerousFlags, no generic shape: no match", tk: terraformTK, hasTK: true, flag: "--refresh", wantNoMatch: true},
