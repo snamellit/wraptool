@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -133,7 +134,7 @@ func driftSeedCache(t *testing.T, name, binary, versionOutput string, subs map[s
 
 // ---------------------------------------------------------------- Meta
 
-// TestDriftCheckMeta pins both checks' ID/Needs against the SAME Meta
+// TestDriftCheckMeta pins all three checks' ID/Needs against the SAME Meta
 // literals init() registers, never through Registered() (plan §1 rule 8):
 // once every other Phase-B/C/D/F file has merged, Registered() carries every
 // one of THEIR checks too, so an assertion against it would not be testing
@@ -146,6 +147,7 @@ func TestDriftCheckMeta(t *testing.T) {
 	}{
 		{driftToolVersionChangedMeta, driftToolVersionChanged, NeedsConfig | NeedsProbe},
 		{driftUnverifiableMeta, driftUnverifiable, NeedsConfig | NeedsProbe},
+		{driftUnknownSubcommandMeta, driftUnknownSubcommand, NeedsConfig | NeedsProbe},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.wantID), func(t *testing.T) {
@@ -678,6 +680,248 @@ func TestRunDriftUnverifiable(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------- drift.unknown-subcommand
+
+// driftGcloudLikeCatalog is a NON-plugin-risky tool fixture: gcloud carries
+// no driftPluginRiskyTools entry (see that map's own doc comment), so it is
+// the tool this file uses to prove drift.unknown-subcommand actually FIRES —
+// git and kubectl, the two real tools THE GATE excludes, can only prove the
+// opposite (see the "plugin risk" subtests below). Reuses driftGitCatalog's
+// text (pull/push/status), which parses identically regardless of which
+// tool's CatalogArgv nominally produced it — ProbeCatalog does not care which
+// tool ran, only what came back.
+const driftGcloudLikeCatalog = driftGitCatalog
+
+func TestRunDriftUnknownSubcommand(t *testing.T) {
+	t.Run("no allow rules (deny only): no finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Deny: []config.DenyRule{{Subcommand: []string{"compute"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (no allow rules to check)", res.Outcome())
+		}
+	})
+
+	t.Run("unknown tool (no knowledge-table entry): no finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "mytool", driftGcloudLikeCatalog)
+		tools := map[string]config.ToolConfig{
+			"custom": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"run"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 1: no catalog argv known for this tool)", res.Outcome())
+		}
+	})
+
+	t.Run("git: plugin risk disqualifies it even for a genuine, exhaustively-probed typo", func(t *testing.T) {
+		// THE GATE's own point: an otherwise textbook-clean case (exhaustive
+		// probe, trusted cache, a subcommand that plainly is not in the
+		// catalog) must still produce NOTHING for git — driftPluginRiskyTools
+		// is measured evidence that git's catalog cannot be trusted to have
+		// enumerated everything "frobnicate" could have been.
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
+		driftSeedCache(t, "git", bin, "", nil)
+		tools := map[string]config.ToolConfig{
+			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 2: git is in driftPluginRiskyTools): %+v", res.Outcome(), res.Findings)
+		}
+	})
+
+	t.Run("kubectl: plugin risk disqualifies it too", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "kubectl", driftGcloudLikeCatalog)
+		driftSeedCache(t, "kubectl", bin, "", nil)
+		tools := map[string]config.ToolConfig{
+			"kubectl": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 2: kubectl is in driftPluginRiskyTools): %+v", res.Outcome(), res.Findings)
+		}
+	})
+
+	t.Run("gcloud (not plugin-risky): absent first segment fires a warn finding naming version and argv", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", bin, "", nil)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		f := res.Findings[0]
+		if f.Severity != SeverityWarn {
+			t.Errorf("Severity = %q, want warn", f.Severity)
+		}
+		if !strings.Contains(f.Detail, `"frobnicate"`) {
+			t.Errorf("Detail %q missing the offending subcommand", f.Detail)
+		}
+		if !strings.Contains(f.Detail, "help") { // gcloud's CatalogArgv
+			t.Errorf("Detail %q missing the catalog argv used", f.Detail)
+		}
+		if f.Remedy == "" {
+			t.Error("empty Remedy")
+		}
+		if strings.Contains(strings.ToLower(f.Remedy), "delete this rule") {
+			t.Errorf("Remedy %q must never say to delete the rule", f.Remedy)
+		}
+		// driftFakeShellScript answers ANY argv (including --version) with the
+		// same fixture text, so the "version probed" clause is that text's
+		// first line — proving the finding actually threads ProbeVersion's
+		// result through, not that it reports "unknown" (see the dedicated
+		// TestDriftUnknownSubcommandVersionDisplay for the empty-probe case).
+		const wantVersion = "usage: git <command> [<args>]"
+		if !strings.Contains(f.Detail, wantVersion) {
+			t.Errorf("Detail %q does not name the version probed (%q)", f.Detail, wantVersion)
+		}
+		if !strings.Contains(f.Remedy, wantVersion) {
+			t.Errorf("Remedy %q does not name the version probed (%q)", f.Remedy, wantVersion)
+		}
+		if got, want := f.Path.String(), At("tools", "gcloud", "allow").Item("subcommand", "frobnicate").String(); got != want {
+			t.Errorf("Path = %q, want %q", got, want)
+		}
+		if f.Location != "" {
+			t.Errorf("Location = %q, want empty — a check must set Path, never Location", f.Location)
+		}
+	})
+
+	t.Run("gcloud: first segment present (even for a multi-segment rule): no finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", bin, "", nil)
+		tools := map[string]config.ToolConfig{
+			// "pull" is in driftGitCatalog/driftGcloudLikeCatalog; deeper segments
+			// are never checked by this check (design §5.3: first-segment only —
+			// drift.unverifiable's driftReasonMultiSegment covers the rest).
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull", "some", "deeper", "thing"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (first segment %q is in the catalog): %+v", res.Outcome(), "pull", res.Findings)
+		}
+	})
+
+	t.Run("catalog probe not exhaustive (binary missing): no finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		missing := filepath.Join(t.TempDir(), "gcloud")
+		driftSeedCache(t, "gcloud", missing, "", nil)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: missing, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 3: probe cannot run at all): %+v", res.Outcome(), res.Findings)
+		}
+	})
+
+	t.Run("no cached schema: no finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 4: never introspected): %+v", res.Outcome(), res.Findings)
+		}
+	})
+
+	t.Run("cache untrusted (binary changed): no finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		otherBin := driftFakeShellScript(t, dir, "not-really-gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", otherBin, "", nil)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"frobnicate"}}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass (gate 4: cached schema names a different binary): %+v", res.Outcome(), res.Findings)
+		}
+	})
+
+	t.Run("multiple offending rules: one finding per rule, sorted by tool, deterministic", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", bin, "", nil)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{
+				{Subcommand: []string{"pull"}},        // in the catalog: no finding
+				{Subcommand: []string{"frobnicate"}},  // absent: finding
+				{Subcommand: []string{"nonexistent"}}, // absent: finding
+			}},
+		}
+		in := driftInput(tools)
+		first := runDriftUnknownSubcommand(context.Background(), in)
+		if len(first.Findings) != 2 {
+			t.Fatalf("Findings = %d, want 2: %+v", len(first.Findings), first.Findings)
+		}
+		for i := 0; i < 5; i++ {
+			again := runDriftUnknownSubcommand(context.Background(), in)
+			if !reflect.DeepEqual(first, again) {
+				t.Fatalf("non-deterministic result: run 1 = %+v, run %d = %+v", first.Findings, i+2, again.Findings)
+			}
+		}
+	})
+
+	t.Run("empty rule.Subcommand: skipped defensively, never a finding", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGcloudLikeCatalog)
+		driftSeedCache(t, "gcloud", bin, "", nil)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {Binary: bin, Allow: []config.AllowRule{{Subcommand: nil}}},
+		}
+		res := runDriftUnknownSubcommand(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass: %+v", res.Outcome(), res.Findings)
+		}
+	})
+}
+
+// TestDriftUnknownSubcommandVersionDisplay covers both branches directly —
+// design §7.6's "include the version probed, so a stale claim is
+// self-dating" applies even when the live probe itself produced nothing.
+func TestDriftUnknownSubcommandVersionDisplay(t *testing.T) {
+	if got := driftUnknownSubcommandVersionDisplay(""); got != "unknown (a live --version probe produced no output)" {
+		t.Errorf("empty probe: got %q", got)
+	}
+	if got := driftUnknownSubcommandVersionDisplay("git version 2.44.0"); got != "git version 2.44.0" {
+		t.Errorf("non-empty probe: got %q, want passthrough", got)
+	}
+}
+
+// TestDriftPluginRiskyToolsHasEvidence guards against a driftPluginRiskyTools
+// entry with an empty evidence string sneaking in — the map exists to be
+// read by a human (this file's own report, and any later maintainer), not
+// just by driftPluginRiskReason's boolean.
+func TestDriftPluginRiskyToolsHasEvidence(t *testing.T) {
+	for tool, reason := range driftPluginRiskyTools {
+		if strings.TrimSpace(reason) == "" {
+			t.Errorf("driftPluginRiskyTools[%q] has an empty evidence string", tool)
+		}
+	}
+}
+
 // ---------------------------------------------------------------- reason-table completeness (RULING 6)
 
 // TestDriftReasonTableIsComplete is the structural guard design §7.6 RULING 6
@@ -755,7 +999,11 @@ func TestDriftBuildUnverifiableFindingRefusesACauselessResult(t *testing.T) {
 // realistic multi-tool config that exercises every reason bucket at once —
 // invariants_test.go's own fixtures use binaries that do not exist
 // (/usr/bin/kubectl, /usr/bin/gcloud on most hosts), so they never reach the
-// "exhaustive catalog, seeded cache" branches this test does.
+// "exhaustive catalog, seeded cache" branches this test does. gcloud is
+// included alongside git specifically so runDriftUnknownSubcommand is
+// exercised too: git is excluded by driftPluginRiskyTools (see that map's own
+// doc comment), so a git-only fixture would leave this new check permanently
+// silent here.
 func TestDriftFindingsAreWellFormed(t *testing.T) {
 	driftIsolateCacheDir(t)
 	dir := t.TempDir()
@@ -763,6 +1011,8 @@ func TestDriftFindingsAreWellFormed(t *testing.T) {
 	driftSeedCache(t, "git", bin, "git version 2.44.0", map[string]introspect.Subcommand{
 		"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 3, CoverageFound: 1},
 	})
+	gcloudBin := driftFakeShellScript(t, dir, "gcloud", driftGitCatalog)
+	driftSeedCache(t, "gcloud", gcloudBin, "", nil)
 	tools := map[string]config.ToolConfig{
 		"git": {
 			Binary: bin,
@@ -774,10 +1024,14 @@ func TestDriftFindingsAreWellFormed(t *testing.T) {
 			// a multi-segment deny rule.
 			Deny: []config.DenyRule{{Subcommand: []string{"push", "--force"}}},
 		},
+		"gcloud": {
+			Binary: gcloudBin,
+			Allow:  []config.AllowRule{{Subcommand: []string{"frobnicate"}}},
+		},
 	}
 	in := driftInput(tools)
 
-	for _, run := range []RunFunc{runDriftToolVersionChanged, runDriftUnverifiable} {
+	for _, run := range []RunFunc{runDriftToolVersionChanged, runDriftUnverifiable, runDriftUnknownSubcommand} {
 		res := run(context.Background(), in)
 		for _, f := range res.Findings {
 			if !f.Severity.Valid() {
@@ -788,6 +1042,9 @@ func TestDriftFindingsAreWellFormed(t *testing.T) {
 			}
 			if strings.TrimSpace(f.Detail) == "" {
 				t.Error("empty Detail")
+			}
+			if (f.Severity == SeverityFail || f.Severity == SeverityWarn) && f.Remedy == "" {
+				t.Errorf("severity %s requires a Remedy: %+v", f.Severity, f)
 			}
 			if !f.Path.Empty() && f.Location != "" {
 				t.Errorf("finding sets both Path and Location: %+v", f)

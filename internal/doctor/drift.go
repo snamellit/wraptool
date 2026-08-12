@@ -1,12 +1,20 @@
-// drift.go implements the FIRST slice of design §7.6's drift.* group: the
-// half of the catalog that CANNOT assert an absence. drift.tool-version-changed
+// drift.go implements design §7.6's drift.* group. F1 shipped the half of
+// the catalog that CANNOT assert an absence: drift.tool-version-changed
 // (context: why other drift findings may have appeared) and drift.unverifiable
-// (honesty: what the group could not confirm, and why) ship alone in this
-// step — drift.unknown-subcommand and drift.unknown-flag, the checks that DO
-// assert an absence, are later steps layered on top of the probe/cache/report
-// plumbing this file proves out first. The design's own ordering rationale
-// (§"F1 before F2"): "ships the honest half first, so the group is useful and
-// harmless before any absence claim exists."
+// (honesty: what the group could not confirm, and why). F2 (this file's
+// second layer, see the "drift.unknown-subcommand" section below) adds the
+// first check that DOES assert an absence — allow rules only; deny rules are
+// F3's job and carry fail severity, per design §7.6's own row. The design's
+// own ordering rationale (§"F1 before F2"): "ships the honest half first, so
+// the group is useful and harmless before any absence claim exists."
+//
+// F2's own binding investigation, recorded here rather than only in a review
+// thread (mirrors F1's "Rulings taken while F1 shipped" in
+// design/doctor/wraptool-doctor.md §7.6): see driftPluginRiskyTools' own doc
+// comment for the git/kubectl plugin-enumeration finding that keeps THE GATE
+// (below) from trusting either tool's catalog for an absence claim, and this
+// file's own report (delivered alongside the branch) for the per-tool
+// evidence in full.
 //
 // Decisions taken since design/doctor/implementation-plan.md was written,
 // binding on this file:
@@ -53,11 +61,12 @@ import (
 const (
 	driftToolVersionChanged CheckID = "drift.tool-version-changed"
 	driftUnverifiable       CheckID = "drift.unverifiable"
+	driftUnknownSubcommand  CheckID = "drift.unknown-subcommand"
 )
 
-// driftToolVersionChangedMeta, driftUnverifiableMeta are named so
-// drift_test.go's meta assertions read the SAME literal init() registers —
-// never through Registered() (plan §1 rule 8).
+// driftToolVersionChangedMeta, driftUnverifiableMeta, driftUnknownSubcommandMeta
+// are named so drift_test.go's meta assertions read the SAME literal init()
+// registers — never through Registered() (plan §1 rule 8).
 var (
 	driftToolVersionChangedMeta = Meta{
 		ID:    driftToolVersionChanged,
@@ -71,11 +80,18 @@ var (
 		Summary: "reports, tool by tool, which allow/deny rules' subcommand/flag drift could not be confirmed " +
 			"against the installed tool, and why",
 	}
+	driftUnknownSubcommandMeta = Meta{
+		ID:    driftUnknownSubcommand,
+		Needs: NeedsConfig | NeedsProbe,
+		Summary: "warns when an ALLOW rule's subcommand is absent from a trustworthy, per-tool-vetted catalog " +
+			"probe of the installed tool (§5.3; deny rules are F3's, at fail severity)",
+	}
 )
 
 func init() {
 	register(driftToolVersionChangedMeta, runDriftToolVersionChanged)
 	register(driftUnverifiableMeta, runDriftUnverifiable)
+	register(driftUnknownSubcommandMeta, runDriftUnknownSubcommand)
 }
 
 // ---------------------------------------------------------------- drift.tool-version-changed
@@ -579,4 +595,192 @@ func driftBuildUnverifiableFinding(name string, allowCount, denyCount int, catal
 		Path:   At("tools", name),
 		DocRef: "design/doctor/wraptool-doctor.md",
 	}, true
+}
+
+// ---------------------------------------------------------------- drift.unknown-subcommand
+
+// driftPluginRiskyTools names tools whose subcommand-DISPATCH convention lets
+// a binary anywhere on PATH become a live subcommand — "git-foo" is "git
+// foo", "kubectl-foo" (a krew plugin) is "kubectl foo" — that the CURRENT
+// introspect pipeline cannot reliably enumerate through the per-tool
+// CatalogArgv in toolknowledge.go, regardless of what ProbeCatalog.Exhaustive
+// reports. This is deliberately NOT the same question driftCatalogReason
+// answers ("did the probe itself succeed and parse as a genuine, non-empty
+// listing") — a tool can pass that bar and still silently omit an
+// operator's real, working plugin subcommand, which is exactly the "delete a
+// working rule" failure mode the architect brief calls the worst output
+// doctor can produce. Consulted ONLY by runDriftUnknownSubcommand: F1's
+// driftCatalogReason (shared with drift.unverifiable) is intentionally left
+// alone — drift.unverifiable never asserts an absence, so it does not need
+// this extra bar, and F1's own tests already pin its current, lower one.
+//
+// Evidence per entry, gathered on THIS host before enabling (or refusing to
+// enable) anything — see this step's own report for the full write-up:
+//
+//   - git: MEASURED, on git 2.54.0. `git help -a` (git's own CatalogArgv) DOES
+//     list a PATH-installed external command (a `git-foo` script placed on
+//     PATH) — under a genuine "External commands" section — but with NO
+//     description column: `cat -A` on that line reads "   foo$", nothing
+//     after the name. introspect's subcommandRe
+//     (`^\s{2,}(\w[\w-]*)\s{2,}(.+)$`, parser_git.go) requires a SECOND
+//     2+-space-separated group to match at all, so BestParseSubcommands
+//     silently drops every such line, and ProbeCatalog has no way to tell —
+//     Exhaustive still reports true, because git's BUILT-IN commands alone
+//     already make a non-empty, well-formed catalog. A real, working
+//     `git <plugin>` allow rule (git-lfs, git-flow, git-extras, ...) would
+//     therefore read as unknown. Built-ins and the operator's own `git config
+//     alias.*` entries are NOT affected by this gap — verified separately:
+//     `git help -a` lists a "Command aliases" section in the SAME two-column,
+//     WITH-description shape ("   st                      status"), which
+//     subcommandRe matches correctly, and `st` is not one of git's own
+//     porcelain names. The gap is specific to the undescribed "External
+//     commands" section, but a per-rule check has no way to know whether the
+//     ABSENT name it is looking at would have lived there — so the whole tool
+//     is excluded, not just the entries this run happens to demonstrate.
+//   - kubectl: NOT verified on this host — kubectl is not installed here, so
+//     nothing above could be measured directly against it. Recorded from
+//     kubectl's own documented krew plugin convention instead (a
+//     `kubectl-<name>` binary anywhere on PATH becomes `kubectl <name>`,
+//     precisely the shape the architect brief itself names as "the sharper
+//     case"): unlike git, `kubectl --help`'s static command list has no
+//     names-only section for PATH-discovered plugins at all, so if this tool
+//     were ever probed successfully on some other host, the identical
+//     failure mode would apply with even less signal than git's. Included as
+//     a known, documented limitation pending on-host confirmation, not as
+//     something this run measured — see the report for that distinction.
+//
+// gcloud and terraform carry NO entry here: neither has a documented
+// PATH-dispatch plugin convention, and — unverified either way, since
+// neither is installed on this host — they are left to the ordinary
+// "ProbeCatalog.Exhaustive == false because the binary cannot even be run"
+// exclusion instead of an invented, untested claim about their plugin
+// behaviour.
+var driftPluginRiskyTools = map[string]string{
+	"git": "git's own catalog probe (`help -a`) lists a PATH-installed external command under an " +
+		"\"External commands\" section with NO description column, and the shared parser requires one to " +
+		"recognize a catalog entry at all — so an installed plugin (e.g. git-lfs, git-flow) is silently " +
+		"absent from the parsed catalog even though the probe itself reports as exhaustive (measured on git " +
+		"2.54.0; git's built-in commands and `git config alias.*` entries are unaffected)",
+	"kubectl": "kubectl's krew plugin convention (a `kubectl-<name>` binary anywhere on PATH becomes " +
+		"`kubectl <name>`) is not enumerated by `kubectl --help` at all — documented, not verified on this " +
+		"host, since kubectl is not installed here",
+}
+
+// driftPluginRiskReason returns driftPluginRiskyTools' entry for basename, if
+// any.
+func driftPluginRiskReason(basename string) (string, bool) {
+	reason, risky := driftPluginRiskyTools[basename]
+	return reason, risky
+}
+
+// driftUnknownSubcommandVersionDisplay renders introspect.ProbeVersion's
+// result for a finding's Detail/Remedy — design §7.6's own instruction
+// ("Include the version probed in the finding, so a stale claim is
+// self-dating") applies even when the live --version probe itself produced
+// nothing (a tool that answers `--help`-shaped catalog argv but not
+// `--version`, or a race against the binary being replaced between the two
+// probes): a named, honest "unknown" beats silently omitting the clause THE
+// GATE below requires.
+func driftUnknownSubcommandVersionDisplay(version string) string {
+	if version == "" {
+		return "unknown (a live --version probe produced no output)"
+	}
+	return version
+}
+
+// runDriftUnknownSubcommand implements design §7.6's drift.unknown-subcommand
+// for ALLOW rules only (deny rules are F3's, at fail severity — a typo'd deny
+// is fail-open). THE GATE (architect brief, binding): a finding for one
+// allow rule requires ALL of —
+//
+//  1. the tool has a knowledge-table entry AND a non-empty CatalogArgv
+//     (LookupToolKnowledge, design §5.3);
+//  2. basename is not in driftPluginRiskyTools — the plugin-enumeration
+//     investigation above, which THE GATE's own text demands ("if a tool's
+//     catalog argv cannot enumerate plugins, that tool CANNOT support this
+//     check");
+//  3. introspect.ProbeCatalog(argv) reports Exhaustive == true — a clean,
+//     non-deadline-killed, zero-exit probe whose output has the shape of a
+//     genuine listing (see ProbeCatalog's own doc comment);
+//  4. the tool's cached schema exists AND is still trustworthy for the
+//     currently configured binary — reused verbatim from F1:
+//     introspect.LoadCacheStaleAt + driftCacheTrustReason, the SAME
+//     "cached-schema trust conditions" drift.unverifiable already applies
+//     per rule (design §7.6 RULING 3). This is a TOOL-wide gate (computed
+//     once, like driftCacheTrustReason itself), not a per-subcommand one —
+//     it says nothing about whether THIS rule's flags were ever captured,
+//     only that the tool's own introspection state is coherent enough to
+//     stand behind ANY drift claim about it right now.
+//
+// Anything short of all four is drift.unverifiable's job, not this one's —
+// this function emits NOTHING for a disqualified tool, exactly like F1's
+// checks do for the same underlying reasons (no double-reporting: a silent
+// skip here, a named reason there).
+//
+// Matching is FIRST-SEGMENT ONLY (design §5.3): rule.Subcommand[0] against
+// probe.Catalog, regardless of how many segments the rule has. A multi-segment
+// rule whose first segment DOES match reports nothing here (its deeper levels
+// are drift.unverifiable's driftReasonMultiSegment, unchanged, reported
+// separately) — this check only ever speaks to the first segment.
+func runDriftUnknownSubcommand(ctx context.Context, in *Input) Result {
+	var findings []Finding
+	for _, name := range toolSortedNames(in.Config.Tools) {
+		tc := in.Config.Tools[name]
+		if tc.Binary == "" || len(tc.Allow) == 0 {
+			continue
+		}
+
+		basename := ToolBasename(tc.Binary)
+		tk, ok := LookupToolKnowledge(basename)
+		if !ok || len(tk.CatalogArgv) == 0 {
+			continue // gate 1: no catalog argv at all — drift.unverifiable's job
+		}
+		if _, risky := driftPluginRiskReason(basename); risky {
+			continue // gate 2: measured/documented plugin-enumeration gap
+		}
+
+		probe := introspect.ProbeCatalog(ctx, &tc, tk.CatalogArgv)
+		if !probe.Exhaustive {
+			continue // gate 3: the live probe could not be trusted as exhaustive
+		}
+
+		schema, cached := introspect.LoadCacheStaleAt(in.Paths.CacheDir, name)
+		if !cached {
+			continue // gate 4: never introspected — driftReasonNoCachedSchema's tool
+		}
+		if _, untrusted := driftCacheTrustReason(in.Env, tc, schema); untrusted {
+			continue // gate 4: cache no longer describes the configured binary
+		}
+
+		version := driftUnknownSubcommandVersionDisplay(introspect.ProbeVersion(ctx, &tc))
+		argv := strings.Join(tk.CatalogArgv, " ")
+
+		for _, rule := range tc.Allow {
+			if len(rule.Subcommand) == 0 {
+				continue
+			}
+			first := rule.Subcommand[0]
+			if _, ok := probe.Catalog[first]; ok {
+				continue
+			}
+
+			sub := strings.Join(rule.Subcommand, " ")
+			findings = append(findings, Finding{
+				Severity: SeverityWarn,
+				Title:    "Allowed subcommand not found in the tool's catalog",
+				Detail: fmt.Sprintf(
+					"tools.%s.allow permits subcommand %q, whose first segment %q was not found in the "+
+						"subcommand catalog probed with `%s %s` against the installed %s (version %s).",
+					name, sub, first, basename, argv, name, version),
+				Path: At("tools", name, "allow").Item("subcommand", sub),
+				Remedy: fmt.Sprintf(
+					"%q was not found in %s's subcommand catalog (probed with `%s %s`, version %s) — this "+
+						"may be a typo, or a gap in the catalog probe itself; run it yourself and confirm "+
+						"before changing tools.%s.allow's %q entry, never remove it on this finding alone",
+					first, name, basename, argv, version, name, sub),
+				DocRef: "design/doctor/wraptool-doctor.md",
+			})
+		}
+	}
+	return Found(findings...)
 }
