@@ -463,3 +463,27 @@ func TestExpandPathTilde(t *testing.T) {
 		}
 	}
 }
+
+// TestAllowedCWDRootsExpandTilde pins the consistency: every other path field in
+// this file expands a leading ~, and Validate requires these roots to be
+// absolute, so without expansion `~/src` failed with "must be an absolute path"
+// — true, but it reads as a rule against home-relative paths when the same
+// spelling works for request_log and both token files.
+func TestAllowedCWDRootsExpandTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory in this environment")
+	}
+	cfg := &Config{
+		MCP:   MCPConfig{AllowedCWDRoots: []string{"~/src", "~", "/already/absolute"}},
+		Tools: map[string]ToolConfig{},
+	}
+	cfg.applyDefaults()
+
+	want := []string{filepath.Join(home, "src"), home, "/already/absolute"}
+	for i, w := range want {
+		if cfg.MCP.AllowedCWDRoots[i] != w {
+			t.Errorf("AllowedCWDRoots[%d] = %q, want %q", i, cfg.MCP.AllowedCWDRoots[i], w)
+		}
+	}
+}
