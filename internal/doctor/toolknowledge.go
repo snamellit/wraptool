@@ -112,9 +112,44 @@ func stringSet(items ...string) map[string]bool {
 // elsewhere as an example tool basename (CLAUDE.md's introspect section):
 // neither design doc gives it dangerous-flag/subcommand data, and inventing
 // some would be exactly the guess LookupToolKnowledge's doc comment forbids.
+// DangerousFlags may only contain flags that are dangerous in the position
+// wraptool can actually send them. executor.buildArgs always appends flags
+// AFTER the subcommand, so a flag that is dangerous only in a tool's
+// PRE-subcommand position cannot be sent through wraptool at all, and listing
+// it produces a finding about a call the policy engine could never make.
+//
+// git is the tool where this bites: `git -c core.sshCommand=... pull` really
+// does execute an arbitrary command, but wraptool would emit `git pull -c ...`,
+// which git rejects. Meanwhile `-c` AFTER a subcommand is that subcommand's own
+// flag and usually harmless -- `git switch -c <branch>` names a new branch --
+// so listing `-c` warned operators about branch creation. kubectl and gcloud
+// accept their global flags in either position (`kubectl get pods
+// --kubeconfig=X`), so theirs stay.
+//
+// Evidence for each entry, so a later maintainer knows what was checked
+// rather than assumed:
+//   - git: verified empirically. `git pull -c core.sshCommand=X` is rejected
+//     with "unknown switch `c'", while `git fetch --upload-pack=X` is
+//     accepted and reaches the transport.
+//   - kubectl: from cobra's persistent-flag semantics, which accept a parent
+//     command's flags after the subcommand. NOT verified here (kubectl is not
+//     installed in this development container).
+//   - gcloud: from gcloud's documented global flags, which its parser accepts
+//     after the command group. NOT verified here.
+//   - terraform: has no DangerousFlags entry, so the question does not arise.
+//     Note its own global options (`-chdir`) must PRECEDE the subcommand, so
+//     they would be unreachable through wraptool and must never be added here.
+//
+// Verify the kubectl and gcloud entries against a real binary before relying
+// on them, and record the result here.
 var toolKnowledgeTable = map[string]ToolKnowledge{
 	"git": {
-		DangerousFlags: stringSet("--upload-pack", "--receive-pack", "--exec", "-c", "--config"),
+		// Subcommand flags only, and every one of these runs a program:
+		// --upload-pack/--receive-pack name the program git executes on the
+		// other end of a fetch/push, --exec is push's alias for the latter, and
+		// --template picks a directory whose hooks are copied into the new
+		// repository, where a later git operation executes them.
+		DangerousFlags: stringSet("--upload-pack", "--receive-pack", "--exec", "--template"),
 		CatalogArgv:    []string{"help", "-a"},
 	},
 	"kubectl": {

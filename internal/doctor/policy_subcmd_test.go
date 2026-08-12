@@ -339,3 +339,56 @@ func TestPolicySubcmdOtherToolsIgnoredByForcePush(t *testing.T) {
 		t.Errorf("outcome = %v, want pass (non-git tool never matches)", res.Outcome())
 	}
 }
+
+// TestRunPolicySubcmdCloneAllowed pins the capability-level warning: wraptool's
+// own workflow starts from a repository that is already checked out, so an
+// allowed clone grants a client-chosen URL fetched with host credentials and a
+// working tree written at a client-chosen path, for no use case wraptool needs.
+func TestRunPolicySubcmdCloneAllowed(t *testing.T) {
+	cases := []struct {
+		name      string
+		tools     map[string]config.ToolConfig
+		wantFinds int
+	}{
+		{
+			name: "git clone allowed: warns",
+			tools: map[string]config.ToolConfig{"git": {
+				Binary: "/usr/bin/git",
+				Allow:  []config.AllowRule{{Subcommand: []string{"clone"}}},
+			}},
+			wantFinds: 1,
+		},
+		{
+			name: "git without clone: silent",
+			tools: map[string]config.ToolConfig{"git": {
+				Binary: "/usr/bin/git",
+				Allow: []config.AllowRule{
+					{Subcommand: []string{"pull"}},
+					{Subcommand: []string{"switch"}},
+				},
+			}},
+			wantFinds: 0,
+		},
+		{
+			// Another tool's own `clone` subcommand is not git's, and this check
+			// knows nothing about it.
+			name: "a non-git tool with a clone subcommand: silent",
+			tools: map[string]config.ToolConfig{"vboxmanage": {
+				Binary: "/usr/bin/vboxmanage",
+				Allow:  []config.AllowRule{{Subcommand: []string{"clone"}}},
+			}},
+			wantFinds: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := runPolicySubcmdCloneAllowed(context.Background(), policysubcmdInput(tc.tools))
+			if len(res.Findings) != tc.wantFinds {
+				t.Fatalf("got %d findings, want %d: %+v", len(res.Findings), tc.wantFinds, res.Findings)
+			}
+			if tc.wantFinds > 0 && res.Findings[0].Severity != SeverityWarn {
+				t.Errorf("severity = %v, want warn", res.Findings[0].Severity)
+			}
+		})
+	}
+}
