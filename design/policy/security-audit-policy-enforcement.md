@@ -270,8 +270,16 @@ what, if anything, still needs a human.
    - The **anchoring** half of this item is now moot, not manual: patterns
      are auto-anchored (`^(?:…)$`) since F6, so an unanchored pattern can no
      longer under-match. What replaces it is a pattern that's anchored but
-     constrains nothing (`.*`, `.+`, `(?s).*`, empty) — that's
-     `policy.overbroad-pattern` (warn), a distinct check.
+     constrains nothing (`.*`, `.+`, `.*?`, `(?s).*`) — that's
+     `policy.overbroad-pattern` (warn), a distinct check. An **empty**
+     pattern is deliberately not one of them: `FlagConstraint.Pattern`'s zero
+     value cannot distinguish `pattern: ""` from no `pattern` key, so
+     counting it fired on every constraint that simply has none — including
+     `docs/getting-started.qmd`'s own `{type: integer, max: 100}`, whose
+     value `validateValue` really does range-check. The no-pattern case
+     belongs to `policy.unpatterned-value-flag`. `design/doctor/wraptool-doctor.md`
+     §7.7's row still lists the empty pattern and is stale on this point; the
+     code is authoritative.
 2. **Mutating subcommands.** `policy.mutating-subcommand` (warn) fires when
    an allowed subcommand's *last* segment is one of a tool's mutating verbs:
    kubectl `delete/apply/edit/patch/replace/scale/drain`, gcloud

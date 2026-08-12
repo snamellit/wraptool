@@ -72,7 +72,7 @@ var (
 		ID:    policygenericOverbroadPattern,
 		Needs: NeedsConfig,
 		Summary: "warns when a reachable flag_constraints pattern constrains nothing " +
-			"(.*, .+, .*?, (?s).*, or empty)",
+			"(.*, .+, .*?, (?s).*)",
 	}
 	policygenericUnboundedPositionalCountMeta = Meta{
 		ID:    policygenericUnboundedPositionalCount,
@@ -223,18 +223,14 @@ func runPolicygenericOverbroadPattern(_ context.Context, in *Input) Result {
 				if !policygenericOverbroadPatterns[c.Pattern] || !policygenericConstraintReachable(rule, flag, c) {
 					continue
 				}
-				shown := c.Pattern
-				if shown == "" {
-					shown = "(empty)"
-				}
 				findings = append(findings, Finding{
 					Severity: SeverityWarn,
 					Title:    "flag_constraints pattern constrains nothing",
 					Detail: fmt.Sprintf(
-						"tools.%s allow[subcommand=%q].flag_constraints[%q].pattern is %s, which matches — or, if "+
-							"empty, checks nothing about — any value at all, leaving the flag effectively "+
-							"unconstrained despite the flag_constraints entry",
-						name, subcommand, flag, shown),
+						"tools.%s allow[subcommand=%q].flag_constraints[%q].pattern is %q, which matches any "+
+							"value at all, leaving the flag effectively unconstrained despite the "+
+							"flag_constraints entry",
+						name, subcommand, flag, c.Pattern),
 					Path: At("tools", name, "allow").Item("subcommand", subcommand).
 						Key("flag_constraints", flag, "pattern"),
 					Remedy: fmt.Sprintf(
