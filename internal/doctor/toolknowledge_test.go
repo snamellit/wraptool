@@ -77,7 +77,7 @@ func TestIsDangerousFlag(t *testing.T) {
 	if !ok {
 		t.Fatal("git entry missing")
 	}
-	for _, f := range []string{"--upload-pack", "--receive-pack", "--exec", "-c", "--config"} {
+	for _, f := range []string{"--upload-pack", "--receive-pack", "--exec"} {
 		if !git.IsDangerousFlag(f) {
 			t.Errorf("git.IsDangerousFlag(%q) = false, want true", f)
 		}
@@ -240,5 +240,30 @@ func TestStringSet(t *testing.T) {
 	empty := stringSet()
 	if len(empty) != 0 {
 		t.Errorf("stringSet() = %v, want empty", empty)
+	}
+}
+
+// TestGitGlobalOnlyFlagsAreNotDangerousFlags pins the position invariant.
+// executor.buildArgs always appends flags AFTER the subcommand, so git's
+// pre-subcommand-only flags cannot be sent through wraptool at all: `git -c
+// core.sshCommand=... pull` would come out as `git pull -c ...`, which git
+// rejects. What a wrapped call CAN send is the subcommand's own -c, and `git
+// switch -c <branch>` merely names a new branch — so listing these warned
+// operators about branch creation and called it arbitrary code execution.
+func TestGitGlobalOnlyFlagsAreNotDangerousFlags(t *testing.T) {
+	git, ok := LookupToolKnowledge("git")
+	if !ok {
+		t.Fatal("git has no knowledge entry")
+	}
+	for _, f := range []string{"-c", "--config", "--exec-path"} {
+		if git.IsDangerousFlag(f) {
+			t.Errorf("%q is dangerous only before a subcommand, a position wraptool cannot emit; it must not be listed", f)
+		}
+	}
+	// The subcommand-scoped ones stay: each names a program git executes.
+	for _, f := range []string{"--upload-pack", "--receive-pack", "--exec"} {
+		if !git.IsDangerousFlag(f) {
+			t.Errorf("%q runs a program and is a subcommand flag; it must stay listed", f)
+		}
 	}
 }

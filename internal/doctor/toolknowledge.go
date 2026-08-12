@@ -112,9 +112,25 @@ func stringSet(items ...string) map[string]bool {
 // elsewhere as an example tool basename (CLAUDE.md's introspect section):
 // neither design doc gives it dangerous-flag/subcommand data, and inventing
 // some would be exactly the guess LookupToolKnowledge's doc comment forbids.
+// DangerousFlags may only contain flags that are dangerous in the position
+// wraptool can actually send them. executor.buildArgs always appends flags
+// AFTER the subcommand, so a flag that is dangerous only in a tool's
+// PRE-subcommand position cannot be sent through wraptool at all, and listing
+// it produces a finding about a call the policy engine could never make.
+//
+// git is the tool where this bites: `git -c core.sshCommand=... pull` really
+// does execute an arbitrary command, but wraptool would emit `git pull -c ...`,
+// which git rejects. Meanwhile `-c` AFTER a subcommand is that subcommand's own
+// flag and usually harmless -- `git switch -c <branch>` names a new branch --
+// so listing `-c` warned operators about branch creation. kubectl and gcloud
+// accept their global flags in either position (`kubectl get pods
+// --kubeconfig=X`), so theirs stay.
 var toolKnowledgeTable = map[string]ToolKnowledge{
 	"git": {
-		DangerousFlags: stringSet("--upload-pack", "--receive-pack", "--exec", "-c", "--config"),
+		// Subcommand flags only, and every one of these runs a program:
+		// --upload-pack/--receive-pack name the program git executes on the
+		// other end of a fetch/push, and --exec is push's alias for the latter.
+		DangerousFlags: stringSet("--upload-pack", "--receive-pack", "--exec"),
 		CatalogArgv:    []string{"help", "-a"},
 	},
 	"kubectl": {
