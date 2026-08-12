@@ -254,6 +254,14 @@ const (
 	// stays silent on this axis instead of reporting noise about a check
 	// that was never going to run against it.
 	driftReasonCatalogNotVetted
+	// driftReasonCatalogSentinelMissing: the tool IS on the allowlist, but
+	// this run's probed catalog did not contain the sentinel subcommand its
+	// vetted catalog is expected to include (design §7.6 F2 RULING 2). That
+	// is a different fact from "never vetted", and the operator needs the
+	// difference: this one says the tool's catalog output changed shape or was
+	// truncated on THIS run, which is worth investigating, whereas the other
+	// says wraptool has simply never established completeness for this tool.
+	driftReasonCatalogSentinelMissing
 
 	// driftReasonCount is a sentinel, not a real reason: the number of
 	// declared members above, used by driftAllReasons to enumerate the whole
@@ -291,6 +299,7 @@ var driftReasonOrder = []driftUnverifiableReason{
 	driftReasonLowCoverage,
 	driftReasonNoExhaustivenessAssertion,
 	driftReasonCatalogNotVetted,
+	driftReasonCatalogSentinelMissing,
 }
 
 // driftReasonText is the human clause for each per-rule reason, completing
@@ -315,8 +324,10 @@ var driftReasonText = map[driftUnverifiableReason]string{
 		"yet carries the design §7.6 \"help is exhaustive\" assertion — until a later step adds it, full " +
 		"coverage alone is not proof no other flags exist, for any tool",
 	driftReasonCatalogNotVetted: "could have supported a subcommand-absence claim only if this tool's catalog " +
-		"were vetted complete enough for one — it is not (design §7.6 F2 RULING 1), or the probed catalog did " +
-		"not match what was vetted (RULING 2)",
+		"had been vetted as listing every subcommand it dispatches — it has not been (design §7.6 F2 RULING 1)",
+	driftReasonCatalogSentinelMissing: "could have supported a subcommand-absence claim, but this run's probed " +
+		"catalog did not contain the sentinel subcommand the vetted catalog is expected to include — the " +
+		"listing looks truncated or reshaped, so it is not what was vetted (design §7.6 F2 RULING 2)",
 }
 
 // driftRuleKind distinguishes an allow rule from a deny rule in a
@@ -429,10 +440,15 @@ func driftCatalogAxis(ctx context.Context, name string, tc config.ToolConfig) (r
 			strings.Join(tk.CatalogArgv, " ")), nil
 	}
 
-	if driftCatalogEligibilityReason(basename, probe) != "" {
+	// Which of the two eligibility facts held decides which reason the operator
+	// sees: RULING 2 asks for the sentinel mismatch to be reported AS that
+	// reason, and a static "A or B" sentence would hide the case worth acting
+	// on (a catalog that changed shape on this run) behind the case that is
+	// merely a standing limitation.
+	if reason, ok := driftCatalogEligibilityFailure(basename, probe); ok {
 		for _, rule := range tc.Allow {
 			subject := strconv.Quote(name + " " + strings.Join(rule.Subcommand, " "))
-			items = append(items, driftItem{reason: driftReasonCatalogNotVetted, kind: driftKindAllow, subject: subject})
+			items = append(items, driftItem{reason: reason, kind: driftKindAllow, subject: subject})
 		}
 	}
 	return "", items
@@ -643,6 +659,13 @@ func driftBuildUnverifiableFinding(name string, allowCount, denyCount int, catal
 // driftEligibleCatalogTools' own doc comment for the case that made this
 // bar necessary) — plus a Sentinel bound against a probe result truncated or
 // reshaped in a way that would still read as Exhaustive.
+// NOTE on VersionMeasured: it is a RECORD, not a gate. Eligibility is keyed on
+// basename alone, so an entry asserts that the tool's catalog is complete
+// across every version a host might run -- not merely the one measured. If a
+// tool's catalog shape ever diverges between versions, that assumption breaks
+// and the entry must gain a version constraint. The sentinel is the only
+// runtime guard today, and it catches a reshaped listing rather than a
+// differently-complete one.
 type driftCatalogEligible struct {
 	// VersionMeasured is the exact binary version the evidence below was
 	// gathered against — not itself printed into any finding (ProbeVersion's
@@ -738,6 +761,21 @@ var driftCatalogExcludedTools = map[string]string{
 // mirroring driftCacheTrustReason, already shared the same way for the
 // cache-trust axis. Caller MUST have already confirmed probe.Exhaustive;
 // this function does not check it again.
+// driftCatalogEligibilityFailure is driftCatalogEligibilityReason's typed
+// counterpart: same two questions, answered as the reason enum
+// drift.unverifiable reports rather than as prose. ok is false when the tool
+// is eligible and its catalog matched what was vetted.
+func driftCatalogEligibilityFailure(basename string, probe introspect.CatalogProbe) (driftUnverifiableReason, bool) {
+	eligible, ok := driftEligibleCatalogTools[basename]
+	if !ok {
+		return driftReasonCatalogNotVetted, true
+	}
+	if _, found := probe.Catalog[eligible.Sentinel]; !found {
+		return driftReasonCatalogSentinelMissing, true
+	}
+	return driftReasonCount, false
+}
+
 func driftCatalogEligibilityReason(basename string, probe introspect.CatalogProbe) string {
 	eligible, ok := driftEligibleCatalogTools[basename]
 	if !ok {

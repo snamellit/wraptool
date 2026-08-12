@@ -731,7 +731,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
 		}
 		d := res.Findings[0].Detail
-		if !strings.Contains(d, "could have supported a subcommand-absence claim only if this tool's catalog were vetted") {
+		if !strings.Contains(d, "had been vetted as listing every subcommand it dispatches") {
 			t.Errorf("Detail %q missing the catalog-not-vetted reason: %s", d, d)
 		}
 		if !strings.Contains(d, `1 allow rule(s)`) {
@@ -1257,5 +1257,45 @@ func TestDriftFindingsAreWellFormed(t *testing.T) {
 				t.Errorf("finding sets both Path and Location: %+v", f)
 			}
 		}
+	}
+}
+
+// TestDriftSentinelMismatchIsItsOwnReason pins RULING 2's requirement that a
+// sentinel mismatch is reported AS that reason. The two facts are different
+// for the operator: "never vetted" is a standing limitation of wraptool, while
+// a missing sentinel says this tool's catalog output changed shape or was
+// truncated on THIS run, which is worth investigating. A single "A or B"
+// sentence would hide the second behind the first.
+func TestDriftSentinelMismatchIsItsOwnReason(t *testing.T) {
+	const basename = "driftsentineltool"
+	driftMakeEligible(t, basename, driftCatalogEligible{
+		VersionMeasured: "test",
+		Evidence:        "synthetic entry for this test only",
+		Sentinel:        "init",
+	})
+
+	withSentinel := introspect.CatalogProbe{
+		Catalog:    map[string]string{"init": "start", "plan": "plan"},
+		Exhaustive: true,
+	}
+	if _, failed := driftCatalogEligibilityFailure(basename, withSentinel); failed {
+		t.Errorf("a catalog containing the sentinel must be eligible")
+	}
+
+	truncated := introspect.CatalogProbe{
+		Catalog:    map[string]string{"plan": "plan"},
+		Exhaustive: true,
+	}
+	reason, failed := driftCatalogEligibilityFailure(basename, truncated)
+	if !failed {
+		t.Fatal("a catalog missing the sentinel must not be eligible")
+	}
+	if reason != driftReasonCatalogSentinelMissing {
+		t.Errorf("reason = %v, want driftReasonCatalogSentinelMissing", reason)
+	}
+
+	unvetted, failed := driftCatalogEligibilityFailure("nevervettedtool", withSentinel)
+	if !failed || unvetted != driftReasonCatalogNotVetted {
+		t.Errorf("an unvetted tool must report driftReasonCatalogNotVetted, got %v (failed=%v)", unvetted, failed)
 	}
 }
