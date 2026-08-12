@@ -125,6 +125,23 @@ func stringSet(items ...string) map[string]bool {
 // so listing `-c` warned operators about branch creation. kubectl and gcloud
 // accept their global flags in either position (`kubectl get pods
 // --kubeconfig=X`), so theirs stay.
+//
+// Evidence for each entry, so a later maintainer knows what was checked
+// rather than assumed:
+//   - git: verified empirically. `git pull -c core.sshCommand=X` is rejected
+//     with "unknown switch `c'", while `git fetch --upload-pack=X` is
+//     accepted and reaches the transport.
+//   - kubectl: from cobra's persistent-flag semantics, which accept a parent
+//     command's flags after the subcommand. NOT verified here (kubectl is not
+//     installed in this development container).
+//   - gcloud: from gcloud's documented global flags, which its parser accepts
+//     after the command group. NOT verified here.
+//   - terraform: has no DangerousFlags entry, so the question does not arise.
+//     Note its own global options (`-chdir`) must PRECEDE the subcommand, so
+//     they would be unreachable through wraptool and must never be added here.
+//
+// Verify the kubectl and gcloud entries against a real binary before relying
+// on them, and record the result here.
 var toolKnowledgeTable = map[string]ToolKnowledge{
 	"git": {
 		// Subcommand flags only, and every one of these runs a program:
