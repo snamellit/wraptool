@@ -13,16 +13,24 @@
 //
 //   - doctor calls internal/introspect DIRECTLY. There is no doctor-specific
 //     probe path and no Prober seam on Input/Env: introspect's own exported
-//     surface (LoadCacheStale, ProbeVersion, ProbeCatalog) already builds its
-//     child environment via executor.ChildEnv itself (design §5.1). This is
-//     the same "sanctioned sibling-package escape hatch" host.go's Env doc
+//     surface (LoadCacheStaleAt, ProbeVersion, ProbeCatalog) already builds
+//     its child environment via executor.ChildEnv itself (design §5.1). This
+//     is the same "sanctioned sibling-package escape hatch" host.go's Env doc
 //     comment already carves out for introspect.CacheStamp — the introspect
 //     package is not in invariants_test.go's forbidden-selector table, so
 //     TestChecksDoNotTouchTheRealHost does not (and must not) see through this.
 //   - doctor NEVER calls Introspect or SaveCache — see driftFlagItems' doc
 //     comment for why LoadCache (the validity-gated read) is not usable from
-//     outside this package either, which leaves LoadCacheStale as the only
+//     outside this package either, which leaves LoadCacheStaleAt as the only
 //     cache read doctor can perform, unconditionally.
+//   - The cache read is ROOT-PARAMETERIZED (design §7.6 RULING 1, the F0 API
+//     gap this file originally shipped with: introspect.LoadCacheStale
+//     resolved through the real host's paths.CacheDir() regardless of what
+//     Input carried, so doctor's own unit tests — and the shared,
+//     Probe:true registry-wide invariants — read/wrote the DEVELOPER's real
+//     introspection cache). Every read here goes through
+//     introspect.LoadCacheStaleAt(in.Paths.CacheDir, name), never
+//     introspect.LoadCacheStale.
 //   - NeedsProbe (already reserved in finding.go) gates both checks here:
 //     even though the flag-dimension half of drift.unverifiable only reads
 //     the cache (no exec), the catalog-dimension half executes a live
@@ -60,7 +68,7 @@ var (
 	driftUnverifiableMeta = Meta{
 		ID:    driftUnverifiable,
 		Needs: NeedsConfig | NeedsProbe,
-		Summary: "reports, tool by tool, which allow rules' subcommand/flag drift could not be confirmed " +
+		Summary: "reports, tool by tool, which allow/deny rules' subcommand/flag drift could not be confirmed " +
 			"against the installed tool, and why",
 	}
 )
@@ -74,11 +82,12 @@ func init() {
 
 // runDriftToolVersionChanged compares each configured tool's CURRENTLY
 // installed --version output (a live probe: introspect.ProbeVersion) against
-// the version string recorded in its cached schema (introspect.LoadCacheStale
-// — deliberately the STALE-tolerant read: a tool upgrade bumps the binary's
-// own mtime, which is exactly what makes the validity-gated LoadCache reject
-// the cache entry, discarding the one field this check needs, see
-// LoadCacheStale's own doc comment).
+// the version string recorded in its cached schema
+// (introspect.LoadCacheStaleAt, rooted at in.Paths.CacheDir — deliberately
+// the STALE-tolerant read: a tool upgrade bumps the binary's own mtime, which
+// is exactly what makes the validity-gated LoadCache reject the cache entry,
+// discarding the one field this check needs, see LoadCacheStaleAt's own doc
+// comment).
 //
 // A tool with no cached schema at all, or a cached schema with no recorded
 // version (--version itself failed at introspection time), or a live probe
@@ -95,7 +104,7 @@ func runDriftToolVersionChanged(ctx context.Context, in *Input) Result {
 			continue
 		}
 
-		cached, ok := introspect.LoadCacheStale(name)
+		cached, ok := introspect.LoadCacheStaleAt(in.Paths.CacheDir, name)
 		if !ok || cached.VersionOutput == "" {
 			continue
 		}
@@ -131,98 +140,195 @@ func runDriftToolVersionChanged(ctx context.Context, in *Input) Result {
 // always reported in full; only the enumerated examples are capped.
 const driftMaxNamedItems = 5
 
-// driftUnverifiableReason is a closed set naming EVERY way this step's data
-// can fall short of supporting a subcommand- or flag-drift claim (design
-// §7.6 + §5.3). Each reason is reported with its own count and a capped
+// driftUnverifiableReason is a CLOSED, iota-numbered set naming every way
+// this step's data can fall short of supporting a subcommand- or flag-drift
+// claim (design §7.6 + §5.3). It is deliberately NOT a string-const enum:
+// driftReasonCount is a live sentinel that lets TestDriftReasonTableIsComplete
+// (ruling 6) enumerate "every declared reason" by counting from zero, rather
+// than hand-maintaining a second list that could itself silently drop the
+// very entry a bug removes from driftReasonOrder or driftReasonText — the
+// exact failure a reviewer produced by deleting one entry from
+// driftReasonOrder ("tools.git has 1 allow rule(s). .", a finding with no
+// cause at all). Each reason is reported with its own count and a capped
 // example list — never folded into one "could not verify" line with no
 // cause, which is exactly the did-not-look silence the design forbids.
-type driftUnverifiableReason string
+type driftUnverifiableReason int
 
 const (
 	// driftReasonMultiSegment: a rule's subcommand has more than one segment.
 	// Matching is first-segment-only (§5.3) — a rule shaped [compute,
 	// instances, list] can never be verified past "compute", regardless of
-	// how exhaustive the catalog probe is.
-	driftReasonMultiSegment driftUnverifiableReason = "multi-segment"
-	// driftReasonNoCachedSchema: introspect.LoadCacheStale found nothing at
+	// how exhaustive the catalog probe is. Applies to both allow and deny
+	// rules: both are matched the same first-segment-only way.
+	driftReasonMultiSegment driftUnverifiableReason = iota
+	// driftReasonNoCachedSchema: introspect.LoadCacheStaleAt found nothing at
 	// all for this tool. doctor never writes the cache (design §5.2), so on a
 	// host where `wraptool serve` has never introspected this tool there is
-	// nothing to read — that is unverifiable, not drift.
-	driftReasonNoCachedSchema driftUnverifiableReason = "no-cached-schema"
-	// driftReasonNotInCache: a cached schema exists for the TOOL, but this
-	// specific subcommand key is absent from it — added to the allow list
-	// since the cache was last built, most likely.
-	driftReasonNotInCache driftUnverifiableReason = "not-in-cache"
+	// nothing to read — that is unverifiable, not drift. Allow rules only:
+	// deny rules carry no flags and are never introspected into the cache in
+	// the first place (Introspect ranges over tc.Allow only), so "no cached
+	// schema" is not a fact about a deny rule specifically.
+	driftReasonNoCachedSchema
+	// driftReasonBinaryChanged: a cached schema exists, but Schema.Binary
+	// (stamped at introspection time) names a DIFFERENT path than the tool's
+	// currently configured binary. LoadCacheStaleAt performs no validity
+	// check at all (design §5.2's own tradeoff), so without this the flag
+	// checks below would silently trust a schema describing a different
+	// program — the exact gap a reviewer measured: a config whose binary
+	// points at a different file reporting the same --version output, with
+	// drift saying nothing. An empty Schema.Binary (a hand-built or
+	// pre-Binary-field cache entry) is treated as unknown, never a mismatch.
+	driftReasonBinaryChanged
+	// driftReasonCacheOlderThanBinary: the cached schema's IntrospectedAt
+	// predates the currently configured binary's own mtime (Env.Stat) — the
+	// binary was rebuilt or upgraded in place (same path, so
+	// driftReasonBinaryChanged does not catch it) since the cache was last
+	// written. Checked only when the binary can be stat'd at all; a missing
+	// binary is drift.tool-version-changed's and driftCatalogReason's own
+	// concern, not reinvented here as a third reason for the same fact.
+	driftReasonCacheOlderThanBinary
+	// driftReasonNotInCache: a cached schema exists for the TOOL, and it is
+	// trustworthy for the currently configured binary, but this specific
+	// subcommand key is absent from it — added to the allow list since the
+	// cache was last built, most likely.
+	driftReasonNotInCache
 	// driftReasonNotParsed: the cached Subcommand's ParseOutcome is not
 	// ParseOutcomeParsed (help failed outright, or "succeeded" with garbage
 	// that clears the byte threshold but isn't a real help page — see
 	// ParseOutcome's own doc comment). Absence may only ever be asserted from
 	// a genuine parse.
-	driftReasonNotParsed driftUnverifiableReason = "not-parsed"
+	driftReasonNotParsed
 	// driftReasonCoverageUnmeasurable: the cached Subcommand's help text had
 	// no option-shaped tokens at all (CoverageTokens == 0) to check the parse
 	// against — not the same as "the parse captured everything".
-	driftReasonCoverageUnmeasurable driftUnverifiableReason = "coverage-unmeasurable"
+	driftReasonCoverageUnmeasurable
 	// driftReasonLowCoverage: the parse captured fewer flag-shaped tokens
 	// than the help text actually contained (CoverageFound < CoverageTokens)
 	// — a signal the text itself supplies, independent of parser confidence
 	// (measured: `git log -h` parses at the maximum 0.90 confidence while
 	// missing --oneline/--graph/--pretty/--since/--author entirely).
-	driftReasonLowCoverage driftUnverifiableReason = "low-coverage"
+	driftReasonLowCoverage
+	// driftReasonNoExhaustivenessAssertion: the parse achieved FULL coverage
+	// (CoverageFound == CoverageTokens, and every case above already ruled
+	// out) — the one case that, before this reason existed, silently fell
+	// through the switch and produced NO item at all, reading as fully
+	// flag-verifiable. Design §7.6 gates a flag-level absence claim on TWO
+	// conditions: the coverage fraction AND a per-tool "help is exhaustive"
+	// assertion — and no tool in the §7.8 knowledge table carries that
+	// assertion field yet (it does not exist), so today NO tool can support
+	// one, regardless of coverage. This reason says so, for every tool,
+	// unconditionally, until a later step (F4) adds the table field and this
+	// reason becomes conditional on it.
+	driftReasonNoExhaustivenessAssertion
+
+	// driftReasonCount is a sentinel, not a real reason: the number of
+	// declared members above, used by driftAllReasons to enumerate the whole
+	// set for TestDriftReasonTableIsComplete without a hand-maintained
+	// parallel list. Anything appended above MUST stay above this line.
+	driftReasonCount
 )
+
+// driftAllReasons enumerates every declared driftUnverifiableReason by
+// counting from zero to the driftReasonCount sentinel — the completeness
+// oracle ruling 6 requires: a reason struck from driftReasonOrder or
+// driftReasonText is still IN this list, so the completeness test built on
+// it catches the omission structurally rather than via a second table that
+// could just as easily be edited to agree with the bug.
+func driftAllReasons() []driftUnverifiableReason {
+	out := make([]driftUnverifiableReason, 0, driftReasonCount)
+	for r := driftUnverifiableReason(0); r < driftReasonCount; r++ {
+		out = append(out, r)
+	}
+	return out
+}
 
 // driftReasonOrder is the fixed rendering order for driftBuildUnverifiableFinding
 // — a slice, not a map range, so two runs over the same Input produce
-// byte-identical Detail text (TestChecksAreDeterministic).
+// byte-identical Detail text (TestChecksAreDeterministic). Must name every
+// member of driftAllReasons() exactly once (TestDriftReasonTableIsComplete).
 var driftReasonOrder = []driftUnverifiableReason{
 	driftReasonMultiSegment,
 	driftReasonNoCachedSchema,
+	driftReasonBinaryChanged,
+	driftReasonCacheOlderThanBinary,
 	driftReasonNotInCache,
 	driftReasonNotParsed,
 	driftReasonCoverageUnmeasurable,
 	driftReasonLowCoverage,
+	driftReasonNoExhaustivenessAssertion,
 }
 
 // driftReasonText is the human clause for each per-rule reason, completing
-// "N allow rule(s) <text>".
+// "N <allow|deny> rule(s) <text>". Must have a non-empty entry for every
+// member of driftAllReasons() (TestDriftReasonTableIsComplete).
 var driftReasonText = map[driftUnverifiableReason]string{
 	driftReasonMultiSegment: "have more than one subcommand segment — only the first is ever matched " +
 		"against a catalog (§5.3)",
 	driftReasonNoCachedSchema: "have never been introspected — there is no cached schema for this tool yet " +
 		"(doctor never probes to build one; this fills in once `wraptool serve` has run against this config)",
+	driftReasonBinaryChanged: "have a cached schema that was built from a different binary path than the one " +
+		"currently configured — the cache describes a different program",
+	driftReasonCacheOlderThanBinary: "have a cached schema older than the currently configured binary's own " +
+		"modification time — the binary was likely rebuilt or upgraded in place since the cache was last written",
 	driftReasonNotInCache: "are missing from the last cached introspection (added to the config since, or " +
 		"the cache predates them)",
 	driftReasonNotParsed: "have help output that was not confirmed as a genuine, parsed help page",
 	driftReasonCoverageUnmeasurable: "have help text with no flag-shaped tokens to measure the parse " +
 		"against",
 	driftReasonLowCoverage: "have help text the parse did not fully account for",
+	driftReasonNoExhaustivenessAssertion: "have full flag coverage against the cached help text, but no tool " +
+		"yet carries the design §7.6 \"help is exhaustive\" assertion — until a later step adds it, full " +
+		"coverage alone is not proof no other flags exist, for any tool",
 }
 
-// driftItem is one (reason, example subcommand) pair collected while
-// examining a tool's allow rules.
+// driftRuleKind distinguishes an allow rule from a deny rule in a
+// driftItem/finding sentence — design §7.6: "drift.unknown-subcommand" is
+// fail-severity for a deny rule specifically (a typo'd deny is fail-open),
+// so its honest "could not tell" counterpart must say which kind of rule it
+// is talking about, not silently fold deny rules into "allow rule(s)" text
+// or drop them from consideration entirely.
+type driftRuleKind string
+
+const (
+	driftKindAllow driftRuleKind = "allow"
+	driftKindDeny  driftRuleKind = "deny"
+)
+
+// driftRuleKindOrder is the fixed rendering order for driftBuildUnverifiableFinding
+// — allow before deny — mirrored for the same determinism reason as
+// driftReasonOrder.
+var driftRuleKindOrder = []driftRuleKind{driftKindAllow, driftKindDeny}
+
+// driftItem is one (reason, rule kind, example subcommand) triple collected
+// while examining a tool's allow and deny rules.
 type driftItem struct {
 	reason  driftUnverifiableReason
+	kind    driftRuleKind
 	subject string
 }
 
 // runDriftUnverifiable examines every configured tool with at least one
-// allow rule (an inert tool, tools.inert's own subject, has nothing here to
-// verify) along two INDEPENDENT axes — see driftCatalogReason (can this
-// tool's subcommand catalog be trusted at all) and driftFlagItems (can each
-// individual allow rule's flags be trusted) — and emits at most ONE finding
-// per tool aggregating both. A tool where every axis comes back clean gets
-// no finding at all: silence means checked-and-clean, and design §7.6 is
+// allow OR deny rule along two INDEPENDENT axes — see driftCatalogReason (can
+// this tool's subcommand catalog be trusted at all) and driftFlagItems (can
+// each individual rule be trusted) — and emits at most ONE finding per tool
+// aggregating both. A tool with neither allow nor deny rules has nothing
+// here to verify (it is tools.inert's own subject for the allow-rule case; a
+// tool config with only deny rules and no allow rules is not tools.inert,
+// but genuinely has zero rules of ANY kind for drift to examine only when
+// both lists are empty). A tool where every axis comes back clean gets no
+// finding at all: silence means checked-and-clean, and design §7.6 is
 // explicit that MOST tools will not reach that state (only four tools carry
 // a knowledge-table entry, and full flag coverage is the exception even for
-// those).
+// those — and, as of driftReasonNoExhaustivenessAssertion, full coverage
+// alone no longer reaches that state either).
 func runDriftUnverifiable(ctx context.Context, in *Input) Result {
 	var findings []Finding
 	for _, name := range toolSortedNames(in.Config.Tools) {
 		tc := in.Config.Tools[name]
-		if tc.Binary == "" || len(tc.Allow) == 0 {
+		if tc.Binary == "" || (len(tc.Allow) == 0 && len(tc.Deny) == 0) {
 			continue
 		}
-		if f, ok := driftToolUnverifiable(ctx, name, tc); ok {
+		if f, ok := driftToolUnverifiable(ctx, in, name, tc); ok {
 			findings = append(findings, f)
 		}
 	}
@@ -231,23 +337,21 @@ func runDriftUnverifiable(ctx context.Context, in *Input) Result {
 
 // driftToolUnverifiable combines one tool's catalog-dimension reason (at
 // most one, applies to the whole tool) and flag-dimension items (0..N, one
-// per affected allow rule) into a single Finding, or reports ok == false
-// when neither axis found anything to report.
-func driftToolUnverifiable(ctx context.Context, name string, tc config.ToolConfig) (Finding, bool) {
+// per affected allow/deny rule) into a single Finding, or reports ok == false
+// when neither axis found anything to report (or the resulting sentence list
+// is somehow empty regardless — see driftBuildUnverifiableFinding).
+func driftToolUnverifiable(ctx context.Context, in *Input, name string, tc config.ToolConfig) (Finding, bool) {
 	catalogReason := driftCatalogReason(ctx, name, tc)
-	items := driftFlagItems(name, tc)
-	if catalogReason == "" && len(items) == 0 {
-		return Finding{}, false
-	}
-	return driftBuildUnverifiableFinding(name, len(tc.Allow), catalogReason, items), true
+	items := driftFlagItems(in, name, tc)
+	return driftBuildUnverifiableFinding(name, len(tc.Allow), len(tc.Deny), catalogReason, items)
 }
 
 // driftCatalogReason answers whether this tool's SUBCOMMAND CATALOG can be
 // trusted as exhaustive at all (design §5.3), independent of any specific
-// allow rule: "" means yes (a genuine, non-empty, per-tool-vetted catalog
-// probe succeeded); any other value is the specific reason it does not,
-// named per the design's own bounding rule ("unknown", never a guess built
-// from a partial source).
+// allow or deny rule: "" means yes (a genuine, non-empty, per-tool-vetted
+// catalog probe succeeded); any other value is the specific reason it does
+// not, named per the design's own bounding rule ("unknown", never a guess
+// built from a partial source).
 //
 //   - no LookupToolKnowledge entry at all for this tool's basename: the
 //     catalog is unknown, full stop (§7.8: "an unknown tool gets the generic
@@ -284,51 +388,112 @@ func driftCatalogReason(ctx context.Context, name string, tc config.ToolConfig) 
 	return ""
 }
 
-// driftFlagItems examines every one of tc's allow rules along the FLAG
-// dimension: can this rule's flags be checked against the installed tool at
-// all. It reads introspect.LoadCacheStale ONCE per tool (never LoadCache):
-// LoadCache is validity-gated against a CacheValidity{ConfigHash, ...}, and
-// ConfigHash is produced by introspect's own unexported configHash — doctor
-// cannot recompute it and has no way to construct a CacheValidity that would
-// ever genuinely match a real cache entry, so LoadCache is not a usable read
-// from outside the package in practice (see the design decisions in this
-// file's header comment: "the cached-only path isn't available"). This also
-// means doctor cannot skip probing when a cache "looks fresh" — freshness
-// itself is unobservable from here, which is why driftCatalogReason above
-// probes unconditionally rather than trying to shortcut on cache state.
+// driftCacheTrustReason answers whether a TOOL's cached schema — once it
+// exists at all — can still be trusted to describe the CURRENTLY configured
+// binary, independent of any single rule (design §7.6 RULING 3).
+// introspect.LoadCacheStaleAt performs no validity check whatsoever (that is
+// its whole point, for drift.tool-version-changed's sake), so a rule-by-rule
+// read on top of it would otherwise silently believe a schema describing a
+// DIFFERENT binary, or one older than the binary it now names — exactly the
+// gap a reviewer measured: a config whose binary points at a different file
+// reporting the same --version output, with drift.unverifiable saying
+// nothing.
 //
-// A rule may appear in more than one bucket (e.g. a multi-segment rule that
-// is ALSO missing from the cache) — that is two distinct, independently true
-// facts about the same rule, not a double-count of one problem.
-func driftFlagItems(name string, tc config.ToolConfig) []driftItem {
+// A binary path change is checked first via Schema.Binary (stamped at
+// introspection time by Introspect) against the tool's currently configured
+// Binary — an empty Schema.Binary (a hand-built or pre-Binary-field cache
+// entry) is treated as unknown, never a mismatch, since it carries no signal
+// either way. Staleness is checked only when env.Stat can resolve the
+// currently configured binary at all; a binary that cannot be stat'd is
+// drift.tool-version-changed's and driftCatalogReason's own concern, not
+// reinvented here as a third reason for the same underlying fact.
+func driftCacheTrustReason(env Env, tc config.ToolConfig, schema *introspect.Schema) (driftUnverifiableReason, bool) {
+	if schema.Binary != "" && schema.Binary != tc.Binary {
+		return driftReasonBinaryChanged, true
+	}
+	if fi, err := env.Stat(tc.Binary); err == nil && fi.ModTime.After(schema.IntrospectedAt) {
+		return driftReasonCacheOlderThanBinary, true
+	}
+	return 0, false
+}
+
+// driftFlagItems examines every one of tc's allow AND deny rules. Allow
+// rules are examined along the FLAG dimension: can this rule's flags be
+// checked against the installed tool at all. Deny rules carry no flags
+// (config.DenyRule has only Subcommand) and are never introspected into the
+// cache (Introspect ranges over tc.Allow only), so a deny rule is examined
+// only for the one thing that applies to it: whether its subcommand can even
+// be matched past the first segment (§5.3) — its catalog-membership
+// trustworthiness is driftCatalogReason's tool-wide concern, reported once,
+// not duplicated per deny rule here.
+//
+// It reads introspect.LoadCacheStaleAt ONCE per tool, rooted at
+// in.Paths.CacheDir (never introspect.LoadCacheStale, which resolves the
+// REAL host's cache dir regardless of Input — design §7.6 RULING 1 — and
+// never LoadCache): LoadCache is validity-gated against a
+// CacheValidity{ConfigHash, ...}, and ConfigHash is produced by introspect's
+// own unexported configHash — doctor cannot recompute it and has no way to
+// construct a CacheValidity that would ever genuinely match a real cache
+// entry, so LoadCache is not a usable read from outside the package in
+// practice (see this file's header comment: "the cached-only path isn't
+// available"). This also means doctor cannot skip probing when a cache
+// "looks fresh" — freshness itself is unobservable from here, which is why
+// driftCatalogReason above probes unconditionally rather than trying to
+// shortcut on cache state.
+//
+// A rule may appear in more than one bucket (e.g. a multi-segment allow rule
+// that is ALSO missing from the cache) — that is two distinct, independently
+// true facts about the same rule, not a double-count of one problem.
+func driftFlagItems(in *Input, name string, tc config.ToolConfig) []driftItem {
 	var items []driftItem
-	schema, cached := introspect.LoadCacheStale(name)
+	schema, cached := introspect.LoadCacheStaleAt(in.Paths.CacheDir, name)
+
+	var trust driftUnverifiableReason
+	var untrusted bool
+	if cached {
+		trust, untrusted = driftCacheTrustReason(in.Env, tc, schema)
+	}
 
 	for _, rule := range tc.Allow {
 		subcmdKey := strings.Join(rule.Subcommand, " ")
 		subject := strconv.Quote(name + " " + subcmdKey)
 
 		if len(rule.Subcommand) > 1 {
-			items = append(items, driftItem{reason: driftReasonMultiSegment, subject: subject})
+			items = append(items, driftItem{reason: driftReasonMultiSegment, kind: driftKindAllow, subject: subject})
 		}
 
 		if !cached {
-			items = append(items, driftItem{reason: driftReasonNoCachedSchema, subject: subject})
+			items = append(items, driftItem{reason: driftReasonNoCachedSchema, kind: driftKindAllow, subject: subject})
+			continue
+		}
+		if untrusted {
+			items = append(items, driftItem{reason: trust, kind: driftKindAllow, subject: subject})
 			continue
 		}
 
 		sub, ok := schema.Subcommands[subcmdKey]
 		switch {
 		case !ok:
-			items = append(items, driftItem{reason: driftReasonNotInCache, subject: subject})
+			items = append(items, driftItem{reason: driftReasonNotInCache, kind: driftKindAllow, subject: subject})
 		case sub.ParseOutcome != introspect.ParseOutcomeParsed:
-			items = append(items, driftItem{reason: driftReasonNotParsed, subject: subject})
+			items = append(items, driftItem{reason: driftReasonNotParsed, kind: driftKindAllow, subject: subject})
 		case sub.CoverageTokens == 0:
-			items = append(items, driftItem{reason: driftReasonCoverageUnmeasurable, subject: subject})
+			items = append(items, driftItem{reason: driftReasonCoverageUnmeasurable, kind: driftKindAllow, subject: subject})
 		case sub.CoverageFound < sub.CoverageTokens:
-			items = append(items, driftItem{reason: driftReasonLowCoverage, subject: subject})
+			items = append(items, driftItem{reason: driftReasonLowCoverage, kind: driftKindAllow, subject: subject})
+		default:
+			items = append(items, driftItem{reason: driftReasonNoExhaustivenessAssertion, kind: driftKindAllow, subject: subject})
 		}
 	}
+
+	for _, rule := range tc.Deny {
+		subcmdKey := strings.Join(rule.Subcommand, " ")
+		subject := strconv.Quote(name + " " + subcmdKey)
+		if len(rule.Subcommand) > 1 {
+			items = append(items, driftItem{reason: driftReasonMultiSegment, kind: driftKindDeny, subject: subject})
+		}
+	}
+
 	return items
 }
 
@@ -346,37 +511,65 @@ func driftCapList(items []string) (named []string, suffix string) {
 }
 
 // driftBuildUnverifiableFinding renders one tool's catalog-dimension reason
-// (if any) and flag-dimension items (bucketed by reason, in driftReasonOrder)
-// into a single Finding.
-func driftBuildUnverifiableFinding(name string, ruleCount int, catalogReason string, items []driftItem) Finding {
+// (if any) and flag-dimension items (bucketed by (reason, rule kind), in
+// driftReasonOrder x driftRuleKindOrder) into a single Finding. ok is false
+// when the resulting sentence list is EMPTY — design §7.6 RULING 6: a reason
+// bucket with items but no text (a driftReasonText entry gone missing, or a
+// reason struck from driftReasonOrder so its bucket is never visited) must
+// never produce a finding with a body-less Detail ("tools.git has 1 allow
+// rule(s). .", the exact shape a reviewer produced by deleting one table
+// entry) — silence is preferable to a causeless finding.
+// TestDriftReasonTableIsComplete is the structural guard that keeps this
+// branch unreachable in practice; this is the runtime backstop.
+func driftBuildUnverifiableFinding(name string, allowCount, denyCount int, catalogReason string, items []driftItem) (Finding, bool) {
 	var sentences []string
 	if catalogReason != "" {
 		sentences = append(sentences, "subcommand catalog: "+catalogReason)
 	}
 
-	byReason := map[driftUnverifiableReason][]string{}
-	for _, it := range items {
-		byReason[it.reason] = append(byReason[it.reason], it.subject)
+	type driftBucketKey struct {
+		reason driftUnverifiableReason
+		kind   driftRuleKind
 	}
+	byBucket := map[driftBucketKey][]string{}
+	for _, it := range items {
+		k := driftBucketKey{reason: it.reason, kind: it.kind}
+		byBucket[k] = append(byBucket[k], it.subject)
+	}
+
 	for _, reason := range driftReasonOrder {
-		subjects := byReason[reason]
-		if len(subjects) == 0 {
+		text, haveText := driftReasonText[reason]
+		if !haveText || text == "" {
 			continue
 		}
-		sort.Strings(subjects)
-		named, suffix := driftCapList(subjects)
-		sentences = append(sentences, fmt.Sprintf(
-			"%d allow rule(s) %s (%s%s)",
-			len(subjects), driftReasonText[reason], strings.Join(named, ", "), suffix))
+		for _, kind := range driftRuleKindOrder {
+			subjects := byBucket[driftBucketKey{reason: reason, kind: kind}]
+			if len(subjects) == 0 {
+				continue
+			}
+			sort.Strings(subjects)
+			named, suffix := driftCapList(subjects)
+			sentences = append(sentences, fmt.Sprintf(
+				"%d %s rule(s) %s (%s%s)",
+				len(subjects), kind, text, strings.Join(named, ", "), suffix))
+		}
+	}
+
+	if len(sentences) == 0 {
+		return Finding{}, false
+	}
+
+	base := fmt.Sprintf("tools.%s has %d allow rule(s)", name, allowCount)
+	if denyCount > 0 {
+		base += fmt.Sprintf(" and %d deny rule(s)", denyCount)
 	}
 
 	return Finding{
 		Severity: SeverityInfo,
-		Title:    fmt.Sprintf("drift could not confirm all of %s's allow rules against the installed tool", name),
+		Title:    fmt.Sprintf("drift could not confirm all of %s's rules against the installed tool", name),
 		Detail: fmt.Sprintf(
-			"tools.%s has %d allow rule(s). %s.",
-			name, ruleCount, strings.Join(sentences, "; ")),
-		Path:   At("tools", name, "allow"),
+			"%s. %s.", base, strings.Join(sentences, "; ")),
+		Path:   At("tools", name),
 		DocRef: "design/doctor/wraptool-doctor.md",
-	}
+	}, true
 }

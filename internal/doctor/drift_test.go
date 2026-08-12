@@ -14,17 +14,26 @@ import (
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/introspect"
+	"github.com/pti/wraptool/internal/paths"
 )
 
 // ---------------------------------------------------------------- fixtures/helpers
 
 // driftIsolateCacheDir points XDG_CACHE_HOME at a fresh t.TempDir() for the
-// duration of the test, so introspect.SaveCache/LoadCacheStale — which this
-// package's drift checks call directly, per drift.go's own header comment —
-// never touch this HOST's real introspection cache. Mirrors
-// internal/introspect/cache_test.go's own isolateCacheDir; duplicated rather
-// than exported, since introspect has no reason to grow a test-only export
-// for one caller outside the package.
+// duration of the test, so introspect.SaveCache — the only remaining WRITE
+// path, which this package's drift checks never call themselves (design
+// §5.2) but which driftSeedCache uses to seed fixtures — never touches this
+// HOST's real introspection cache. Mirrors internal/introspect/cache_test.go's
+// own isolateCacheDir; duplicated rather than exported, since introspect has
+// no reason to grow a test-only export for one caller outside the package.
+//
+// The READ side no longer needs this isolation at all (design §7.6 RULING 1:
+// drift.go now reads through introspect.LoadCacheStaleAt(in.Paths.CacheDir,
+// ...), never introspect.LoadCacheStale) — driftInput sets Paths.CacheDir to
+// paths.CacheDir() explicitly, which only agrees with where driftSeedCache
+// wrote because THIS function has already redirected XDG_CACHE_HOME and
+// reloaded by the time driftInput reads it. Still required before every
+// driftSeedCache call for that reason.
 func driftIsolateCacheDir(t *testing.T) {
 	t.Helper()
 	old, had := os.LookupEnv("XDG_CACHE_HOME")
@@ -77,15 +86,24 @@ These are common Git commands used in various situations:
 
 // driftInput builds a *Input suitable for driving runDriftToolVersionChanged/
 // runDriftUnverifiable directly (plan §1 rule 8: tested by calling the
-// RunFunc, never through Registered()). Env is a bare MapEnv — neither check
-// in this file ever calls it (drift.go's own header comment: probing and
-// cache reads go straight through introspect, not Env) — set only so Input
-// satisfies doctor.Run's nil-Env guard, should a future caller route through
-// it.
+// RunFunc, never through Registered()). Env is a bare MapEnv — most cases in
+// this file never populate it (driftCacheTrustReason's Env.Stat call only
+// fires once a cache entry exists AND names the currently configured binary,
+// see the "cache older than binary" case below) — set only so Input
+// satisfies doctor.Run's nil-Env guard and so a case that DOES need Env can
+// populate it via `in.Env.(*MapEnv)`.
+//
+// Paths.CacheDir is set to paths.CacheDir() — the value driftIsolateCacheDir
+// has already redirected via XDG_CACHE_HOME by the time a test calls this —
+// so introspect.LoadCacheStaleAt(in.Paths.CacheDir, ...), the ONLY cache read
+// drift.go performs (design §7.6 RULING 1), resolves to the same isolated
+// directory driftSeedCache wrote into, hermetically, with no reliance on
+// LoadCacheStale's real-host default.
 func driftInput(tools map[string]config.ToolConfig) *Input {
 	return &Input{
 		Env:    NewMapEnv(),
 		GOOS:   "linux",
+		Paths:  HostPaths{CacheDir: paths.CacheDir()},
 		Config: &config.Config{Tools: tools},
 		Probe:  true,
 	}
@@ -93,13 +111,18 @@ func driftInput(tools map[string]config.ToolConfig) *Input {
 
 // driftSeedCache is introspect.SaveCache with drift_test.go's own defaults
 // filled in (IntrospectedAt, an empty Subcommands map when the caller has no
-// use for one) so each test case only states what it cares about.
-func driftSeedCache(t *testing.T, name, versionOutput string, subs map[string]introspect.Subcommand) {
+// use for one) so each test case only states what it cares about. binary is
+// stamped as Schema.Binary — the field driftCacheTrustReason (design §7.6
+// RULING 3) compares against the tool's CURRENTLY configured Binary, so a
+// case exercising the "cache describes a different binary" reason passes a
+// binary here that deliberately differs from config.ToolConfig.Binary.
+func driftSeedCache(t *testing.T, name, binary, versionOutput string, subs map[string]introspect.Subcommand) {
 	t.Helper()
 	if subs == nil {
 		subs = map[string]introspect.Subcommand{}
 	}
 	if err := introspect.SaveCache(name, &introspect.Schema{
+		Binary:         binary,
 		VersionOutput:  versionOutput,
 		IntrospectedAt: time.Now(),
 		Subcommands:    subs,
@@ -159,7 +182,7 @@ func TestRunDriftToolVersionChanged(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "tool", "git version 2.44.0\n")
-		driftSeedCache(t, "git", "", nil)
+		driftSeedCache(t, "git", bin, "", nil)
 		tools := map[string]config.ToolConfig{
 			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
 		}
@@ -173,7 +196,7 @@ func TestRunDriftToolVersionChanged(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "tool", "git version 2.44.0\nextra line ignored\n")
-		driftSeedCache(t, "git", "git version 2.44.0", nil)
+		driftSeedCache(t, "git", bin, "git version 2.44.0", nil)
 		tools := map[string]config.ToolConfig{
 			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
 		}
@@ -187,7 +210,7 @@ func TestRunDriftToolVersionChanged(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "tool", "git version 2.45.0\n")
-		driftSeedCache(t, "git", "git version 2.44.0", nil)
+		driftSeedCache(t, "git", bin, "git version 2.44.0", nil)
 		tools := map[string]config.ToolConfig{
 			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
 		}
@@ -213,7 +236,7 @@ func TestRunDriftToolVersionChanged(t *testing.T) {
 	t.Run("probe fails (binary missing): no finding even with a cached version", func(t *testing.T) {
 		driftIsolateCacheDir(t)
 		missing := filepath.Join(t.TempDir(), "does-not-exist")
-		driftSeedCache(t, "git", "git version 2.44.0", nil)
+		driftSeedCache(t, "git", missing, "git version 2.44.0", nil)
 		tools := map[string]config.ToolConfig{
 			"git": {Binary: missing, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
 		}
@@ -228,8 +251,8 @@ func TestRunDriftToolVersionChanged(t *testing.T) {
 		dir := t.TempDir()
 		binA := driftFakeShellScript(t, dir, "toola", "version A2\n")
 		binB := driftFakeShellScript(t, dir, "toolb", "version B2\n")
-		driftSeedCache(t, "alpha", "version A1", nil)
-		driftSeedCache(t, "zeta", "version B1", nil)
+		driftSeedCache(t, "alpha", binA, "version A1", nil)
+		driftSeedCache(t, "zeta", binB, "version B1", nil)
 		tools := map[string]config.ToolConfig{
 			"alpha": {Binary: binA, Allow: []config.AllowRule{{Subcommand: []string{"go"}}}},
 			"zeta":  {Binary: binB, Allow: []config.AllowRule{{Subcommand: []string{"go"}}}},
@@ -286,7 +309,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		if !strings.Contains(f.Detail, "never been introspected") {
 			t.Errorf("Detail %q missing the no-cached-schema reason", f.Detail)
 		}
-		if got, want := f.Path.String(), At("tools", "custom", "allow").String(); got != want {
+		if got, want := f.Path.String(), At("tools", "custom").String(); got != want {
 			t.Errorf("Path = %q, want %q", got, want)
 		}
 	})
@@ -313,11 +336,15 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		}
 	})
 
-	t.Run("fully verifiable rule: exhaustive catalog, parsed, full coverage, single segment — no finding", func(t *testing.T) {
+	t.Run("full coverage, single segment, trusted cache: still unverifiable — no exhaustiveness assertion exists yet", func(t *testing.T) {
+		// Design §7.6 RULING 4: coverage alone is not the whole flag-drift gate
+		// — a per-tool "help is exhaustive" assertion is required too, and no
+		// tool carries one yet, so even a rule this clean cannot support a
+		// flag-level absence claim today.
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
-		driftSeedCache(t, "git", "git version 2.44.0", map[string]introspect.Subcommand{
+		driftSeedCache(t, "git", bin, "git version 2.44.0", map[string]introspect.Subcommand{
 			"pull": {
 				Flags:          map[string]introspect.Flag{"--depth": {Type: "integer", TakesValue: true}},
 				ParseOutcome:   introspect.ParseOutcomeParsed,
@@ -329,8 +356,14 @@ func TestRunDriftUnverifiable(t *testing.T) {
 			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
 		}
 		res := runDriftUnverifiable(context.Background(), driftInput(tools))
-		if res.Outcome() != OutcomePass {
-			t.Fatalf("Outcome = %v, want pass: %+v", res.Outcome(), res.Findings)
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		if !strings.Contains(res.Findings[0].Detail, "no tool yet carries the design §7.6") {
+			t.Errorf("Detail %q missing the no-exhaustiveness-assertion reason", res.Findings[0].Detail)
+		}
+		if strings.Contains(res.Findings[0].Detail, "subcommand catalog:") {
+			t.Errorf("Detail %q should not carry a catalog-dimension reason — the catalog probe was exhaustive", res.Findings[0].Detail)
 		}
 	})
 
@@ -338,7 +371,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "gcloud", driftGitCatalog)
-		driftSeedCache(t, "gcloud", "", map[string]introspect.Subcommand{
+		driftSeedCache(t, "gcloud", bin, "", map[string]introspect.Subcommand{
 			"compute instances list": {
 				ParseOutcome:   introspect.ParseOutcomeParsed,
 				CoverageTokens: 1,
@@ -365,7 +398,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
-		driftSeedCache(t, "git", "", map[string]introspect.Subcommand{
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
 			"status": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 1, CoverageFound: 1},
 		})
 		tools := map[string]config.ToolConfig{
@@ -384,7 +417,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
-		driftSeedCache(t, "git", "", map[string]introspect.Subcommand{
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
 			"pull": {ParseOutcome: introspect.ParseOutcomeGarbage},
 		})
 		tools := map[string]config.ToolConfig{
@@ -403,7 +436,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
-		driftSeedCache(t, "git", "", map[string]introspect.Subcommand{
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
 			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 0, CoverageFound: 0},
 		})
 		tools := map[string]config.ToolConfig{
@@ -422,7 +455,7 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		driftIsolateCacheDir(t)
 		dir := t.TempDir()
 		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
-		driftSeedCache(t, "git", "", map[string]introspect.Subcommand{
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
 			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 5, CoverageFound: 2},
 		})
 		tools := map[string]config.ToolConfig{
@@ -434,6 +467,138 @@ func TestRunDriftUnverifiable(t *testing.T) {
 		}
 		if !strings.Contains(res.Findings[0].Detail, "did not fully account for") {
 			t.Errorf("Detail %q missing the low-coverage reason", res.Findings[0].Detail)
+		}
+	})
+
+	t.Run("binary changed: cached schema names a different binary path — the exact gap a reviewer measured", func(t *testing.T) {
+		// Design §7.6 RULING 3: a config whose binary points at a different
+		// file reporting the same version must not read as verifiable just
+		// because the cache "looks" complete — the cache describes a DIFFERENT
+		// program.
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
+		otherBin := driftFakeShellScript(t, dir, "not-really-git", driftGitCatalog)
+		driftSeedCache(t, "git", otherBin, "", map[string]introspect.Subcommand{
+			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 1, CoverageFound: 1},
+		})
+		tools := map[string]config.ToolConfig{
+			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
+		}
+		res := runDriftUnverifiable(context.Background(), driftInput(tools))
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		d := res.Findings[0].Detail
+		if !strings.Contains(d, "different binary path") {
+			t.Errorf("Detail %q missing the binary-changed reason", d)
+		}
+		// The stale per-subcommand fields (not-in-cache/not-parsed/coverage) must
+		// NOT also fire once the cache itself is untrusted — one honest reason,
+		// not a pile of derivative ones built on data that cannot be trusted.
+		if strings.Contains(d, "missing from the last cached introspection") ||
+			strings.Contains(d, "did not fully account for") {
+			t.Errorf("Detail %q should not ALSO report per-subcommand reasons once the binary itself changed: %s", d, d)
+		}
+	})
+
+	t.Run("cache older than binary: same path, rebuilt in place since the cache was written", func(t *testing.T) {
+		// Design §7.6 RULING 3, second half: a binary can be upgraded in place
+		// (same path), which a path-only comparison would miss entirely —
+		// Env.Stat's mtime is the only remaining signal.
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
+			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 1, CoverageFound: 1},
+		})
+		tools := map[string]config.ToolConfig{
+			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
+		}
+		in := driftInput(tools)
+		// The cache's IntrospectedAt is "now" (driftSeedCache); make the binary
+		// appear rebuilt an hour after that.
+		env := in.Env.(*MapEnv)
+		env.Files[bin] = MapFile{ModTime: time.Now().Add(time.Hour)}
+		res := runDriftUnverifiable(context.Background(), in)
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		if !strings.Contains(res.Findings[0].Detail, "older than the currently configured binary's own modification time") {
+			t.Errorf("Detail %q missing the cache-older-than-binary reason", res.Findings[0].Detail)
+		}
+	})
+
+	t.Run("cache newer than binary: no staleness reason", func(t *testing.T) {
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
+		driftSeedCache(t, "git", bin, "", map[string]introspect.Subcommand{
+			"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 1, CoverageFound: 1},
+		})
+		tools := map[string]config.ToolConfig{
+			"git": {Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"pull"}}}},
+		}
+		in := driftInput(tools)
+		env := in.Env.(*MapEnv)
+		env.Files[bin] = MapFile{ModTime: time.Now().Add(-time.Hour)}
+		res := runDriftUnverifiable(context.Background(), in)
+		// Full coverage, trusted cache: only driftReasonNoExhaustivenessAssertion
+		// fires (ruling 4), never the staleness reason.
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		if strings.Contains(res.Findings[0].Detail, "older than the currently configured binary") {
+			t.Errorf("Detail %q should not report staleness — the binary is OLDER than the cache: %s", res.Findings[0].Detail, res.Findings[0].Detail)
+		}
+	})
+
+	t.Run("deny rules: multi-segment counted and labeled deny, distinct from allow", func(t *testing.T) {
+		// Design §7.6 RULING 5: a tool with deny rules but no allow rules must
+		// still be examined, and the text must say "deny", not "allow".
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGitCatalog)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {
+				Binary: bin,
+				Deny:   []config.DenyRule{{Subcommand: []string{"compute", "instances", "delete"}}},
+			},
+		}
+		res := runDriftUnverifiable(context.Background(), driftInput(tools))
+		if len(res.Findings) != 1 {
+			t.Fatalf("Findings = %d, want 1: %+v", len(res.Findings), res.Findings)
+		}
+		d := res.Findings[0].Detail
+		if !strings.Contains(d, "1 deny rule(s) have more than one subcommand segment") {
+			t.Errorf("Detail %q missing the deny-labeled multi-segment reason: %s", d, d)
+		}
+		if strings.Contains(d, "allow rule(s) have more than one") {
+			t.Errorf("Detail %q wrongly labels the deny rule as allow: %s", d, d)
+		}
+		if !strings.Contains(d, "0 allow rule(s) and 1 deny rule(s)") {
+			t.Errorf("Detail %q missing the allow/deny rule counts: %s", d, d)
+		}
+	})
+
+	t.Run("deny rule with a single segment and no cache concerns: nothing to report", func(t *testing.T) {
+		// A deny rule carries no flags (config.DenyRule has only Subcommand) and
+		// is never introspected into the cache, so — unlike an allow rule — a
+		// single-segment deny rule with an otherwise-trustworthy catalog has
+		// NOTHING left to report: driftReasonNoCachedSchema and the flag-cache
+		// buckets are allow-only by design.
+		driftIsolateCacheDir(t)
+		dir := t.TempDir()
+		bin := driftFakeShellScript(t, dir, "gcloud", driftGitCatalog)
+		tools := map[string]config.ToolConfig{
+			"gcloud": {
+				Binary: bin,
+				Deny:   []config.DenyRule{{Subcommand: []string{"compute"}}},
+			},
+		}
+		res := runDriftUnverifiable(context.Background(), driftInput(tools))
+		if res.Outcome() != OutcomePass {
+			t.Fatalf("Outcome = %v, want pass: %+v", res.Outcome(), res.Findings)
 		}
 	})
 
@@ -513,6 +678,76 @@ func TestRunDriftUnverifiable(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------- reason-table completeness (RULING 6)
+
+// TestDriftReasonTableIsComplete is the structural guard design §7.6 RULING 6
+// asks for: every reason driftAllReasons() enumerates (i.e. every declared
+// driftUnverifiableReason member, up to the driftReasonCount sentinel)
+// appears EXACTLY ONCE in driftReasonOrder, and has a non-empty entry in
+// driftReasonText. A reviewer produced a causeless finding — "tools.git has 1
+// allow rule(s). ." — by deleting one entry from driftReasonOrder; this test
+// fails the build the moment that happens again, for either table.
+func TestDriftReasonTableIsComplete(t *testing.T) {
+	all := driftAllReasons()
+
+	seenInOrder := map[driftUnverifiableReason]int{}
+	for _, r := range driftReasonOrder {
+		seenInOrder[r]++
+	}
+	for _, r := range all {
+		switch n := seenInOrder[r]; {
+		case n == 0:
+			t.Errorf("driftReasonOrder is missing reason %d — a rule flagged with it would never be rendered", r)
+		case n > 1:
+			t.Errorf("driftReasonOrder names reason %d %d times, want exactly once", r, n)
+		}
+	}
+	if len(driftReasonOrder) != len(all) {
+		t.Errorf("driftReasonOrder has %d entries, want %d (driftAllReasons()) — an entry not in the declared set snuck in, or a duplicate is padding the count", len(driftReasonOrder), len(all))
+	}
+
+	for _, r := range all {
+		text, ok := driftReasonText[r]
+		if !ok {
+			t.Errorf("driftReasonText is missing an entry for reason %d", r)
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			t.Errorf("driftReasonText[%d] is empty", r)
+		}
+	}
+	if len(driftReasonText) != len(all) {
+		t.Errorf("driftReasonText has %d entries, want %d (driftAllReasons()) — a stale entry for a removed reason, or an entry for an undeclared one", len(driftReasonText), len(all))
+	}
+}
+
+// TestDriftBuildUnverifiableFindingRefusesACauselessResult is the runtime
+// backstop TestDriftReasonTableIsComplete's structural guard exists to make
+// unreachable: driftBuildUnverifiableFinding itself must refuse to emit a
+// finding whose sentence list came out empty (design §7.6 RULING 6), rather
+// than trusting the table is always complete. Simulated directly by handing
+// it an item whose reason has no driftReasonText entry — the exact shape a
+// reviewer produced by deleting one.
+func TestDriftBuildUnverifiableFindingRefusesACauselessResult(t *testing.T) {
+	const driftReasonUndeclared driftUnverifiableReason = 999 // not in driftReasonOrder or driftReasonText
+
+	items := []driftItem{{reason: driftReasonUndeclared, kind: driftKindAllow, subject: `"git pull"`}}
+	if _, ok := driftBuildUnverifiableFinding("git", 1, 0, "", items); ok {
+		t.Error("driftBuildUnverifiableFinding should refuse to emit a finding for a reason with no rendering — items alone are not enough, a sentence must actually have been built")
+	}
+
+	// The catalog-dimension reason alone still produces a real, non-causeless
+	// finding, proving the refusal is specific to an empty SENTENCE list, not
+	// to "items was non-nil".
+	f, ok := driftBuildUnverifiableFinding("git", 1, 0, "an unrelated but real reason", items)
+	if !ok {
+		t.Fatal("driftBuildUnverifiableFinding should still emit a finding when the catalog-dimension reason alone is non-empty")
+	}
+	if !strings.Contains(f.Detail, "an unrelated but real reason") {
+		t.Errorf("Detail %q missing the catalog-dimension reason", f.Detail)
+	}
+}
+
 // ---------------------------------------------------------------- well-formedness spot check
 
 // TestDriftFindingsAreWellFormed is a focused version of
@@ -525,14 +760,20 @@ func TestDriftFindingsAreWellFormed(t *testing.T) {
 	driftIsolateCacheDir(t)
 	dir := t.TempDir()
 	bin := driftFakeShellScript(t, dir, "git", driftGitCatalog)
-	driftSeedCache(t, "git", "git version 2.44.0", map[string]introspect.Subcommand{
+	driftSeedCache(t, "git", bin, "git version 2.44.0", map[string]introspect.Subcommand{
 		"pull": {ParseOutcome: introspect.ParseOutcomeParsed, CoverageTokens: 3, CoverageFound: 1},
 	})
 	tools := map[string]config.ToolConfig{
-		"git": {Binary: bin, Allow: []config.AllowRule{
-			{Subcommand: []string{"pull"}},
-			{Subcommand: []string{"push"}},
-		}},
+		"git": {
+			Binary: bin,
+			Allow: []config.AllowRule{
+				{Subcommand: []string{"pull"}},
+				{Subcommand: []string{"push"}},
+			},
+			// Exercises the deny-rule bucket alongside allow (design §7.6 RULING 5):
+			// a multi-segment deny rule.
+			Deny: []config.DenyRule{{Subcommand: []string{"push", "--force"}}},
+		},
 	}
 	in := driftInput(tools)
 

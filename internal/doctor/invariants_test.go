@@ -94,6 +94,24 @@ func invariantsVirginInput() *Input {
 	}
 }
 
+// invariantsMissingBinDir is a directory that does not exist on any host —
+// the parent of every tool binary invariantsFullyPopulatedInput names (design
+// §7.6 RULING 2). Before this, the fixture pointed at real absolute paths
+// (/usr/bin/git, /usr/bin/kubectl, /usr/bin/gcloud): once F1 gave
+// drift.tool-version-changed/drift.unverifiable NeedsProbe (which
+// invariantsFullyPopulatedInput satisfies via Probe: true), every registry-
+// wide invariant test — run 8x each by TestChecksAreDeterministic alone —
+// started spawning REAL child processes against whatever the CI/dev host
+// happened to have installed at those paths, a non-hermetic, non-portable
+// dependency this package's whole MapEnv seam exists to avoid. A path under
+// this directory never resolves: exec fails immediately with ENOENT
+// (harmless, deterministic, no fork survives to become a process), so every
+// probe-gated check reports its own honest "could not verify" instead of
+// executing anything for real. The basenames (git/kubectl/gcloud) are kept
+// so LookupToolKnowledge/ToolBasename-keyed logic (drift.go's
+// driftCatalogReason) still exercises its "known tool" branch.
+const invariantsMissingBinDir = "/home/user/.cache/wraptool-doctor-invariants-fixture-missing-bin"
+
 // invariantsFullyPopulatedInput satisfies every Requirement bit doctor.go's
 // provides() knows about, so a config-gated (or workspace-gated, probe-gated,
 // pool-verify-gated) check gets exercised by the registry-wide invariants too
@@ -105,7 +123,9 @@ func invariantsVirginInput() *Input {
 // check that ranges over cfg.Tools/cfg.MCPServers without sorting keys, or
 // that only reaches its real logic past a non-empty-listen/non-empty-token
 // branch, needs more than one entry and a non-default listener to ever be
-// exercised at all.
+// exercised at all. Every tool binary lives under invariantsMissingBinDir
+// (design §7.6 RULING 2), which never exists on any host — see its own doc
+// comment for why.
 func invariantsFullyPopulatedInput() *Input {
 	return &Input{
 		Env:   NewMapEnv(),
@@ -118,15 +138,15 @@ func invariantsFullyPopulatedInput() *Input {
 			},
 			Tools: map[string]config.ToolConfig{
 				"git": {
-					Binary: "/usr/bin/git",
+					Binary: invariantsMissingBinDir + "/git",
 					Allow:  []config.AllowRule{{Subcommand: []string{"pull"}}},
 				},
 				"kubectl": {
-					Binary: "/usr/bin/kubectl",
+					Binary: invariantsMissingBinDir + "/kubectl",
 					Allow:  []config.AllowRule{{Subcommand: []string{"get", "pods"}}},
 				},
 				"gcloud": {
-					Binary: "/usr/bin/gcloud",
+					Binary: invariantsMissingBinDir + "/gcloud",
 					Allow:  []config.AllowRule{{Subcommand: []string{"compute", "instances", "list"}}},
 				},
 			},

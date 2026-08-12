@@ -3,6 +3,7 @@ package introspect
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -157,6 +158,78 @@ func TestLoadCacheStale_Missing(t *testing.T) {
 	isolateCacheDir(t)
 	if _, ok := LoadCacheStale("git"); ok {
 		t.Error("LoadCacheStale should report ok=false when no cache exists")
+	}
+}
+
+// TestLoadCacheStaleAt_Hermetic is the RULING 1 regression test
+// (design/doctor/wraptool-doctor.md §7.6): LoadCacheStaleAt must read from an
+// EXPLICIT cacheDir, never from paths.CacheDir(), so a caller outside this
+// package (doctor's drift group) never touches the real host's introspection
+// cache. Deliberately does NOT call isolateCacheDir — no XDG_CACHE_HOME
+// redirection at all — and writes directly under two independent
+// t.TempDir()s to prove the read is rooted at the argument, not at any
+// process-global state.
+func TestLoadCacheStaleAt_Hermetic(t *testing.T) {
+	dirA := filepath.Join(t.TempDir(), "cache-a")
+	dirB := filepath.Join(t.TempDir(), "cache-b")
+
+	if _, ok := LoadCacheStaleAt(dirA, "git"); ok {
+		t.Fatal("LoadCacheStaleAt should report ok=false when no cache exists at dirA")
+	}
+
+	at := time.Now().UTC().Truncate(time.Second)
+	data, err := json.Marshal(&Schema{
+		Binary:         "/usr/bin/git",
+		VersionOutput:  "git version 2.44.0",
+		IntrospectedAt: at,
+		Subcommands:    map[string]Subcommand{},
+		FormatVersion:  schemaFormatVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dirA, "introspection", "git.json")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	schema, ok := LoadCacheStaleAt(dirA, "git")
+	if !ok {
+		t.Fatal("LoadCacheStaleAt ok=false after writing directly under dirA")
+	}
+	if schema.VersionOutput != "git version 2.44.0" {
+		t.Errorf("VersionOutput = %q, want the seeded version", schema.VersionOutput)
+	}
+
+	// dirB never had anything written to it — reading it must never fall back
+	// to dirA, or to the real host's paths.CacheDir().
+	if _, ok := LoadCacheStaleAt(dirB, "git"); ok {
+		t.Error("LoadCacheStaleAt(dirB, ...) should report ok=false — nothing was ever written there")
+	}
+}
+
+// TestLoadCacheStale_DelegatesToLoadCacheStaleAt pins LoadCacheStale as
+// exactly LoadCacheStaleAt(paths.CacheDir(), toolName) — the real-host
+// entry point `serve`'s own callers keep using, now expressed as a thin
+// wrapper rather than its own read path.
+func TestLoadCacheStale_DelegatesToLoadCacheStaleAt(t *testing.T) {
+	isolateCacheDir(t)
+
+	at := time.Now().UTC().Truncate(time.Second)
+	if err := SaveCache("git", &Schema{VersionOutput: "v1", IntrospectedAt: at, Subcommands: map[string]Subcommand{}}); err != nil {
+		t.Fatal(err)
+	}
+
+	viaStale, okStale := LoadCacheStale("git")
+	viaAt, okAt := LoadCacheStaleAt(paths.CacheDir(), "git")
+	if okStale != okAt {
+		t.Fatalf("ok mismatch: LoadCacheStale=%v, LoadCacheStaleAt(paths.CacheDir(), ...)=%v", okStale, okAt)
+	}
+	if viaStale.VersionOutput != viaAt.VersionOutput || !viaStale.IntrospectedAt.Equal(viaAt.IntrospectedAt) {
+		t.Errorf("LoadCacheStale and LoadCacheStaleAt(paths.CacheDir(), ...) disagree: %+v vs %+v", viaStale, viaAt)
 	}
 }
 

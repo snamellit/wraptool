@@ -91,16 +91,51 @@ func LoadCache(toolName string, v CacheValidity) *Schema {
 // reflecting the CURRENTLY installed tool for anything but VersionOutput and
 // IntrospectedAt (when it was captured) — exactly what drift.tool-version-changed
 // needs and nothing more.
+//
+// Resolves through THIS process's real paths.CacheDir(). doctor's drift
+// checks must not call this: paths.CacheDir() is the real host's XDG cache
+// dir regardless of what Input.Paths.CacheDir says, which made every doctor
+// unit test that seeded a cache entry read/write the DEVELOPER's actual
+// introspection cache (design/doctor/wraptool-doctor.md §7.6, RULING 1 —
+// the F0 API gap: this whole package predates doctor's root-parameterized
+// convention, internal/pool's ActiveGeneration/VerifyGenerationTree). Use
+// LoadCacheStaleAt(in.Paths.CacheDir, toolName) instead; `serve`'s
+// wraptool_discover/introspection-cache-freshness callers keep using this
+// entry point since they always mean the real host.
 func LoadCacheStale(toolName string) (schema *Schema, ok bool) {
-	return readCacheFile(toolName)
+	return LoadCacheStaleAt(paths.CacheDir(), toolName)
 }
 
-// readCacheFile is LoadCache and LoadCacheStale's shared read path: load,
-// decode, and check FormatVersion. Neither caller-visible function does
-// anything with the result but the two things they each document doing on
-// top of this.
+// LoadCacheStaleAt is LoadCacheStale, rooted at an explicit cache directory
+// instead of the real host's paths.CacheDir() — the read-only counterpart of
+// how internal/pool exposes ActiveGeneration/VerifyGenerationTree against an
+// explicit root rather than its own zero-argument, host-rooted layout
+// accessors. This is the entry point doctor's drift group must use: build the
+// path from Input.Paths.CacheDir (cmd/doctor.go resolves that field from the
+// real paths.CacheDir() once, up front — same value, but hermetically
+// injectable), never from LoadCacheStale.
+func LoadCacheStaleAt(cacheDir, toolName string) (schema *Schema, ok bool) {
+	return readCacheFileAt(cacheFileAt(cacheDir, toolName))
+}
+
+// cacheFileAt mirrors paths.IntrospectionCacheFile's layout
+// (cacheDir/introspection/<tool>.json) but rooted at an explicit cacheDir
+// rather than resolving paths.CacheDir() itself.
+func cacheFileAt(cacheDir, toolName string) string {
+	return filepath.Join(cacheDir, "introspection", toolName+".json")
+}
+
+// readCacheFile is LoadCache's read path (via the real, host-rooted
+// paths.IntrospectionCacheFile): load, decode, and check FormatVersion.
 func readCacheFile(toolName string) (*Schema, bool) {
-	data, err := os.ReadFile(paths.IntrospectionCacheFile(toolName))
+	return readCacheFileAt(paths.IntrospectionCacheFile(toolName))
+}
+
+// readCacheFileAt is the actual load-decode-validate primitive every reader
+// in this file shares — LoadCache and CacheStamp via readCacheFile's
+// host-rooted path, LoadCacheStaleAt via an explicit one.
+func readCacheFileAt(path string) (*Schema, bool) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}
