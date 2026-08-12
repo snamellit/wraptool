@@ -217,27 +217,94 @@ harmless today — noted for strict defense-in-depth.
 
 ---
 
-## Policy-content self-audit checklist (for the host config, not readable here)
+## Policy-content self-audit checklist — now automated by `wraptool doctor`
 
-Because `config.yaml` is host-isolated from the harness by design, audit it
-host-side against:
+This section used to tell the operator to audit `config.yaml` by hand,
+grepping for the four shapes below. It predates `wraptool doctor`
+(`design/doctor/wraptool-doctor.md`), whose `config.*` and `policy.*` check
+groups (§7.2, §7.7; implementation `internal/doctor`) now run these checks
+for you. Run `wraptool doctor` — or `wraptool doctor --only config,policy`
+to scope it to this section's concerns — instead of a manual pass. What
+follows maps each original item to the check(s) that now cover it and says
+what, if anything, still needs a human.
 
-1. **Every value-taking flag that can execute or redirect must carry a `pattern`
-   constraint** — git `--upload-pack`/`--receive-pack`/`--exec`/`-c`/`--config`/`-o`;
-   kubectl `--kubeconfig`/`--token`/`--server`/`--as`; gcloud
-   `--impersonate-service-account`/`--flags-file`/`--configuration`; any `--*-file`.
-   An allowlisted value flag with no pattern = free-form value (see F2). Also
-   ensure each `pattern` is anchored (`^…$`) — unanchored patterns are substring
-   matches (see F6).
-2. **Mutating subcommands** — prefer deny or capability-gating: `kubectl
-   delete/apply/edit/patch/replace/scale/drain/exec/cp/port-forward`, `gcloud …
-   delete/set-iam-policy/add-iam-policy-binding`, `terraform apply/destroy/import`,
-   `git push --force*` (as `deny_flags`).
-3. **Treat `kubectl exec`/`cp`/`port-forward`/`proxy` as shell-equivalent** — deny
-   unless truly required (and note F3: their positional payloads aren't
-   content-constrained).
-4. **Run `wraptool config validate` as a mandatory pre-flight** until F1 is fixed —
-   it is currently the only defense against the silent-typo class.
+1. **Every value-taking flag that can execute or redirect must carry a
+   `pattern` constraint.** Two checks split this:
+   - `policy.unpatterned-value-flag` (warn) fires on an allowed flag whose
+     `flag_constraints` entry CONFIRMS a value-taking type
+     (`type: string`) and has no `pattern`. It deliberately does **not**
+     fire on an untyped flag: `internal/whitelist` has no notion of
+     "value-taking" independent of the constraint type, and most flags in a
+     real config are untyped (`flag_constraints` is written only when a
+     capability request supplied `flag_types`) — treating "untyped" as
+     "value-taking" produced nine false positives against a plausible
+     `git status/log/diff` policy during implementation (bare switches like
+     `--porcelain`, `--oneline`) and was reverted (`internal/doctor/policy_flags.go`).
+     So an unconstrained, untyped value flag is still a manual review item.
+   - `policy.dangerous-flag` (warn) fires on an allowed flag that is on its
+     tool's own execute-or-redirect list, or matches the generic
+     `--*-file`/`--*-cmd` shape, with no `pattern` — on any constraint type,
+     not just string. The per-tool lists are git
+     `--upload-pack`/`--receive-pack`/`--exec`/`-c`/`--config`; kubectl
+     `--kubeconfig`/`--token`/`--server`/`--as`; gcloud
+     `--impersonate-service-account`/`--flags-file`/`--configuration`
+     (`internal/doctor/toolknowledge.go`, matching
+     `design/doctor/wraptool-doctor.md` §7.7). **Correction to this item's
+     git list:** an earlier draft of this checklist also named `-o`. git has
+     no top-level `-o` flag at all; per-subcommand it means things far from
+     "execute or redirect" (`clone -o <name>` names a remote,
+     `format-patch -o <dir>` names an output directory) or, at most,
+     `push -o`/`--push-option`, which hands an opaque string to a
+     *server-side* hook rather than causing the local git process to
+     execute or read anything — not the local exec/redirect shape this item
+     is about, and not part of the F5 repo-local-config exec vector either
+     (`core.fsmonitor`/`core.pager`/`core.sshCommand`/hooks, none of which
+     `-o` touches). `internal/doctor/toolknowledge.go` and
+     `design/doctor/wraptool-doctor.md` §7.7 both omit it; this note is now
+     amended to agree with the code rather than the other way around.
+   - Manual residue beyond the untyped-flag gap above: the per-tool list
+     only covers git/kubectl/gcloud/terraform
+     (`internal/doctor/toolknowledge.go`'s `toolKnowledgeTable`) — a tool
+     with no entry (e.g. `glab`) gets the generic `--*-file`/`--*-cmd` check
+     only, never a per-tool one, and doctor never guesses one.
+   - The **anchoring** half of this item is now moot, not manual: patterns
+     are auto-anchored (`^(?:…)$`) since F6, so an unanchored pattern can no
+     longer under-match. What replaces it is a pattern that's anchored but
+     constrains nothing (`.*`, `.+`, `(?s).*`, empty) — that's
+     `policy.overbroad-pattern` (warn), a distinct check.
+2. **Mutating subcommands.** `policy.mutating-subcommand` (warn) fires when
+   an allowed subcommand's *last* segment is one of a tool's mutating verbs:
+   kubectl `delete/apply/edit/patch/replace/scale/drain`, gcloud
+   `delete/set-iam-policy/add-iam-policy-binding`, terraform
+   `apply/destroy/import`. `policy.force-push-allowed` (warn) fires when
+   `git push` is allowed with no `deny_flags` covering
+   `--force`/`--force-with-lease`/`-f`. Note kubectl's `exec`/`cp`/
+   `port-forward` — lumped in with "mutating" by this item's original
+   wording — are covered by item 3's check instead, not this one (they
+   aren't in kubectl's `MutatingVerbs` set). Manual residue: both checks
+   only *warn*, they don't deny or gate anything, and the verb tables are
+   scoped to git/kubectl/gcloud/terraform — any other mutating tool/verb is
+   still a human's job.
+3. **Treat `kubectl exec`/`cp`/`port-forward`/`proxy` as shell-equivalent.**
+   `policy.shell-equivalent-subcommand` (warn) covers exactly this list, plus
+   `gcloud compute ssh` (not in this item's original wording, but in the
+   design catalog and the same tool-knowledge table). Manual residue: same
+   table-scoping limit as item 2, and F3 remains open — a flagged
+   subcommand's positional payload is still not content-constrained, only
+   count-bounded, so a `kubectl exec` allow rule still needs a human to
+   judge what it can actually run even after doctor flags it.
+4. ~~Run `wraptool config validate` as a mandatory pre-flight until F1 is
+   fixed.~~ Superseded, not merely automated: F1 itself is fixed (`serve` and
+   reload now hard-fail on `LoadStrict`, see "Proposed remediation order"
+   below), so a typo'd restrictive key no longer runs silently even without
+   this checklist. `wraptool doctor` additionally runs the same
+   `config.LoadStrict` / `Config.Validate()` pair itself, as `config.parse`
+   and `config.validate` (both `fail` severity, `internal/doctor/config_load.go`)
+   — an explicit, scriptable preflight (`wraptool doctor --only config.parse`)
+   with the same JSON/CI-gating story as every other check (§9.1 there).
+   Manual residue: `Config.Validate` still stops at its first error
+   (documented gap, both there and here), so a config with several problems
+   surfaces them one fix at a time.
 
 ---
 
