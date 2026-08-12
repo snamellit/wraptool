@@ -40,10 +40,14 @@ const (
 	// has none.
 	ParseOutcomeHelpFailed ParseOutcome = "help_failed"
 	// ParseOutcomeGarbage means getHelp returned output that cleared its
-	// byte-length success threshold but does not have the SHAPE of a help
-	// page — see looksLikeHelp. Whatever Flags/coverage this entry carries
-	// must not be trusted; the input they were derived from was not help
-	// text.
+	// byte-length success threshold, yielded NO flags to any parser, and does
+	// not have the shape of a help page — see looksLikeHelp and
+	// classifySubcommandHelp for why all three conditions are required. Flags
+	// is always empty here and coverage is always zero: the classifier stores
+	// nothing derived from text it just declared was not help.
+	//
+	// The distinction this carries is the one drift depends on: an absent flag
+	// under "garbage" means "could not tell", never "confirmed absent".
 	ParseOutcomeGarbage ParseOutcome = "garbage"
 	// ParseOutcomeParsed means help output was obtained and has the shape of
 	// a real help page. Flags/CoverageTokens/CoverageFound reflect a genuine
@@ -118,16 +122,19 @@ func looksLikeHelp(text string) bool {
 		}
 	}
 
+	// A usage line plus at least one further non-blank line. Deliberately NOT
+	// "usage, then a BLANK line, then more": `go build -h` on go 1.26.5 prints
+	// its two lines with nothing between them, so requiring the blank rejected
+	// a genuine help page — the earlier fixture that appeared to prove
+	// otherwise had invented the blank line.
 	sawUsage := false
-	sawBlankAfterUsage := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		switch {
-		case usageLineRe.MatchString(line):
+		if usageLineRe.MatchString(line) {
 			sawUsage = true
-		case sawUsage && trimmed == "":
-			sawBlankAfterUsage = true
-		case sawUsage && sawBlankAfterUsage && trimmed != "":
+			continue
+		}
+		if sawUsage && trimmed != "" {
 			return true
 		}
 	}

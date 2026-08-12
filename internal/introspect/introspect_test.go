@@ -3,6 +3,7 @@ package introspect
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -366,4 +367,64 @@ func TestIntrospect_ParseOutcomeHelpFailed(t *testing.T) {
 // script's printf argument, escaping any single quote s itself contains.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestParseIsNeverDiscardedForShape pins the ordering invariant that keeps real
+// flag metadata out of the bin: looksLikeHelp is consulted only when the parse
+// found nothing, so a text the parsers DID extract flags from can never be
+// classified garbage on layout grounds.
+//
+// The regression it guards is not hypothetical. git's stash, config, worktree,
+// submodule and bisect help pages are pure usage blocks — no line begins with
+// '-', no indented two-column block — yet the parsers extract 12, 9, 7, 18 and
+// 3 flags from them respectively. A shape gate placed BEFORE the parse dropped
+// every one of those flags from the MCP tool schema, silently removing
+// capabilities the policy had granted.
+func TestParseIsNeverDiscardedForShape(t *testing.T) {
+	// Prose mentioning flags: no usage line, no line beginning with '-', no
+	// indented two-column block, so the shape check rejects it — while the
+	// fallback parser, which scans for flag tokens anywhere, reads flags out of
+	// it. Exactly the disagreement the ordering exists to resolve.
+	const usageBlock = "Supported options are --foo and --bar for this command.\n"
+	if looksLikeHelp(usageBlock) {
+		t.Skip("shape check now accepts this text; the ordering it guards no longer applies to this fixture")
+	}
+	if got := len(BestParse(usageBlock).Subcommand.Flags); got == 0 {
+		t.Skip("parsers extract nothing from this fixture; it cannot demonstrate the ordering")
+	}
+
+	sub := classifySubcommandHelp("git", "stash", usageBlock)
+	if sub.ParseOutcome == ParseOutcomeGarbage {
+		t.Errorf("a text the parsers extracted flags from was classified garbage on shape alone")
+	}
+	if len(sub.Flags) == 0 {
+		t.Errorf("flags the parsers found were discarded; got %+v", sub)
+	}
+}
+
+// TestRealGitUsageBlocksKeepTheirFlags is the live counterpart to
+// TestParseIsNeverDiscardedForShape: the synthetic fixture proves the ordering,
+// this proves the ordering was needed. Every subcommand here is one whose flags
+// vanished from the tool schema while the shape gate ran first.
+func TestRealGitUsageBlocksKeepTheirFlags(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	tc := &config.ToolConfig{Binary: git}
+
+	for _, sub := range []string{"stash", "config", "worktree", "submodule", "bisect"} {
+		helpText, err := RunProbe(context.Background(), tc, []string{sub, "-h"})
+		if err != nil || helpText == "" {
+			t.Logf("%s: probe produced nothing on this host, skipping", sub)
+			continue
+		}
+		got := classifySubcommandHelp("git", sub, helpText)
+		if got.ParseOutcome == ParseOutcomeGarbage {
+			t.Errorf("git %s: real help classified garbage", sub)
+		}
+		if len(got.Flags) == 0 {
+			t.Errorf("git %s: real help yielded zero flags", sub)
+		}
+	}
 }

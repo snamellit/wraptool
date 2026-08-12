@@ -42,11 +42,13 @@ func TestLooksLikeHelp(t *testing.T) {
 			want: true,
 		},
 		{
-			// go build -h's real shape: a usage line, a blank line, then a
-			// further section — no flag definition line, no indented
-			// two-column block, but still a genuine (if terse) help page.
+			// `go build -h` verbatim on go 1.26.5: two lines, NO blank line
+			// between them. Captured from the binary rather than written from
+			// memory — the earlier fixture invented a blank line and a
+			// different second line, so it proved a shape the tool does not
+			// produce.
 			name: "a usage line followed by a further section, no flags",
-			text: "usage: go build [-o output] [build flags] [packages]\n\nUse 'go help build' for more information.\n",
+			text: "usage: go build [-o output] [build flags] [packages]\nRun 'go help build' for details.\n",
 			want: true,
 		},
 		{

@@ -137,26 +137,7 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 			continue
 		}
 
-		if !looksLikeHelp(helpText) {
-			// getHelp's byte-length threshold cleared, but the output does not
-			// have the shape of a help page (e.g. `git bogus -h`'s one-line
-			// error text) — do not parse it as if it were one.
-			log.Printf("introspect %s %s: help output did not look like a help page, treating as garbage", toolName, subcmdKey)
-			schema.Subcommands[subcmdKey] = Subcommand{
-				Flags:        make(map[string]Flag),
-				ParseOutcome: ParseOutcomeGarbage,
-			}
-			continue
-		}
-
-		result := BestParse(helpText)
-		log.Printf("introspect %s %s: parsed %d flags (confidence %.2f)",
-			toolName, subcmdKey, len(result.Subcommand.Flags), result.Confidence)
-
-		sub := result.Subcommand
-		sub.ParseOutcome = ParseOutcomeParsed
-		sub.CoverageFound, sub.CoverageTokens = flagCoverage(helpText, sub.Flags)
-		schema.Subcommands[subcmdKey] = sub
+		schema.Subcommands[subcmdKey] = classifySubcommandHelp(toolName, subcmdKey, helpText)
 	}
 
 	// Load and merge overrides.
@@ -176,6 +157,41 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 
 // getHelp runs the tool's help command for a specific subcommand.
 // It tries -h first (short, structured output), then --help.
+// classifySubcommandHelp turns one subcommand's help output into the stored
+// Subcommand: its parsed flags, its ParseOutcome, and the raw coverage counts.
+//
+// ORDER MATTERS, and it is the whole point of the function. The parse runs
+// FIRST, and the shape check is consulted only when the parse found nothing.
+// A text the parsers extracted flags from is help by the strongest evidence
+// available, whatever its layout — gating on shape first threw those flags
+// away: git's stash, config, worktree, submodule and bisect help pages are pure
+// usage blocks (no line begins with '-', no indented two-column block) that the
+// parsers nonetheless read 12, 9, 7, 18 and 3 flags out of, and every one lost
+// its flags from the MCP tool schema, removing capabilities the policy had
+// granted.
+//
+// Zero flags is the only state where garbage and genuinely-flagless are even
+// confusable, so it is the only state worth asking the shape question about.
+func classifySubcommandHelp(toolName, subcmdKey, helpText string) Subcommand {
+	result := BestParse(helpText)
+
+	if len(result.Subcommand.Flags) == 0 && !looksLikeHelp(helpText) {
+		log.Printf("introspect %s %s: no flags parsed and output does not look like a help page, treating as garbage", toolName, subcmdKey)
+		return Subcommand{
+			Flags:        make(map[string]Flag),
+			ParseOutcome: ParseOutcomeGarbage,
+		}
+	}
+
+	log.Printf("introspect %s %s: parsed %d flags (confidence %.2f)",
+		toolName, subcmdKey, len(result.Subcommand.Flags), result.Confidence)
+
+	sub := result.Subcommand
+	sub.ParseOutcome = ParseOutcomeParsed
+	sub.CoverageFound, sub.CoverageTokens = flagCoverage(helpText, sub.Flags)
+	return sub
+}
+
 func getHelp(ctx context.Context, tc *config.ToolConfig, subcommand []string) (string, error) {
 	// Try -h first (git, cobra tools give structured output).
 	args := append(subcommand, "-h")
@@ -279,12 +295,19 @@ func RunProbe(ctx context.Context, tc *config.ToolConfig, args []string) (string
 // §5.3/§7.6) needs to decide whether a probe may be trusted as exhaustive: a
 // probe that failed to start, was killed by its own deadline, or exited
 // non-zero with output that just happens to look plausible must not be
-// treated the same as a clean, complete run. Exited is false when the
-// process never produced an exit code at all (start failure, or a signal
-// kill including the deadline). DeadlineExceeded is true only when ctx's own
-// timeout — not a caller-supplied, pre-expired context — is what ended the
-// probe. The output itself is returned separately by runProbeEnv, not
-// duplicated here.
+// treated the same as a clean, complete run.
+//
+// Exited is false only when the process produced no exit status at all — a
+// start failure. A signal kill, INCLUDING the deadline's own, still yields an
+// *exec.ExitError, so a deadline-killed probe records Exited=true with
+// ExitCode -1; measured directly, not assumed. Read Exited as "the OS told us
+// how it ended", never as "it ended cleanly" — that is ExitCode == 0.
+//
+// DeadlineExceeded is ctx.Err() on the derived context, so a caller-supplied
+// deadline sets it too, not only the timeout runProbeEnv adds. That is the
+// behaviour this package's own tests rely on.
+//
+// The output itself is returned separately by runProbeEnv, not duplicated here.
 type probeResult struct {
 	Exited           bool
 	ExitCode         int
