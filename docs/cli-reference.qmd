@@ -21,6 +21,7 @@ for the binary you have installed.
 | `wraptool requests` | Review capability requests |
 | `wraptool server` | Inspect or stop the shared server |
 | `wraptool config validate` | Strictly decode and validate configuration |
+| `wraptool doctor` | Run the operator-facing preflight report |
 | `wraptool version` | Print build version, revision, dirty state, and Go version |
 | `wraptool completion` | Generate shell completion for bash, fish, PowerShell, or zsh |
 
@@ -130,3 +131,20 @@ If editing fails, request status remains approved while policy remains unchanged
 The positional config path and `--config` cannot be used together. Validation
 strictly rejects unknown YAML keys and performs the same semantic checks used by
 `serve`, without starting a server or wrapped tools.
+
+## Diagnostics
+
+### `doctor`
+
+```text
+wraptool doctor [-c|--config PATH] [--workspace DIR] [--json]
+                [--only CHECK,...] [--skip CHECK,...] [--strict]
+                [--no-probe] [--verify-pool]
+```
+
+An operator-facing preflight report: host dependencies, configuration
+integrity, deployment posture, and policy content. Safe to run before any
+configuration exists. Exit code `0` means no `fail` finding, `1` means at
+least one, and `2` means doctor could not complete. See [wraptool
+doctor](doctor.qmd) for the full report format, check groups, severity model,
+and suppression syntax.
