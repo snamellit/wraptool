@@ -17,13 +17,19 @@ import (
 // a format-1 cache has no data for either, and json.Unmarshal would leave
 // them at their Go zero values (0.0, ParseOutcomeUnknown) rather than
 // erroring — indistinguishable from a genuinely-probed-and-found-nothing
-// subcommand. SaveCache stamps every write with the CURRENT binary's
-// schemaFormatVersion (the sole writer of truth — a caller-supplied value is
-// always overwritten); LoadCache and LoadCacheStale both reject any Schema
-// whose FormatVersion doesn't match, forcing a full re-introspection rather
-// than serving a schema shaped like an older format. Bump again for any
-// future change to Schema or Subcommand's JSON shape with the same property.
-const schemaFormatVersion = 2
+// subcommand. Format 3 replaced Coverage (a precomputed float that read 1.0
+// for both "verified, no flags" and "nothing to measure against" alike —
+// exactly the false-confidence step function item 4 was meant to remove, not
+// relocate into a new field) with CoverageTokens/CoverageFound, the raw
+// counts a caller can reason about directly; a format-2 cache has no data
+// for either int field either, same silent-zero-value risk. SaveCache stamps
+// every write with the CURRENT binary's schemaFormatVersion (the sole writer
+// of truth — a caller-supplied value is always overwritten); LoadCache and
+// LoadCacheStale both reject any Schema whose FormatVersion doesn't match,
+// forcing a full re-introspection rather than serving a schema shaped like
+// an older format. Bump again for any future change to Schema or
+// Subcommand's JSON shape with the same property.
+const schemaFormatVersion = 3
 
 // CacheValidity holds the current value of every input that determines a
 // tool's introspected schema. A cached schema is reused only when all of them
@@ -111,16 +117,17 @@ func readCacheFile(toolName string) (*Schema, bool) {
 }
 
 // CacheStamp reports when a tool's cached schema was last introspected and the
-// config hash it was built from, with no validity check — purely for reporting
-// freshness (e.g. the wraptool_info tool). Returns ok=false when there is no
-// readable cache (introspected fresh this boot, or introspection failed).
+// config hash it was built from, with no validity check beyond FormatVersion
+// — purely for reporting freshness (e.g. the wraptool_info tool). Returns
+// ok=false when there is no readable cache (introspected fresh this boot,
+// introspection failed) OR the cache is in an older FormatVersion — routed
+// through the same readCacheFile LoadCache/LoadCacheStale use, rather than
+// its own bare read-and-decode, so it can never report an introspected_at
+// for an entry every OTHER reader in this package already treats as absent.
+// A duplicated decode here previously skipped that check entirely.
 func CacheStamp(toolName string) (introspectedAt time.Time, configHash string, ok bool) {
-	data, err := os.ReadFile(paths.IntrospectionCacheFile(toolName))
-	if err != nil {
-		return time.Time{}, "", false
-	}
-	var schema Schema
-	if err := json.Unmarshal(data, &schema); err != nil {
+	schema, ok := readCacheFile(toolName)
+	if !ok {
 		return time.Time{}, "", false
 	}
 	return schema.IntrospectedAt, schema.ConfigHash, true

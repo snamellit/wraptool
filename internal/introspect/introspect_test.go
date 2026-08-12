@@ -259,9 +259,9 @@ func TestIntrospectCollectsCatalogWithoutAllowRules(t *testing.T) {
 }
 
 // TestIntrospect_ParseOutcomeParsed covers items 4/5's happy path: a
-// subcommand whose help genuinely parses gets ParseOutcomeParsed and a
-// Coverage reflecting how much of the help's own flag vocabulary the parse
-// captured.
+// subcommand whose help genuinely parses gets ParseOutcomeParsed and
+// coverage counts reflecting how much of the help's own flag vocabulary the
+// parse captured.
 func TestIntrospect_ParseOutcomeParsed(t *testing.T) {
 	isolateCacheDir(t)
 
@@ -288,8 +288,8 @@ func TestIntrospect_ParseOutcomeParsed(t *testing.T) {
 	if sub.ParseOutcome != ParseOutcomeParsed {
 		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeParsed)
 	}
-	if sub.Coverage != 1.0 {
-		t.Errorf("Coverage = %v, want 1.0 (both flags in the help were captured)", sub.Coverage)
+	if sub.CoverageTokens != 4 || sub.CoverageFound != 4 {
+		t.Errorf("CoverageFound/CoverageTokens = %d/%d, want 4/4 (both flags' long AND short forms captured)", sub.CoverageFound, sub.CoverageTokens)
 	}
 	if len(sub.Flags) != 2 {
 		t.Errorf("got %d flags, want 2", len(sub.Flags))

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/executor"
 )
 
 // CatalogProbe is the result of probing a tool's subcommand catalog with a
@@ -28,9 +29,9 @@ type CatalogProbe struct {
 	Exhaustive bool
 }
 
-// ProbeCatalog runs argv against tc's binary and parses the result as a
-// subcommand catalog, using the same env-injection contract as RunProbe (see
-// its own doc comment for what env == nil/non-nil means).
+// ProbeCatalog runs argv against tc's binary — under the same
+// executor.ChildEnv(tc.Binary, nil) environment as every other probe, see
+// RunProbe's doc comment — and parses the result as a subcommand catalog.
 //
 // Exhaustive is false (Catalog == nil) for every input that is not a
 // genuinely trustworthy, non-empty catalog:
@@ -40,7 +41,21 @@ type CatalogProbe struct {
 //     whose entry has no CatalogArgv) must never fall back to a partial
 //     source, per the design's own bounding rule (§5.3): "unknown", not a
 //     guess.
-//   - the probe errored (missing binary, exec failure, timeout).
+//   - the probe errored (missing binary, no output at all).
+//   - the probe did not exit cleanly: it never produced an exit status at
+//     all (failed to start, or was killed by a signal), or runProbeEnv's own
+//     10s context timeout killed it mid-listing, or it exited non-zero. Any
+//     of these can hand back PARTIAL output — a catalog command that was
+//     cut off produces a truncated listing, not an error page, so byte
+//     length alone can't catch it. This is the fix for the single most
+//     damaging defect in this package: swallowing exit status let a
+//     killed-mid-listing `git help -a` be recorded as EXHAUSTIVE, which is
+//     what made drift report `git config` as a subcommand git does not
+//     have — a partial catalog mistaken for a complete one.
+//   - the output does not have the structural shape of real listing text
+//     (looksLikeHelp's positive-structure bound — see its own doc comment):
+//     a one-line CLI error page (wrong subcommand, wrong flag) must not
+//     become a catalog any more than it may become parsed help.
 //   - the output parsed to zero subcommands. A catalog argv that produced no
 //     recognizable listing is not evidence the tool HAS no subcommands — an
 //     upstream help-format change, for instance — so it must not be reported
@@ -49,13 +64,19 @@ type CatalogProbe struct {
 // A caller (the later drift.unknown-subcommand check) MUST treat
 // Exhaustive == false as drift.unverifiable, never as "no subcommands
 // exist".
-func ProbeCatalog(ctx context.Context, tc *config.ToolConfig, argv []string, env []string) CatalogProbe {
+func ProbeCatalog(ctx context.Context, tc *config.ToolConfig, argv []string) CatalogProbe {
 	if len(argv) == 0 {
 		return CatalogProbe{}
 	}
 
-	output, err := RunProbe(ctx, tc, argv, env)
+	output, result, err := runProbeEnv(ctx, tc, argv, executor.ChildEnv(tc.Binary, nil))
 	if err != nil {
+		return CatalogProbe{}
+	}
+	if !result.Exited || result.DeadlineExceeded || result.ExitCode != 0 {
+		return CatalogProbe{}
+	}
+	if !looksLikeHelp(output) {
 		return CatalogProbe{}
 	}
 

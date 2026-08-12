@@ -25,12 +25,13 @@ type Schema struct {
 	// exactly one writer of truth). Bumped whenever Schema or Subcommand grows
 	// a field a pre-bump cache entry could be silently MISREAD under: a missing
 	// JSON field decodes to its Go zero value rather than erroring, which for
-	// Subcommand.Coverage/ParseOutcome (added at format 2, see their own doc
-	// comments) is indistinguishable from a genuine "probed and found nothing"
-	// result. LoadCache and LoadCacheStale both reject any Schema whose
-	// FormatVersion doesn't match schemaFormatVersion, forcing a full
-	// re-introspection instead of serving a schema shaped like an older
-	// format. See design/doctor/wraptool-doctor.md §4.2 item 4.
+	// Subcommand.CoverageTokens/CoverageFound/ParseOutcome (added at format 2,
+	// reshaped from a single float Coverage field to this pair at format 3 —
+	// see their own doc comments) is indistinguishable from a genuine "probed
+	// and found nothing" result. LoadCache and LoadCacheStale both reject any
+	// Schema whose FormatVersion doesn't match schemaFormatVersion, forcing a
+	// full re-introspection instead of serving a schema shaped like an older
+	// format. See design/doctor/wraptool-doctor.md §4.2 items 1 and 4.
 	FormatVersion int `json:"format_version"`
 }
 
@@ -38,21 +39,36 @@ type Schema struct {
 type Subcommand struct {
 	Description string          `json:"description"`
 	Flags       map[string]Flag `json:"flags"`
-	// Coverage is the fraction of flag-shaped tokens found ANYWHERE in the
-	// subcommand's help text that ended up as a key in Flags — "how much of
-	// this help did I actually understand", not which parser ran. See
-	// flagCoverage's doc comment for why this replaces ParseResult.Confidence
-	// as the persisted quality signal (design/doctor/wraptool-doctor.md §4.2
-	// item 4): Confidence is a four-value step function of parser IDENTITY
-	// (0.3 fallback, 0.6/0.7 GNU, 0.8/0.9 git, gradated only by
-	// matchCount > 5) — `git log -h` parses 7 flags at the maximum 0.90 while
-	// missing --oneline/--graph/--pretty/--since/--author entirely, so
-	// thresholding on it produces maximum-confidence false positives.
-	// Confidence still decides which PARSER wins (BestParse); it is simply
-	// never persisted, because nothing downstream can act on "which parser"
-	// as a trust signal. Meaningless (0.0) unless ParseOutcome ==
-	// ParseOutcomeParsed — a caller MUST check ParseOutcome first.
-	Coverage float64 `json:"coverage"`
+	// CoverageTokens is how many DISTINCT option-shaped tokens
+	// (flagShapeTokens: --x, --[no-]x, --x[=...], short -x) were found
+	// ANYWHERE in the subcommand's help text — the coverage denominator.
+	// CoverageFound is how many of those ended up as a key in Flags (or
+	// matched some Flag's Short) — the numerator. "How much of this help did
+	// I actually understand", not which parser ran. See flagCoverage's doc
+	// comment for why this pair — raw counts, not a precomputed fraction —
+	// replaces ParseResult.Confidence as the persisted quality signal
+	// (design/doctor/wraptool-doctor.md §4.2 item 4): Confidence is a
+	// four-value step function of parser IDENTITY (0.3 fallback, 0.6/0.7
+	// GNU, 0.8/0.9 git, gradated only by matchCount > 5) — `git log -h`
+	// parses 7 flags at the maximum 0.90 while missing
+	// --oneline/--graph/--pretty/--since/--author entirely, so thresholding
+	// on it produces maximum-confidence false positives. Confidence still
+	// decides which PARSER wins (BestParse); it is simply never persisted,
+	// because nothing downstream can act on "which parser" as a trust
+	// signal.
+	//
+	// CoverageTokens == 0 means UNMEASURABLE — flagShapeTokens found nothing
+	// in the text to check the parse against, which is NOT the same as "the
+	// parse captured everything". A caller must check that before treating
+	// CoverageFound == CoverageTokens as "verified, no gaps": a fraction
+	// computed naively (found/total with total defaulting to 1) would make
+	// an unmeasurable subcommand indistinguishable from a genuinely
+	// zero-flag one at full confidence — exactly the false-confidence bug
+	// this pair of fields replaces. Both fields are meaningless (0, 0)
+	// unless ParseOutcome == ParseOutcomeParsed — a caller MUST check
+	// ParseOutcome first.
+	CoverageTokens int `json:"coverage_tokens"`
+	CoverageFound  int `json:"coverage_found"`
 	// ParseOutcome records how this subcommand's help was obtained and
 	// classified, so a caller can tell "verified: no flags" from "could not
 	// tell" — an empty Flags map alone is ambiguous between them. See

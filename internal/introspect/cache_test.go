@@ -202,6 +202,15 @@ func TestSchemaFormatVersion_DiscardsOlderFormat(t *testing.T) {
 	if _, ok := LoadCacheStale("git"); ok {
 		t.Error("LoadCacheStale must discard an older-FormatVersion entry rather than serve it")
 	}
+	// Ruling 5: CacheStamp must agree with LoadCache/LoadCacheStale about
+	// what counts as present. Before this fix CacheStamp did its own bare
+	// read-and-decode with no FormatVersion check, so it could report an
+	// introspected_at for an entry every other reader in this package
+	// already treats as absent (wraptool_info claiming freshness for a
+	// schema LoadCache would silently discard and re-introspect).
+	if _, _, ok := CacheStamp("git"); ok {
+		t.Error("CacheStamp must discard an older-FormatVersion entry rather than serve it")
+	}
 }
 
 // TestSaveCache_StampsFormatVersion covers SaveCache being the sole writer of

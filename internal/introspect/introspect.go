@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/executor"
 )
 
 // configHash is a stable hash of the introspection-relevant config for a tool:
@@ -153,7 +155,7 @@ func Introspect(ctx context.Context, toolName string, tc *config.ToolConfig) (*S
 
 		sub := result.Subcommand
 		sub.ParseOutcome = ParseOutcomeParsed
-		sub.Coverage = flagCoverage(helpText, sub.Flags)
+		sub.CoverageFound, sub.CoverageTokens = flagCoverage(helpText, sub.Flags)
 		schema.Subcommands[subcmdKey] = sub
 	}
 
@@ -219,62 +221,123 @@ func firstLine(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// ProbeVersion runs a tool's --version probe with a caller-supplied
-// environment and returns its first line, mirroring getVersion but for a
-// caller outside this package's own cached Introspect path — a drift check
-// (design/doctor/wraptool-doctor.md §7.6 drift.tool-version-changed) needs
-// the INSTALLED tool's CURRENT version string to compare against the cached
-// one (LoadCacheStale), and must obtain it without touching the cache. See
-// RunProbe for env's meaning.
-func ProbeVersion(ctx context.Context, tc *config.ToolConfig, env []string) string {
-	output, err := RunProbe(ctx, tc, []string{"--version"}, env)
+// ProbeVersion runs a tool's --version probe and returns its first line,
+// mirroring getVersion but for a caller outside this package's own cached
+// Introspect path — a drift check (design/doctor/wraptool-doctor.md §7.6
+// drift.tool-version-changed) needs the INSTALLED tool's CURRENT version
+// string to compare against the cached one (LoadCacheStale), and must obtain
+// it without touching the cache. See RunProbe for the environment it runs
+// under.
+func ProbeVersion(ctx context.Context, tc *config.ToolConfig) string {
+	output, err := RunProbe(ctx, tc, []string{"--version"})
 	if err != nil {
 		return ""
 	}
 	return firstLine(output)
 }
 
-// runTool executes the tool binary with the given arguments, inheriting the
-// calling process's ENTIRE environment (cmd.Env left nil) — Introspect's own
-// existing behaviour, unchanged by RunProbe's addition.
-// It captures both stdout and stderr (some tools print help to stderr).
+// runTool executes the tool binary with the given arguments. It is
+// Introspect's own name for RunProbe — kept as a thin, unexported alias so
+// this file's serve-time call sites (getHelp, getVersion) don't have to say
+// "RunProbe" for what is, from here, just "run the tool".
 func runTool(ctx context.Context, tc *config.ToolConfig, args []string) (string, error) {
-	return RunProbe(ctx, tc, args, nil)
+	return RunProbe(ctx, tc, args)
 }
 
 // RunProbe executes the tool binary with args, using introspection's own
 // vocabulary (help/version forms, a per-tool catalog argv, or an
 // operator-authored subcommand from config — design/doctor/wraptool-doctor.md
 // §5.1's allowed list; RunProbe itself does not enforce that boundary, the
-// caller does, exactly as runTool always has). Both stdout and stderr are
-// captured and combined, since many tools print help to stderr; a non-zero
-// exit is not an error by itself (most --help paths exit non-zero) — RunProbe
-// only errors when there is no output at all to look at.
+// caller does). Both stdout and stderr are captured and combined, since many
+// tools print help to stderr; a non-zero exit is not by itself a reason to
+// discard output (most --help paths exit non-zero) — RunProbe errors only
+// when there is no output at all to look at.
 //
-// env, in exec.Cmd.Env's own "KEY=value" form, REPLACES the child process's
-// entire environment when non-empty. An empty/nil env leaves cmd.Env unset —
-// exec.Cmd's documented default of inheriting the CALLING process's full
-// environment, which is Introspect's own existing behaviour (runTool passes
-// env == nil). A caller that must not hand the probe its own environment — an
-// operator's interactive shell, typically carrying GH_TOKEN/SSH_AUTH_SOCK/
-// cloud credentials (doctor; see design/doctor/wraptool-doctor.md §5.1) —
-// supplies one explicitly: typically executor.ChildEnv(binary, nil), an
-// explicitly nil RESOLVED env, since ChildEnv's second parameter is the
-// tool's OWN configured credentials, which a help probe must never receive.
-func RunProbe(ctx context.Context, tc *config.ToolConfig, args []string, env []string) (string, error) {
+// There is exactly one probe environment, not a doctor-specific one and a
+// serve-time one: every call — Introspect's own cached path (via runTool)
+// and any external caller (doctor's drift checks) alike — runs the child
+// with executor.ChildEnv(tc.Binary, nil), the SAME construction
+// internal/executor and internal/mcpproxy already use for every other child
+// process wraptool spawns. Before this, runTool set no cmd.Env at all and
+// inherited the CALLING process's entire environment — introspection was the
+// one execution path inside serve that did NOT go through ChildEnv, so a
+// doctor probe built on the real Introspect/runTool path would have reported
+// on a hypothetical (a scrubbed environment serve itself never actually
+// used) rather than on what serve will do. There is no env parameter here on
+// purpose: the production path must have no choice to make about it. The
+// resolved env passed to ChildEnv is always nil — a help/version/catalog
+// probe has no business seeing the tool's OWN configured credentials
+// (env/env_files), only PATH/HOME/LANG. See runProbeEnv for the underlying
+// exec mechanics and its test seam.
+func RunProbe(ctx context.Context, tc *config.ToolConfig, args []string) (string, error) {
+	output, _, err := runProbeEnv(ctx, tc, args, executor.ChildEnv(tc.Binary, nil))
+	return output, err
+}
+
+// probeResult carries what RunProbe deliberately throws away for its
+// output-string-only callers, but which ProbeCatalog (item 6, design
+// §5.3/§7.6) needs to decide whether a probe may be trusted as exhaustive: a
+// probe that failed to start, was killed by its own deadline, or exited
+// non-zero with output that just happens to look plausible must not be
+// treated the same as a clean, complete run. Exited is false when the
+// process never produced an exit code at all (start failure, or a signal
+// kill including the deadline). DeadlineExceeded is true only when ctx's own
+// timeout — not a caller-supplied, pre-expired context — is what ended the
+// probe. The output itself is returned separately by runProbeEnv, not
+// duplicated here.
+type probeResult struct {
+	Exited           bool
+	ExitCode         int
+	DeadlineExceeded bool
+}
+
+// runProbeEnv is RunProbe's underlying exec mechanics, with env as an
+// explicit parameter and the exit/deadline detail RunProbe's simpler
+// (output, error) signature can't carry. It exists as a test seam — so this
+// package's own tests can exercise env-replacement and exit/deadline
+// classification directly — but every PRODUCTION caller reaches this only
+// through RunProbe, which always supplies executor.ChildEnv(tc.Binary, nil)
+// and never leaves the choice open.
+//
+// env, in exec.Cmd.Env's own "KEY=value" form, is assigned to cmd.Env
+// unconditionally, including when nil — exec.Cmd's documented nil meaning
+// ("inherit the calling process's environment") only applies if the caller
+// truly wants that; RunProbe never passes nil, so nil here is reachable only
+// from a test that wants to observe inheritance explicitly. An empty-but-
+// non-nil env (len 0) is NOT the same as nil: it is the strongest isolation
+// a caller can ask for (no environment at all) and must be honoured exactly,
+// never silently upgraded to "inherit everything" — RunProbe's predecessor
+// had exactly that bug (gating on len(env) > 0).
+func runProbeEnv(ctx context.Context, tc *config.ToolConfig, args []string, env []string) (string, probeResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, tc.Binary, args...)
-	if len(env) > 0 {
-		cmd.Env = env
-	}
-	output, err := cmd.CombinedOutput()
+	cmd.Env = env
+	outputBytes, runErr := cmd.CombinedOutput()
+	output := string(outputBytes)
 
-	// Many tools exit non-zero for -h/--help. That's fine — we care about output.
+	result := probeResult{
+		DeadlineExceeded: ctx.Err() == context.DeadlineExceeded,
+	}
+	var exitErr *exec.ExitError
+	switch {
+	case runErr == nil:
+		result.Exited = true
+		result.ExitCode = 0
+	case errors.As(runErr, &exitErr):
+		result.Exited = true
+		result.ExitCode = exitErr.ExitCode()
+	default:
+		result.Exited = false
+	}
+
+	// Many tools exit non-zero for -h/--help. That's fine — we care about
+	// output. This (output, error) return keeps runTool/ProbeVersion's
+	// existing behaviour: any output at all is success, and the error is
+	// reported only when there is truly nothing to look at.
 	if len(output) > 0 {
-		return string(output), nil
+		return output, result, nil
 	}
-
-	return "", err
+	return "", result, runErr
 }
