@@ -1,0 +1,331 @@
+---
+title: "wraptool doctor"
+description: "The operator-facing preflight report: host dependencies, configuration integrity, deployment posture, and policy content."
+---
+
+`wraptool doctor` is an operator-facing preflight report. It answers one
+question: is this installation sane, and is the policy in `config.yaml` as
+tight as you think it is? It checks host dependencies, strict configuration
+validity, deployment posture, divergence between the configuration and a
+running server, and dangerous policy content.
+
+It is **operator**-facing only. It never registers as an MCP tool, is never
+reachable from an agent, and is never exposed on the review UI. It never edits
+`config.yaml`, never starts or contacts the server, and never mutates the
+harness pool.
+
+::: {.callout-note title="Safe as your first command"}
+A missing configuration is not an error. Run `wraptool doctor` before you have
+created `config.yaml` — right after installing wraptool — and it reports `info:
+no config yet` instead of failing. With no `--config`, the path shown is the
+XDG default (`~/.config/wraptool/config.yaml` on Linux); this run points at a
+scratch path instead so the example is reproducible:
+
+```text
+$ wraptool doctor --config /tmp/demo-home/.config/wraptool/config.yaml
+wraptool doctor — no config file yet (/tmp/demo-home/.config/wraptool/config.yaml)
+  info  no config yet; one is created on your first `wraptool serve` or `wraptool up`.
+
+environment:
+  info  env.container-backend: none found on PATH; not found: guix, docker, podman
+        → install guix, docker, or podman if you want `wraptool up` to build an isolated environment
+        docs/isolated-environments.md
+  info  env.devcontainer-cli: devcontainer CLI not found on PATH
+        → install the devcontainer CLI if you want `wraptool up --runtime=devcontainer` to build the isolated environment
+        docs/isolated-environments.md
+
+0 failed, 0 warnings, 2 info, 4 passed, 48 skipped.
+```
+:::
+
+## Running it
+
+```bash
+wraptool doctor
+wraptool doctor --config /path/to/config.yaml
+wraptool doctor --json
+```
+
+`--config` resolves the same way as `wraptool config validate`: the flag,
+then `WRAPTOOL_CONFIG`, then the XDG default location.
+
+## What the report looks like
+
+Every finding is reported on one indented line: a severity marker, the check
+ID, and what was found, followed by an optional remedy line (`→ ...`) and an
+optional documentation reference. Findings are grouped into sections and
+sorted so that two runs against the same inputs produce byte-identical
+output. A summary line closes the report.
+
+This is real output from a configuration deliberately built to exercise
+several checks at once — a group-writable `config.yaml`, an allowed `git -c`
+flag with no pattern, an unpinned `npx` invocation in `mcp_servers`, and a
+second tool with no allow rules yet:
+
+```text
+$ wraptool doctor --config /tmp/demo/config.yaml --workspace /tmp/demo
+wraptool doctor — /tmp/demo/config.yaml
+
+environment:
+  info  env.container-backend: none found on PATH; not found: guix, docker, podman
+        → install guix, docker, or podman if you want `wraptool up` to build an isolated environment
+        docs/isolated-environments.md
+  info  env.devcontainer-cli: devcontainer CLI not found on PATH
+        → install the devcontainer CLI if you want `wraptool up --runtime=devcontainer` to build the isolated environment
+        docs/isolated-environments.md
+
+configuration:
+  FAIL  config.file-perms: /tmp/demo/config.yaml (symlinks resolved) is mode 0664 (group-writable) — whoever can write it can grant themselves any tool
+        → chmod go-w /tmp/demo/config.yaml
+        docs/configuration.qmd#validating-a-config
+
+exposure:
+  warn  exposure.cwd-roots-unset: mcp.allowed_cwd_roots is empty — a client-supplied working directory is not constrained to any root (the documented default-open case, audit F5)
+        → set mcp.allowed_cwd_roots to the project root(s) you want to allow, or accept the default-open behavior deliberately
+        docs/configuration.qmd
+
+tools:
+  FAIL  tools.mcp-server-args-unpinned: /tmp/demo/config.yaml:18 — mcp_servers.fetch runs /gnu/store/wa6dz3068k61jhqgshxfm0viq30wa9na-profile/bin/npx -y @modelcontextprotocol/server-fetch@latest with package spec "@modelcontextprotocol/server-fetch@latest", which has no pinned version — this fetches and executes whatever code the registry currently serves for that name at every serve start, with this server's own env (including any env_files credentials) available to it. An absolute, existing command alone (tools.mcp-server-command) does not close this: npx itself is the fetch-and-execute vector. npm proceeds non-interactively even without --yes because the spawned child has no TTY to prompt on — an npx invocation with no -y/--yes is not a lesser risk
+        → pin an exact version in the package spec (e.g. @modelcontextprotocol/server-fetch@<version>), or install the server locally and point mcp_servers.fetch.command at its absolute binary path instead of npx
+        docs/configuration.qmd
+  warn  tools.mcp-server-inert: /tmp/demo/config.yaml:16 — mcp_servers.fetch has zero allow rules, so no upstream tool is ever permitted, but the child process is still spawned (and its credentials/env still exposed to it) at every serve start
+        → add an allow rule under mcp_servers.fetch, or remove the entry if it is not in use
+        docs/configuration.qmd
+  info  tools.inert: /tmp/demo/config.yaml:12 — tools.gh registers zero MCP tools until an allow rule is added — this is the deliberate bootstrap state wraptool_discover exists to serve, and validateTool permits it explicitly
+        docs/configuration.qmd
+
+policy:
+  warn  policy.dangerous-flag: /tmp/demo/config.yaml:11 — tools.git's allow rule for "pull" permits flag "-c", which is on this tool's own execute-or-redirect flag list, with no pattern to constrain its value
+        → add a `pattern` to flag_constraints["-c"] under tools.git's "pull" allow rule, or move "-c" to deny_flags if it should never be permitted
+        docs/configuration.qmd
+  warn  policy.unbounded-positional-count: /tmp/demo/config.yaml:9 — 1 of tools.git's allow rules set no arg_constraints.positional_max ("pull"), so whitelist places no limit on how many positional arguments those calls may carry. This bounds COUNT ONLY — ArgConstraints has no content field, so even a positional_max would not constrain what those positional values ARE; audit F3 remains open upstream
+        → add arg_constraints.positional_max to the tools.git allow rules that should cap (or forbid) positional arguments
+        design/doctor/wraptool-doctor.md
+
+2 failed, 4 warnings, 3 info, 30 passed, 15 skipped.
+```
+
+Findings on config values carry a `file:line` location, resolved against the
+same YAML document the server would load — click through to the exact line
+that needs to change. A finding with no config location (a binary path, a
+socket directory, a host dependency) has none.
+
+## Check groups
+
+Findings are organized into groups, and `--only`/`--skip` select by group
+name or by exact check ID. A group name is the token before the first `.` in
+a check ID (`policy.dangerous-flag` is in group `policy`) — this is **not**
+always the same word as the printed section title below (`pool` prints as
+"harness pool", `config` prints as "configuration").
+
+| Group | Section title | Checks | What it covers |
+|---|---|---|---|
+| `env` | environment | host dependencies | Which of `guix`, `docker`, `podman`, and the Dev Container CLI are on `PATH`; whether a workspace that needs a backend has one; whether the XDG directories wraptool writes to are writable. |
+| `config` | configuration | configuration integrity | Strict decode and semantic validation of `config.yaml` (the same checks `wraptool config validate` runs); file and directory permissions on the configuration itself; a symlinked configuration that silently disables hot-reload; an inline `env:` entry whose key name is credential-shaped in a group- or other-readable file. |
+| `exposure` | exposure | deployment posture and secrets | Transport and listen-address posture for the MCP listener and the review UI's listener (non-loopback binds, colliding listeners); token file permissions and strength; the request log's writability and permissions; `mcp.allowed_cwd_roots` left unset. |
+| `tools` | tools | tool and MCP server wiring | Whether each configured `binary`/`command` is executable, absolute, and not writable by a group or the world; `working_dir` and `env_files` sanity; an `mcp_servers` entry that spawns an `npx`/`uvx` child running an unpinned package spec, or that spawns a child with zero allow rules; a tool with zero allow rules (informational — this is the deliberate bootstrap state `wraptool_discover` exists to serve). |
+| `pool` | harness pool | the developer harness pool | Permissions on the pool's shared `home/` tree; whether an active generation's receipt digest matches the lock; whether a project's Dev Container declares the runtime mount, and declares it read-only; a Dev Container pinned to a deprecated harness pool feature. `--verify-pool` additionally hashes every file in the active generation against its receipt — slow, so it is opt-in. |
+| `runtime` | runtime | configuration vs. the running server | Whether a recorded PID file names a live process; whether the running server's effective listen address diverges from what the configuration says; the uid the server runs as; whether the configuration changed on disk since the server's last successful (re)load. Most of these are gated on a live server process recorded for the exact config being audited — with nothing running, they are reported `skipped`, not `pass`. |
+| `policy` | policy | policy-content lint | Heuristics over the `tools:`/`mcp_servers:` policy itself: value-taking flags with no `pattern`; flags that can execute a command or change configuration (`git -c`, `kubectl --kubeconfig`, and similar, per tool); subcommands that are shell-equivalent (`kubectl exec`) or mutate remote state; `git push` allowed with no `--force` deny; a deny rule that is a strict prefix of a longer allowed subcommand; an `mcp_servers` allow entry naming an upstream tool that looks like it executes or deletes. |
+
+`drift` — comparing policy against what the installed tool binaries actually
+support — is planned but not yet implemented; no `drift.*` checks are
+registered today.
+
+`--no-probe` is accepted and documented for forward compatibility with that
+group: as shipped, no check executes a configured tool binary (checks stat
+files, read configuration, and resolve names on `PATH` only), so `--no-probe`
+currently has no observable effect.
+
+## Severity
+
+| Severity | Meaning |
+|---|---|
+| `FAIL` | wraptool is broken, or the credential boundary is provably not what the configuration claims. A `fail` never fires on a configuration that is working as designed — it is not a judgement call. |
+| `warn` | A heuristic, a default-open setting, or a shape that is dangerous in most deployments but legitimately intended in some. |
+| `info` | State worth knowing. Never a problem. |
+
+A finding with no problem is not printed at all: silence means "checked,
+clean," never "did not look." A check that could not run (missing
+configuration, no workspace, `--no-probe`, permission bits that are not
+meaningful on this platform) reports `skipped` with a reason, and is counted
+separately from `passed`.
+
+## Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | No `fail` finding. A `warn` may still be present, unless `--strict` was given. |
+| `1` | At least one `fail` finding — or, under `--strict`, at least one unsuppressed `warn`. |
+| `2` | doctor could not complete: the configuration was unreadable or failed to parse, an internal error occurred, or a selection flag (`--only`/`--skip`/`--workspace`) named something that does not exist. |
+
+Exit `2` is deliberately distinct from exit `1`: "your setup is broken" and "I
+could not tell" are different signals. A configuration that fails strict
+decoding still produces the full `env.*` group and a `config.parse` finding
+before doctor exits `2`:
+
+```text
+$ wraptool doctor --config /tmp/demo/config-bad.yaml --workspace /tmp/demo
+wraptool doctor — /tmp/demo/config-bad.yaml
+
+doctor could not complete: parsing config: yaml: unmarshal errors:
+  line 4: field bogus_key_that_does_not_exist not found in type config.MCPConfig. Checks after this point did not run.
+
+environment:
+  info  env.container-backend: none found on PATH; not found: guix, docker, podman
+        → install guix, docker, or podman if you want `wraptool up` to build an isolated environment
+        docs/isolated-environments.md
+  info  env.devcontainer-cli: devcontainer CLI not found on PATH
+        → install the devcontainer CLI if you want `wraptool up --runtime=devcontainer` to build the isolated environment
+        docs/isolated-environments.md
+
+configuration:
+  FAIL  config.parse: wraptool config validate would reject this file: parsing config: yaml: unmarshal errors:
+  line 4: field bogus_key_that_does_not_exist not found in type config.MCPConfig
+        → fix or remove the unrecognized/misspelled key(s) named above
+        docs/configuration.qmd#validating-a-config
+
+1 failed, 0 warnings, 2 info, 6 passed, 45 skipped.
+```
+
+::: {.callout-warning title="--strict is not a stable CI gate"}
+`--strict` promotes every unsuppressed `warn` to exit code `1`. Do not pin CI
+to it: a later wraptool release can add a new heuristic that ships as `warn`,
+and that alone would turn a passing pipeline red with no configuration change
+on your side.
+
+Gate CI on `--only <groups>` over the deterministic groups (`config`,
+`exposure`, `tools`, `runtime`), or on specific check IDs read from `--json`
+instead. A check ID may be added, and its severity may be lowered, without
+notice; renaming or repurposing an existing ID is treated as a breaking
+change.
+:::
+
+## Flags
+
+| Flag | Meaning |
+|---|---|
+| `-c, --config PATH` | Path to `config.yaml`. Default: flag, then `WRAPTOOL_CONFIG`, then the XDG default. |
+| `--json` | Emit the report as JSON instead of the plain-text report (see [below](#json-output)). |
+| `--only CHECK,...` | Run only these check IDs or group names, comma-separated. |
+| `--skip CHECK,...` | Skip these check IDs or group names, comma-separated. `--skip` wins over `--only`. |
+| `--strict` | Promote an unsuppressed `warn` finding to exit code `1`. See the callout above. |
+| `--no-probe` | Disable inert local execution of configured tool binaries. Reserved for the `drift` group; has no effect today. |
+| `--verify-pool` | Additionally hash every file in the active harness generation and verify it against its receipt. Slow — a Node-based harness generation is 10,000+ files. |
+| `--workspace DIR` | Workspace root for workspace-gated checks. Default: walk upward from the current directory for `.git` or `manifest.scm`. An explicit path that does not exist is a usage error. |
+
+An `--only`/`--skip` token naming neither a registered check ID nor a known
+group is a usage error (exit `2`), never a silent no-op.
+
+## JSON output {#json-output}
+
+`--json` emits a stable, versioned schema (`"schema": 1`) with one object per
+finding, plus a summary and a list of skipped checks. `wraptool_version` is
+the same build identity `wraptool version` reports — an exact release version
+for a tagged build, or `devel+<short-sha>` for a local one, as below. This is
+real output for the same suppressed finding shown
+[below](#suppressing-a-finding), narrowed to the `policy` group for brevity:
+
+```json
+{
+  "schema": 1,
+  "config_path": "/tmp/demo/config-suppressed.yaml",
+  "wraptool_version": "devel+4ca12c8fe6cb",
+  "probed": true,
+  "incomplete": false,
+  "incomplete_reason": "",
+  "config_state": "loaded",
+  "summary": {
+    "fail": 0,
+    "warn": 2,
+    "suppressed": 1,
+    "info": 0,
+    "pass": 8,
+    "skipped": 0
+  },
+  "findings": [
+    {
+      "id": "policy.dangerous-flag",
+      "severity": "warn",
+      "title": "Allowed flag is on the dangerous-flag list with no pattern",
+      "detail": "tools.git's allow rule for \"pull\" permits flag \"-c\", which is on this tool's own execute-or-redirect flag list, with no pattern to constrain its value",
+      "location": "/tmp/demo/config-suppressed.yaml:12",
+      "remedy": "add a `pattern` to flag_constraints[\"-c\"] under tools.git's \"pull\" allow rule, or move \"-c\" to deny_flags if it should never be permitted",
+      "doc_ref": "docs/configuration.qmd",
+      "suppressed": true,
+      "suppression_reason": "reviewed 2026-08, -c value is fixed by the wrapper"
+    },
+    {
+      "id": "policy.unbounded-positional-count",
+      "severity": "warn",
+      "title": "allow rules have no positional argument count limit",
+      "detail": "1 of tools.git's allow rules set no arg_constraints.positional_max (\"pull\"), so whitelist places no limit on how many positional arguments those calls may carry. This bounds COUNT ONLY — ArgConstraints has no content field, so even a positional_max would not constrain what those positional values ARE; audit F3 remains open upstream",
+      "location": "/tmp/demo/config-suppressed.yaml:9",
+      "remedy": "add arg_constraints.positional_max to the tools.git allow rules that should cap (or forbid) positional arguments",
+      "doc_ref": "design/doctor/wraptool-doctor.md",
+      "suppressed": false,
+      "suppression_reason": ""
+    }
+  ],
+  "skipped": []
+}
+```
+
+A suppressed finding is always present in `"findings"` with `"suppressed":
+true`, even though the plain-text report omits it — see below.
+
+## Suppressing a finding {#suppressing-a-finding}
+
+Suppress a specific finding at its source with a `# doctor:ignore <id> --
+reason` comment. This waives the finding; it does not delete or weaken the
+underlying rule, and the reason is preserved in `--json` so an auditor can see
+what was waived and why.
+
+```yaml
+tools:
+  git:
+    allow:
+      # doctor:ignore policy.dangerous-flag -- reviewed 2026-08, value is fixed by the wrapper
+      - subcommand: [pull]
+        flags: ["-c"]
+```
+
+Running doctor against this configuration now reports one fewer warning, and
+the summary line records it as suppressed rather than dropping it silently:
+
+```text
+$ wraptool doctor --config /tmp/demo/config-suppressed.yaml --workspace /tmp/demo --only policy
+wraptool doctor — /tmp/demo/config-suppressed.yaml
+
+policy:
+  warn  policy.unbounded-positional-count: /tmp/demo/config-suppressed.yaml:9 — 1 of tools.git's allow rules set no arg_constraints.positional_max ("pull"), so whitelist places no limit on how many positional arguments those calls may carry. This bounds COUNT ONLY — ArgConstraints has no content field, so even a positional_max would not constrain what those positional values ARE; audit F3 remains open upstream
+        → add arg_constraints.positional_max to the tools.git allow rules that should cap (or forbid) positional arguments
+        design/doctor/wraptool-doctor.md
+
+0 failed, 2 warnings (1 suppressed), 0 info, 8 passed, 0 skipped.
+```
+
+Two comment placements are supported, and they differ in scope:
+
+- **Before a sequence item** (as above, right before `- subcommand: ...`)
+  suppresses a matching finding anywhere within that one allow or deny rule.
+- **Before a mapping key** (right before `git:`) suppresses a matching
+  finding anywhere within that key's whole value — every rule under `git:`,
+  not just one.
+
+Only `warn` findings are suppressible. Every `fail` in the catalog is a
+provably broken invariant rather than a judgement call, so there is nothing
+for a suppression comment to legitimately waive there — an ignore comment
+placed near a `fail` finding is inert. A `# doctor:ignore` comment naming a
+check ID that is not in the catalog is itself reported, as
+`config.unknown-suppression`, so a typo in the directive does not silently
+fail to suppress anything.
+
+## See also
+
+- [Configuration reference](configuration.qmd) for the fields most findings
+  point back to.
+- [CLI reference](cli-reference.qmd#doctor) for the flag summary alongside
+  every other command.
+- `design/doctor/wraptool-doctor.md` for the full design and check catalog,
+  including checks planned for a later release.
