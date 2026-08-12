@@ -562,6 +562,81 @@ they are recorded here rather than living only in a review thread.
    "could not verify". The reasons are an iota enum with a completeness test,
    and a finding whose sentences came out empty is refused.
 
+#### Rulings taken while F2 shipped
+
+Three decisions came out of F2's first review round, all sharing one
+structural cause: `driftPluginRiskyTools` was a DENYLIST, so any tool with a
+`CatalogArgv` could assert an absence by default — inverted from the design's
+intent exactly. git, the only tool this step actually measured, was
+excluded, while gcloud and terraform — verified on NO host — were the only
+tools that COULD produce an absence claim. The code cites these by number.
+
+1. **Eligibility for a subcommand-absence claim is an ALLOWLIST, not a
+   denylist.** `driftEligibleCatalogTools` (`internal/doctor/drift.go`)
+   replaces `driftPluginRiskyTools`: a tool's basename is a key IFF its
+   `CatalogArgv` has been run against a REAL, installed binary and confirmed
+   to enumerate everything the tool will dispatch — built-ins, aliases, and
+   external/plugin commands — with the version measured and what was checked
+   recorded alongside (`VersionMeasured`/`Evidence`). A tool absent from the
+   map never produces a `drift.unknown-subcommand` finding; it falls through
+   to `drift.unverifiable` instead, whose per-rule reason
+   (`driftReasonCatalogNotVetted`) says its catalog has not been vetted for
+   completeness. A reviewer downloaded real terraform (1.9.8 and 1.15.8) and
+   demonstrated the consequence of the denylist end to end: `terraform env`
+   is a working, undocumented built-in subcommand absent from
+   `terraform --help`, so the denylist reported it as not existing. The
+   allowlist is expected to be EMPTY or nearly so — shipping a check that
+   fires rarely and truthfully beats one that fires often and sometimes
+   lies.
+2. **A sentinel guards against a truncated or reshaped catalog.**
+   `CatalogProbe.Exhaustive` is derived from exit status, output shape, and
+   non-emptiness alone — none of those can see CONTENT truncation: a probe
+   that prints only the first N lines of a real tool's help and exits 0
+   still reports `Exhaustive == true`. Each `driftEligibleCatalogTools` entry
+   therefore also records a `Sentinel` — a subcommand certain to be present
+   in the vetted catalog (`terraform init`, `gcloud version`, `git commit`).
+   If a probed catalog does not contain it, the probe result does not match
+   what was vetted: no absence claim is made this run
+   (`driftCatalogEligibilityReason`), and `drift.unverifiable` reports the
+   mismatch instead. This is a BOUND on the probe result, not an enumeration
+   of truncation shapes.
+3. **The eligible set is pinned by a test, not left incidental.**
+   `TestDriftCatalogEligibilityIsExplicit` (`drift_test.go`) walks
+   `toolKnowledgeTable` and requires every entry with a non-empty
+   `CatalogArgv` to be accounted for in EXACTLY ONE of
+   `driftEligibleCatalogTools` (with evidence) or `driftCatalogExcludedTools`
+   (with a reason) — so a later `CatalogArgv` addition can never silently
+   grant absence-claim authority by omission; the reviewed decision is
+   visible in the test, not implied by what a map happens to leave out.
+
+**Named prerequisite: git eligibility.** git is not in
+`driftEligibleCatalogTools` — it is in `driftCatalogExcludedTools` instead —
+because of a PARSER gap in `internal/introspect`, not a knowledge-table
+omission, and fixing it needs its own step and its own verification, since
+`internal/introspect` is depended on by `serve`. Measured on git 2.54.0: with
+a `git-foo` script placed on `PATH`, `git help -a` lists it under a genuine
+"External commands" section with NO description column:
+
+```
+External commands
+   foo
+```
+
+(`cat -A`: `   foo$` — three spaces, the name, nothing after it; verified
+directly, not inferred). `internal/introspect/parser_git.go`'s
+`subcommandRe`, `^\s{2,}(\w[\w-]*)\s{2,}(.+)$`, requires a SECOND run of 2+
+spaces followed by a description to recognize a catalog line at all, so this
+line does not match and is silently dropped from the parsed catalog —
+`BestParseSubcommands` never sees it, and `ProbeCatalog.Exhaustive` still
+reports `true` because git's built-in commands alone already make a
+non-empty, well-formed catalog. git's own built-ins and `git config
+alias.*` entries are unaffected (verified separately: `git help -a` lists a
+"Command aliases" section in the SAME two-column, WITH-description shape,
+e.g. `   st                      status`, which `subcommandRe` matches
+correctly). The fix belongs to `internal/introspect`'s subcommand parser
+(recognize a name-only "External commands" line as a catalog entry with an
+empty description), not to this file's knowledge table or eligibility map.
+
 ### 7.7 `policy.*` — content lint (heuristic)
 
 Every finding is `warn` except the one that is not a judgement call.
