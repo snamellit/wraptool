@@ -75,12 +75,19 @@ func invariantsInputCases() []struct {
 // Input.Paths.PoolRoot; an empty PoolRoot there would silently resolve a
 // root-parameterized pool call to a RELATIVE path and read the real
 // filesystem from underneath a MapEnv-backed unit test.
+// Rooted at a path no real XDG home can be, deliberately. "/home/user/..."
+// is a plausible spelling -- it IS the home of a user named "user" -- and
+// these paths now reach real readers: drift resolves its cache from
+// Paths.CacheDir, so a fixture pointing at a plausible path is one hostname
+// away from reading somebody's actual cache.
+const invariantsFixtureRoot = "/nonexistent-wraptool-doctor-fixture"
+
 var invariantsHostPaths = HostPaths{
-	ConfigDir:  "/home/user/.config/wraptool",
-	DataDir:    "/home/user/.local/share/wraptool",
-	CacheDir:   "/home/user/.cache/wraptool",
-	RuntimeDir: "/run/user/1000/wraptool",
-	PoolRoot:   "/home/user/.local/share/wraptool/harness-pool",
+	ConfigDir:  invariantsFixtureRoot + "/.config/wraptool",
+	DataDir:    invariantsFixtureRoot + "/.local/share/wraptool",
+	CacheDir:   invariantsFixtureRoot + "/.cache/wraptool",
+	RuntimeDir: invariantsFixtureRoot + "/run/wraptool",
+	PoolRoot:   invariantsFixtureRoot + "/.local/share/wraptool/harness-pool",
 }
 
 // invariantsVirginInput is a host before any config exists — "virgin" means
@@ -110,7 +117,7 @@ func invariantsVirginInput() *Input {
 // executing anything for real. The basenames (git/kubectl/gcloud) are kept
 // so LookupToolKnowledge/ToolBasename-keyed logic (drift.go's
 // driftCatalogReason) still exercises its "known tool" branch.
-const invariantsMissingBinDir = "/home/user/.cache/wraptool-doctor-invariants-fixture-missing-bin"
+const invariantsMissingBinDir = invariantsFixtureRoot + "/missing-bin"
 
 // invariantsFullyPopulatedInput satisfies every Requirement bit doctor.go's
 // provides() knows about, so a config-gated (or workspace-gated, probe-gated,
@@ -316,6 +323,22 @@ var invariantsForbiddenHostSelectors = map[string][]string{
 		"RuntimeActivePlatformDir", "PointerFile", "RuntimeGenerationsDir",
 		"RuntimeGenerationDir", "HomeDir", "StagingDir", "StagingTxnDir",
 		"AdvisoryLockFile",
+	},
+	// internal/introspect's HOST-ROOTED cache entry points, listed for exactly
+	// the reason the pool row is: each resolves through paths.CacheDir()
+	// itself, so a check calling one reads the DEVELOPER'S real introspection
+	// cache even under a MapEnv-backed unit test, and no other guard notices.
+	// That defect shipped once already -- drift's first version read the real
+	// cache from the shared registry-wide fixture -- and reverting the fix left
+	// every gate green, because the drift tests redirect XDG_CACHE_HOME and so
+	// cannot tell the two reads apart.
+	//
+	// Deliberately NOT listed: LoadCacheStaleAt, which takes an explicit cache
+	// dir and is exactly how a check is meant to reach the cache, from
+	// Input.Paths.CacheDir. Introspect is listed because it WRITES the cache;
+	// doctor never does.
+	"introspect": {
+		"LoadCache", "LoadCacheStale", "CacheStamp", "SaveCache", "Introspect",
 	},
 }
 

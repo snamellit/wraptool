@@ -414,7 +414,14 @@ func driftCacheTrustReason(env Env, tc config.ToolConfig, schema *introspect.Sch
 	if fi, err := env.Stat(tc.Binary); err == nil && fi.ModTime.After(schema.IntrospectedAt) {
 		return driftReasonCacheOlderThanBinary, true
 	}
-	return 0, false
+	// driftReasonCount, never a bare 0: 0 is driftReasonMultiSegment, a legal
+	// member, so a caller that dropped the bool would silently report every
+	// trusted tool's rules as multi-segment -- a plausible-looking claim the
+	// data does not support, which no test would catch. The sentinel has no
+	// text, and driftBuildUnverifiableFinding already refuses a finding whose
+	// sentences came out empty, so a dropped bool degrades into silence
+	// instead.
+	return driftReasonCount, false
 }
 
 // driftFlagItems examines every one of tc's allow AND deny rules. Allow

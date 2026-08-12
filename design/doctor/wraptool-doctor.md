@@ -529,6 +529,39 @@ Remedy text never says "delete this rule". It says the flag or subcommand was
 not found in the installed tool's help, names the version probed, and asks the
 operator to verify.
 
+#### Rulings taken while F1 shipped
+
+Six decisions came out of F1's review rounds. The code cites them by number, so
+they are recorded here rather than living only in a review thread.
+
+1. **The cache read is root-parameterized.** `introspect.LoadCacheStale`
+   resolves through `paths.CacheDir()`, so a check calling it reads the
+   developer's real cache even under a `MapEnv` unit test — measured, and it
+   made the registry-wide invariants non-hermetic. `LoadCacheStaleAt` takes an
+   explicit directory and is the only way a check may reach the cache;
+   `invariantsForbiddenHostSelectors` names the host-rooted entry points so the
+   fix cannot be reverted silently.
+2. **The shared fixture never executes host binaries.** Once `NeedsProbe` was
+   satisfiable, `invariantsFullyPopulatedInput`'s `/usr/bin/*` paths made
+   `go test ./internal/doctor` spawn real processes. Its binaries point at a
+   guaranteed-absent directory, so a probe fails deterministically and every
+   check reports its honest cannot-verify.
+3. **Silence must not imply verifiable.** `drift.unverifiable` reads a
+   stale-tolerant cache, so staying quiet about a rule claimed it was checked
+   against the installed tool. It now reports when the cached schema was built
+   from a different binary path, or predates the binary's mtime.
+4. **The missing half of the flag gate is named.** §7.6 gates a flag claim on
+   coverage *and* a per-tool "help is exhaustive" assertion. That assertion
+   exists for no tool, so no flag-level absence can be confirmed today — and a
+   full-coverage rule read as flag-verifiable until the check said so out loud.
+5. **Deny rules get their honest counterpart before F2.** F2 makes a typo'd
+   deny rule the `fail`-severity case because it is fail-open; its "could not
+   tell" partner ships first, and findings say `allow` or `deny`.
+6. **A reason with no text produces no finding.** A reason missing from the
+   order or text table was silently dropped, yielding a causeless
+   "could not verify". The reasons are an iota enum with a completeness test,
+   and a finding whose sentences came out empty is refused.
+
 ### 7.7 `policy.*` — content lint (heuristic)
 
 Every finding is `warn` except the one that is not a judgement call.
