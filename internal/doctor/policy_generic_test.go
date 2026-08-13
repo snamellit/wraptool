@@ -526,3 +526,68 @@ func TestUnboundedPositionalCountAggregatesPerTool(t *testing.T) {
 		t.Errorf("Detail does not fold the remainder past the cap: %q", d)
 	}
 }
+
+// TestRunPolicygenericDenyFlagAsSubcommand pins the fail-open shape this check
+// exists for: a deny rule reading like it blocks `git config --global` that in
+// fact matches no call that can exist, because whitelist compares deny rules
+// against subcommand tokens and a flag is never one.
+func TestRunPolicygenericDenyFlagAsSubcommand(t *testing.T) {
+	cases := []struct {
+		name      string
+		deny      [][]string
+		wantFinds int
+		wantIn    string
+	}{
+		{
+			name:      "a flag as the second segment: fires",
+			deny:      [][]string{{"config", "--global"}},
+			wantFinds: 1,
+			wantIn:    `"--global"`,
+		},
+		{
+			name:      "a short flag: fires",
+			deny:      [][]string{{"push", "-f"}},
+			wantFinds: 1,
+			wantIn:    `"-f"`,
+		},
+		{
+			name:      "a genuine two-segment subcommand: silent",
+			deny:      [][]string{{"remote", "set-url"}},
+			wantFinds: 0,
+		},
+		{
+			name:      "a single-segment deny: silent",
+			deny:      [][]string{{"clone"}},
+			wantFinds: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var deny []config.DenyRule
+			for _, d := range tc.deny {
+				deny = append(deny, config.DenyRule{Subcommand: d})
+			}
+			in := &Input{Env: NewMapEnv(), Config: &config.Config{
+				Tools: map[string]config.ToolConfig{"git": {Deny: deny}},
+			}}
+
+			res := runPolicygenericDenyFlagAsSubcommand(context.Background(), in)
+			if len(res.Findings) != tc.wantFinds {
+				t.Fatalf("got %d findings, want %d: %+v", len(res.Findings), tc.wantFinds, res.Findings)
+			}
+			if tc.wantFinds == 0 {
+				return
+			}
+			f := res.Findings[0]
+			if f.Severity != SeverityWarn {
+				t.Errorf("severity = %v, want warn", f.Severity)
+			}
+			if !strings.Contains(f.Detail, tc.wantIn) {
+				t.Errorf("Detail %q does not name the offending segment %s", f.Detail, tc.wantIn)
+			}
+			if !strings.Contains(f.Remedy, "deny_flags") {
+				t.Errorf("Remedy must name deny_flags as the mechanism that actually blocks a flag: %q", f.Remedy)
+			}
+		})
+	}
+}

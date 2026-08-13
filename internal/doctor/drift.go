@@ -187,6 +187,19 @@ const (
 	// the first place (Introspect ranges over tc.Allow only), so "no cached
 	// schema" is not a fact about a deny rule specifically.
 	driftReasonNoCachedSchema
+	// driftReasonCacheStaleFormat: a cached schema EXISTS but a different
+	// wraptool build wrote it, so its format no longer matches this binary's
+	// and every loader discards it. Distinct from "never introspected"
+	// because the operator's action differs and the wrong one is
+	// discouraging: they HAVE run the server, and restarting it rebuilds the
+	// cache. Reporting this as "never introspected" told an operator with a
+	// perfectly good setup that their server had never run.
+	driftReasonCacheStaleFormat
+	// driftReasonCacheUnreadable: a cached schema exists and could not be
+	// parsed at all -- corrupt, or truncated by a full disk. Removing the
+	// file is the fix; a restart alone rewrites it only for the tools the
+	// current config names.
+	driftReasonCacheUnreadable
 	// driftReasonBinaryChanged: a cached schema exists, but Schema.Binary
 	// (stamped at introspection time) names a DIFFERENT path than the tool's
 	// currently configured binary. LoadCacheStaleAt performs no validity
@@ -291,6 +304,8 @@ func driftAllReasons() []driftUnverifiableReason {
 var driftReasonOrder = []driftUnverifiableReason{
 	driftReasonMultiSegment,
 	driftReasonNoCachedSchema,
+	driftReasonCacheStaleFormat,
+	driftReasonCacheUnreadable,
 	driftReasonBinaryChanged,
 	driftReasonCacheOlderThanBinary,
 	driftReasonNotInCache,
@@ -310,6 +325,11 @@ var driftReasonText = map[driftUnverifiableReason]string{
 		"against a catalog (§5.3)",
 	driftReasonNoCachedSchema: "have never been introspected — there is no cached schema for this tool yet " +
 		"(doctor never probes to build one; this fills in once `wraptool serve` has run against this config)",
+	driftReasonCacheStaleFormat: "have a cached schema written by a DIFFERENT wraptool build, in a format this " +
+		"binary no longer reads — the server HAS introspected this tool; restarting it rebuilds the cache in " +
+		"the current format",
+	driftReasonCacheUnreadable: "have a cached schema that could not be parsed at all (corrupt, or truncated by " +
+		"a full disk) — remove that tool's file from the introspection cache directory and restart the server",
 	driftReasonBinaryChanged: "have a cached schema that was built from a different binary path than the one " +
 		"currently configured — the cache describes a different program",
 	driftReasonCacheOlderThanBinary: "have a cached schema older than the currently configured binary's own " +
@@ -519,7 +539,13 @@ func driftCacheTrustReason(env Env, tc config.ToolConfig, schema *introspect.Sch
 // true facts about the same rule, not a double-count of one problem.
 func driftFlagItems(in *Input, name string, tc config.ToolConfig) []driftItem {
 	var items []driftItem
-	schema, cached := introspect.LoadCacheStaleAt(in.Paths.CacheDir, name)
+	// The STATE form, not the bool: "no usable cache" has three causes with
+	// three different fixes, and telling an operator who runs a server every
+	// day that their tool has "never been introspected" is both wrong and
+	// discouraging. The commonest cause in practice is a cache written by an
+	// older wraptool build, which a restart repairs.
+	schema, cacheState := introspect.LoadCacheStaleStateAt(in.Paths.CacheDir, name)
+	cached := cacheState == introspect.CacheOK
 
 	var trust driftUnverifiableReason
 	var untrusted bool
@@ -536,7 +562,7 @@ func driftFlagItems(in *Input, name string, tc config.ToolConfig) []driftItem {
 		}
 
 		if !cached {
-			items = append(items, driftItem{reason: driftReasonNoCachedSchema, kind: driftKindAllow, subject: subject})
+			items = append(items, driftItem{reason: driftCacheStateReason(cacheState), kind: driftKindAllow, subject: subject})
 			continue
 		}
 		if untrusted {
@@ -761,6 +787,22 @@ var driftCatalogExcludedTools = map[string]string{
 // mirroring driftCacheTrustReason, already shared the same way for the
 // cache-trust axis. Caller MUST have already confirmed probe.Exhaustive;
 // this function does not check it again.
+// driftCacheStateReason maps introspect's cache state onto the reason the
+// operator reads. Every non-OK state gets its own, because the actions differ:
+// run the server once, restart it, or delete a corrupt file.
+func driftCacheStateReason(state introspect.CacheState) driftUnverifiableReason {
+	switch state {
+	case introspect.CacheStaleFormat:
+		return driftReasonCacheStaleFormat
+	case introspect.CacheUnreadable:
+		return driftReasonCacheUnreadable
+	case introspect.CacheAbsent, introspect.CacheOK:
+		return driftReasonNoCachedSchema
+	default:
+		return driftReasonNoCachedSchema
+	}
+}
+
 // driftCatalogEligibilityFailure is driftCatalogEligibilityReason's typed
 // counterpart: same two questions, answered as the reason enum
 // drift.unverifiable reports rather than as prose. ok is false when the tool
