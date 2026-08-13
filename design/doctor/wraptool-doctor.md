@@ -1,6 +1,6 @@
 # Design: `wraptool doctor`
 
-Status: **proposed**
+Status: **implemented**
 Scope: a single operator-facing preflight command that answers "is this
 installation sane, is my policy as tight as I think it is, and does it still
 match the tools actually installed?" It checks host dependencies, strict config
@@ -615,7 +615,10 @@ tools that COULD produce an absence claim. The code cites these by number.
    visible in the test, not implied by what a map happens to leave out.
 
 **Named prerequisite: git eligibility — RESOLVED (the parser gap), but git
-STAYS EXCLUDED (a second, independent reason).** The parser gap this section
+STAYS EXCLUDED (a second, independent reason). SUPERSEDED — the conclusion
+below stands, but for a third and decisive reason: see "Phase F closes as
+informational-only" at the end of this section. Nothing here needs acting on;
+it is kept for the measurements.** The parser gap this section
 originally recorded is fixed: `internal/introspect/parser_git.go`'s
 `ParseSubcommands` now recognizes a bare, description-less catalog line (git
 2.54.0's `git help -a`, with a `git-foo` script placed on `PATH`, lists it
@@ -670,6 +673,87 @@ finding recorded as its reason (`internal/doctor/drift.go`) — see
 parser fix's own regression coverage, and
 `testdata/git_help_a_external.txt` for the captured fixture (git 2.54.0,
 external commands + aliases).
+
+#### Phase F closes as informational-only
+
+**Decision: `drift.unknown-subcommand` never asserts that a subcommand is
+absent. The eligibility allowlist stays permanently empty, and F3
+(deny-rule subcommand drift at `fail`) and F4 (`drift.unknown-flag`) are not
+built.** What the drift group ships is what it can support: which rules it
+could not verify, and precisely why.
+
+This supersedes the two reasons recorded above. Both were true and neither was
+the real one. The parser gap was fixable, and was fixed. `git help -a`'s
+incompleteness was real, and `git --list-cmds=main,others,alias` answers it —
+it enumerates built-ins, PATH-installed externals and aliases, omits a typo,
+and unlike probing a subcommand it does not execute an alias body (measured: a
+repo whose `.git/config` defines `alias.wtexec = !script` runs the script under
+`git wtexec -h` and does not under `--list-cmds`). Two rounds of review then
+found the actual obstacle, and it disqualifies the whole class of claim.
+
+**A tool's dispatchable set depends on ambient configuration, and doctor probes
+from outside it.** Every axis below was measured, each in a separate review
+round, each after the previous one was closed:
+
+| axis | probe sees | execution sees | detectable? |
+|---|---|---|---|
+| working directory | `Input.Workspace` | `paths.ResolveCWD`: the CLIENT's cwd, per call | no — see below |
+| declared `env` / `env_files` | withheld (`ChildEnv(binary, nil)`) | the tool's own resolved env | yes, gate on it |
+| `PATH` | doctor's | serve's | only when `serve.state` records one |
+| `working_dir` | ignored | `ResolveCWD`'s fallback | yes |
+| `HOME` | doctor's | serve's | **no** — `serve.state` records no `home` |
+
+The working-directory row is decisive on its own. `ResolveCWD`
+(`internal/paths/context.go`) prefers a client-supplied `?cwd=` **per MCP
+call**, then a Unix-socket peer's `/proc/<pid>/cwd`, and only then the
+configured `working_dir`. git resolves repo-local aliases from the working
+directory's `.git/config`, so a git tool's dispatchable set genuinely differs
+between two calls made seconds apart. There is no single environment doctor
+could probe that answers for all of them. The strongest statement any probe
+supports is "absent in the environment I probed", and that is not "absent".
+
+`HOME` shows the same thing from the other side: a global alias in
+`$HOME/.gitconfig` appears under one `HOME` and not another (measured), and
+`serve.state` records no `home` key — so the gate cannot even detect the
+difference, let alone close it.
+
+Five axes were found across five rounds, each round closing the named ones and
+uncovering more. That is the signature of enumerating cases where a bound was
+needed, and the bound, once stated, rules the claim out rather than repairing
+it: **an absence claim about a tool whose dispatch depends on ambient
+configuration is not soundly derivable from an out-of-band probe.** Loading
+enough environment to make it sound is not available either — closing the env
+axis honestly would mean a catalog probe reading the tool's `env_files`, and a
+probe that reads credentials to check for typos is a worse trade than not
+checking.
+
+Two approaches were built and abandoned in reaching this, both recorded because
+the reasons generalize:
+
+- **Per-subcommand rejection probes** (`drift.subcommand-rejected`, branch
+  `impl/doctor-rejection`, abandoned). git states plainly that it does not have
+  a subcommand — `git zwitch -h` prints `'zwitch' is not a git command` and even
+  names the correction — which is stronger evidence than any catalog listing,
+  and sidesteps completeness entirely. It was abandoned because probing an
+  operator-authored token EXECUTES a shell-bodied git alias: a reviewer
+  demonstrated `wraptool doctor` creating a side-effect file. A tool that audits
+  a repository must not execute what it finds there.
+- **`--list-cmds` as an exhaustive catalog** (branch `impl/git-listcmds`,
+  abandoned). Complete and side-effect free, and still defeated by the
+  environment axes above.
+
+What an operator gets instead, and it is not nothing: `drift.unverifiable`
+names every rule it could not confirm and the reason (no cached schema, a cache
+from a different build or binary, a help page that did not parse, a
+multi-segment subcommand, an unvetted catalog). `drift.tool-version-changed`
+explains when the tool moved underneath the cache. A typo like `git zwitch`
+surfaces as a rule whose help output the tool did not recognise — honest,
+caveated, and correct — with the authoritative answer arriving where it always
+was: the call fails at execution.
+
+Revisit if `serve.state` ever records the environment a call actually ran in,
+or if a tool appears whose dispatchable set is a pure function of its binary.
+Neither is true of git today.
 
 ### 7.7 `policy.*` — content lint (heuristic)
 

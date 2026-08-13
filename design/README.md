@@ -35,8 +35,8 @@ first (the foundational wrapping model), then browse by area below.
 | `policy/flag-type-inference.md` | policy | implemented | Flag value types come from the capability author, not a regex |
 | `policy/security-audit-policy-enforcement.md` | policy | findings | Policy-enforcement perimeter & config fail-open surface (open) |
 | `policy/opt-in-documentation-tooling.md` | policy | proposal | Opt-in documentation tooling for development containers |
-| `doctor/wraptool-doctor.md` | doctor | proposed | `wraptool doctor` — dependency, posture, policy-lint and tool-drift preflight |
-| `doctor/implementation-plan.md` | doctor | proposed | Step-by-step delivery of `wraptool doctor`, each step shipping a working command |
+| `doctor/wraptool-doctor.md` | doctor | implemented | `wraptool doctor` — dependency, posture, policy-lint and drift preflight (drift is informational: §7.6 records why absence claims are unsound) |
+| `doctor/implementation-plan.md` | doctor | implemented | Step-by-step delivery of `wraptool doctor`; A1–G3 shipped, F3/F4 deliberately not built |
 | `introspect/introspection-cache-invalidation.md` | introspect | implemented | Introspection cache invalidates on its real inputs |
 | `introspect/tool-descriptions-from-help.md` | introspect | decided | Tool descriptions come from `--help`, not config |
 | `audit/claude-audit.md` | audit | findings | Security audit — wraptool |

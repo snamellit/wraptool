@@ -1,6 +1,6 @@
 # Design: `wraptool doctor` implementation plan
 
-Status: **proposed**
+Status: **implemented**
 Scope: an itemized, incremental execution plan for
 `design/doctor/wraptool-doctor.md`. Every step after the foundation ships a
 `wraptool doctor` that runs and covers slightly more than the step before it.
@@ -227,6 +227,19 @@ independently reviewable.
 F1 before F2 is the important ordering: it proves the probe path, the cache
 path, and the report plumbing while the group still cannot produce a false
 "this does not exist".
+
+**OUTCOME: F0a–F0f and F1 shipped. F2 shipped inert; F3 and F4 were not
+built.** `drift.unknown-subcommand` exists with a permanently empty
+eligibility allowlist and never asserts absence — see
+`design/doctor/wraptool-doctor.md` §7.6, "Phase F closes as
+informational-only", for the five measured environment axes that rule the
+claim out, and for the two approaches built and abandoned on the way there.
+
+That ordering decision is the one part of this phase worth reusing. Shipping
+the half that cannot assert absence first meant every later round tested a
+real probe path against a real report, and the four rounds that followed each
+found a false-absence case in a working configuration. Had F2 gone first,
+those would have been support reports rather than review findings.
 
 ### Phase G — documentation
 
