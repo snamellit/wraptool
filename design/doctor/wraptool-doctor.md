@@ -317,7 +317,12 @@ non-empty" gate does not help, because git's catalog *is* non-empty.
 Therefore the §6.8 per-tool knowledge table gains a **catalog argv** column
 (`git help -a`, `kubectl --help`, `gcloud help`, `terraform --help`). A tool
 with no catalog argv in the table never produces a subcommand-drift finding —
-it reports `drift.unverifiable`.
+it reports `drift.unverifiable`. `git help -a` is a MUCH better catalog than
+`git -h`, but §7.6's own investigation later found it is still not exhaustive
+(missing deprecated spellings and remote-helper plumbing `git`'s own
+`--list-cmds` enumerates) — see §7.6's "Named prerequisite: git eligibility"
+for the evidence; this is why git carries a catalog argv in the knowledge
+table (§6.8) but stays out of `driftEligibleCatalogTools`.
 
 Multi-level subcommands are a second, independent limit: schema keys are
 `strings.Join(rule.Subcommand, " ")` (`introspect.go:123`) while catalog entries
@@ -609,33 +614,62 @@ tools that COULD produce an absence claim. The code cites these by number.
    grant absence-claim authority by omission; the reviewed decision is
    visible in the test, not implied by what a map happens to leave out.
 
-**Named prerequisite: git eligibility.** git is not in
-`driftEligibleCatalogTools` — it is in `driftCatalogExcludedTools` instead —
-because of a PARSER gap in `internal/introspect`, not a knowledge-table
-omission, and fixing it needs its own step and its own verification, since
-`internal/introspect` is depended on by `serve`. Measured on git 2.54.0: with
-a `git-foo` script placed on `PATH`, `git help -a` lists it under a genuine
-"External commands" section with NO description column:
+**Named prerequisite: git eligibility — RESOLVED (the parser gap), but git
+STAYS EXCLUDED (a second, independent reason).** The parser gap this section
+originally recorded is fixed: `internal/introspect/parser_git.go`'s
+`ParseSubcommands` now recognizes a bare, description-less catalog line (git
+2.54.0's `git help -a`, with a `git-foo` script placed on `PATH`, lists it
+under a genuine "External commands" section with no second, description-
+carrying column at all — `cat -A`: `   foo$`, three spaces, the name, nothing
+after it, verified directly). The fix is gated, not a blanket relaxation of
+`subcommandRe`: a bare line is trusted as a catalog entry only when the
+WHOLE help text's 2-or-more-space-indented content sits at one single,
+uniform indentation width, and that width already carries at least one
+genuine two-column entry — see `ParseSubcommands`' own doc comment for why a
+looser bound (e.g. "matches any width already used by a two-column entry
+anywhere in the text") is unsafe: measured directly against every fixture in
+`testdata/` and this host's own installed tools, several REAL help texts
+(a subcommand-specific git help page's own flag-value enumeration; a live
+`pi --help` capture's "Examples:" section, which uses the identical 2-space
+indentation as its real subcommand list) contain an indented bare word that
+is prose, not a listing entry, and would have become a false catalog entry
+under a width-matching-alone rule. git's own built-ins and `git config
+alias.*` entries are unaffected by any of this (verified separately: `git
+help -a` lists a "Command aliases" section in the SAME two-column,
+WITH-description shape, e.g. `   st                      status`, which
+`subcommandRe` already matched correctly before this fix).
 
-```
-External commands
-   foo
-```
-
-(`cat -A`: `   foo$` — three spaces, the name, nothing after it; verified
-directly, not inferred). `internal/introspect/parser_git.go`'s
-`subcommandRe`, `^\s{2,}(\w[\w-]*)\s{2,}(.+)$`, requires a SECOND run of 2+
-spaces followed by a description to recognize a catalog line at all, so this
-line does not match and is silently dropped from the parsed catalog —
-`BestParseSubcommands` never sees it, and `ProbeCatalog.Exhaustive` still
-reports `true` because git's built-in commands alone already make a
-non-empty, well-formed catalog. git's own built-ins and `git config
-alias.*` entries are unaffected (verified separately: `git help -a` lists a
-"Command aliases" section in the SAME two-column, WITH-description shape,
-e.g. `   st                      status`, which `subcommandRe` matches
-correctly). The fix belongs to `internal/introspect`'s subcommand parser
-(recognize a name-only "External commands" line as a catalog entry with an
-empty description), not to this file's knowledge table or eligibility map.
+Fixing the parser was NOT enough to make git eligible. Verifying it exposed
+an independent, more fundamental problem: `git help -a`'s own printed catalog
+is not exhaustive even read by a perfect parser. Measured, on git 2.54.0:
+`git --list-cmds=main,others,alias` — git's OWN internal command-enumeration
+mechanism, confirmed to correctly include the PATH-installed external command
+and gitconfig aliases used above — lists at least 24 names `git help -a`
+never prints at all: deprecated spellings (`init-db`, `fsck-objects`) and
+remote-helper/protocol plumbing (`upload-pack`, `receive-pack`,
+`http-fetch`, `http-push`, `remote-https`, `remote-http`, `remote-ftp`,
+`remote-ftps`, `remote-ext`, `remote-fd`, `shell`, `stage`, `subtree`,
+`pickaxe`, `merge-recursive` and its `-ours`/`-recursive-ours`/
+`-recursive-theirs`/`-resolve`/`-subtree`/`-octopus` siblings,
+`upload-archive`). Every one of these DISPATCHES: `git init-db` and
+`git fsck-objects` were run directly (created a repository; ran a
+connectivity check, exit 0); the rest were confirmed via their own real
+usage/error output (`git upload-pack` prints its own
+"usage: git-upload-pack ..." line; `git shell` reports its own "Interactive
+git shell is not enabled" — never git's `'X' is not a git command` message,
+which is what a unique-prefix abbreviation (`git stat`), a case variant
+(`git Status`/`git STATUS`), and an ambiguous prefix (`git chec`) all
+produce instead — so abbreviation and case are confirmed NOT a second gap).
+The eligibility bar (RULING 1 above) is enumerating EVERYTHING the tool
+dispatches; `git help -a` provably does not, independent of the parser that
+reads it. git therefore remains in `driftCatalogExcludedTools`, with this
+finding recorded as its reason (`internal/doctor/drift.go`) — see
+`internal/introspect/introspect_test.go`'s
+`TestGitParser_ParseSubcommands_NameOnlyExternalCommands` and
+`TestGitParser_ParseSubcommands_NameOnlyRequiresUniformIndentation` for the
+parser fix's own regression coverage, and
+`testdata/git_help_a_external.txt` for the captured fixture (git 2.54.0,
+external commands + aliases).
 
 ### 7.7 `policy.*` — content lint (heuristic)
 
