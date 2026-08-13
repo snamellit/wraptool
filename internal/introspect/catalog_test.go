@@ -2,6 +2,7 @@ package introspect
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -106,24 +107,17 @@ func TestProbeCatalog_NonZeroExitIsUnknown(t *testing.T) {
 // leave plausible-looking partial output behind, and that must not be
 // mistaken for a clean, complete catalog either.
 func TestProbeCatalog_DeadlineKilledIsUnknown(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake shell script probing needs a POSIX shell")
-	}
-	dir := t.TempDir()
-	bin := filepath.Join(dir, "tool")
-	// Print a real catalog-shaped prefix, then hang — exec replaces the
-	// shell process so the deadline's kill lands on the actual sleeper, see
-	// runprobe_test.go's TestRunProbeEnv_DeadlineKill for why.
-	script := "#!/bin/sh\ncat <<'HELP'\n" + gitStyleHelp + "HELP\nexec sleep 5\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	tc := &config.ToolConfig{Binary: bin}
+	// The child is this test binary re-executed as a helper, not a shell
+	// script: printing a catalog and then hanging needs neither a shell nor
+	// an external sleep, and an `exec sleep 5` here had the same latent
+	// portability bug runprobe_test.go's own deadline test was fixed for.
+	tc := &config.ToolConfig{Binary: os.Args[0]}
+	t.Setenv(catalogHelperEnv, "catalog-then-hang")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	got := ProbeCatalog(ctx, tc, []string{"--help"})
+	got := ProbeCatalog(ctx, tc, []string{"-test.run=^TestProbeCatalogHelperProcess$"})
 	if got.Exhaustive {
 		t.Error("Exhaustive should be false — the probe was killed by its own deadline mid-listing")
 	}
@@ -170,4 +164,21 @@ func TestProbeCatalog_AgainstGitFixtures(t *testing.T) {
 			t.Errorf("git -h unexpectedly listed %q — if this now fails, git's -h output grew a common-commands entry and the design §5.3 rationale needs re-verifying", name)
 		}
 	}
+}
+
+// catalogHelperEnv marks a re-execution of the test binary as this file's
+// helper child.
+const catalogHelperEnv = "WRAPTOOL_INTROSPECT_CATALOG_HELPER"
+
+// TestProbeCatalogHelperProcess is not a test — it is the child
+// TestProbeCatalog_DeadlineKilledIsUnknown execs. It prints a genuine
+// catalog-shaped listing and then hangs, so the deadline kill lands
+// mid-listing, which is the state under test: plausible partial output that
+// must not be trusted as a complete catalog.
+func TestProbeCatalogHelperProcess(t *testing.T) {
+	if os.Getenv(catalogHelperEnv) != "catalog-then-hang" {
+		t.Skip("not a helper invocation")
+	}
+	fmt.Print(gitStyleHelp)
+	time.Sleep(30 * time.Second)
 }
