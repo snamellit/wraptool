@@ -118,11 +118,17 @@ func TestRunProbeEnv_ExitStatus(t *testing.T) {
 func TestRunProbeEnv_DeadlineKill(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "hangprobe")
-	// `exec sleep` replaces the shell process itself (rather than forking a
-	// child that would keep holding the CombinedOutput pipe open after the
-	// shell is killed), so SIGKILL from the context deadline ends the probe
-	// promptly instead of leaving this test blocked on an orphaned sleep.
-	script := "#!/bin/sh\necho \"partial output\"\nexec sleep 5\n"
+	// A builtin-only busy wait, deliberately: an earlier version ran
+	// `exec sleep 5`, which needs sleep to resolve on the PATH this test
+	// hands the child -- and that PATH is a hardcoded /usr/bin:/bin, so the
+	// test failed on a Guix host where coreutils lives in the store rather
+	// than under an FHS prefix. echo and : are POSIX shell builtins, so the
+	// fixture now depends on nothing but the shell itself.
+	//
+	// It also hangs in the shell process rather than a forked child, so
+	// SIGKILL from the context deadline ends the probe promptly instead of
+	// leaving this test blocked on an orphan still holding the output pipe.
+	script := "#!/bin/sh\necho \"partial output\"\nwhile :; do :; done\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
