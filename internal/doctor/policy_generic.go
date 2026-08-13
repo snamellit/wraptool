@@ -368,3 +368,85 @@ func runPolicygenericDenyPrefixGap(_ context.Context, in *Input) Result {
 	}
 	return Found(findings...)
 }
+
+// ---------------------------------------------------------------- policy.deny-flag-as-subcommand
+
+const policygenericDenyFlagAsSubcommand CheckID = "policy.deny-flag-as-subcommand"
+
+var policygenericDenyFlagAsSubcommandMeta = Meta{
+	ID:    policygenericDenyFlagAsSubcommand,
+	Needs: NeedsConfig,
+	Summary: "warns when a deny rule names a flag as a subcommand segment, which can never match " +
+		"and therefore denies nothing",
+}
+
+func init() {
+	register(policygenericDenyFlagAsSubcommandMeta, runPolicygenericDenyFlagAsSubcommand)
+}
+
+// runPolicygenericDenyFlagAsSubcommand reports a deny rule whose subcommand
+// contains a segment that is a FLAG.
+//
+// Such a rule is inert, and inert in the fail-open direction: whitelist's
+// subcommandMatches compares the rule's tokens against the call's SUBCOMMAND
+// tokens only (internal/whitelist/policy.go), and a flag never appears there —
+// the MCP handler carries flags in their own map, and executor.buildArgs
+// appends them after the subcommand. So `deny: {subcommand: [config,
+// --global]}` matches no call that can exist, while reading exactly like a rule
+// that blocks `git config --global`.
+//
+// This is the one deny-shaped mistake that is unambiguous enough to report
+// without per-tool knowledge: a subcommand segment beginning with "-" is never
+// a subcommand. The fix is deny_flags, which is the mechanism that actually
+// blocks a flag.
+func runPolicygenericDenyFlagAsSubcommand(_ context.Context, in *Input) Result {
+	var findings []Finding
+	for _, name := range toolSortedNames(in.Config.Tools) {
+		tc := in.Config.Tools[name]
+		for _, deny := range tc.Deny {
+			flags := policygenericFlagSegments(deny.Subcommand)
+			if len(flags) == 0 {
+				continue
+			}
+			sub := strings.Join(deny.Subcommand, " ")
+			findings = append(findings, Finding{
+				Severity: SeverityWarn,
+				Title:    "deny rule names a flag as a subcommand segment, so it never matches",
+				Detail: fmt.Sprintf(
+					"tools.%s denies subcommand %q, whose segment(s) %s are flags — whitelist matches a deny "+
+						"rule against a call's SUBCOMMAND tokens only, and a flag never appears there (flags "+
+						"travel in their own map and are appended after the subcommand), so this rule can "+
+						"never match any call and blocks nothing",
+					name, sub, strings.Join(flags, ", ")),
+				Path: At("tools", name, "deny").Item("subcommand", sub),
+				Remedy: fmt.Sprintf(
+					"deny the subcommand itself (drop the flag segment(s)), and block the flag with "+
+						"deny_flags on the allow rule that permits %q — deny_flags is the mechanism that "+
+						"actually rejects a flag",
+					strings.Join(policygenericNonFlagSegments(deny.Subcommand), " ")),
+				DocRef: "docs/configuration.qmd",
+			})
+		}
+	}
+	return Found(findings...)
+}
+
+func policygenericFlagSegments(subcommand []string) []string {
+	var flags []string
+	for _, seg := range subcommand {
+		if strings.HasPrefix(seg, "-") {
+			flags = append(flags, strconv.Quote(seg))
+		}
+	}
+	return flags
+}
+
+func policygenericNonFlagSegments(subcommand []string) []string {
+	var out []string
+	for _, seg := range subcommand {
+		if !strings.HasPrefix(seg, "-") {
+			out = append(out, seg)
+		}
+	}
+	return out
+}

@@ -134,6 +134,42 @@ func readCacheFile(toolName string) (*Schema, bool) {
 // readCacheFileAt is the actual load-decode-validate primitive every reader
 // in this file shares — LoadCache and CacheStamp via readCacheFile's
 // host-rooted path, LoadCacheStaleAt via an explicit one.
+// CacheState says WHY a cached schema could not be used, so a caller can tell
+// an operator something better than "no cache". The three states are
+// genuinely different actions: absent means run the server once; stale-format
+// means a cache exists but a different wraptool build wrote it, so restarting
+// the server rebuilds it; unreadable means the file is corrupt and should be
+// removed.
+type CacheState int
+
+const (
+	CacheOK CacheState = iota
+	CacheAbsent
+	CacheUnreadable
+	CacheStaleFormat
+)
+
+// LoadCacheStaleStateAt is LoadCacheStaleAt with the reason attached. The
+// bool-returning form stays for callers that only need "usable or not".
+func LoadCacheStaleStateAt(cacheDir, toolName string) (*Schema, CacheState) {
+	return readCacheFileStateAt(cacheFileAt(cacheDir, toolName))
+}
+
+func readCacheFileStateAt(path string) (*Schema, CacheState) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, CacheAbsent
+	}
+	var schema Schema
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return nil, CacheUnreadable
+	}
+	if schema.FormatVersion != schemaFormatVersion {
+		return nil, CacheStaleFormat
+	}
+	return &schema, CacheOK
+}
+
 func readCacheFileAt(path string) (*Schema, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
