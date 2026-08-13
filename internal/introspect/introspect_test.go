@@ -40,6 +40,100 @@ func TestGitParser_ParseSubcommands(t *testing.T) {
 	}
 }
 
+// TestGitParser_ParseSubcommands_NameOnlyExternalCommands exercises the
+// design §7.6 named prerequisite end to end against a REAL `git help -a`
+// capture (git 2.54.0, testdata/git_help_a_external.txt — captured with a
+// git-foo and git-bar-baz script on PATH and two gitconfig aliases): a
+// PATH-installed external command listed with NO description column must
+// now be recognized, with an empty description, alongside its two-column
+// neighbors and the genuine (WITH-description) "Command aliases" section.
+func TestGitParser_ParseSubcommands_NameOnlyExternalCommands(t *testing.T) {
+	helpText := readTestData(t, "git_help_a_external.txt")
+	// AllowNameOnly is what BestParseCatalog sets for a vetted catalog argv;
+	// the default parser must NOT admit these, and the sibling test below
+	// pins that.
+	p := &GitParser{AllowNameOnly: true}
+	subcmds := p.ParseSubcommands(helpText)
+
+	// Bound the whole set, not just the two names: an over-wide relaxation
+	// against a 200-line real capture would otherwise pass this test.
+	if len(subcmds) != 175 {
+		t.Errorf("parsed %d entries, want exactly 175 (the fixture's measured true parse)", len(subcmds))
+	}
+	var descriptionless int
+	for _, d := range subcmds {
+		if d == "" {
+			descriptionless++
+		}
+	}
+	if descriptionless != 2 {
+		t.Errorf("got %d description-less entries, want exactly 2 (foo, bar-baz)", descriptionless)
+	}
+
+	for _, name := range []string{"foo", "bar-baz"} {
+		desc, ok := subcmds[name]
+		if !ok {
+			t.Errorf("expected external command %q to be found", name)
+		}
+		if desc != "" {
+			t.Errorf("external command %q description = %q, want empty (no description column at all)", name, desc)
+		}
+	}
+
+	// The alias section is WITH descriptions and must be entirely
+	// unaffected by the name-only extension.
+	if desc := subcmds["st"]; desc != "status" {
+		t.Errorf(`subcmds["st"] = %q, want "status"`, desc)
+	}
+	if desc := subcmds["unstage"]; desc != "reset HEAD --" {
+		t.Errorf(`subcmds["unstage"] = %q, want "reset HEAD --"`, desc)
+	}
+
+	// A genuine built-in, from the ordinary two-column section, must be
+	// completely unaffected.
+	if desc := subcmds["commit"]; desc != "Record changes to the repository" {
+		t.Errorf(`subcmds["commit"] = %q, want "Record changes to the repository"`, desc)
+	}
+}
+
+// TestGitParser_ParseSubcommands_NameOnlyRequiresUniformIndentation is the
+// negative case for the same bound: a bare, description-less line is NEVER
+// promoted to a catalog entry when the surrounding text mixes indentation
+// widths — the same shape a subcommand-specific help page's own flag-value
+// enumeration, a wrapped description continuation, or an inline usage
+// example under an "Examples:" heading all produce (measured against
+// testdata/git_log_help.txt and a live `pi --help` capture during this
+// step's own investigation: neither gained a spurious entry). Constructed
+// here rather than relying on those large fixtures, so the bound itself has
+// a small, direct regression test.
+func TestGitParser_ParseSubcommands_NameOnlyRequiresUniformIndentation(t *testing.T) {
+	const mixedIndentHelp = `Usage: widget <command>
+
+Commands
+   clone      Clone a repository
+   status     Show the working tree status
+
+Examples:
+  # Run once, interactively
+  widget
+
+Notes:
+       widget is not affiliated with any other project.
+`
+	p := &GitParser{}
+	subcmds := p.ParseSubcommands(mixedIndentHelp)
+
+	if _, ok := subcmds["widget"]; ok {
+		t.Error(`"widget" (a bare usage-example invocation, not a subcommand) must not appear in the catalog ` +
+			"— this text mixes indentation widths (3, 2, 7), so the name-only extension must stay withheld")
+	}
+	for _, name := range []string{"clone", "status"} {
+		if _, ok := subcmds[name]; !ok {
+			t.Errorf("expected genuine two-column subcommand %q to still be found", name)
+		}
+	}
+}
+
 func TestGitParser_ParseFlags_CommitH(t *testing.T) {
 	helpText := readTestData(t, "git_commit_h.txt")
 	p := &GitParser{}
@@ -426,5 +520,62 @@ func TestRealGitUsageBlocksKeepTheirFlags(t *testing.T) {
 		if len(got.Flags) == 0 {
 			t.Errorf("git %s: real help yielded zero flags", sub)
 		}
+	}
+}
+
+// TestGitParserNameOnlyIsOffByDefault pins the scope of the description-less
+// relaxation. BestParseSubcommands parses an arbitrary tool's top-level -h into
+// Schema.Available, which wraptool_discover reports to the AI, so a bare
+// indented word there must never become a subcommand. Only a per-tool catalog
+// argv, chosen and vetted because it lists what the tool dispatches, opts in.
+func TestGitParserNameOnlyIsOffByDefault(t *testing.T) {
+	helpText := readTestData(t, "git_help_a_external.txt")
+
+	off := (&GitParser{}).ParseSubcommands(helpText)
+	if _, found := off["foo"]; found {
+		t.Error("default parser admitted a description-less entry; only BestParseCatalog may")
+	}
+
+	on := (&GitParser{AllowNameOnly: true}).ParseSubcommands(helpText)
+	if _, found := on["foo"]; !found {
+		t.Error("AllowNameOnly parser did not admit the external command")
+	}
+	if len(on) != len(off)+2 {
+		t.Errorf("AllowNameOnly added %d entries, want exactly 2", len(on)-len(off))
+	}
+
+	// And the seam itself: the catalog entry point enables it, the general one does not.
+	if _, found := BestParseCatalog(helpText)["foo"]; !found {
+		t.Error("BestParseCatalog must admit description-less catalog entries")
+	}
+	if _, found := BestParseSubcommands(helpText)["foo"]; found {
+		t.Error("BestParseSubcommands must not admit description-less entries")
+	}
+}
+
+// TestGitParserNameOnlyRequiresATwoColumnEntry pins the second half of the
+// gate, which a mutation survived: without it, a uniformly indented document
+// containing no command listing at all would have its bare words parsed as a
+// whole catalog, where the old parser correctly produced none.
+func TestGitParserNameOnlyRequiresATwoColumnEntry(t *testing.T) {
+	// Uniform indent, no two-column entry anywhere: a values list, not commands.
+	const valuesList = `Supported values:
+  alpha
+  beta
+  gamma
+`
+	if got := (&GitParser{AllowNameOnly: true}).ParseSubcommands(valuesList); len(got) != 0 {
+		t.Errorf("a uniformly indented list with no two-column entry parsed as a catalog: %v", got)
+	}
+
+	// The same shape WITH a real two-column entry is a command listing.
+	const commandList = `Commands:
+  add        Add a thing
+  alpha
+  beta
+`
+	got := (&GitParser{AllowNameOnly: true}).ParseSubcommands(commandList)
+	if _, found := got["alpha"]; !found {
+		t.Errorf("a bare entry alongside a genuine two-column entry must be admitted: %v", got)
 	}
 }

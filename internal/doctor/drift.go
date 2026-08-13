@@ -749,18 +749,32 @@ var driftEligibleCatalogTools = map[string]driftCatalogEligible{}
 // the build loudly rather than leaving the decision to be inferred from an
 // omission.
 var driftCatalogExcludedTools = map[string]string{
-	"git": "MEASURED, on git 2.54.0: `git help -a` lists a PATH-installed external command (a `git-foo` " +
-		"script placed on PATH) under a genuine \"External commands\" section, but with NO description " +
-		"column (`cat -A`: \"   foo$\", nothing after the name). internal/introspect's subcommandRe " +
-		"(`^\\s{2,}(\\w[\\w-]*)\\s{2,}(.+)$`, parser_git.go) requires a SECOND 2+-space-separated group to " +
-		"match at all, so the line is silently dropped from the parsed catalog even though " +
-		"ProbeCatalog.Exhaustive still reports true (git's built-in commands alone already make a " +
-		"non-empty, well-formed catalog). git's own built-ins and `git config alias.*` entries are NOT " +
-		"affected (verified separately: `git help -a` lists a \"Command aliases\" section in the SAME " +
-		"two-column, WITH-description shape). This is a PARSER gap in internal/introspect, not a " +
-		"knowledge-table omission — recorded as design/doctor/wraptool-doctor.md §7.6's own named " +
-		"prerequisite for making git eligible; fixing it needs its own step and its own verification, " +
-		"since internal/introspect is depended on by `serve`.",
+	"git": "The PARSER gap that originally excluded git (a PATH-installed external command listed under " +
+		"`git help -a`'s \"External commands\" section with NO description column, silently dropped by " +
+		"internal/introspect's subcommandRe) is FIXED — parser_git.go now recognizes a bare, " +
+		"description-less catalog line, gated on the whole help text using a single uniform indentation " +
+		"width throughout (see ParseSubcommands' own doc comment for the bound and why a looser one is " +
+		"unsafe); MEASURED, on git 2.54.0 with a `git-foo`/`git-bar-baz` script on PATH and two gitconfig " +
+		"aliases (`GIT_CONFIG_GLOBAL`): both external commands and both aliases now parse correctly " +
+		"(testdata/git_help_a_external.txt, TestGitParser_ParseSubcommands_NameOnlyExternalCommands). git " +
+		"STAYS EXCLUDED regardless, for an INDEPENDENT, more fundamental reason found while verifying the " +
+		"parser fix: `git help -a`'s own printed catalog is not exhaustive even with a perfect parser. " +
+		"MEASURED, on git 2.54.0: `git --list-cmds=main,others,alias` — git's OWN internal command-" +
+		"enumeration mechanism, which correctly includes the PATH-installed external command and both " +
+		"gitconfig aliases used above — lists at least 24 names `git help -a` never prints at all: " +
+		"deprecated spellings (`init-db`, `fsck-objects`) and remote-helper/protocol plumbing " +
+		"(`upload-pack`, `receive-pack`, `http-fetch`, `http-push`, `remote-https`, `remote-http`, " +
+		"`remote-ftp`, `remote-ftps`, `remote-ext`, `remote-fd`, `shell`, `stage`, `subtree`, `pickaxe`, " +
+		"`merge-recursive` and its `-ours`/`-recursive-ours`/`-recursive-theirs`/`-resolve`/`-subtree`/" +
+		"`-octopus` siblings, `upload-archive`). Every one of these DISPATCHES: `git init-db` and " +
+		"`git fsck-objects` were run directly (created a repo; ran a connectivity check, exit 0); the " +
+		"remainder were confirmed via their own real usage/error output (e.g. `git upload-pack` prints its " +
+		"own \"usage: git-upload-pack ...\" line; `git shell` reports its own \"Interactive git shell is " +
+		"not enabled\" — never git's \"'X' is not a git command\" message, which IS what `git stat` (a " +
+		"unique-prefix abbreviation), `git Status`/`git STATUS` (case variants), and `git chec` (an " +
+		"ambiguous prefix) all produce — none of those four are accepted, so abbreviation/case are NOT a " +
+		"second gap). The eligibility bar (design §7.6 F2 RULING 1) is enumerating EVERYTHING the tool " +
+		"dispatches; `git help -a` provably does not, independent of the parser that reads it.",
 	"kubectl": "NOT verified on this host — kubectl is not installed here, so nothing could be measured " +
 		"against a real binary. kubectl's own documented krew plugin convention (a `kubectl-<name>` " +
 		"binary anywhere on PATH becomes `kubectl <name>`) is not enumerated by `kubectl --help` at all, " +

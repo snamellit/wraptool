@@ -80,7 +80,7 @@ func ProbeCatalog(ctx context.Context, tc *config.ToolConfig, argv []string) Cat
 		return CatalogProbe{}
 	}
 
-	catalog := BestParseSubcommands(output)
+	catalog := BestParseCatalog(output)
 	if len(catalog) == 0 {
 		return CatalogProbe{}
 	}
