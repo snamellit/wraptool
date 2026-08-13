@@ -69,6 +69,36 @@ func BestParseSubcommands(helpText string) map[string]string {
 	return nil
 }
 
+// BestParseCatalog is BestParseSubcommands for a per-tool CATALOG argv -- the
+// command a knowledge-table entry names precisely because it lists everything
+// the tool dispatches (git help -a). It additionally admits description-less
+// entries, which is how git prints a PATH-installed external command.
+//
+// Kept apart from BestParseSubcommands on purpose. That one parses an
+// arbitrary tool's top-level -h into Schema.Available, which wraptool_discover
+// reports to the AI, so a relaxation there can put a non-subcommand in front of
+// the agent -- a cobra help whose body is uniformly indented and carries an
+// "Environment:" section would contribute env var names. Here the argv was
+// chosen and vetted per tool, so the bare-name shape is expected rather than
+// tolerated.
+func BestParseCatalog(helpText string) map[string]string {
+	for _, p := range AllParsers() {
+		if g, ok := p.(*GitParser); ok {
+			g.AllowNameOnly = true
+			subs := g.ParseSubcommands(helpText)
+			g.AllowNameOnly = false
+			if len(subs) > 0 {
+				return subs
+			}
+			continue
+		}
+		if subs := p.ParseSubcommands(helpText); len(subs) > 0 {
+			return subs
+		}
+	}
+	return nil
+}
+
 // BestParse runs all parsers against the help text and returns the highest-
 // confidence result, then relaxes its placeholder-less booleans (see
 // demoteBooleansIfNoPlaceholders) — on the winner, so the choice of parser

@@ -13,7 +13,18 @@ import (
 //   - Subcommands: "   name      description" (indented, 2+ spaces between)
 //   - Flags from -h: "    -s, --[no-]long <value>  description"
 //   - Flags from -h: "    --[no-]flag              description"
-type GitParser struct{}
+type GitParser struct {
+	// AllowNameOnly admits description-less catalog entries (ParseSubcommands'
+	// second pass). OFF by default, deliberately: the relaxation is safe for a
+	// per-tool CATALOG argv we chose and vetted (git help -a), and unsafe for
+	// an arbitrary tool's top-level -h, whose parse becomes Schema.Available
+	// and is reported to the AI by wraptool_discover. A cobra-style help whose
+	// whole body sits at one indent and carries an "Environment:" section of
+	// bare names would otherwise contribute env var names to that list --
+	// measured on a constructed case, not hypothetical. Only BestParseCatalog
+	// turns this on.
+	AllowNameOnly bool
+}
 
 func (p *GitParser) Name() string { return "git" }
 
@@ -111,11 +122,14 @@ func (p *GitParser) ParseSubcommands(helpText string) map[string]string {
 	// Exactly one indentation width used anywhere in the text, AND that
 	// width already carries a genuine two-column entry: see the doc
 	// comment above for why both conditions are required.
-	if len(allIndentWidths) == 1 {
+	if p.AllowNameOnly && len(allIndentWidths) == 1 {
 		var width int
 		for w := range allIndentWidths {
 			width = w
 		}
+		// establishedWidths: the width must already carry a genuine two-column
+		// entry. Without it a uniformly indented document with no command list at
+		// all -- a plain list of values -- would parse as an entire catalog.
 		if establishedWidths[width] {
 			for _, line := range lines {
 				m := catalogNameOnlyRe.FindStringSubmatch(line)
