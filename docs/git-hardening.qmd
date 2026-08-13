@@ -38,8 +38,8 @@ properties combine into a serious threat surface.
 ## Split execution model
 
 You do not need wraptool to mediate every `git` invocation. Many
-operations are local-only and can run perfectly well inside the AI
-assistant's unprivileged container (which holds no secrets).
+operations are local-only and can run perfectly well inside the agent's
+unprivileged container (which holds no secrets).
 Restrict wraptool's surface to the operations that actually need
 host credentials.
 
@@ -450,7 +450,7 @@ Aggregated upstream announcements live at the
 
 ## Scope: what wraptool does and does not enforce
 
-Today, wraptool enforces **whitelisting and credential isolation at
+Today, wraptool enforces **policy and credential isolation at
 the command boundary**. It does not:
 
 - inspect repository configuration before launching `git`,
@@ -458,9 +458,31 @@ the command boundary**. It does not:
 - run static analysis on `.gitattributes`,
 - prevent `git` from auto-discovering a bare repository in a parent
   directory of the working tree,
-- apply mandatory Git command-scope configuration,
+- apply mandatory Git command-scope configuration of its own,
 - constrain remote destination hosts, or
 - apply the configured tool environment to introspection.
+
+The fifth point has one deliberate exception. The starter config that
+`wraptool up` and `wraptool serve` scaffold on first run ships
+`GIT_CONFIG_COUNT` and the indexed `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n`
+pairs in the git tool's `env`, pinning `core.hooksPath` at an empty directory
+and `core.fsmonitor` to `false`. Those are command scope, so they outrank a
+hostile `.git/config`, and they close the hook and fsmonitor execution channels
+for the wrapped `git pull` that the scaffold allows.
+
+That is configuration, not enforcement, and the difference decides who is
+covered:
+
+- A configuration written before this shipped does not have the settings.
+  `EnsureConfigFile` never overwrites an existing file, so upgrading wraptool
+  does not add them to a config you already have — copy them in by hand.
+- An operator can delete them. Nothing re-adds them and nothing checks for
+  them at load.
+- An explicit `git -c key=value` still outranks them, which is why `-c`,
+  `--config-env`, `-C`, `--git-dir`, and `--work-tree` must never appear in an
+  allow rule's flags.
+- They close the hook and fsmonitor channels only — not `.gitattributes`
+  filter and merge drivers, and not bare-repository discovery.
 
 The split execution model is the primary boundary. The environment recipe
 closes known execution channels for normal wrapped calls, but is not proof

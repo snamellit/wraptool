@@ -68,9 +68,9 @@ file-only audit reports "loopback, ok" while the server listens off-host.
 
 - Not a fixer. doctor never writes config; it prints the change to make.
   `--fix` is deferred (§13).
-- Not AI-facing. Never an MCP tool, never on an unauthenticated Web UI surface.
+- Not agent-facing. Never an MCP tool, never on an unauthenticated review UI surface.
   Its output is a map of exactly where the policy is weakest.
-  `wraptool_discover` remains the AI-facing, policy-respecting counterpart.
+  `wraptool_discover` remains the agent-facing, policy-respecting counterpart.
 - Not a liveness check. doctor reads the server's *recorded* state from disk; it
   never opens a connection or requires the server to be running.
 - Not a replacement for `wraptool config validate`, which stays as the narrow,
@@ -1010,7 +1010,7 @@ Stated explicitly so silence keeps meaning "checked, clean" (§6):
 - **Request-log integrity** — `requestlog` folds state over an append-only
   JSONL stream; a truncated or corrupt line is discovered at read time. doctor
   checks the log's permissions and writability, not its content.
-- **Web UI auth surface beyond the token file** — session cookie and login-form
+- **Review UI auth surface beyond the token file** — session cookie and login-form
   behaviour is code, not configuration.
 - **`introspection.cache_ttl`** — a very large value makes the cache
   effectively permanent, but the invalidation inputs (binary mtime, wraptool
@@ -1024,7 +1024,7 @@ Stated explicitly so silence keeps meaning "checked, clean" (§6):
    policy intent is worse than a report that is.
 2. **Per-tool knowledge freshness.** In-tree only, or operator-overridable the
    way introspection overrides are?
-3. **Web UI panel.** The engine returns findings rather than printing them
+3. **Review UI panel.** The engine returns findings rather than printing them
    partly so an admin-listener health panel stays possible.
 4. **Coverage bar for flag drift.** The concrete fraction-of-flags-found
    threshold needs calibrating against §12.1's corpus.

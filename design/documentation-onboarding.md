@@ -153,8 +153,8 @@ user runs most and the widest single source of "what does this mean".
   `wraptool_discover` is mentioned only in passing in `hot-reload.qmd` and
   `wraptool_info` only in `releases.qmd`. `wraptool_discover` exists to break
   a bootstrap deadlock (a tool with no allow rules registers nothing, so the
-  AI cannot name a subcommand to request) — worth surfacing where readers look
-  for what the AI can see.
+  agent cannot name a subcommand to request) — worth surfacing where readers look
+  for what the agent can see.
 - **`flag_types` on `wraptool_request_capability` is undocumented** anywhere in
   `docs/`, despite overriding introspection
   (`design/policy/flag-type-inference.md`).

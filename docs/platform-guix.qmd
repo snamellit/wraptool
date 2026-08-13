@@ -5,7 +5,7 @@ description: "Set up wraptool on Guix System: the native container runtime from 
 
 On Guix System `wraptool up` uses the **native Guix container** runtime — no
 Docker, no image build. It runs `guix shell --container --network -m manifest.scm`,
-so the container gets the *same* toolchain you develop with, and the AI harness
+so the container gets the *same* toolchain you develop with, and the agent
 can compile, test, and analyze locally.
 
 ## 1. Prerequisites

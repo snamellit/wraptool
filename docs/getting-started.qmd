@@ -13,28 +13,32 @@ that OS** (macOS in particular puts it under `~/Library/Application Support`, no
 
 ## The recommended path: `wraptool up`
 
-Once wraptool is installed and you have a config, you don't wire anything by
-hand. In any git repo:
+Once wraptool is installed, you don't wire anything by hand. In any git repo:
 
 ```bash
 wraptool up
 ```
 
 That one command starts the shared server (auto-generating the auth token),
-**auto-provisions your coding assistant's MCP config** with the connection URL
+**auto-provisions your coding agent's MCP config** with the connection URL
 and `Authorization` header, brings up an **isolated container** (no credentials),
 and drops you into a shell. Bare `wraptool` in a repo does the same. Full detail
 in [§6 below](#one-command-per-project-wraptool-up).
 
-`up` needs **one thing up front**: an existing config. It calls `config.Load`
-before it does anything else, so with no config file it fails immediately —
-create one first (see [Create a config](#create-a-config)). After that, `up` is
-all you run.
+`up` needs **nothing up front**. If no config exists at the resolved path it
+writes a commented starter there first, logs where it landed, and carries on —
+it never overwrites a config you already have. That starter is deny-by-default
+and allows exactly two privileged operations, `git pull` and `git fetch`, so
+the very first run comes up working and already demonstrates something the
+agent cannot do for itself.
+
+Editing that policy to expose the tools you actually want is the next step, not
+a prerequisite: see [Create a config](#create-a-config).
 
 The sections below are the **manual / from-scratch** path — how the pieces fit
 when you want to build, configure, and connect a harness yourself. If you just
-ran `up`, skip to [§6](#one-command-per-project-wraptool-up) for its details; you
-only need the config section below.
+ran `up`, skip to [§6](#one-command-per-project-wraptool-up) for its details,
+and read [§2](#create-a-config) when you are ready to widen the policy.
 
 ## 1. Build (manual path)
 
@@ -57,13 +61,15 @@ guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wrapto
 You usually don't write this from scratch: on first run both `wraptool up` and
 `wraptool serve` **scaffold** a commented starter config at that path if none
 exists (never overwriting one that does) and log where it landed. The starter
-enables a single privileged tool — `git pull` — so the server comes up
-immediately; you then edit the file to expose the tools you want.
+enables two privileged operations — `git pull` and `git fetch` — so the server
+comes up immediately; you then edit the file to expose the tools you want.
+`push` ships commented out and `clone` is deliberately absent; the scaffold
+explains why at each.
 
 Only wrap commands that actually need wraptool. `git pull`, `git fetch`, and
-`git push` reach the network with your host credentials — which the AI never
+`git push` reach the network with your host credentials — which the agent never
 sees — so they must go through wraptool. Read-only local git (`status`, `log`,
-`diff`) only touches the working `.git`, needs no credentials, and the assistant
+`diff`) only touches the working `.git`, needs no credentials, and the agent
 can run it itself, so there is nothing to gain by wrapping it. A fuller policy:
 
 ```yaml
@@ -128,7 +134,7 @@ mcp:
 head -c 32 /dev/urandom | base64 > ~/.config/wraptool/auth_token
 ```
 
-## 4. Connect your coding assistant
+## 4. Connect your coding agent
 
 ```bash
 wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
@@ -174,13 +180,12 @@ sequenceDiagram
   W-->>AI: ToolResult
 ```
 
-Trigger any allowed subcommand from your assistant. The wraptool log
+Trigger any allowed subcommand from your agent. The wraptool log
 prints one line per executed command with status and duration.
 
 ## 6. One command per project: `wraptool up`
 
-Once the config exists you don't start things by hand. In any git repository
-(or worktree) root:
+You don't start things by hand. In any git repository (or worktree) root:
 
 ```bash
 wraptool up
@@ -192,8 +197,8 @@ and does three things:
 1. **Ensures the shared server is running** — if it isn't, it starts `wraptool
    serve` detached (pidfile + lock under `$XDG_RUNTIME_DIR`, auto-generating the
    auth token), and waits for it to become reachable. It also brings up the
-   **operator review UI** at `127.0.0.1:8718` with its own generated token (so
-   you can approve the AI's capability requests) and prints its URL — disable
+   **review UI** at `127.0.0.1:8718` with its own generated token (so
+   you can approve the agent's capability requests) and prints its URL — disable
    with `--no-admin`. The review UI is host-facing and always stays on loopback.
 2. **Brings up the project's container**, injecting the connection info: the auth
    token and this worktree's host path. On a Guix host it uses a **native Guix
@@ -210,7 +215,7 @@ and does three things:
 - **`guix`** — when `guix` is on `PATH` and the worktree has a `manifest.scm`.
   It runs `guix shell --container --network -m manifest.scm`: no Docker, no image
   build, and the container gets the **same toolchain you develop with** (from
-  `manifest.scm`), so the AI harness can compile, test, and analyze locally. The
+  `manifest.scm`), so the agent can compile, test, and analyze locally. The
   harness itself installs **once** into the shared pool
   (`$XDG_DATA_HOME/wraptool/harness-pool/home`, mounted to
   `/home/wraptool-harness`) — its login and skills persist there across every
@@ -295,7 +300,7 @@ Assume untrusted project code can probe and use every host localhost service:
 - Do not keep production data or privileged unauthenticated admin endpoints on
   ports reachable during a session.
 - Use separate test databases and least-privilege test accounts.
-- Keep wraptool's admin UI authenticated; its token is intentionally not passed
+- Keep wraptool's review UI authenticated; its token is intentionally not passed
   to the container.
 
 #### Harness HOME is shared and writable

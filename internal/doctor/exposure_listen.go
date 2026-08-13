@@ -1,5 +1,5 @@
 // exposure_listen.go implements the listener/bind half of the exposure.*
-// group (design §7.3): whether the MCP and admin listeners are reachable from
+// group (design §7.3): whether the MCP and review UI listeners are reachable from
 // somewhere they should not be. exposure_files.go (B5, its own parallel
 // step) owns the token/socket/request-log half of the same design section —
 // deliberately split, per plan §1's one-file-per-group rule, so the two never
@@ -46,7 +46,7 @@ var (
 	exposureListenAdminContainerReachableMeta = Meta{
 		ID:    exposureListenAdminContainerReachableID,
 		Needs: NeedsConfig,
-		Summary: "warns when the admin listener is set on a host where guix can share its network " +
+		Summary: "warns when the review UI listener is set on a host where guix can share its network " +
 			"namespace with a project container",
 	}
 	exposureListenListenersCollideMeta = Meta{
@@ -139,7 +139,7 @@ func runExposureListenSSENonLoopback(_ context.Context, in *Input) Result {
 func runExposureListenAdminNonLoopback(_ context.Context, in *Input) Result {
 	cfg := in.Config
 	if cfg.Admin.Listen == "" {
-		return Pass() // admin UI disabled
+		return Pass() // review UI disabled
 	}
 	if config.ListenIsLoopback(cfg.Admin.Listen) {
 		return Pass()
@@ -148,7 +148,7 @@ func runExposureListenAdminNonLoopback(_ context.Context, in *Input) Result {
 		Severity: SeverityFail,
 		Title:    "Admin review UI is not loopback-only",
 		Detail: fmt.Sprintf(
-			"admin.listen %q is not loopback-only — the admin UI is the sole approval authority for capability "+
+			"admin.listen %q is not loopback-only — the review UI is the sole approval authority for capability "+
 				"requests and rule edits, and must not be reachable off-host", cfg.Admin.Listen),
 		Remedy: "bind admin.listen to 127.0.0.1 (localhost only)",
 		DocRef: "docs/configuration.qmd#admin",
@@ -157,7 +157,7 @@ func runExposureListenAdminNonLoopback(_ context.Context, in *Input) Result {
 
 // ------------------------------------------------------ exposure.admin-container-reachable
 
-// runExposureListenAdminContainerReachable warns when the admin UI is
+// runExposureListenAdminContainerReachable warns when the review UI is
 // enabled on a host where `guix shell --container --network` (cmd/guixcontainer.go)
 // would share the host's network namespace with a project container: a
 // loopback-only admin.listen is normally safe from anything off-host, but a
@@ -177,7 +177,7 @@ func runExposureListenAdminContainerReachable(_ context.Context, in *Input) Resu
 		Title:    "Admin UI may be reachable from inside a project container",
 		Detail: fmt.Sprintf(
 			"admin.listen %q is set and guix is on PATH. guix shell --container --network shares the host's "+
-				"network namespace, so an in-container harness can reach the admin UI at its loopback address "+
+				"network namespace, so an in-container harness can reach the review UI at its loopback address "+
 				"just as this host can, even though admin.listen is otherwise loopback-only", in.Config.Admin.Listen),
 		Remedy: "this is a property of guix's shared-netns container network mode — make sure you trust every " +
 			"harness given access to a `wraptool up` container on this host, since it can reach the approval UI",

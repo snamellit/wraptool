@@ -51,7 +51,69 @@ The command writes `docs/_site/`. Generated output and Quarto caches are ignored
 and must not be committed to `main`. Use relative links for repository pages and
 assets so the site works below the production `/wraptool/` path.
 
-## Documentation accuracy
+## Documentation style {#documentation-style}
+
+One rule applies everywhere: **one name per concept**, per
+[Terminology](terminology.qmd). Elegant variation is a defect here. A reader
+who meets "the AI", "the assistant", and "the agent" on one page has to work
+out whether those are three things.
+
+Everything below is scoped by what a page is for. The site mixes three kinds of
+page and they do not want the same prose.
+
+### Procedural pages
+
+`installation.qmd`, `platform-*.qmd`, `getting-started.qmd`,
+`troubleshooting.qmd`, `examples.qmd`.
+
+Someone is following these with a terminal open, often not in their first
+language, often while something is already broken. Write accordingly:
+
+- Imperative mood. "Run `wraptool up`", not "you can run" or "the user should
+  run".
+- One instruction per sentence. One action per numbered step.
+- Keep procedural sentences under about 20 words.
+- Put a warning **before** the step it applies to, never after. A caution that
+  follows the command it guards has already failed.
+- Present tense, active voice.
+- Avoid noun stacks longer than three words. "Harness pool generation
+  activation pointer" is not English.
+- Say what a command does before showing flags that change it.
+
+### Reference pages
+
+`cli-reference.qmd`, `configuration.qmd`, `mcp-integration.qmd`.
+
+Terminology discipline and short sentences apply. Prefer a table to a paragraph
+whenever the content is genuinely tabular. Options, defaults, and error
+conditions belong in tables; explain the model in prose above them.
+
+### Explanatory pages
+
+`architecture.qmd`, `security.qmd`, `git-hardening.qmd`, `harness-pool.qmd`,
+`comparison.qmd`, `isolated-environments.md`.
+
+The procedural rules above do **not** apply beyond terminology. These pages
+carry conceptual distinctions — mediation versus proxying, capability versus
+containment — that need subordinate clauses and worked examples to land.
+Shortening them costs meaning.
+
+Modality is load-bearing here. Distinguish what wraptool **prevents**,
+**mitigates**, **detects**, and **does not address**, and never let an editing
+pass upgrade one to another. This matters most in `security.qmd`: a
+simplification that turns "mitigates" into "stops" is a false security claim,
+not a style improvement. See [Documentation accuracy](#documentation-accuracy)
+below.
+
+### Not adopted
+
+The procedural rules above overlap with ASD-STE100 Simplified Technical
+English, deliberately. The standard itself is not adopted: its restricted
+dictionary and ban on subordinate constructions would flatten the explanatory
+pages, which is where wraptool's reasoning lives. Do not extend these rules
+beyond the procedural pages listed above.
+
+## Documentation accuracy {#documentation-accuracy}
 
 CLI reference changes should be checked against both Cobra source and live help:
 

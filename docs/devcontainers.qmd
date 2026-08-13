@@ -1,11 +1,11 @@
 ---
-title: "Dev containers for AI harnesses"
+title: "Dev containers for harnesses"
 ---
 
 A [dev container](https://containers.dev) is a description of a throwaway
 development environment — a base image plus a list of *features* — that your
 editor builds and drops you into. Your project source is bind-mounted in; the
-toolchain, the AI harness, and everything else live in the container and can be
+toolchain, the harness, and everything else live in the container and can be
 rebuilt from scratch at any time.
 
 For AI-assisted development this is exactly the shape you want:
@@ -15,7 +15,7 @@ For AI-assisted development this is exactly the shape you want:
   filesystem and the container's tools.
 - **Compile and test happen in the container too**, so the agent's edits are
   validated against the same toolchain your editor uses — no "works on my
-  machine" gap between the human and the AI.
+  machine" gap between the human and the agent.
 - **Credentials stay on the host.** With the [`wraptool`
   feature](#the-wraptool-feature), the agent reaches git, gcloud, and
   kubectl through wraptool over MCP — it never holds a token or an SSH key.
@@ -344,7 +344,7 @@ go build ./...        # the container's Go, not your laptop's
 go test ./...
 ```
 
-The AI harness runs beside them:
+The harness runs beside them:
 
 ```bash
 claude                # or:  agy
@@ -364,4 +364,4 @@ git push                    # only works via the wrapped MCP tool
 - [Getting started](getting-started.qmd) — configure and run the host server.
 - [Isolated environments](isolated-environments.md) — Guix, Docker, Podman, and
   Unix-socket variants, plus the full security checklist.
-- [Configuration reference](configuration.qmd) — every whitelist field.
+- [Configuration reference](configuration.qmd) — every policy field.
