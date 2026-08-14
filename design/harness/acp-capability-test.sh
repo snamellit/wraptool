@@ -59,33 +59,33 @@ guix_run() {
 echo
 echo "T1 — byte transparency (stdout unmodified through guix shell + bash)"
 
-# A payload no line-oriented or text-assuming layer survives intact:
-# NUL bytes, CR without LF, a >64KiB burst (past one pipe buffer), high bytes,
-# and a final line with no trailing newline.
-{
-  printf 'ACPSTART\n'
-  printf 'nul[\000\000]cr[\r]tab[\t]esc[\033]\n'
-  printf '\200\376\377 high bytes\n'
-  head -c 200000 /dev/urandom | base64 | tr -d '\n'
-  printf '\n'
-  printf 'no-trailing-newline-END'
-} > "$WORK/payload"
+# A built Go binary is a better payload than anything hand-generated: it already
+# contains NUL bytes, high bytes and megabytes of runs without newlines. Hashing
+# it also folds T2a in — anything injected onto stdout changes the hash.
+PAYLOAD=""
+for cand in "$ROOT/wraptool" "$(command -v guix)" /bin/bash; do
+  [ -f "$cand" ] && { PAYLOAD="$cand"; break; }
+done
+[ -n "$PAYLOAD" ] || { echo "no binary payload found — run 'go build -o wraptool .' first"; exit 2; }
+echo "  payload: $PAYLOAD ($(stat -c%s "$PAYLOAD") bytes)"
 
-# `cat` the payload from inside the container; compare byte for byte.
-guix_run "$(container_entry "cat $(printf '%q' "$WORK/payload")")" > "$WORK/got" 2>"$WORK/err"
-if cmp -s "$WORK/payload" "$WORK/got"; then
-  ok "T1a stdout is byte-identical under bash -lc"
+want="$(md5sum < "$PAYLOAD" | cut -d' ' -f1)"
+got="$(guix_run "$(container_entry "cat $(printf '%q' "$PAYLOAD")")" 2>/dev/null | md5sum | cut -d' ' -f1)"
+if [ "$want" = "$got" ]; then
+  ok "T1a stdout byte-identical under bash -lc (md5 $want)"
 else
-  bad "T1a stdout altered — $(stat -c%s "$WORK/payload") sent, $(stat -c%s "$WORK/got" 2>/dev/null || echo 0) received"
-  cmp "$WORK/payload" "$WORK/got" 2>&1 | head -3 | sed 's/^/        /'
+  bad "T1a stdout altered — host $want, container $got"
   echo "        R1 IS NOT VIABLE AS WRITTEN — see §13 closing paragraph"
 fi
 
-guix_run "$(container_entry "cat $(printf '%q' "$WORK/payload")")" -c > "$WORK/got_c" 2>/dev/null
-if cmp -s "$WORK/payload" "$WORK/got_c"; then
+# §14.2: is the login shell droppable? Informational — T1a passing under -lc
+# already means the profile is quiet, so a -c failure here would be surprising
+# rather than blocking.
+got_c="$(guix_run "$(container_entry "cat $(printf '%q' "$PAYLOAD")")" -c 2>/dev/null | md5sum | cut -d' ' -f1)"
+if [ "$want" = "$got_c" ]; then
   ok "T1b byte-identical under bash -c (login shell droppable — §14.2)"
 else
-  bad "T1b differs under bash -c"
+  bad "T1b differs under bash -c (informational; -lc is what ships)"
 fi
 
 echo
@@ -112,29 +112,31 @@ echo "T3 — bidirectional round-trip over pipes (not a TTY)"
 
 # JSON-RPC needs stdin to reach the child promptly and the reply to come back
 # without waiting for EOF. A redirect-to-file test cannot show this.
-cat > "$WORK/echo.sh" <<'INNER'
-while IFS= read -r line; do
-  printf 'echo:%s\n' "$line"
+# MUST be a true request/response round-trip, not a fire-and-forget producer
+# piped into the container. `guix shell --container` takes seconds to start; a
+# producer that writes and exits fills the pipe buffer before the child begins
+# reading, so the child drains it in one burst and the test reports "buffered"
+# on a perfectly unbuffered path. Each send therefore waits for its own reply.
+t3_rounds=5
+t3_got=0
+coproc T3 { guix_run "$(container_entry 'bash -c "while IFS= read -r l; do echo echo:\$l; done"')" 2>/dev/null; }
+for i in $(seq "$t3_rounds"); do
+  printf 'ping-%d\n' "$i" >&"${T3[1]}" 2>/dev/null || break
+  # Generous first timeout: it absorbs container startup, not stream latency.
+  if IFS= read -r -t 180 reply <&"${T3[0]}" && [ "$reply" = "echo:ping-$i" ]; then
+    t3_got=$((t3_got+1))
+  else
+    break
+  fi
+  sleep 0.3
 done
-INNER
+exec {T3[1]}>&- 2>/dev/null
+wait 2>/dev/null
 
-t3_result="$(
-  {
-    exec 3>&1
-    (
-      for i in 1 2 3; do
-        printf 'ping-%d\n' "$i"
-        sleep 0.3   # if the child buffers, replies arrive late or not at all
-      done
-      sleep 1
-    ) | timeout 180 guix_run "$(container_entry "bash $(printf '%q' "$WORK/echo.sh")")" 2>/dev/null
-  }
-)"
-got_lines="$(printf '%s' "$t3_result" | grep -c '^echo:ping-' || true)"
-if [ "$got_lines" -eq 3 ]; then
-  ok "T3 all 3 lines round-tripped through pipes"
+if [ "$t3_got" -eq "$t3_rounds" ]; then
+  ok "T3 $t3_got/$t3_rounds request/response round-trips completed"
 else
-  bad "T3 $got_lines/3 lines round-tripped — stdin or stdout is buffered"
+  bad "T3 $t3_got/$t3_rounds round-trips — stdin does not reach the child before EOF"
   echo "        R1 IS NOT VIABLE AS WRITTEN — see §13 closing paragraph"
 fi
 
@@ -162,9 +164,13 @@ kill -TERM "$parent" 2>/dev/null
 wait "$parent" 2>/dev/null
 sleep 3
 if pgrep -f "$marker" >/dev/null 2>&1; then
-  bad "T5 orphaned process survived parent death — WP1 needs process-group teardown (§7.11)"
+  bad "T5 orphan survived parent death — WP1 needs process-group teardown (§7.11)"
   pgrep -af "$marker" | head -3 | sed 's/^/        /'
+  # Known to fail as of 2026-08-14 (§13.1): the signalled process itself, guix's
+  # guile wrapper, survives SIGTERM — so Setpgid + kill(-pgid) is required, not
+  # a kill of cmd.Process. Reported as a fail because WP1 has not landed yet.
   pkill -f "$marker" 2>/dev/null
+  pkill -f 'guix shell --container' 2>/dev/null
 else
   ok "T5 no orphan after the parent was killed"
 fi

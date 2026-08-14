@@ -1,10 +1,11 @@
 # Design: running an ACP harness inside a wraptool container
 
-Status: **proposed** (design only — nothing implemented; §13's capability
-tests run before any documentation or code lands). This note describes future
-work, not current behaviour: per `docs/contributing.qmd#documentation-accuracy`
-a design document is not automatically a statement of what wraptool does
-today.
+Status: **proposed** (design only — nothing implemented). §13's capability
+tests have been run on a Guix host and **R1's premise holds**: stdio into the
+container is byte-transparent and interactive (§13.1). This note still
+describes future work, not current behaviour: per
+`docs/contributing.qmd#documentation-accuracy` a design document is not
+automatically a statement of what wraptool does today.
 
 Scope: let an editor that speaks the Agent Client Protocol (Zed, and the
 Neovim/Emacs clients built on the same contract) drive a harness running
@@ -1306,6 +1307,15 @@ through `wantShell`'s TTY-driven `auto` branch (`cmd/up.go:189`), which
 resolves to `false` under an editor's pipes and, on the Guix path, never
 enters a container at all (`cmd/guixcontainer.go:99-111`).
 
+**Teardown is not "kill the child".** §13.1's T5 established empirically that
+`guix`'s guile wrapper — wraptool's own direct child — survives `SIGTERM`,
+along with the inner `guix` process and everything inside the container. So
+WP1 sets `SysProcAttr.Setpgid` on the container command and signals the
+negated process-group id on exit and on parent pipe close, escalating to
+`SIGKILL` after a grace period. Signalling `cmd.Process` alone leaves exactly
+the orphan §7.11 describes: a container holding the MCP Bearer token and a
+writable worktree, with no terminal for a human to notice it in.
+
 The surface question — a `--exec` flag on `up`, a trailing `--` argv, or a
 separate subcommand — is deliberately left open (§14.2). It should be chosen
 for the general primitive, not for ACP.
@@ -1402,6 +1412,54 @@ editor against a real harness — and only that result licenses a worked example
 in WP3. If T1 or T3 fails, R1 is not viable as stated and the login shell or
 the container runtime, not the documentation, is what has to change.
 
+### 13.1 Results — 2026-08-14, Guix host
+
+Run against this worktree's `manifest.scm` on a developer's Guix host, driving
+`guix shell --container` directly with the argv of `buildGuixShellArgs`
+(`cmd/guixcontainer.go:618`). **R1's premise holds.**
+
+| Test | Result | Evidence |
+|---|---|---|
+| T1a byte transparency, `bash -lc` | **pass** | `cat` of a multi-megabyte Go binary through the container: md5 identical to the host's |
+| T2a stream separation | **pass** | same run, output piped to `md5sum` — any injected byte would change the hash. Nothing from `guix` or the login profile reached stdout |
+| cold-cache variant | **pass** | `--rebuild-cache` with stderr discarded: hash unchanged. See caveat below |
+| T3 round-trip | **pass** | 5 request/response pairs over a coprocess: intervals 305/306/306/306 ms against a 300 ms send delay, so **round-trip ≈ 5 ms** |
+| T4 no TTY | **pass** | T3 ran with pipes on both ends |
+| T5 teardown | **fail** | see below — this is the expected failure, and it is a WP1 requirement, not a threat to R1 |
+| T6 Dev Container | not run | needs a docker host |
+
+**What this settles.** Stdout is byte-transparent and stdin reaches the child
+promptly; a protocol wraptool has no knowledge of survives the trip intact and
+interactively. The entry-argv primitive of §12 is sufficient for ACP, and the
+relay rejected in §10 is not needed to make the connection *work* — only, had
+it been kept, to police it.
+
+**Two things it does not settle.**
+
+*The cold-store case.* `--rebuild-cache` invalidates guix's profile cache, not
+the store. With every package already built, no substitute download or compile
+occurred, so this is strong evidence that guix's own output goes to stderr —
+not proof. A first-ever run on a fresh machine remains untested, and §5.3's
+warm-up should not be deleted on this evidence alone, only demoted from
+required to probably-unnecessary.
+
+*T1b under `bash -c`.* Not separately run. It does not matter: T1a passed
+under `bash -lc`, the spelling shipped today, so the login profile emits
+nothing on stdout on this host and §5.4 needs no fix. Dropping `-l` becomes an
+option rather than a requirement (§14.2).
+
+**T5, and what it actually showed.** Worse than "no process-group teardown".
+The surviving processes included **the direct child that was signalled** —
+`guix`'s guile wrapper survived `SIGTERM`, along with the inner `guix` and the
+`sleep` inside the container. So a launcher that kills its immediate child on
+exit is not sufficient: WP1 must set a process group (`SysProcAttr.Setpgid`)
+and signal the negated group id, with escalation to `SIGKILL`. Confirmed by
+inspection that no `Setpgid` exists anywhere in the tree today.
+
+This is the §7.11 orphan risk in concrete form: under an editor, a closed
+connection would leave a container running with the MCP Bearer token and a
+writable worktree, and no human at a terminal to notice.
+
 ## 14. Open questions — what a spike must answer first
 
 ### 14.1 Protocol and client behaviour
@@ -1457,14 +1515,16 @@ research; the pointer is to the test that settles each one.
 - Does `devcontainer up` offer a way to suppress its stdout progress and
   terminating JSON result object? If not, `cmd/up.go:1008` is simply
   repointed at stderr. **T2/T6.**
-- Does `guix shell` itself write anything to stdout on the entry path? Its
-  build progress is believed to go to stderr, but §5.3's warm-up must not
-  depend on that. **T1/T2.**
-- Can the login shell be dropped (`bash -c` instead of `bash -lc`,
-  `cmd/guixcontainer.go:630`) without losing anything a harness needs, or
-  must the profile phase be redirected instead (§5.4)? **T1.** Note the pool
-  PATH append lives in the entry string itself (`cmd/guixcontainer.go:608`),
-  not in the profile, so a harness on `PATH` does not depend on `-l`.
+- ~~Does `guix shell` itself write anything to stdout on the entry path?~~
+  **Answered (§13.1): no.** Its output goes to stderr, including under
+  `--rebuild-cache`. §5.3's warm-up is demoted from required to probably
+  unnecessary — the cold-store case is still untested.
+- ~~Can the login shell be dropped (`bash -c` instead of `bash -lc`)?~~
+  **Moot (§13.1).** T1a passed under `bash -lc`, so the login profile emits
+  nothing on stdout and §5.4 needs no fix. Dropping `-l` is now an option, not
+  a requirement. (The pool PATH append lives in the entry string itself,
+  `cmd/guixcontainer.go:608`, not in the profile, so a harness on `PATH` never
+  depended on `-l` either.)
 - **Should a non-interactive launch auto-enable the review UI at all?** Today
   `enableAdminDefault` (`cmd/up.go:245-247`) turns on a credential-holding
   listener reachable from inside the container over the shared network
