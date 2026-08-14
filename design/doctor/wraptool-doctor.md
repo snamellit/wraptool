@@ -755,6 +755,19 @@ Revisit if `serve.state` ever records the environment a call actually ran in,
 or if a tool appears whose dispatchable set is a pure function of its binary.
 Neither is true of git today.
 
+**Deferred, not finished.** What is settled is the bound: an out-of-band probe
+cannot support an absence claim about a tool whose dispatch depends on ambient
+configuration. Detecting configuration drift is not settled, and remains worth
+doing. Expect a restart rather than a resumption of F2–F4 — the empty
+eligibility allowlist, the catalog argv table and its captured fixtures are
+artifacts of the approach that was ruled out, and a design that starts from the
+capabilities actually active at the time (what the server has resolved and is
+serving) asks a different question than one that probes a binary from outside.
+Two things survive that restart: the five axes above, which any new design has
+to clear rather than rediscover, and the ordering lesson from F1 before F2 —
+ship the half that cannot assert absence first, so the probe and report paths
+are proven before any claim depends on them.
+
 ### 7.7 `policy.*` — content lint (heuristic)
 
 Every finding is `warn` except the one that is not a judgement call.
