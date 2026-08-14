@@ -24,6 +24,13 @@ environment (equivalent to 'wraptool up').`,
 		// main.go prints the returned error itself; without this cobra
 		// prints it too and every failure shows up twice.
 		SilenceErrors: true,
+		// Refuse root once, at the root command, so it covers every
+		// subcommand including any added later. cobra runs only the most
+		// specific PersistentPreRunE it finds, so no subcommand may define
+		// one of its own without re-invoking refuseRoot.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return refuseRoot()
+		},
 		// Bare `wraptool` in a repo → `up`; otherwise show help.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, err := gitToplevel(); err != nil {
@@ -35,6 +42,7 @@ environment (equivalent to 'wraptool up').`,
 
 	root.AddCommand(newServeCmd("serve", true)) // hidden alias for `server start`
 	root.AddCommand(newConfigCmd())
+	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newRequestsCmd())
 	root.AddCommand(newInitCmd())
 	root.AddCommand(newHarnessCmd())

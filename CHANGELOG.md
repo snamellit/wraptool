@@ -4,7 +4,105 @@ Release tags (`wraptool-vX.Y.Z`) are the sole version source; binaries for
 each tag are published by CI with SHA-256 checksums. Notes here cover what
 changed and anything an upgrade should know.
 
-## 0.5.0 — unreleased
+## 0.7.0 — unreleased
+
+`wraptool doctor`: an operator preflight that checks the installation, the
+configuration's posture, and the policy's own content. It automates the manual
+checklist in `design/policy/security-audit-policy-enforcement.md`, which until
+now told operators to grep their own configuration by hand.
+
+### Added
+
+- `wraptool doctor` — 55 checks across eight groups: host dependencies
+  (`env.*`), configuration integrity and permissions (`config.*`), listener and
+  credential-file posture (`exposure.*`), tool and MCP-server wiring
+  (`tools.*`), the running server versus the configuration on disk
+  (`runtime.*`), the harness pool (`pool.*`), a heuristic lint over the policy
+  itself (`policy.*`), and policy-versus-installed-tools drift (`drift.*`, see
+  Known limits). Safe as the very first command after install: a missing
+  configuration is reported as information, not an error.
+- Findings carry a `file:line` location resolved against the operator's own
+  YAML, so a policy finding names the line to change.
+- `# doctor:ignore <check-id> -- reason` suppresses a warning per site. Only
+  warnings are suppressible; a suppressed finding is still counted, and
+  `--json` carries it with its reason so an auditor sees what was waived.
+- `--json` (stable check IDs, schema 1), `--only`/`--skip` by check or group,
+  `--strict`, `--no-probe`, `--workspace`, `--verify-pool`. Exit `0` clean,
+  `1` on a failure, `2` when doctor could not complete — a distinct signal,
+  because "your setup is broken" and "I could not tell" are different answers.
+- `docs/doctor.qmd`, a `cli-reference` section, and troubleshooting entries for
+  the findings an operator meets first.
+- `serve.state` records the server's effective runtime state — transport, admin
+  listen, uid, config path, PATH, start time and last successful config load —
+  so `runtime.*` can report the config on disk against the policy actually in
+  force. A failed reload deliberately leaves the load timestamp untouched;
+  that is what makes a stale policy detectable.
+
+### Changed
+
+- **wraptool refuses to run as root.** Every wrapped tool inherits the server's
+  uid, so a root server makes a policy that allows `git pull` allow it against
+  any file on the host, and the configuration whose permissions decide who may
+  grant capabilities becomes writable by the process reading it. Run wraptool
+  as the user that owns the credentials — a dedicated service user, or
+  yourself. The guard keys on the effective uid, so a setuid binary is caught
+  too, and it is a no-op on Windows.
+- `mcp.allowed_cwd_roots` now expands a leading `~`, like every other path in
+  the configuration. `~/src` previously failed with "must be an absolute path",
+  which was true and read as a rule against home-relative paths.
+- Introspection builds its child environment with `executor.ChildEnv`, matching
+  the tool-execution and MCP-server paths. It was the one spawn in the codebase
+  that inherited the caller's whole environment. `PATH` and `HOME` survive, so
+  plugin-derived subcommands still enumerate; ambient shell state no longer
+  reaches a help probe.
+- The introspection cache records a format version and per-subcommand parse
+  quality. An older cache is discarded rather than misread, and doctor reports
+  *which* of "never introspected", "written by a different build" and "corrupt"
+  it found, because the remedies differ.
+
+### Known limits
+
+- The `drift.*` group is informational. It reports which policy rules it could
+  not verify against the installed tools, and why, but never claims a
+  subcommand or flag is absent. Five measured environment axes — the
+  client-supplied working directory (per MCP call), a tool's declared `env` and
+  `env_files`, `PATH`, `working_dir` and `HOME` — mean a probe run outside the
+  execution environment cannot support that claim; see
+  `design/doctor/wraptool-doctor.md` §7.6. A rule naming a subcommand the tool
+  does not have surfaces as one whose help output was not recognised, and the
+  authoritative answer arrives when the call fails.
+- The `policy.*` group is heuristic by construction, which is what
+  `doctor:ignore` is for. Its per-tool knowledge covers git, kubectl, gcloud
+  and terraform; any other tool gets the tool-independent checks only, and
+  doctor never guesses per-tool knowledge it does not have.
+
+## 0.6.0 — 2026-08-10
+
+Distribution and onboarding.
+
+### Added
+
+- A Homebrew tap for wraptool itself, published by the release workflow. The
+  formula is attached to each release, so the tap can also be updated by hand
+  when the push secret is absent.
+- A comparison page for wraptool against Docker Sandboxes, and a design note
+  investigating microVMs as a harder runtime boundary.
+
+### Changed
+
+- Onboarding documentation reworked around the first-run path.
+- Documentation adopted a written style contract and a terminology table:
+  one name per concept, with `agent`, `harness`, and `review UI` as the
+  preferred terms.
+
+### Fixed
+
+- The shrinkwrap-seeding gate derives from the embedded raw lockfile rather
+  than a reconstructed summary, so a harness shipping its own
+  `npm-shrinkwrap.json` realizes from what was actually locked.
+- Homebrew formula style, instance URLs, and the Linux dependency note.
+
+## 0.5.0 — 2026-08-08
 
 Phase 3 of the unified harness pool: the OCI provisioner. `wraptool
 harness install` now works on hosts without Guix — macOS, Windows, and
@@ -232,5 +330,5 @@ execute on the Guix runtime.
 Phase 2 wave 1 (0.3.x): immutable generations, offline npm realization
 with the verbatim embedded lockfile, receipts, and the `REALIZED` list
 column. Phase 1 (0.2.x): manifest/lock/quarantine around the legacy pool,
-capability discovery, the request-review Web UI, and the `server start`
+capability discovery, the request-review UI, and the `server start`
 command family. See git history for details.

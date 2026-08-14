@@ -23,7 +23,7 @@ type Config struct {
 	MCPServers map[string]MCPServerConfig `yaml:"mcp_servers"`
 }
 
-// MCPConfig configures the AI-facing MCP listener and request audit log.
+// MCPConfig configures the agent-facing MCP listener and request audit log.
 type MCPConfig struct {
 	Transport     string `yaml:"transport"`
 	Listen        string `yaml:"listen"`
@@ -276,6 +276,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Admin.AuthTokenFile != "" {
 		c.Admin.AuthTokenFile = expandPath(c.Admin.AuthTokenFile)
+	}
+	// Expanded like every other path in this file. Validate requires these to be
+	// absolute, so without expansion a `~/src` entry fails with "must be an
+	// absolute path" — technically true, but it reads as a rule against home-
+	// relative paths when the same spelling works for request_log and both token
+	// files. The tilde resolves against the SERVER's home, which is the right
+	// one: the server is what enforces containment.
+	for i, root := range c.MCP.AllowedCWDRoots {
+		c.MCP.AllowedCWDRoots[i] = expandPath(root)
 	}
 
 	for name, tool := range c.Tools {

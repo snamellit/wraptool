@@ -37,6 +37,7 @@ website:
           - configuration.qmd
           - cli-reference.qmd
           - mcp-integration.qmd
+          - doctor.qmd
           - terminology.qmd
       - href: security.qmd
         text: Security
@@ -71,6 +72,7 @@ website:
           - configuration.qmd
           - cli-reference.qmd
           - mcp-integration.qmd
+          - doctor.qmd
           - terminology.qmd
       - section: Trust boundary
         contents:

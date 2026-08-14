@@ -6,7 +6,7 @@ first (the foundational wrapping model), then browse by area below.
 ## Organization
 
 - Subdirectories cluster notes by subsystem: `harness/`, `webui/`, `policy/`,
-  `introspect/`, `audit/`.
+  `introspect/`, `doctor/`, `audit/`.
 - The foundational wrapping model stays at the root: `mcp-server-wrapping.md`.
 - Each note carries a `Status:` line near the top (`implemented` / `proposed`
   / `planned` / `superseded` / `findings` / `decided`); the index below mirrors
@@ -29,12 +29,14 @@ first (the foundational wrapping model), then browse by area below.
 | `harness/microvm-sandbox-runtime.md` | harness | proposed | Investigate Docker Sandboxes microVMs as a harder container boundary |
 | `harness/unified-harness-pool.md` | harness | proposed | One version-locked harness pool for Guix and Dev Containers |
 | `webui/webui-management-completion.md` | webui | planned | Complete the operator Web UI for flag typing and policy management |
-| `webui/webui-accessibility-reachability.md` | webui | proposed | Accessibility and reachability of the operator Web UI |
+| `webui/webui-accessibility-reachability.md` | webui | proposed | Accessibility and reachability of the operator review UI |
 | `webui/webauthn-admin-auth.md` | webui | proposed | WebAuthn admin authentication |
 | `policy/flag-constraint-type-single-source.md` | policy | proposal | Single source of truth for flag-constraint types |
 | `policy/flag-type-inference.md` | policy | implemented | Flag value types come from the capability author, not a regex |
 | `policy/security-audit-policy-enforcement.md` | policy | findings | Policy-enforcement perimeter & config fail-open surface (open) |
 | `policy/opt-in-documentation-tooling.md` | policy | proposal | Opt-in documentation tooling for development containers |
+| `doctor/wraptool-doctor.md` | doctor | implemented | `wraptool doctor` — dependency, posture, policy-lint and drift preflight (drift is informational: §7.6 records why absence claims are unsound) |
+| `doctor/implementation-plan.md` | doctor | implemented | Step-by-step delivery of `wraptool doctor`; A1–G3 shipped, F3/F4 deliberately not built |
 | `introspect/introspection-cache-invalidation.md` | introspect | implemented | Introspection cache invalidates on its real inputs |
 | `introspect/tool-descriptions-from-help.md` | introspect | decided | Tool descriptions come from `--help`, not config |
 | `audit/claude-audit.md` | audit | findings | Security audit — wraptool |

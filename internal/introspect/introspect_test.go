@@ -3,7 +3,9 @@ package introspect
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pti/wraptool/internal/config"
@@ -34,6 +36,100 @@ func TestGitParser_ParseSubcommands(t *testing.T) {
 	if desc, ok := subcmds["commit"]; ok {
 		if desc != "Record changes to the repository" {
 			t.Errorf("commit description = %q", desc)
+		}
+	}
+}
+
+// TestGitParser_ParseSubcommands_NameOnlyExternalCommands exercises the
+// design §7.6 named prerequisite end to end against a REAL `git help -a`
+// capture (git 2.54.0, testdata/git_help_a_external.txt — captured with a
+// git-foo and git-bar-baz script on PATH and two gitconfig aliases): a
+// PATH-installed external command listed with NO description column must
+// now be recognized, with an empty description, alongside its two-column
+// neighbors and the genuine (WITH-description) "Command aliases" section.
+func TestGitParser_ParseSubcommands_NameOnlyExternalCommands(t *testing.T) {
+	helpText := readTestData(t, "git_help_a_external.txt")
+	// AllowNameOnly is what BestParseCatalog sets for a vetted catalog argv;
+	// the default parser must NOT admit these, and the sibling test below
+	// pins that.
+	p := &GitParser{AllowNameOnly: true}
+	subcmds := p.ParseSubcommands(helpText)
+
+	// Bound the whole set, not just the two names: an over-wide relaxation
+	// against a 200-line real capture would otherwise pass this test.
+	if len(subcmds) != 175 {
+		t.Errorf("parsed %d entries, want exactly 175 (the fixture's measured true parse)", len(subcmds))
+	}
+	var descriptionless int
+	for _, d := range subcmds {
+		if d == "" {
+			descriptionless++
+		}
+	}
+	if descriptionless != 2 {
+		t.Errorf("got %d description-less entries, want exactly 2 (foo, bar-baz)", descriptionless)
+	}
+
+	for _, name := range []string{"foo", "bar-baz"} {
+		desc, ok := subcmds[name]
+		if !ok {
+			t.Errorf("expected external command %q to be found", name)
+		}
+		if desc != "" {
+			t.Errorf("external command %q description = %q, want empty (no description column at all)", name, desc)
+		}
+	}
+
+	// The alias section is WITH descriptions and must be entirely
+	// unaffected by the name-only extension.
+	if desc := subcmds["st"]; desc != "status" {
+		t.Errorf(`subcmds["st"] = %q, want "status"`, desc)
+	}
+	if desc := subcmds["unstage"]; desc != "reset HEAD --" {
+		t.Errorf(`subcmds["unstage"] = %q, want "reset HEAD --"`, desc)
+	}
+
+	// A genuine built-in, from the ordinary two-column section, must be
+	// completely unaffected.
+	if desc := subcmds["commit"]; desc != "Record changes to the repository" {
+		t.Errorf(`subcmds["commit"] = %q, want "Record changes to the repository"`, desc)
+	}
+}
+
+// TestGitParser_ParseSubcommands_NameOnlyRequiresUniformIndentation is the
+// negative case for the same bound: a bare, description-less line is NEVER
+// promoted to a catalog entry when the surrounding text mixes indentation
+// widths — the same shape a subcommand-specific help page's own flag-value
+// enumeration, a wrapped description continuation, or an inline usage
+// example under an "Examples:" heading all produce (measured against
+// testdata/git_log_help.txt and a live `pi --help` capture during this
+// step's own investigation: neither gained a spurious entry). Constructed
+// here rather than relying on those large fixtures, so the bound itself has
+// a small, direct regression test.
+func TestGitParser_ParseSubcommands_NameOnlyRequiresUniformIndentation(t *testing.T) {
+	const mixedIndentHelp = `Usage: widget <command>
+
+Commands
+   clone      Clone a repository
+   status     Show the working tree status
+
+Examples:
+  # Run once, interactively
+  widget
+
+Notes:
+       widget is not affiliated with any other project.
+`
+	p := &GitParser{}
+	subcmds := p.ParseSubcommands(mixedIndentHelp)
+
+	if _, ok := subcmds["widget"]; ok {
+		t.Error(`"widget" (a bare usage-example invocation, not a subcommand) must not appear in the catalog ` +
+			"— this text mixes indentation widths (3, 2, 7), so the name-only extension must stay withheld")
+	}
+	for _, name := range []string{"clone", "status"} {
+		if _, ok := subcmds[name]; !ok {
+			t.Errorf("expected genuine two-column subcommand %q to still be found", name)
 		}
 	}
 }
@@ -254,5 +350,232 @@ func TestIntrospectCollectsCatalogWithoutAllowRules(t *testing.T) {
 	}
 	if got := schema.Available["issue"]; got != "manage issues" {
 		t.Errorf("issue description = %q, want %q", got, "manage issues")
+	}
+}
+
+// TestIntrospect_ParseOutcomeParsed covers items 4/5's happy path: a
+// subcommand whose help genuinely parses gets ParseOutcomeParsed and
+// coverage counts reflecting how much of the help's own flag vocabulary the
+// parse captured.
+func TestIntrospect_ParseOutcomeParsed(t *testing.T) {
+	isolateCacheDir(t)
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool")
+	help := "Usage: tool commit [OPTION]...\n\n" +
+		"  -a, --append   append to the file\n" +
+		"  -v, --verbose  explain what is being done\n"
+	script := "#!/bin/sh\ncat <<'HELP'\n" + help + "HELP\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &config.ToolConfig{Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"commit"}}}}
+	schema, err := Introspect(context.Background(), "tool", tc)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+
+	sub, ok := schema.Subcommands["commit"]
+	if !ok {
+		t.Fatal("expected a \"commit\" entry")
+	}
+	if sub.ParseOutcome != ParseOutcomeParsed {
+		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeParsed)
+	}
+	if sub.CoverageTokens != 4 || sub.CoverageFound != 4 {
+		t.Errorf("CoverageFound/CoverageTokens = %d/%d, want 4/4 (both flags' long AND short forms captured)", sub.CoverageFound, sub.CoverageTokens)
+	}
+	if len(sub.Flags) != 2 {
+		t.Errorf("got %d flags, want 2", len(sub.Flags))
+	}
+}
+
+// TestIntrospect_ParseOutcomeGarbage is the design's own worked example:
+// `git bogus -h` returns a 53-byte, one-line error message that clears
+// getHelp's 20-byte success threshold. Introspect must record
+// ParseOutcomeGarbage, not parse it as if it were real help.
+func TestIntrospect_ParseOutcomeGarbage(t *testing.T) {
+	isolateCacheDir(t)
+
+	garbage := readTestData(t, "git_bogus_h.txt")
+	if len(garbage) <= 20 {
+		t.Fatalf("test fixture bug: garbage fixture must clear the 20-byte threshold, got %d bytes", len(garbage))
+	}
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "git")
+	// Every help form (-h, --help, help <sub>) returns the same one-line
+	// error text — exactly what a genuinely nonexistent subcommand does.
+	script := "#!/bin/sh\nprintf '%s' " + shellQuote(garbage) + "\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &config.ToolConfig{Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"bogus"}}}}
+	schema, err := Introspect(context.Background(), "git", tc)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+
+	sub, ok := schema.Subcommands["bogus"]
+	if !ok {
+		t.Fatal("expected a \"bogus\" entry")
+	}
+	if sub.ParseOutcome != ParseOutcomeGarbage {
+		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeGarbage)
+	}
+	if len(sub.Flags) != 0 {
+		t.Errorf("garbage output must not be parsed into flags, got %v", sub.Flags)
+	}
+}
+
+// TestIntrospect_ParseOutcomeHelpFailed covers the third distinguishable
+// state: no help output was obtained at all (every form exits with nothing).
+func TestIntrospect_ParseOutcomeHelpFailed(t *testing.T) {
+	isolateCacheDir(t)
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tool")
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	tc := &config.ToolConfig{Binary: bin, Allow: []config.AllowRule{{Subcommand: []string{"noop"}}}}
+	schema, err := Introspect(context.Background(), "tool", tc)
+	if err != nil {
+		t.Fatalf("Introspect: %v", err)
+	}
+
+	sub, ok := schema.Subcommands["noop"]
+	if !ok {
+		t.Fatal("expected a \"noop\" entry")
+	}
+	if sub.ParseOutcome != ParseOutcomeHelpFailed {
+		t.Errorf("ParseOutcome = %q, want %q", sub.ParseOutcome, ParseOutcomeHelpFailed)
+	}
+}
+
+// shellQuote wraps s in single quotes for embedding in a generated shell
+// script's printf argument, escaping any single quote s itself contains.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// TestParseIsNeverDiscardedForShape pins the ordering invariant that keeps real
+// flag metadata out of the bin: looksLikeHelp is consulted only when the parse
+// found nothing, so a text the parsers DID extract flags from can never be
+// classified garbage on layout grounds.
+//
+// The regression it guards is not hypothetical. git's stash, config, worktree,
+// submodule and bisect help pages are pure usage blocks — no line begins with
+// '-', no indented two-column block — yet the parsers extract 12, 9, 7, 18 and
+// 3 flags from them respectively. A shape gate placed BEFORE the parse dropped
+// every one of those flags from the MCP tool schema, silently removing
+// capabilities the policy had granted.
+func TestParseIsNeverDiscardedForShape(t *testing.T) {
+	// Prose mentioning flags: no usage line, no line beginning with '-', no
+	// indented two-column block, so the shape check rejects it — while the
+	// fallback parser, which scans for flag tokens anywhere, reads flags out of
+	// it. Exactly the disagreement the ordering exists to resolve.
+	const usageBlock = "Supported options are --foo and --bar for this command.\n"
+	if looksLikeHelp(usageBlock) {
+		t.Skip("shape check now accepts this text; the ordering it guards no longer applies to this fixture")
+	}
+	if got := len(BestParse(usageBlock).Subcommand.Flags); got == 0 {
+		t.Skip("parsers extract nothing from this fixture; it cannot demonstrate the ordering")
+	}
+
+	sub := classifySubcommandHelp("git", "stash", usageBlock)
+	if sub.ParseOutcome == ParseOutcomeGarbage {
+		t.Errorf("a text the parsers extracted flags from was classified garbage on shape alone")
+	}
+	if len(sub.Flags) == 0 {
+		t.Errorf("flags the parsers found were discarded; got %+v", sub)
+	}
+}
+
+// TestRealGitUsageBlocksKeepTheirFlags is the live counterpart to
+// TestParseIsNeverDiscardedForShape: the synthetic fixture proves the ordering,
+// this proves the ordering was needed. Every subcommand here is one whose flags
+// vanished from the tool schema while the shape gate ran first.
+func TestRealGitUsageBlocksKeepTheirFlags(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	tc := &config.ToolConfig{Binary: git}
+
+	for _, sub := range []string{"stash", "config", "worktree", "submodule", "bisect"} {
+		helpText, err := RunProbe(context.Background(), tc, []string{sub, "-h"})
+		if err != nil || helpText == "" {
+			t.Logf("%s: probe produced nothing on this host, skipping", sub)
+			continue
+		}
+		got := classifySubcommandHelp("git", sub, helpText)
+		if got.ParseOutcome == ParseOutcomeGarbage {
+			t.Errorf("git %s: real help classified garbage", sub)
+		}
+		if len(got.Flags) == 0 {
+			t.Errorf("git %s: real help yielded zero flags", sub)
+		}
+	}
+}
+
+// TestGitParserNameOnlyIsOffByDefault pins the scope of the description-less
+// relaxation. BestParseSubcommands parses an arbitrary tool's top-level -h into
+// Schema.Available, which wraptool_discover reports to the AI, so a bare
+// indented word there must never become a subcommand. Only a per-tool catalog
+// argv, chosen and vetted because it lists what the tool dispatches, opts in.
+func TestGitParserNameOnlyIsOffByDefault(t *testing.T) {
+	helpText := readTestData(t, "git_help_a_external.txt")
+
+	off := (&GitParser{}).ParseSubcommands(helpText)
+	if _, found := off["foo"]; found {
+		t.Error("default parser admitted a description-less entry; only BestParseCatalog may")
+	}
+
+	on := (&GitParser{AllowNameOnly: true}).ParseSubcommands(helpText)
+	if _, found := on["foo"]; !found {
+		t.Error("AllowNameOnly parser did not admit the external command")
+	}
+	if len(on) != len(off)+2 {
+		t.Errorf("AllowNameOnly added %d entries, want exactly 2", len(on)-len(off))
+	}
+
+	// And the seam itself: the catalog entry point enables it, the general one does not.
+	if _, found := BestParseCatalog(helpText)["foo"]; !found {
+		t.Error("BestParseCatalog must admit description-less catalog entries")
+	}
+	if _, found := BestParseSubcommands(helpText)["foo"]; found {
+		t.Error("BestParseSubcommands must not admit description-less entries")
+	}
+}
+
+// TestGitParserNameOnlyRequiresATwoColumnEntry pins the second half of the
+// gate, which a mutation survived: without it, a uniformly indented document
+// containing no command listing at all would have its bare words parsed as a
+// whole catalog, where the old parser correctly produced none.
+func TestGitParserNameOnlyRequiresATwoColumnEntry(t *testing.T) {
+	// Uniform indent, no two-column entry anywhere: a values list, not commands.
+	const valuesList = `Supported values:
+  alpha
+  beta
+  gamma
+`
+	if got := (&GitParser{AllowNameOnly: true}).ParseSubcommands(valuesList); len(got) != 0 {
+		t.Errorf("a uniformly indented list with no two-column entry parsed as a catalog: %v", got)
+	}
+
+	// The same shape WITH a real two-column entry is a command listing.
+	const commandList = `Commands:
+  add        Add a thing
+  alpha
+  beta
+`
+	got := (&GitParser{AllowNameOnly: true}).ParseSubcommands(commandList)
+	if _, found := got["alpha"]; !found {
+		t.Errorf("a bare entry alongside a genuine two-column entry must be admitted: %v", got)
 	}
 }

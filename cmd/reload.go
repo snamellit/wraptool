@@ -88,5 +88,11 @@ func reloadConfig(configPath string, reg *registrar, trigger string) {
 	// registrar.reload). mcp-go emits notifications/tools/list_changed on each
 	// AddTool/DeleteTools, so connected clients refresh without reconnecting.
 	reg.reload(newCfg)
+
+	// Success-path only: the process does not rebind on reload, so nothing
+	// else in serve state changes here — see updateServeStateConfigLoadedAt's
+	// own doc comment. A failed reload (either error return above) must leave
+	// config_loaded_at untouched; that is runtime.stale-policy's signal.
+	updateServeStateConfigLoadedAt(time.Now())
 	log.Println("config reloaded successfully")
 }

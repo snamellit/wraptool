@@ -60,8 +60,10 @@ guix time-machine -C channels.scm -- shell -m manifest.scm -- go build -o wrapto
 You usually don't write this from scratch: on first run both `wraptool up` and
 `wraptool serve` **scaffold** a commented starter config at that path if none
 exists (never overwriting one that does) and log where it landed. The starter
-enables a single privileged tool — `git pull` — so the server comes up
-immediately; you then edit the file to expose the tools you want.
+enables two privileged operations — `git pull` and `git fetch` — so the server
+comes up immediately; you then edit the file to expose the tools you want.
+`push` ships commented out and `clone` is deliberately absent; the scaffold
+explains why at each.
 
 Only wrap commands that actually need wraptool. `git pull`, `git fetch`, and
 `git push` reach the network with your host credentials — which the agent never

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
 	"github.com/pti/wraptool/internal/buildinfo"
 	"github.com/pti/wraptool/internal/config"
@@ -108,6 +109,11 @@ This keeps credentials isolated in the wraptool process.`,
 }
 
 func runServe(configPath string, ov serveOverrides) error {
+	// Captured before anything else so it reflects process start, not "config
+	// finished loading" — the two are recorded as separate serve-state fields
+	// (design/doctor/wraptool-doctor.md §4.1).
+	startedAt := time.Now()
+
 	if configPath == "" {
 		configPath = os.Getenv("WRAPTOOL_CONFIG")
 	}
@@ -139,6 +145,9 @@ func runServe(configPath string, ov serveOverrides) error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validating config: %w", err)
 	}
+	// The moment the config is known good — recorded as config_loaded_at
+	// alongside startedAt (see serveState's write below).
+	configLoadedAt := time.Now()
 
 	policy := whitelist.NewPolicy(configPointers(cfg.Tools))
 	mcpPolicy := whitelist.NewMCPPolicy(configPointers(cfg.MCPServers))
@@ -196,9 +205,22 @@ func runServe(configPath string, ov serveOverrides) error {
 			return err
 		}
 		defer removePidFile()
-		if err := writeServeState(serveState{Listen: cfg.MCP.Listen, Auth: cfg.MCP.AuthTokenFile != ""}); err != nil {
+		uid, hasUID := effectiveUID()
+		if err := writeServeState(serveState{
+			Listen:         cfg.MCP.Listen,
+			Auth:           cfg.MCP.AuthTokenFile != "",
+			Transport:      cfg.MCP.Transport,
+			AdminListen:    cfg.Admin.Listen,
+			ConfigPath:     effectiveConfigPath(configPath),
+			Path:           os.Getenv("PATH"),
+			StartedAt:      startedAt.Format(time.RFC3339),
+			ConfigLoadedAt: configLoadedAt.Format(time.RFC3339),
+			uid:            uid,
+			hasUID:         hasUID,
+		}); err != nil {
 			return err
 		}
+		markServeStateOwned()
 		defer removeServeState()
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, terminationSignals()...)

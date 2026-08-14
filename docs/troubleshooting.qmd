@@ -73,3 +73,137 @@ the profile but does not leave a container running.
 conflict, unknown tool, or invalid resulting config can leave the request marked
 approved without changing policy. Correct the YAML and rely on hot reload, or
 submit/review a new request.
+
+## `doctor` reports a symlinked config
+
+Run `wraptool doctor`. If it reports `config.symlinked`, hot-reload will not
+see edits you make to the file.
+
+Hot-reload resolves `config.yaml`'s path with `filepath.Abs`, not through the
+symlink, then watches the **link's** directory. A common dotfiles layout —
+`~/.config/wraptool/config.yaml` symlinked to a file tracked elsewhere — puts
+the real file in a different directory, so edits to it never trigger a
+reload. The server keeps enforcing whatever policy it last loaded.
+
+Do one of the following after each edit:
+
+```bash
+kill -HUP $(pidof wraptool)   # reload now
+```
+
+Or restart the server:
+
+```bash
+wraptool server stop
+wraptool up
+```
+
+Or store `config.yaml` directly at the configured path instead of
+symlinking it, so the watch and the file agree.
+
+## `doctor` reports the server's bind differs from the config
+
+Run `wraptool doctor`. If it reports `runtime.bind-divergence`, the running
+server is not listening where `config.yaml` says.
+
+`wraptool up`'s Dev Container runtime widens a loopback `mcp.listen` to
+`0.0.0.0` in memory before starting the server, so the container can reach
+it, and never writes that change back to `config.yaml`. Reading the file
+alone shows a safe loopback bind while the server actually listens off-host.
+
+There is a second cause, and doctor says so in the finding itself: the
+recorded server state does not include the configuration it was started from,
+so the check compares against whichever configuration the *running* server
+used. A shared server started by `wraptool up` from your XDG configuration,
+audited with `wraptool doctor --config ./project.yaml`, diverges by design.
+
+Check the severity doctor gave the finding:
+
+- **FAIL** — the running server is an unauthenticated listener reachable
+  off-host. Fix this one: anyone who can route to that port reaches the
+  wrapped tools. Set `mcp.auth_token_file`, then restart the server.
+- **warn** — everything else, including `up`'s Dev Container adjustment
+  (loopback widened to `0.0.0.0` on the same port, with a token configured),
+  which is expected and needs no action.
+
+For a warn, read the address doctor prints before restarting anything. If the
+running server was started from the configuration you are auditing, restart it
+so it picks up the configured bind:
+
+```bash
+wraptool server stop
+wraptool up
+```
+
+If it was started from a different configuration, the divergence is expected
+and stopping the server would interrupt whatever is using it. Audit that
+server with the configuration it was started from instead.
+
+## `doctor` reports a stale policy
+
+Run `wraptool doctor`. If it reports `runtime.stale-policy`, the server is
+enforcing an older policy than the one on disk.
+
+A reload advances the server's recorded load time only when it succeeds. If
+an earlier edit had a syntax error or failed validation, the server logged
+the failure and kept the previous policy — but the file on disk is clean
+now, so reading it alone looks fine. `doctor` catches the mismatch by
+comparing the config file's modification time to the server's last
+successful load.
+
+Check the server log for the reload error, fix the configuration, then
+reload:
+
+```bash
+kill -HUP $(pidof wraptool)
+```
+
+## `doctor` reports a token file problem
+
+Run `wraptool doctor`. Two checks cover `mcp.auth_token_file` and
+`admin.auth_token_file`.
+
+`exposure.token-perms` (**FAIL**) fires when the token file has any group or
+other permission bit set — anyone else on the host can read the bearer
+credential. Fix the permissions:
+
+```bash
+chmod 600 /path/to/token-file
+```
+
+`exposure.token-weak` (**warn**) fires when the token's content is empty,
+under 32 bytes, or matches a known placeholder such as `changeme` or
+`secret`. Replace it with a long random value:
+
+```bash
+openssl rand -hex 32 > /path/to/token-file
+```
+
+Restart the server after replacing a token. wraptool reads the token file
+once at startup and does not watch it for changes.
+
+## `doctor` reports a writable tool binary path
+
+Run `wraptool doctor`. If it reports `tools.binary-writable`, a configured
+tool's binary — or a directory leading to it — is group- or other-writable.
+Anyone with write access to that path could substitute a different binary
+for the one wraptool is about to run inside the credential boundary.
+
+A directory with the sticky bit set, such as Guix's `/gnu/store`, is exempt
+and never produces this finding: the sticky bit already stops anyone but the
+owner from replacing an entry inside it. If `doctor` reports
+`tools.binary-writable`, the flagged directory is not sticky, and the path
+is genuinely substitutable.
+
+The one accepted exception is Intel-macOS Homebrew's `/usr/local`, which is
+group-writable by design; doctor's own message says so when it applies, and
+no action is needed there.
+
+Otherwise, tighten permissions on the flagged directory:
+
+```bash
+chmod go-w /path/to/directory
+```
+
+Or move the tool's binary to a path with no group- or other-writable
+segment, and update `tools.<name>.binary` in the configuration to match.
