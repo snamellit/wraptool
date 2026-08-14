@@ -25,3 +25,4 @@ skills-lock.json
 
 /.quarto/
 **/*.quarto_ipynb
+.worktrees/
