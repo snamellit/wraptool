@@ -974,3 +974,39 @@ func TestIsWraptoolModuleRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestDevcontainerRuntimeMountStale(t *testing.T) {
+	cases := []struct {
+		name  string
+		dests []string
+		want  bool
+	}{
+		// No existing container: `up` creates a fresh one that picks the
+		// declaration up, so there is nothing to warn about.
+		{"no container", nil, false},
+		{"runtime mounted", []string{"/workspaces/wraptool", devcontainerPoolHome, devcontainerPoolRuntime}, false},
+		// The migrated-config-but-stale-container case: home mount present
+		// (the `:0`-era container had it), runtime mount never created.
+		{"runtime missing", []string{"/workspaces/wraptool", devcontainerPoolHome}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := devcontainerRuntimeMountStale(tc.dests); got != tc.want {
+				t.Errorf("devcontainerRuntimeMountStale(%q) = %v, want %v", tc.dests, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDevcontainerStaleRuntimeMountNotice(t *testing.T) {
+	got := devcontainerStaleRuntimeMountNotice("claude")
+	for _, want := range []string{
+		devcontainerPoolRuntime,
+		"claude",
+		"wraptool down --rm && wraptool up",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("notice %q does not mention %q", got, want)
+		}
+	}
+}

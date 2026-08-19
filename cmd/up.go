@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -838,6 +839,58 @@ func devcontainerRuntimeDeclaredInfo(hname string) string {
 	return fmt.Sprintf("harness pool: runtime mount declared read-only in devcontainer.json (%s) — %s is pool-locked", devcontainerPoolRuntime, hname)
 }
 
+// devcontainerStaleRuntimeMountNotice is the stderr notice for the one case
+// devcontainerClassifyMount cannot see: devcontainer.json declares the
+// runtime mount correctly, but an EXISTING container for this workspace was
+// created BEFORE that declaration. A container's mounts (and containerEnv)
+// are fixed when it is created, and `devcontainer up` reuses whatever
+// container already carries this workspace's `devcontainer.local_folder`
+// label rather than recreating it — so the declaration has no effect at all
+// until the container is recreated, and the harness silently keeps running
+// from the per-image install. Verifying the config alone reports a false OK
+// here, which is exactly how a container built against the deprecated `:0`
+// provisioning major survives a config migration to the wiring-only `:1`.
+func devcontainerStaleRuntimeMountNotice(hname string) string {
+	return fmt.Sprintf(
+		"notice: an existing dev container for this workspace has no mount at %s — a container's mounts are fixed "+
+			"when it is created, so `devcontainer up` reuses it and the declaration in devcontainer.json does not "+
+			"take effect (%s keeps running from the per-image install). Recreate it:\n"+
+			"  wraptool down --rm && wraptool up\n",
+		devcontainerPoolRuntime, hname)
+}
+
+// devcontainerRuntimeMountStale decides whether the destinations of the
+// existing container(s) for this workspace warrant the notice above. No
+// existing container is NOT stale (the next `up` creates a fresh one that
+// picks the declaration up), which is also the answer when docker is absent
+// or unreadable — see devcontainerExistingMountDestinations.
+func devcontainerRuntimeMountStale(dests []string) bool {
+	return len(dests) > 0 && !slices.Contains(dests, devcontainerPoolRuntime)
+}
+
+// devcontainerExistingMountDestinations lists the container-side mount
+// destinations of every existing (running OR stopped — a stopped one is
+// restarted by `up` with its original mounts) dev container for root.
+// Diagnostic only: any docker failure yields no destinations and no error,
+// so a missing or unhealthy docker never turns `up` itself into a failure.
+func devcontainerExistingMountDestinations(root string) []string {
+	ids, err := devcontainerIDs(root)
+	if err != nil || len(ids) == 0 {
+		return nil
+	}
+	out, err := exec.Command("docker", append([]string{"inspect", "-f", "{{range .Mounts}}{{.Destination}}\n{{end}}"}, ids...)...).Output()
+	if err != nil {
+		return nil
+	}
+	var dests []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			dests = append(dests, line)
+		}
+	}
+	return dests
+}
+
 // devcontainerPathExportHint is the standalone `export PATH=...` command a
 // developer can paste into a legacy-feature-provisioned container's shell to
 // reach the pool dispatcher — the same append buildDevcontainerShellEntry
@@ -988,6 +1041,11 @@ uses the Guix container runtime instead — no dev container needed`, root)
 			fmt.Println(devcontainerRuntimeDeclaredInfo(hname))
 			if warn := devcontainerDeclaredMountSourceMissing(root, devcontainerPoolRuntime); warn != "" {
 				fmt.Fprintln(os.Stderr, warn)
+			}
+			// Declared correctly, but a container created before the
+			// declaration is reused as-is — verify the live container too.
+			if devcontainerRuntimeMountStale(devcontainerExistingMountDestinations(root)) {
+				fmt.Fprintln(os.Stderr, devcontainerStaleRuntimeMountNotice(hname))
 			}
 		case devcontainerMountReadWrite:
 			// Loud and unmissable: this is a §5 trust-boundary violation,
