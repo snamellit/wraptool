@@ -9,6 +9,11 @@
     "image": "mcr.microsoft.com/devcontainers/go:1-bookworm",
 
     "features": {
+        // For the `devcontainer` CLI itself (features/ test + publish) and any
+        // other npm tooling in this repo — NOT for the harness, which arrives
+        // pinned in the harness-pool runtime/ mount below.
+        "ghcr.io/devcontainers/features/node:1": {},
+
         // Wire Claude Code to host wraptool. Wiring only (§12.3, :1 major): the
         // binary is NOT installed here — it comes from the host harness-pool
         // runtime/ mount below (`wraptool harness install claude` on the host).
