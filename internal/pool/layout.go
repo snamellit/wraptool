@@ -100,6 +100,15 @@ func RuntimeBinFile(harness string) string {
 	return filepath.Join(RuntimeBinDir(), harness)
 }
 
+// RuntimeBinDirAt is RuntimeBinDir parameterized on an explicit runtime root
+// (PoolPaths.Runtime), for a caller that already holds one — cmd/harness.go
+// naming the dispatcher directory in user-facing guidance, tests rooted at a
+// t.TempDir(). Same reasoning as LegacyRemovedMarkerFileAt, and the exported
+// twin of dispatcher.go's runtimeBinDir.
+func RuntimeBinDirAt(runtimeRoot string) string {
+	return runtimeBinDir(runtimeRoot)
+}
+
 // RuntimeActiveDir returns the directory holding per-platform pointer files
 // (runtime/active/<platform-key>/).
 func RuntimeActiveDir() string {

@@ -1072,20 +1072,26 @@ func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps
 	}
 
 	if d.PoolArchive {
-		// installErr is printed in full, not just its top-level message: for
-		// the guix-absent cause specifically, offGuixInstallError's own text
-		// already carries the devcontainer-feature guidance below — appending
-		// it again here unconditionally would print it twice. For any OTHER
-		// legacy-install failure (e.g. a genuine curl/network error), installErr
-		// carries no such guidance, so printing it in full still names the
-		// underlying legacy error; the devcontainer route remains a
-		// generically-correct next step regardless of cause, but this warning
-		// states the fact (pool generation built and locked) and the concrete
-		// error rather than re-deriving guidance installErr may or may not
-		// already include.
+		// An archive-sourced harness needs no backend to realize at all
+		// (§6.2) — reaching here means the pool did ALL the real work: the
+		// generation is built, locked, and active for this host. The legacy
+		// bin/ copy is a leftover fallback, so this is not a warning about a
+		// broken install; it is a "here is your binary" line plus a footnote
+		// about the fallback that was skipped.
+		//
+		// installErr is deliberately NOT printed in full here. Its
+		// guix-absent form (offGuixInstallError) tells the reader to install
+		// docker or podman so the oci backend can serve the request — advice
+		// that is simply FALSE for this source, which never consults a
+		// backend, and which made a successful install read as a failure with
+		// no actionable next step. Only the cause's short form is echoed.
+		binPath := filepath.Join(pool.RuntimeBinDirAt(paths.Runtime), name)
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"%s %s is active in the harness pool — run it at\n  %s\nor put the pool dispatcher on your PATH:\n  %s\n(`wraptool up` mounts that directory into project containers for you.)\n",
+			name, version, binPath, "export PATH=$PATH:"+shellQuote(pool.RuntimeBinDirAt(paths.Runtime)))
 		fmt.Fprintf(cmd.ErrOrStderr(),
-			"warning: %s: pool generation built and locked, but the pool binary was NOT installed (%v)\n",
-			name, installErr)
+			"note: %s: the legacy harness-pool/bin copy was skipped (%v) — nothing to do, the active generation above replaces it\n",
+			name, legacyInstallCause(installErr))
 		return true
 	}
 
@@ -1110,6 +1116,20 @@ func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps
 		"warning: %s: pool generation built and activated (locked %s); host-side legacy install was skipped (%v)\n",
 		name, version, installErr)
 	return true
+}
+
+// legacyInstallCause condenses a legacy-install failure to its cause for a
+// note that is NOT reporting a real problem. offGuixInstallError's full text
+// is a three-line pointer at the oci backend and the devcontainer feature —
+// correct for an npm-sourced harness (whose realize genuinely needs one of
+// those backends), actively misleading for an archive-sourced one, which
+// realizes in pure Go and has already succeeded by the time a caller reaches
+// this. Any other error is a real error and is echoed verbatim.
+func legacyInstallCause(installErr error) string {
+	if errors.Is(installErr, errGuixAbsent) {
+		return "its installer needs `guix`, which is not on PATH"
+	}
+	return installErr.Error()
 }
 
 // runInstallArgv executes one harness install recipe's argv (guix npm

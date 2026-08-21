@@ -3269,14 +3269,25 @@ func TestHarnessInstallAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.
 		t.Fatal("resolveBackend was called — the archive-source backend gate did not hold")
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
-		t.Errorf("expected the downgraded warning text, got:\n%s", out)
+	if !strings.Contains(out, "agy 1.1.10 is active in the harness pool") {
+		t.Errorf("expected the success line naming the active version, got:\n%s", out)
 	}
-	if strings.Contains(out, "wraptool/wraptool:0") {
-		t.Errorf("warning still points at the retired :0 devcontainer-feature snippet, got:\n%s", out)
+	if !strings.Contains(out, filepath.Join(paths.Runtime, "bin", "agy")) {
+		t.Errorf("expected the runnable dispatcher path, got:\n%s", out)
 	}
-	if !strings.Contains(out, "wraptool harness install agy") || !strings.Contains(out, "major :1") {
-		t.Errorf("expected the modern harness-install + wiring-only-feature guidance, got:\n%s", out)
+	if !strings.Contains(out, "export PATH=$PATH:") {
+		t.Errorf("expected the PATH hint, got:\n%s", out)
+	}
+	if !strings.Contains(out, "the legacy harness-pool/bin copy was skipped") ||
+		!strings.Contains(out, "not on PATH") {
+		t.Errorf("expected the skipped-legacy-copy note naming the guix-absent cause, got:\n%s", out)
+	}
+	// The oci/devcontainer pointer in offGuixInstallError's text is FALSE
+	// for an archive source (it needs no backend at all, §6.2) and made a
+	// successful install read as an unactionable failure — it must not be
+	// echoed on this path.
+	if strings.Contains(out, "Install docker or podman") || strings.Contains(out, "major :1") {
+		t.Errorf("archive-source note still echoes the backend/devcontainer guidance, got:\n%s", out)
 	}
 
 	// Pool state must be fully populated: refresh/resolve/fetch/realize/
@@ -3378,14 +3389,25 @@ func TestHarnessUpdateAgyDowngradesGuixAbsentLegacyInstallToWarning(t *testing.T
 	if err != nil {
 		t.Fatalf("update agy: expected nil error (downgraded to a warning): %v\noutput:\n%s", err, out)
 	}
-	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
-		t.Errorf("expected the downgraded warning text, got:\n%s", out)
+	if !strings.Contains(out, "agy 1.1.10 is active in the harness pool") {
+		t.Errorf("expected the success line naming the active version, got:\n%s", out)
 	}
-	if strings.Contains(out, "wraptool/wraptool:0") {
-		t.Errorf("warning still points at the retired :0 devcontainer-feature snippet, got:\n%s", out)
+	if !strings.Contains(out, filepath.Join(paths.Runtime, "bin", "agy")) {
+		t.Errorf("expected the runnable dispatcher path, got:\n%s", out)
 	}
-	if !strings.Contains(out, "wraptool harness install agy") || !strings.Contains(out, "major :1") {
-		t.Errorf("expected the modern harness-install + wiring-only-feature guidance, got:\n%s", out)
+	if !strings.Contains(out, "export PATH=$PATH:") {
+		t.Errorf("expected the PATH hint, got:\n%s", out)
+	}
+	if !strings.Contains(out, "the legacy harness-pool/bin copy was skipped") ||
+		!strings.Contains(out, "not on PATH") {
+		t.Errorf("expected the skipped-legacy-copy note naming the guix-absent cause, got:\n%s", out)
+	}
+	// The oci/devcontainer pointer in offGuixInstallError's text is FALSE
+	// for an archive source (it needs no backend at all, §6.2) and made a
+	// successful install read as an unactionable failure — it must not be
+	// echoed on this path.
+	if strings.Contains(out, "Install docker or podman") || strings.Contains(out, "major :1") {
+		t.Errorf("archive-source note still echoes the backend/devcontainer guidance, got:\n%s", out)
 	}
 
 	hostKey, err := pool.HostPlatformKey()
@@ -3476,11 +3498,11 @@ func TestHarnessInstallAgyDowngradesLegacyInstallFailureForOtherReasonsToWarning
 		t.Fatalf("expected nil error (any legacy-install failure is downgraded to a warning when the pool generation is genuinely built+active): %v\noutput:\n%s", err, buf.String())
 	}
 	out := buf.String()
-	if !strings.Contains(out, "pool generation built and locked, but the pool binary was NOT installed") {
-		t.Errorf("expected the downgraded warning text, got:\n%s", out)
+	if !strings.Contains(out, "agy 1.1.10 is active in the harness pool") {
+		t.Errorf("expected the success line naming the active version, got:\n%s", out)
 	}
 	if !strings.Contains(out, "could not resolve host") {
-		t.Errorf("expected the warning to name the real underlying legacy-install error, got:\n%s", out)
+		t.Errorf("expected the note to name the real underlying legacy-install error verbatim, got:\n%s", out)
 	}
 
 	// The pool's own work still succeeded (realize/activate both ran fine
