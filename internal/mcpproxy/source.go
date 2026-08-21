@@ -48,7 +48,12 @@ func NewSource(serverName string, cfg *config.MCPServerConfig, policy *whitelist
 // Tools spawns the upstream (if not already running), discovers its tools, and
 // returns one RegisteredTool per allow-listed upstream tool. The tool's input
 // schema is the upstream's, passed through unchanged (mcp.NewToolWithRawSchema),
-// and its final name is "<name_prefix>_<upstream_tool>".
+// and its final name is "<name_prefix>_<upstream_tool>", sanitized by
+// config.SanitizeToolName: an upstream namespaces its tools however it likes
+// ("sigil/lookup"), and a separator wraptool does not control must not reach a
+// model API that rejects the entire tool list over one invalid name. Only the
+// EXPOSED name is rewritten — the handler still calls the upstream by its own
+// unmodified ut.Name, so dispatch is unaffected.
 //
 // A spawn/handshake/list failure is non-fatal: it is logged and the server
 // contributes no tools, mirroring how CLI introspection failures are tolerated.
@@ -88,7 +93,7 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			log.Printf("mcpproxy: skipping tool %q on %q: marshaling schema: %v", ut.Name, s.serverName, err)
 			continue
 		}
-		finalName := s.cfg.NamePrefix + "_" + ut.Name
+		finalName := config.SanitizeToolName(s.cfg.NamePrefix + "_" + ut.Name)
 		tool := mcp.NewToolWithRawSchema(finalName, ut.Description, raw)
 		h := &handler{
 			client:     s.client,

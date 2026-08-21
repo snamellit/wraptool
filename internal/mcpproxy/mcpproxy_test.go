@@ -296,3 +296,53 @@ func containsPrefix(env []string, prefix string) bool {
 	}
 	return false
 }
+
+// TestSourceSanitizesUpstreamToolNameForModelAPI pins the reported agy/Gemini
+// failure: sigil publishes its tools as "sigil/lookup", and the raw
+// "<name_prefix>_<upstream_tool>" join carried that slash into the registered
+// name. Gemini rejects the whole GenerateContentRequest over one invalid
+// function name ("tools[54].function_declarations[0].name: [FIELD_INVALID]"),
+// so a single upstream naming convention disabled every wraptool tool in the
+// session. The exposed name must be sanitized; the upstream call must still
+// use the unmodified name.
+func TestSourceSanitizesUpstreamToolNameForModelAPI(t *testing.T) {
+	srv := server.NewMCPServer("stub", "0.0.1", server.WithToolCapabilities(true))
+	called := ""
+	srv.AddTool(
+		mcp.NewTool("sigil/lookup", mcp.WithDescription("slash-namespaced upstream tool")),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			called = req.Params.Name
+			return mcp.NewToolResultText("ok"), nil
+		},
+	)
+	c := wrapInProcess(t, srv, nil)
+	t.Cleanup(func() { _ = c.Close() })
+
+	cfg := &config.MCPServerConfig{
+		NamePrefix: "sigil",
+		Allow:      []config.MCPAllowRule{{Tool: "sigil/lookup"}},
+	}
+	policy := whitelist.NewMCPPolicy(map[string]*config.MCPServerConfig{"sigil": cfg})
+
+	src := NewSource("sigil", cfg, policy, nil, "test")
+	src.client = c // inject the in-process-backed client (white-box)
+
+	tools, err := src.Tools(context.Background())
+	if err != nil {
+		t.Fatalf("Tools: %v", err)
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 registered tool, got %d: %+v", len(tools), tools)
+	}
+	if tools[0].Name != "sigil_sigil_lookup" {
+		t.Errorf("expected the sanitized name sigil_sigil_lookup, got %q", tools[0].Name)
+	}
+
+	// Dispatch is unaffected: the upstream is still called by its own name.
+	if _, err := tools[0].Handler(context.Background(), mcp.CallToolRequest{}); err != nil {
+		t.Fatalf("handler: %v", err)
+	}
+	if called != "sigil/lookup" {
+		t.Errorf("upstream was called as %q, want the unmodified sigil/lookup", called)
+	}
+}

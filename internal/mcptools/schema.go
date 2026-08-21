@@ -9,11 +9,15 @@ import (
 // ToolName generates the MCP tool name from a tool name and subcommand.
 // e.g. ("git", ["commit"]) -> "git_commit"
 // e.g. ("gcloud", ["compute", "instances", "list"]) -> "gcloud_compute_instances_list"
+//
+// The joined name is passed through config.SanitizeToolName so a subcommand
+// carrying a character no model API accepts in a function name cannot reach
+// the wire (see that function for why one bad name breaks a whole session).
 func ToolName(toolName string, subcommand []string) string {
 	parts := make([]string, 0, 1+len(subcommand))
 	parts = append(parts, toolName)
 	parts = append(parts, subcommand...)
-	return strings.Join(parts, "_")
+	return config.SanitizeToolName(strings.Join(parts, "_"))
 }
 
 // FlagToParam converts a CLI flag name to a JSON Schema parameter name.
