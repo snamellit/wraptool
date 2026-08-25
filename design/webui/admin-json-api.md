@@ -6,6 +6,13 @@ API, and the future TUI (`webui-accessibility-reachability.md` §5) all sit on
 one shared core instead of four copies of the same logic. The work packages
 below are scoped for independent implementation agents.
 
+Scope decision for v1: WP2 (`requestlog.Watch`) and the SSE endpoint are
+**deferred**. The extension needs a polling fallback anyway, and polling
+`GET /api/v1/requests?status=pending` every few seconds is plenty for
+human-approval latency. The fsnotify tail is the riskiest chunk of the plan
+(partial lines, offsets, file creation, teardown); build it when the TUI —
+its other consumer — actually lands, or when polling measurably annoys.
+
 ## 0. Duplication audit (why the plan looks like this)
 
 The approve flow — `store.Get` → `store.UpdateStatus(approved)` → optional
@@ -64,7 +71,7 @@ Files: `internal/adminops/adminops.go` + tests (all four outcomes, the
 partial-failure case, deny with/without reason); edits to
 `internal/webui/webui.go`, `cmd/requests.go`.
 
-### WP2 — event tailing: `requestlog.Watch`
+### WP2 — event tailing: `requestlog.Watch` (deferred, see scope decision)
 
 ```go
 func (s *Store) Watch(ctx context.Context) (<-chan Event, error)
@@ -106,23 +113,20 @@ GET  /api/v1/calls?status=             [ToolCallEvent]      (store.ListToolCalls
 GET  /api/v1/rules                     read-only config snapshot: tools,
                                        allow/deny rules, constraints
                                        (config.Load; no mutation in v1)
-GET  /api/v1/events                    SSE stream of requestlog events
 ```
+
+Deferred with WP2: `GET /api/v1/events` (SSE). Clients poll
+`/api/v1/requests?status=pending` in v1.
 
 - Wire types are the `requestlog` structs as-is. The `/rules` response gets
   its own small view struct (the config types serialize YAML-first).
 - Errors: `{"error": "..."}` with 404 (unknown id), 400 (bad body), 500;
   `Content-Type: application/json` everywhere.
-- SSE: each requestlog event as one SSE `data:` line, `event:` set to the
-  event type (`capability_requested`, `capability_approved`, ...); a
-  `: heartbeat` comment every ~15s so proxies and clients detect death; no
-  replay/Last-Event-ID in v1 — a client re-`GET /requests` on (re)connect,
-  which the extension does anyway. Optional `?types=` filter can wait.
 - Contract stability: field renames or semantic changes after this ships
   require `/api/v2`. Additive fields are fine.
 
 Files: `internal/webui/api.go` + `api_test.go` (round-trip list/approve/deny
-against a temp store+config, error shapes, SSE first-event + heartbeat).
+against a temp store+config, error shapes).
 
 ### WP4 — API-aware auth
 
@@ -146,10 +150,9 @@ Files: `cmd/requests.go` + a test.
 
 ## 2. Sequencing for agents
 
-- **Wave 1 (parallel, disjoint files):** WP1 (`internal/adminops` + both
-  consumer refactors) and WP2 (`internal/requestlog/watch.go`).
-- **Wave 2 (single agent):** WP3 + WP4 + WP5 on top of wave 1.
-- Review each wave against this document before integration.
+One implementation agent, sequential within its branch: WP1 first (it is
+the foundation and the only refactor of existing behavior), then WP3 + WP4 +
+WP5 on top. Review against this document before integration.
 
 Gates for every package: `go build ./...`, `go test ./...`, `go vet ./...`,
 `golangci-lint run ./...`.
