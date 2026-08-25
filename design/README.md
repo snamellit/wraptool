@@ -32,6 +32,7 @@ first (the foundational wrapping model), then browse by area below.
 | `webui/webui-accessibility-reachability.md` | webui | proposed | Accessibility and reachability of the operator review UI |
 | `webui/webauthn-admin-auth.md` | webui | proposed | WebAuthn admin authentication |
 | `vscode-plugin.md` | webui | proposed | VS Code extension for operator request review, atop a new JSON admin API |
+| `webui/admin-json-api.md` | webui | planned | `/api/v1` JSON admin surface on a shared approve/deny core (Web UI, CLI, API, TUI) |
 | `policy/flag-constraint-type-single-source.md` | policy | proposal | Single source of truth for flag-constraint types |
 | `policy/flag-type-inference.md` | policy | implemented | Flag value types come from the capability author, not a regex |
 | `policy/security-audit-policy-enforcement.md` | policy | findings | Policy-enforcement perimeter & config fail-open surface (open) |
