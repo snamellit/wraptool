@@ -42,6 +42,8 @@ it. Nothing about the storage or the approve/deny semantics needs to change.
 
 ## 2. Precondition: a JSON admin API (this repository)
 
+Implementation plan: `webui/admin-json-api.md`.
+
 Add a versioned JSON surface next to the HTML one, same listener, same
 `AuthMiddleware`, same underlying `requestlog.Store` + `config.ApplyRequest`
 calls the HTML handlers use:
