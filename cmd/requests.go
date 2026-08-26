@@ -122,8 +122,7 @@ func newRequestsApproveCmd(configPath *string) *cobra.Command {
 				return err
 			}
 
-			// Fetched here (adminops.Approve fetches it again internally) purely to
-			// read Tool/Subcommand/Flags/FlagTypes for the messages below.
+			// The merged flagTypes must be computed before Approve, so req is read here.
 			req, err := store.Get(args[0])
 			if err != nil {
 				return err
@@ -137,13 +136,16 @@ func newRequestsApproveCmd(configPath *string) *cobra.Command {
 			}
 			fmt.Printf("Request %s approved.\n", args[0])
 
+			// Checked before the OutcomeNotApplied branch below: ApplyErr also
+			// sets Outcome to OutcomeNotApplied (nothing was actually
+			// applied), and that branch's message is reserved for apply=false.
+			if result.ApplyErr != nil {
+				return fmt.Errorf("applying to config: %w", result.ApplyErr)
+			}
+
 			if result.Outcome == adminops.OutcomeNotApplied {
 				fmt.Println("Note: manually add the capability to your config.yaml; a running wraptool will hot-reload on save (or send SIGHUP).")
 				return nil
-			}
-
-			if result.ApplyErr != nil {
-				return fmt.Errorf("applying to config: %w", result.ApplyErr)
 			}
 
 			switch result.Outcome {

@@ -29,17 +29,19 @@ const (
 
 // ApproveResult describes the outcome of approving a capability request.
 type ApproveResult struct {
-	Request *requestlog.CapabilityRequest
 	Outcome ApproveOutcome
 	// AddedFlags lists flags added by the config edit (new rule or extension).
 	// Empty for OutcomeNoChange and OutcomeNotApplied.
 	AddedFlags []string
 	// Snippet is the YAML representation of the resulting allow rule, suitable
-	// for display to the operator. Empty when nothing was written.
+	// for display to the operator. Set whenever config.ApplyRequest ran
+	// successfully (including OutcomeNoChange); empty on ApplyErr or
+	// OutcomeNotApplied, when no rule was resolved.
 	Snippet string
 	// ApplyErr is non-nil when status was flipped to approved but the config
 	// write failed — the caller renders "approved but edit config by hand"
-	// rather than treating the whole operation as failed.
+	// rather than treating the whole operation as failed. Outcome is
+	// OutcomeNotApplied in this case: nothing was actually applied.
 	ApplyErr error
 }
 
@@ -58,11 +60,14 @@ func Approve(store *requestlog.Store, configPath, id string, apply bool, flagTyp
 	if err != nil {
 		return nil, err
 	}
+	// A failure here also returns the bare error (no webui-style "updating
+	// status: " prefix) — accepted deviation, see cmd/requests.go and
+	// internal/webui/webui.go callers.
 	if err := store.UpdateStatus(id, requestlog.StatusApproved, ""); err != nil {
 		return nil, err
 	}
 
-	result := &ApproveResult{Request: req}
+	result := &ApproveResult{}
 	if !apply {
 		result.Outcome = OutcomeNotApplied
 		return result, nil
@@ -71,6 +76,7 @@ func Approve(store *requestlog.Store, configPath, id string, apply bool, flagTyp
 	applied, err := config.ApplyRequest(configPath, req.Tool, req.Subcommand, req.Flags, flagTypes)
 	if err != nil {
 		result.ApplyErr = err
+		result.Outcome = OutcomeNotApplied // nothing was actually applied
 		return result, nil
 	}
 

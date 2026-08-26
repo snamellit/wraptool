@@ -3,6 +3,7 @@ package requestlog
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// ErrNotFound is returned by Get and UpdateStatus when id names no request.
+var ErrNotFound = errors.New("request not found")
 
 // Store is an append-only event log. Requests and tool calls are recorded as
 // heterogeneous events in a single JSONL stream; current state is projected by
@@ -151,7 +155,7 @@ func (s *Store) UpdateStatus(id string, status Status, reason string) error {
 		return err
 	}
 	if _, ok := reqs[id]; !ok {
-		return fmt.Errorf("request %q not found", id)
+		return fmt.Errorf("request %q: %w", id, ErrNotFound)
 	}
 
 	var t EventType
@@ -200,7 +204,7 @@ func (s *Store) Get(id string) (*CapabilityRequest, error) {
 	}
 	req, ok := byID[id]
 	if !ok {
-		return nil, fmt.Errorf("request %q not found", id)
+		return nil, fmt.Errorf("request %q: %w", id, ErrNotFound)
 	}
 	return req, nil
 }

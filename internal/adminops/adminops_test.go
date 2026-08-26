@@ -169,6 +169,9 @@ func TestApprovePartialFailure(t *testing.T) {
 	if !strings.Contains(result.ApplyErr.Error(), "kubectl") {
 		t.Errorf("ApplyErr = %v, want it to name the tool", result.ApplyErr)
 	}
+	if result.Outcome != OutcomeNotApplied {
+		t.Errorf("Outcome = %v, want OutcomeNotApplied (nothing was actually applied)", result.Outcome)
+	}
 
 	// Status still flips to approved even though the apply failed.
 	got, err := store.Get(id)
