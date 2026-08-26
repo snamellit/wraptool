@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pti/wraptool/internal/adminops"
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/requestlog"
 )
@@ -322,36 +323,43 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	apply := r.FormValue("apply") == "1"
 
+	// Fetched here (adminops.Approve fetches it again internally) purely to
+	// read FlagTypes for the merge below and Tool/Subcommand for the success
+	// message — and, as a side effect, to reproduce the original unprefixed
+	// "unknown id" message rather than adminops's single collapsed error.
 	req, err := s.store.Get(id)
 	if err != nil {
 		s.redirect(w, r, "/requests", "err", err.Error(), "")
 		return
 	}
-	if err := s.store.UpdateStatus(id, requestlog.StatusApproved, ""); err != nil {
-		s.redirect(w, r, "/requests", "err", "updating status: "+err.Error(), "")
+
+	result, err := adminops.Approve(s.store, s.configPath, id, apply, flagTypeOverrides(req.FlagTypes, r))
+	if err != nil {
+		s.redirect(w, r, "/requests", "err", err.Error(), "")
 		return
 	}
 
-	if !apply {
+	if result.Outcome == adminops.OutcomeNotApplied {
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s. Add the capability to config manually; a running wraptool hot-reloads on save.", id), "")
 		return
 	}
 
-	result, err := config.ApplyRequest(s.configPath, req.Tool, req.Subcommand, req.Flags, flagTypeOverrides(req.FlagTypes, r))
-	if err != nil {
+	if result.ApplyErr != nil {
 		// Status is already approved; report the apply failure so the
 		// operator can edit the config by hand.
-		s.redirect(w, r, "/requests", "err", fmt.Sprintf("Approved %s but applying to config failed: %s", id, err), "")
+		s.redirect(w, r, "/requests", "err", fmt.Sprintf("Approved %s but applying to config failed: %s", id, result.ApplyErr), "")
 		return
 	}
 
-	switch {
-	case result.NewRule:
+	switch result.Outcome {
+	case adminops.OutcomeNewRule:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — added allow rule for %s %s. Server will hot-reload.", id, req.Tool, strings.Join(req.Subcommand, " ")), result.Snippet)
-	case len(result.AddedFlags) > 0:
+	case adminops.OutcomeExtended:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — extended rule with flags %s. Server will hot-reload.", id, strings.Join(result.AddedFlags, " ")), result.Snippet)
-	default:
+	case adminops.OutcomeNoChange:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — capability was already allowed; no config change.", id), "")
+	case adminops.OutcomeNotApplied:
+		// unreachable: handled above before the apply-error/outcome branch
 	}
 }
 
@@ -390,7 +398,7 @@ func flagTypeOverrides(proposed map[string]string, r *http.Request) map[string]s
 func (s *Server) handleDeny(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	reason := strings.TrimSpace(r.FormValue("reason"))
-	if err := s.store.UpdateStatus(id, requestlog.StatusDenied, reason); err != nil {
+	if err := adminops.Deny(s.store, id, reason); err != nil {
 		s.redirect(w, r, "/requests", "err", "denying: "+err.Error(), "")
 		return
 	}
