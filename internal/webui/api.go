@@ -3,11 +3,11 @@ package webui
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"sort"
-	"strings"
 
 	"github.com/pti/wraptool/internal/adminops"
 	"github.com/pti/wraptool/internal/buildinfo"
@@ -31,6 +31,13 @@ func (s *Server) registerAPIRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/requests/{id}/deny", s.apiDeny)
 	mux.HandleFunc("GET /api/v1/calls", s.apiListCalls)
 	mux.HandleFunc("GET /api/v1/rules", s.apiRules)
+	// Catch-all: an unknown path or wrong method under /api/ still gets the
+	// JSON error shape, not ServeMux's default text/plain 404/405 (more
+	// specific patterns above take precedence regardless of registration
+	// order).
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeAPIError(w, http.StatusNotFound, fmt.Errorf("no such API endpoint: %s %s", r.Method, r.URL.Path))
+	})
 }
 
 func (s *Server) apiInfo(w http.ResponseWriter, r *http.Request) {
@@ -165,6 +172,9 @@ func (s *Server) apiListCalls(w http.ResponseWriter, r *http.Request) {
 // field names. These small view structs give the wire format proper
 // snake_case json tags instead — a DTO layer here, unlike requests/calls
 // which are requestlog's own JSON-tagged structs.
+//
+// Env/EnvFiles are deliberately omitted: they carry credential material
+// (inline secrets or paths to them), out of scope for a policy snapshot.
 
 type apiToolRules struct {
 	Name       string         `json:"name"`
@@ -298,11 +308,11 @@ func decodeJSONBody(r *http.Request, v any) error {
 	return nil
 }
 
-// requestErrorStatus maps a store lookup/update error to an HTTP status: the
-// literal "not found" wording store.Get/UpdateStatus use for an unknown ID
-// becomes a 404; anything else (e.g. a log I/O failure) is a 500.
+// requestErrorStatus maps a store lookup/update error to an HTTP status:
+// requestlog.ErrNotFound (an unknown ID) is a 404; anything else (e.g. a log
+// I/O failure) is a 500.
 func requestErrorStatus(err error) int {
-	if strings.Contains(err.Error(), "not found") {
+	if errors.Is(err, requestlog.ErrNotFound) {
 		return http.StatusNotFound
 	}
 	return http.StatusInternalServerError

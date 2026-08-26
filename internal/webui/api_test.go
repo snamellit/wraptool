@@ -184,6 +184,9 @@ func TestAPIApproveApplyFailureSurfacesApplyError(t *testing.T) {
 	if resp.ApplyError == "" {
 		t.Error("apply_error is empty, want a config-apply error for an unconfigured tool")
 	}
+	if resp.Outcome != "not_applied" {
+		t.Errorf("outcome = %q, want not_applied (nothing was actually applied)", resp.Outcome)
+	}
 
 	// Status still flips to approved even though the apply failed.
 	got, err := store.Get(id)
@@ -361,6 +364,51 @@ func TestAPIAuthBearerOK(t *testing.T) {
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAPIAuthSessionCookieOK(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	h := srv.AuthMiddleware("s3cret", srv.Handler())
+
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/v1/requests", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: "s3cret"})
+	h.ServeHTTP(rr, r)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAPIAuthWrongBearerIsJSON401(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	h := srv.AuthMiddleware("s3cret", srv.Handler())
+
+	rr := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", "/api/v1/requests", nil)
+	r.Header.Set("Authorization", "Bearer wrong")
+	h.ServeHTTP(rr, r)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json (not the HTML login form)", ct)
+	}
+}
+
+func TestAPIUnknownPathIsJSON404(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, httptest.NewRequest("GET", "/api/v1/nope", nil))
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json (not ServeMux's default text/plain)", ct)
 	}
 }
 

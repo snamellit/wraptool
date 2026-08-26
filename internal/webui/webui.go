@@ -324,10 +324,7 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	apply := r.FormValue("apply") == "1"
 
-	// Fetched here (adminops.Approve fetches it again internally) purely to
-	// read FlagTypes for the merge below and Tool/Subcommand for the success
-	// message — and, as a side effect, to reproduce the original unprefixed
-	// "unknown id" message rather than adminops's single collapsed error.
+	// The merged flagTypes must be computed before Approve, so req is read here.
 	req, err := s.store.Get(id)
 	if err != nil {
 		s.redirect(w, r, "/requests", "err", err.Error(), "")
@@ -340,15 +337,18 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if result.Outcome == adminops.OutcomeNotApplied {
-		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s. Add the capability to config manually; a running wraptool hot-reloads on save.", id), "")
+	if result.ApplyErr != nil {
+		// Status is already approved; report the apply failure so the
+		// operator can edit the config by hand. Checked before the
+		// OutcomeNotApplied branch below: ApplyErr also sets Outcome to
+		// OutcomeNotApplied (nothing was actually applied), and that message
+		// is reserved for the apply=false case.
+		s.redirect(w, r, "/requests", "err", fmt.Sprintf("Approved %s but applying to config failed: %s", id, result.ApplyErr), "")
 		return
 	}
 
-	if result.ApplyErr != nil {
-		// Status is already approved; report the apply failure so the
-		// operator can edit the config by hand.
-		s.redirect(w, r, "/requests", "err", fmt.Sprintf("Approved %s but applying to config failed: %s", id, result.ApplyErr), "")
+	if result.Outcome == adminops.OutcomeNotApplied {
+		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s. Add the capability to config manually; a running wraptool hot-reloads on save.", id), "")
 		return
 	}
 
@@ -795,6 +795,9 @@ const sessionCookie = "wraptool_session"
 // assets are served without auth so that form renders styled. All token
 // comparisons are constant-time. An empty token is a configuration error at
 // startup; reject it here as defense in depth rather than trusting loopback.
+// /api/ requests are carved out from the browser flow: only the session
+// cookie and Bearer header authenticate them, a failure is a JSON 401 (never
+// the login form), and a successful one never sets a cookie.
 func (s *Server) AuthMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
