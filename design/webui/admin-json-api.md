@@ -42,11 +42,10 @@ New small package (config ↔ requestlog import-cycle-free meeting point):
 type ApproveOutcome int // OutcomeNewRule | OutcomeExtended | OutcomeNoChange | OutcomeNotApplied
 
 type ApproveResult struct {
-    Request    *requestlog.CapabilityRequest
-    Outcome    ApproveOutcome
+    Outcome    ApproveOutcome // OutcomeNotApplied when apply was skipped OR failed
     AddedFlags []string
-    Snippet    string
-    ApplyErr   error // non-nil: status is approved but the config write failed
+    Snippet    string // always populated by ApplyRequest, including on no-change
+    ApplyErr   error  // non-nil: status is approved but the config write failed
 }
 
 func Approve(store *requestlog.Store, configPath, id string,
@@ -55,7 +54,10 @@ func Approve(store *requestlog.Store, configPath, id string,
 func Deny(store *requestlog.Store, id, reason string) error
 ```
 
-Semantics are lifted verbatim from today's handlers and must not change:
+Semantics are lifted verbatim from today's handlers with one accepted
+deviation: the Web UI's rare `UpdateStatus`-failure flash loses its
+`"updating status: "` prefix (the collapsed error return cannot carry it
+without an extra error type; not worth it). Otherwise:
 status flips to approved *before* the apply attempt; an apply failure is
 reported via `ApplyErr` (not the error return) so every presenter can render
 the same "approved but edit the config by hand" message; `flagTypes` is the
@@ -121,7 +123,12 @@ Deferred with WP2: `GET /api/v1/events` (SSE). Clients poll
 - Wire types are the `requestlog` structs as-is. The `/rules` response gets
   its own small view struct (the config types serialize YAML-first).
 - Errors: `{"error": "..."}` with 404 (unknown id), 400 (bad body), 500;
-  `Content-Type: application/json` everywhere.
+  `Content-Type: application/json` everywhere — including unknown `/api/`
+  paths (a catch-all route, so no `ServeMux` text/plain 404 leaks into the
+  contract). "Unknown id" is detected via a typed
+  `requestlog.ErrNotFound` sentinel, not error-string matching.
+- `/api/v1/rules` deliberately omits `env`/`env_files` — they can carry or
+  name credential material.
 - Contract stability: field renames or semantic changes after this ships
   require `/api/v2`. Additive fields are fine.
 
