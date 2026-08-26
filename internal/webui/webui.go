@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /rules/{tool}/allow/{index}/constraint/delete", s.handleRuleConstraintDelete)
 	mux.HandleFunc("POST /rules/{tool}/allow/{index}/args/set", s.handleRuleArgsSet)
 	mux.Handle("GET /static/", s.static)
+	s.registerAPIRoutes(mux)
 	return mux
 }
 
@@ -824,6 +825,16 @@ func (s *Server) AuthMiddleware(token string, next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+		}
+
+		// API clients get neither the login form nor a session cookie: an
+		// unauthenticated /api/ request fails with a JSON 401 right here,
+		// never falling through to the query/form-token flow below (that
+		// flow's cookie-setting redirect is meaningless to a script).
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
 		}
 
 		// 3. Token via query (?token=) or login form (POST token=).
