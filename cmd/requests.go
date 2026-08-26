@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/pti/wraptool/internal/adminops"
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/requestlog"
@@ -30,7 +32,9 @@ func newRequestsCmd() *cobra.Command {
 	return cmd
 }
 
-func getStore(configPath *string) (*requestlog.Store, error) {
+// resolveConfigPath applies the standard --config / WRAPTOOL_CONFIG / default
+// fallback shared by every requests subcommand.
+func resolveConfigPath(configPath *string) string {
 	path := *configPath
 	if path == "" {
 		path = os.Getenv("WRAPTOOL_CONFIG")
@@ -38,8 +42,11 @@ func getStore(configPath *string) (*requestlog.Store, error) {
 	if path == "" {
 		path = paths.DefaultConfigFile()
 	}
+	return path
+}
 
-	cfg, err := config.Load(path)
+func getStore(configPath *string) (*requestlog.Store, error) {
+	cfg, err := config.Load(resolveConfigPath(configPath))
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +56,7 @@ func getStore(configPath *string) (*requestlog.Store, error) {
 
 func newRequestsListCmd(configPath *string) *cobra.Command {
 	var statusFilter string
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "list",
@@ -62,6 +70,12 @@ func newRequestsListCmd(configPath *string) *cobra.Command {
 			requests, err := store.List(requestlog.Status(statusFilter))
 			if err != nil {
 				return err
+			}
+
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(requests)
 			}
 
 			if len(requests) == 0 {
@@ -90,6 +104,7 @@ func newRequestsListCmd(configPath *string) *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&statusFilter, "status", "pending", "filter by status (pending|approved|denied|\"\")")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the requests as a JSON array instead of a table")
 
 	return cmd
 }
@@ -107,42 +122,42 @@ func newRequestsApproveCmd(configPath *string) *cobra.Command {
 				return err
 			}
 
+			// The merged flagTypes must be computed before Approve, so req is read here.
 			req, err := store.Get(args[0])
 			if err != nil {
 				return err
 			}
 
-			if err := store.UpdateStatus(args[0], requestlog.StatusApproved, ""); err != nil {
+			resolvedPath := resolveConfigPath(configPath)
+
+			result, err := adminops.Approve(store, resolvedPath, args[0], apply, req.FlagTypes)
+			if err != nil {
 				return err
 			}
 			fmt.Printf("Request %s approved.\n", args[0])
 
-			if !apply {
+			// Checked before the OutcomeNotApplied branch below: ApplyErr also
+			// sets Outcome to OutcomeNotApplied (nothing was actually
+			// applied), and that branch's message is reserved for apply=false.
+			if result.ApplyErr != nil {
+				return fmt.Errorf("applying to config: %w", result.ApplyErr)
+			}
+
+			if result.Outcome == adminops.OutcomeNotApplied {
 				fmt.Println("Note: manually add the capability to your config.yaml; a running wraptool will hot-reload on save (or send SIGHUP).")
 				return nil
 			}
 
-			resolvedPath := *configPath
-			if resolvedPath == "" {
-				resolvedPath = os.Getenv("WRAPTOOL_CONFIG")
-			}
-			if resolvedPath == "" {
-				resolvedPath = paths.DefaultConfigFile()
-			}
-
-			result, err := config.ApplyRequest(resolvedPath, req.Tool, req.Subcommand, req.Flags, req.FlagTypes)
-			if err != nil {
-				return fmt.Errorf("applying to config: %w", err)
-			}
-
-			switch {
-			case result.NewRule:
+			switch result.Outcome {
+			case adminops.OutcomeNewRule:
 				fmt.Printf("Added new allow rule to %s for %s %s:\n", resolvedPath, req.Tool, strings.Join(req.Subcommand, " "))
-			case len(result.AddedFlags) > 0:
+			case adminops.OutcomeExtended:
 				fmt.Printf("Extended existing allow rule in %s with flags %v:\n", resolvedPath, result.AddedFlags)
-			default:
+			case adminops.OutcomeNoChange:
 				fmt.Printf("No change required; %s %s with flags %v is already allowed.\n", req.Tool, strings.Join(req.Subcommand, " "), req.Flags)
 				return nil
+			case adminops.OutcomeNotApplied:
+				// unreachable: handled above
 			}
 			if result.Snippet != "" {
 				fmt.Println()
@@ -171,7 +186,7 @@ func newRequestsDenyCmd(configPath *string) *cobra.Command {
 				return err
 			}
 
-			if err := store.UpdateStatus(args[0], requestlog.StatusDenied, reason); err != nil {
+			if err := adminops.Deny(store, args[0], reason); err != nil {
 				return err
 			}
 

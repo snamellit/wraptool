@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pti/wraptool/internal/adminops"
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/requestlog"
 )
@@ -101,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /rules/{tool}/allow/{index}/constraint/delete", s.handleRuleConstraintDelete)
 	mux.HandleFunc("POST /rules/{tool}/allow/{index}/args/set", s.handleRuleArgsSet)
 	mux.Handle("GET /static/", s.static)
+	s.registerAPIRoutes(mux)
 	return mux
 }
 
@@ -322,36 +324,43 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	apply := r.FormValue("apply") == "1"
 
+	// The merged flagTypes must be computed before Approve, so req is read here.
 	req, err := s.store.Get(id)
 	if err != nil {
 		s.redirect(w, r, "/requests", "err", err.Error(), "")
 		return
 	}
-	if err := s.store.UpdateStatus(id, requestlog.StatusApproved, ""); err != nil {
-		s.redirect(w, r, "/requests", "err", "updating status: "+err.Error(), "")
+
+	result, err := adminops.Approve(s.store, s.configPath, id, apply, flagTypeOverrides(req.FlagTypes, r))
+	if err != nil {
+		s.redirect(w, r, "/requests", "err", err.Error(), "")
 		return
 	}
 
-	if !apply {
+	if result.ApplyErr != nil {
+		// Status is already approved; report the apply failure so the
+		// operator can edit the config by hand. Checked before the
+		// OutcomeNotApplied branch below: ApplyErr also sets Outcome to
+		// OutcomeNotApplied (nothing was actually applied), and that message
+		// is reserved for the apply=false case.
+		s.redirect(w, r, "/requests", "err", fmt.Sprintf("Approved %s but applying to config failed: %s", id, result.ApplyErr), "")
+		return
+	}
+
+	if result.Outcome == adminops.OutcomeNotApplied {
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s. Add the capability to config manually; a running wraptool hot-reloads on save.", id), "")
 		return
 	}
 
-	result, err := config.ApplyRequest(s.configPath, req.Tool, req.Subcommand, req.Flags, flagTypeOverrides(req.FlagTypes, r))
-	if err != nil {
-		// Status is already approved; report the apply failure so the
-		// operator can edit the config by hand.
-		s.redirect(w, r, "/requests", "err", fmt.Sprintf("Approved %s but applying to config failed: %s", id, err), "")
-		return
-	}
-
-	switch {
-	case result.NewRule:
+	switch result.Outcome {
+	case adminops.OutcomeNewRule:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — added allow rule for %s %s. Server will hot-reload.", id, req.Tool, strings.Join(req.Subcommand, " ")), result.Snippet)
-	case len(result.AddedFlags) > 0:
+	case adminops.OutcomeExtended:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — extended rule with flags %s. Server will hot-reload.", id, strings.Join(result.AddedFlags, " ")), result.Snippet)
-	default:
+	case adminops.OutcomeNoChange:
 		s.redirect(w, r, "/requests", "ok", fmt.Sprintf("Approved %s — capability was already allowed; no config change.", id), "")
+	case adminops.OutcomeNotApplied:
+		// unreachable: handled above before the apply-error/outcome branch
 	}
 }
 
@@ -390,7 +399,7 @@ func flagTypeOverrides(proposed map[string]string, r *http.Request) map[string]s
 func (s *Server) handleDeny(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	reason := strings.TrimSpace(r.FormValue("reason"))
-	if err := s.store.UpdateStatus(id, requestlog.StatusDenied, reason); err != nil {
+	if err := adminops.Deny(s.store, id, reason); err != nil {
 		s.redirect(w, r, "/requests", "err", "denying: "+err.Error(), "")
 		return
 	}
@@ -786,6 +795,9 @@ const sessionCookie = "wraptool_session"
 // assets are served without auth so that form renders styled. All token
 // comparisons are constant-time. An empty token is a configuration error at
 // startup; reject it here as defense in depth rather than trusting loopback.
+// /api/ requests are carved out from the browser flow: only the session
+// cookie and Bearer header authenticate them, a failure is a JSON 401 (never
+// the login form), and a successful one never sets a cookie.
 func (s *Server) AuthMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -816,6 +828,16 @@ func (s *Server) AuthMiddleware(token string, next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+		}
+
+		// API clients get neither the login form nor a session cookie: an
+		// unauthenticated /api/ request fails with a JSON 401 right here,
+		// never falling through to the query/form-token flow below (that
+		// flow's cookie-setting redirect is meaningless to a script).
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+			return
 		}
 
 		// 3. Token via query (?token=) or login form (POST token=).
