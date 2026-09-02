@@ -799,3 +799,11 @@ Delta since the baseline. Everything above stands except as noted here.
     `wraptool-v0.7.1` from `main` after merging `8fb54e8` and the manifest
     bump; that run is also B2's pipeline proof.** Update the 0.7.0 CHANGELOG
     heading to note it shipped no binaries.
+- **B2 CLOSED (2026-09-02 evening).** `wraptool-v0.7.1` tagged and published:
+  publish-binaries run #306 green, all nine assets attached,
+  `releases/latest` resolves 0.7.1, the linux_amd64 binary's checksum and
+  `--version` verified by download, and the Homebrew tap commit "wraptool
+  0.7.1" landed. publish-feature #307 green. Lint green twice consecutively
+  on `main` (#295-era fix confirmed by #308). B5 and B6 are also merged
+  (`6102639`, scrub series + `1f568bd`). Remaining blockers: B1, B3, B4, B7,
+  B8. The GitLab mirror rows in the checklist are void — mirror retired.
