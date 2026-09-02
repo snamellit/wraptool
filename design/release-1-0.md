@@ -708,12 +708,10 @@ that can actually fail.
       features. Note that `features/src/wraptool` is itself at `version 1.0.0`,
       coincidentally matching wraptool 1.0.0. They are independent; say so in
       the release notes so nobody infers a coupling.
-    - GitLab's `release:binaries` / `release:publish` on the mirror
-      (`.gitlab-ci.yml`). These use the pinned `CI_TOOLCHAIN_IMAGE` digest
-      rather than `guix time-machine`, with `GOTOOLCHAIN: local` — so if the
-      image's Go is older than `go.mod`'s `go 1.26.0` directive the job fails
-      loudly. The pin is current with `manifest.scm` (both at `2026-07-24`), but
-      confirm rather than assume.
+    - ~~GitLab's `release:binaries` / `release:publish` on the mirror~~ —
+      the GitLab mirror is retired (2026-09-02, access lost); `.gitlab-ci.yml`
+      and the `publish-ci-image.yml` feeder workflow are deleted. Forgejo is
+      the only CI. Two runs to watch, not three.
 11. Verify the install paths the documentation promises actually deliver 1.0.0:
     the `releases/latest` API resolution in `docs/installation.qmd:118-119`, the
     checksum verification at `:136-140`, and `brew upgrade

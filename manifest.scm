@@ -2,7 +2,6 @@
 ;; verbatim everywhere:
 ;;   * local dev            guix time-machine -C channels.scm -- shell -m manifest.scm
 ;;   * CI lint              same command (Forgejo)
-;;   * CI container image   guix time-machine -C channels.scm -- pack ... (GitLab)
 ;;   * isolated dev box     guix shell --container -m manifest.scm (wraptool up)
 ;;
 ;; No build-time toggles: the container that the AI harness runs in gets the
