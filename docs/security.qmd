@@ -159,16 +159,19 @@ dependencies without exposing any credential.
 
 ### Auth on network transports
 
-`sse` and `unix` transports authenticate with `auth_token_file`. Requests
-without a matching `Authorization: Bearer ...` header are rejected
-with 401 (no header) or 403 (bad token), using constant-time
-comparison.
+Both network transports read their token from `auth_token_file`, and requests
+without a matching `Authorization: Bearer ...` header are rejected with 401 (no
+header) or 403 (bad token), using constant-time comparison. On `sse` that token
+is unconditional; on `unix`, whose filesystem socket is already restricted to
+mode 0600, it stays optional.
 
-On `sse` the token is not optional. When `mcp.auth_token_file` is unset, the
-server generates a token at `~/.config/wraptool/mcp-token` (mode 0600), logs
-the path, and requires it — a first run still comes up, but never
+When `mcp.auth_token_file` is unset, `sse` generates a token at
+`~/.config/wraptool/mcp-token` (mode 0600; the Linux path — see [platform
+paths](configuration.qmd#platform-paths) for the other platforms), logs where it
+went, and requires it — a first run still comes up, but never
 unauthenticated. `wraptool up` provisions the same token for both container
-runtimes and writes it into the harness configuration it generates.
+runtimes, and `wraptool up` and `wraptool init` both write it into the harness
+configuration they generate.
 
 A loopback bind is not a boundary against the browser, which is why the token
 is unconditional there. The MCP library serves the event stream with
@@ -180,7 +183,9 @@ on both `/sse` and `/mcp`:
 
 - An `Origin` naming anything other than `localhost`, `127.0.0.1`, or `::1` is
   rejected with 403. `null` — a sandboxed frame or a `file://` page — is
-  rejected too.
+  rejected too. Those three names are accepted on **any** port, so a page served
+  by a local development server clears this check; the token, which such a page
+  cannot read cross-origin, is what stops it.
 - A `Host` naming neither the configured bind nor a loopback name is rejected
   with 403, which mitigates DNS rebinding: the browser resolves an
   attacker-controlled name to loopback but still sends that name. A wildcard
