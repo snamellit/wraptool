@@ -140,6 +140,14 @@ func runUp(opts upOptions) error {
 		}
 	}
 
+	// Provision even with --no-server: the already-running server requires
+	// the token (serve provisions its own on start), so the harness config
+	// written below must carry it — otherwise every MCP call 401s with no
+	// diagnostic at up time.
+	if err := provisionDefaultMCPToken(cfg); err != nil {
+		return err
+	}
+
 	if !opts.noServer {
 		if err := adjustServerBindForRuntime(cfg, rt); err != nil {
 			return err
@@ -208,16 +216,20 @@ func configOrDefault(p string) string {
 // adjustServerBindForRuntime widens the MCP bind for a bridged (devcontainer)
 // runtime, whose container reaches the host over the bridge gateway — not the
 // host's loopback — so a loopback bind is unreachable from inside it. A loopback
-// listen is rebound to 0.0.0.0 on the same port, and because a non-loopback bind
-// is reachable off-host it must be authenticated, so a token file is defaulted
-// in when the operator did not configure one (ensureServer then generates it).
-// The guix runtime shares the host netns, so loopback already works there and is
-// left untouched (no LAN exposure) — this is a no-op for it.
+// listen is rebound to 0.0.0.0 on the same port. The guix runtime shares the
+// host netns, so loopback already works there and the bind is left untouched
+// (no LAN exposure).
+//
+// Either way an sse listener gets a token file when the operator did not
+// configure one (created here via provisionDefaultMCPToken; readAuthToken
+// hands it to the harness config both runtimes write). A loopback bind is not
+// a boundary against the browser — see browserGuard — so this is not
+// devcontainer-only.
 func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
-	if rt != runtimeDevcontainer || cfg.MCP.Transport != "sse" {
+	if cfg.MCP.Transport != "sse" {
 		return nil
 	}
-	if config.ListenIsLoopback(cfg.MCP.Listen) {
+	if rt == runtimeDevcontainer && config.ListenIsLoopback(cfg.MCP.Listen) {
 		_, port, err := net.SplitHostPort(cfg.MCP.Listen)
 		if err != nil {
 			return fmt.Errorf("parsing mcp.listen %q: %w", cfg.MCP.Listen, err)
@@ -225,10 +237,30 @@ func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
 		cfg.MCP.Listen = net.JoinHostPort("0.0.0.0", port)
 		fmt.Printf("devcontainer: binding %s so the container can reach the server via its bridge gateway\n", cfg.MCP.Listen)
 	}
-	if cfg.MCP.AuthTokenFile == "" {
-		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
-		fmt.Printf("devcontainer: enabling an MCP auth token at %s (a non-loopback bind must be authenticated)\n", cfg.MCP.AuthTokenFile)
+	return provisionDefaultMCPToken(cfg)
+}
+
+// provisionDefaultMCPToken gives an sse listener a token file when the operator
+// configured none, and creates it. An sse listener is TCP-reachable, and that
+// includes every web page the developer visits: mcp-go answers the SSE stream
+// with Access-Control-Allow-Origin: *, so a hostile page can read the session
+// endpoint and POST tool calls as a CORS simple request. A loopback bind is not
+// a boundary against the browser.
+//
+// Provisioning rather than failing validation keeps a first run working. Every
+// path that needs the effective token calls this — `serve` (which serves it),
+// `up` (which hands it to the container), and `init` (which writes it into a
+// harness config, possibly before any server has ever run, hence the file must
+// be created here and not merely named).
+func provisionDefaultMCPToken(cfg *config.Config) error {
+	if cfg.MCP.Transport != "sse" || cfg.MCP.AuthTokenFile != "" {
+		return nil
 	}
+	cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
+	if err := ensureTokenFile(cfg.MCP.AuthTokenFile, "MCP"); err != nil {
+		return err
+	}
+	fmt.Printf("mcp.auth_token_file is unset — using %s (clients must send it as `Authorization: Bearer ...`)\n", cfg.MCP.AuthTokenFile)
 	return nil
 }
 
@@ -457,23 +489,43 @@ func ensureAuthToken(cfg *config.Config) error {
 	return ensureTokenFile(cfg.Admin.AuthTokenFile, "admin UI")
 }
 
+// ensureTokenFile makes path hold a token, generating one if it does not.
+// All provisioners (serve, up, init) serialize on a sidecar flock, so the
+// read-then-write below is race-free among them: the first writer's token
+// stands, a later caller reads it back, and a file left empty by an
+// interrupted run is repaired under the same lock — no window where two
+// processes hand out different tokens (the earlier O_EXCL scheme still had
+// one around the empty-file repair). Once the file holds a value, that value
+// never changes.
 func ensureTokenFile(path, name string) error {
 	path = expandTilde(path)
 	if path == "" {
 		return nil
 	}
-	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) > 0 {
-		return nil
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating token dir: %w", err)
+	}
+	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("opening token lock: %w", err)
+	}
+	defer lf.Close()
+	if err := lockFile(lf); err != nil {
+		return fmt.Errorf("locking token file: %w", err)
+	}
+	defer func() { _ = unlockFile(lf) }()
+
+	if b, rerr := os.ReadFile(path); rerr == nil && len(strings.TrimSpace(string(b))) > 0 {
+		return nil // an existing token stands, whoever wrote it
+	} else if rerr != nil && !os.IsNotExist(rerr) {
+		return fmt.Errorf("reading auth token %s: %w", path, rerr)
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return fmt.Errorf("generating auth token: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("creating token dir: %w", err)
-	}
 	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(buf)+"\n"), 0600); err != nil {
-		return fmt.Errorf("writing auth token: %w", err)
+		return fmt.Errorf("writing auth token %s: %w", path, err)
 	}
 	fmt.Printf("generated %s auth token -> %s\n", name, path)
 	return nil

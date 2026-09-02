@@ -67,6 +67,18 @@ reproducible isolated environment using Linux namespaces (no Docker needed).
 
 ### Step 1: Start wraptool on the host
 
+This policy follows the split execution model from [Hardening `git` as a
+wrapped tool](git-hardening.qmd#split-execution-model): host credentials
+back the transport subcommands wraptool exposes, but `checkout` and
+`switch` are **denied**, not allowed. Both can run
+`filter.<driver>.clean`/`.smudge`/`.process` from an untrusted repository's
+`.gitattributes` — a code-execution path this credentialed host process
+gains nothing from opening, since branch checkout is a local operation and
+belongs in an uncredentialed `git` installed inside the container, not
+routed through wraptool. See [that page's policy-boundary
+section](git-hardening.qmd#the-split-is-a-policy-boundary-not-a-preference)
+for the full reasoning and a more thoroughly hardened environment.
+
 ```bash
 # Create the config
 mkdir -p ~/.config/wraptool
@@ -105,13 +117,11 @@ tools:
         flags: ["--all", "--prune"]
       - subcommand: [branch]
         flags: ["-a", "--list", "-v"]
-      - subcommand: [checkout]
-        flags: ["-b"]
-      - subcommand: [switch]
-        flags: ["-c"]
     deny:
       - subcommand: [remote, set-url]
       - subcommand: [config]
+      - subcommand: [checkout]
+      - subcommand: [switch]
 EOF
 
 # Start wraptool (runs in foreground, use tmux/screen or & for background)
@@ -125,7 +135,7 @@ guix shell --container \
   --network \
   --share=$HOME/src/myproject=$HOME/src/myproject \
   --expose=/run/user/1000/wraptool.sock=/run/user/1000/wraptool.sock \
-  coreutils grep sed findutils \
+  coreutils grep sed findutils git \
   -- bash
 ```
 
@@ -135,7 +145,10 @@ Flags explained:
   loopback access, including local databases and test services
 - `--share=...`: bind-mount your project directory read-write
 - `--expose=...`: expose the wraptool socket read-only into the container
-- The package list contains only basic tools — no git, no cloud CLIs, no SSH
+- The package list contains basic tools plus an uncredentialed `git` — no cloud
+  CLIs, no SSH. `git` is needed here: the policy above denies `checkout` and
+  `switch` on the host, precisely so those local operations run against this
+  in-container `git` instead
 
 `--network` is not harmless even when MCP uses a Unix socket: every service on
 host localhost becomes reachable from untrusted container code. wraptool accepts
@@ -194,6 +207,7 @@ For a reproducible setup, create a `container-manifest.scm`:
    "diffutils"
    "less"
    "which"
+   "git"          ; local branch work; checkout/switch are denied on the host
    "nss-certs"))   ; for HTTPS if using SSE transport
 ```
 
@@ -388,7 +402,8 @@ current starting point.
 Before using this setup in production:
 
 - [ ] **Policy is minimal** — only allow subcommands the agent actually needs
-- [ ] **Auth token is set** — for SSE transport, always use `auth_token_file`
+- [ ] **Auth token is set** — automatic on `sse` (an unset `auth_token_file`
+  is provisioned at the default path); set it explicitly only to relocate it
 - [ ] **Socket permissions are restricted** — wraptool sets 0600 by default
 - [ ] **No credential files are mounted** — verify with `mount` inside the container
 - [ ] **No credential env vars leak** — verify with `env` inside the container
@@ -404,7 +419,7 @@ From inside the container, confirm that credentials are not accessible:
 cat ~/.ssh/id_ed25519          # No SSH keys
 cat ~/.kube/config             # No kubeconfig
 echo $AWS_SECRET_ACCESS_KEY    # No cloud credentials
-git push origin main           # git not installed / no credentials
+git push origin main           # git is installed but has no credentials
 
 # This should work (via wraptool MCP)
 # Claude Code calling git_status -> wraptool -> git on host

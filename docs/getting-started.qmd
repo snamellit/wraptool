@@ -120,7 +120,13 @@ legacy SSE at `/sse` (Claude Code, Cursor) and Streamable HTTP at `/mcp` (the
 URL). One Bearer-auth wrapper guards both; you don't choose — each harness's
 generated config points at the endpoint it speaks.
 
-For SSE and Unix transports, add an auth token:
+On `sse`, an auth token is mandatory, not optional. Leave `auth_token_file`
+unset and `wraptool server start` generates one at
+`~/.config/wraptool/mcp-token` (mode 0600) and prints where it went. On
+`unix`, whose filesystem socket is already restricted to mode 0600, a token
+stays optional.
+
+To use your own token instead, set the path and write the token yourself:
 
 ```yaml
 mcp:
@@ -144,10 +150,13 @@ This writes the MCP config block for each harness. Supported values:
 
 `init` reads `auth_token_file` from your config and embeds the
 `Authorization: Bearer` header in every networked harness config — so an
-auth-enabled server works out of the box, no hand-editing. With no
-`auth_token_file` (localhost-trust) no header is written. `agy` (Antigravity)
-speaks Streamable HTTP, so its `serverUrl` targets `/mcp` rather than `/sse`; all
-others are written to the endpoint they use.
+auth-enabled server works out of the box, no hand-editing. On `sse`, `init`
+provisions the default token file itself if none exists yet, so the header is
+written whenever a wraptool configuration exists (run `init` after the first
+`serve` or `up`, which scaffold one — the order this guide follows). On
+`unix`, with no `auth_token_file` configured, no header is written. `agy` (Antigravity) speaks Streamable HTTP, so its `serverUrl`
+targets `/mcp` rather than `/sse`; all others are written to the endpoint they
+use.
 
 ::: {.callout-important}
 **A harness running inside a container** (e.g. Antigravity in its own container)
@@ -229,7 +238,9 @@ actually reach it — you don't configure this per platform:
 
 - **`guix`** shares the host network namespace, so a loopback bind
   (`127.0.0.1:8717`) is reachable from inside the container. `up` leaves it as
-  configured — no LAN exposure.
+  configured — no LAN exposure. The auth token is still auto-generated: a
+  loopback bind is not a boundary against a browser, so `sse` requires a token
+  either way.
 - **`devcontainer`** runs on a bridge network, where the container reaches the
   host via the bridge **gateway**, not the host's loopback. So `up` rebinds a
   loopback `mcp.listen` to `0.0.0.0` (same port) and, since a non-loopback bind

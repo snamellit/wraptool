@@ -121,7 +121,19 @@ Check the severity doctor gave the finding:
 
 - **FAIL** — the running server is an unauthenticated listener reachable
   off-host. Fix this one: anyone who can route to that port reaches the
-  wrapped tools. Set `mcp.auth_token_file`, then restart the server.
+  wrapped tools. This shape means the running process predates the current
+  auth-by-default behavior — an `sse` listener now auto-provisions
+  `mcp.auth_token_file` when unset, so a fresh start is never unauthenticated.
+  Restart the server so it comes up with a provisioned token:
+
+  ```bash
+  wraptool server stop
+  wraptool up
+  ```
+
+  If a client then gets 401, its generated config still carries the old
+  (or no) token: re-run `wraptool init` for that harness, or `wraptool up`,
+  which rewrites it.
 - **warn** — everything else, including `up`'s Dev Container adjustment
   (loopback widened to `0.0.0.0` on the same port, with a token configured),
   which is expected and needs no action.

@@ -15,9 +15,11 @@ mcp:
   listen: 127.0.0.1:8717
   # Log verbosity: debug | info | warn | error.
   log_level: info
-  # Auth token for a non-loopback bind (an unauthenticated non-loopback listener
-  # is open to the network). `wraptool up` generates this token file for you;
-  # for a direct `wraptool serve`, create it first (it must exist at config load):
+  # The sse listener is authenticated: with this key unset, wraptool generates a
+  # token at __CONFIG_DIR__/mcp-token and requires it, because a loopback bind is
+  # no boundary against the browser (any page you visit can reach it). Set this
+  # only to keep the token somewhere else — the file must then exist at config
+  # load, and `wraptool init` must be re-run so harness configs pick it up:
   #   auth_token_file: __CONFIG_DIR__/mcp-token
 
 # Operator review UI. NOT agent-facing — bind localhost only. `wraptool up` enables
@@ -82,9 +84,14 @@ tools:
       GIT_CONFIG_VALUE_1: "false"
     allow:
       # Both reach the network with your credentials, and neither carries any
-      # flags: with no `flags:` list, only -h/--help are accepted, so there is
-      # nothing for a caller to smuggle in. Add flags deliberately, one at a
-      # time, and read the -c warning above before you do.
+      # flags in this list — but -h/--help are seeded into every allow rule
+      # regardless (config.SeedHelpFlags) and carry no constraint entry here,
+      # so their value is emitted into argv as-is: {"help":"somefile"} still
+      # smuggles a token past positional_max. SanitizeFlagValues blocks a
+      # leading '-', so this is a bounded smuggle, not flag injection — see
+      # docs/security.qmd's "Known limitations" section. Add flags
+      # deliberately, one at a time, and read the -c warning above before
+      # you do.
       - subcommand: [pull]
       - subcommand: [fetch]
 

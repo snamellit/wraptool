@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrg/xdg"
-
 	"github.com/pti/wraptool/internal/pool"
 )
 
@@ -79,21 +77,7 @@ func TestSelectRuntime(t *testing.T) {
 // global state.
 func withFakePoolRoot(t *testing.T) (root string) {
 	t.Helper()
-	root = t.TempDir()
-	old, had := os.LookupEnv("XDG_DATA_HOME")
-	if err := os.Setenv("XDG_DATA_HOME", root); err != nil {
-		t.Fatal(err)
-	}
-	xdg.Reload()
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("XDG_DATA_HOME", old)
-		} else {
-			os.Unsetenv("XDG_DATA_HOME")
-		}
-		xdg.Reload()
-	})
-	return root
+	return withIsolatedXDG(t, "XDG_DATA_HOME")
 }
 
 // TestWithFakePoolRootRestoresGlobalStateOnCleanup is the leak probe for
