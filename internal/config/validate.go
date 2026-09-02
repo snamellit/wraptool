@@ -70,7 +70,7 @@ func (c *Config) Validate() error {
 	case "stdio", "sse", "unix":
 		// valid
 	default:
-		return fmt.Errorf("mcp.transport must be stdio, sse, or unix, got %q", c.MCP.Transport)
+		return fmt.Errorf("mcp.transport must be sse or unix, got %q", c.MCP.Transport)
 	}
 
 	if c.MCP.Transport == "sse" || c.MCP.Transport == "unix" {

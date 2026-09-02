@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +73,37 @@ func TestInitNoConfigNoHeader(t *testing.T) {
 	}
 	if h := parsed.MCPServers["wraptool"].Headers; len(h) != 0 {
 		t.Errorf("expected no headers without a token, got %v", h)
+	}
+}
+
+// TestInitHelpNeverMentionsStdioTransport guards CLAUDE.md's hard rule: wraptool's
+// own stdio MCP server transport is tests-only and must never be advertised on a
+// user-visible surface (mirrors cmd/doctor_test.go's TestDoctorNeverMentionsStdioTransport).
+// The flag must still ACCEPT "stdio" — only the advertisement is banned.
+func TestInitHelpNeverMentionsStdioTransport(t *testing.T) {
+	c := newInitCmd()
+	var buf bytes.Buffer
+	c.SetOut(&buf)
+	c.SetErr(&buf)
+	c.SetArgs([]string{"--help"})
+	if err := c.Execute(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "stdio") {
+		t.Errorf("init --help must never advertise the stdio MCP transport, got: %s", out)
+	}
+}
+
+// TestInitTransportFlagUsageNeverMentionsStdio guards the --transport flag's own
+// usage string specifically, independent of the rest of --help's rendering.
+func TestInitTransportFlagUsageNeverMentionsStdio(t *testing.T) {
+	c := newInitCmd()
+	f := c.Flags().Lookup("transport")
+	if f == nil {
+		t.Fatal("no --transport flag registered")
+	}
+	if strings.Contains(f.Usage, "stdio") {
+		t.Errorf("--transport usage must never advertise stdio, got: %s", f.Usage)
 	}
 }

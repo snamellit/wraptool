@@ -242,7 +242,7 @@ func runServe(configPath string, ov serveOverrides) error {
 	case "unix":
 		return serveUnix(s, cfg)
 	default:
-		return fmt.Errorf("unknown transport: %q (expected stdio, sse, or unix)", cfg.MCP.Transport)
+		return fmt.Errorf("unknown transport: %q (must be sse or unix)", cfg.MCP.Transport)
 	}
 }
 
