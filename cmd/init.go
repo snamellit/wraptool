@@ -68,11 +68,16 @@ func runInit(harnesses []string, transport, url, socketPath string, global bool,
 	// Read the server's auth token so networked harness configs carry the
 	// Authorization: Bearer header (agy/claude/… render it when a token is set).
 	// Without this the generated config is header-less and 401s against an
-	// auth-enabled server. A missing/tokenless config means localhost-trust — no
-	// header, unchanged behaviour.
+	// auth-enabled server — which an sse server now always is, so provision the
+	// default token here too rather than emit a config that cannot connect.
+	// init may run before the server ever has, so the file must be created, not
+	// just named. Only a readable config implies a server to authenticate to.
 	cfgFile := configOrDefault(configPath)
 	var token string
 	if cfg, cerr := config.Load(cfgFile); cerr == nil {
+		if err = provisionDefaultMCPToken(cfg); err != nil {
+			return err
+		}
 		if token, err = readAuthToken(cfg); err != nil {
 			return err
 		}

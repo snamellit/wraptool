@@ -15,9 +15,11 @@ mcp:
   listen: 127.0.0.1:8717
   # Log verbosity: debug | info | warn | error.
   log_level: info
-  # Auth token for a non-loopback bind (an unauthenticated non-loopback listener
-  # is open to the network). `wraptool up` generates this token file for you;
-  # for a direct `wraptool serve`, create it first (it must exist at config load):
+  # The sse listener is authenticated: with this key unset, wraptool generates a
+  # token at __CONFIG_DIR__/mcp-token and requires it, because a loopback bind is
+  # no boundary against the browser (any page you visit can reach it). Set this
+  # only to keep the token somewhere else — the file must then exist at config
+  # load, and `wraptool init` must be re-run so harness configs pick it up:
   #   auth_token_file: __CONFIG_DIR__/mcp-token
 
 # Operator review UI. NOT agent-facing — bind localhost only. `wraptool up` enables
