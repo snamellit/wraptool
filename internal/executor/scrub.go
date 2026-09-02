@@ -13,16 +13,24 @@ import (
 // require, and slipped through unredacted. Matching is substring-based —
 // "runners_token", "aws_secret_access_key", "client_secret", and
 // "signing_key" all contain one of these fragments — which is deliberately
-// permissive: a false positive on a contrived field name (e.g.
-// "session_key" meaning something entirely mundane) only costs a redacted
-// value, not a broken response (see sensitiveKeyPrefix), and that's far
-// cheaper than a leaked credential. Do not word-boundary-anchor this: doing
-// so would break "aws_secret_access_key", where "secret" sits mid-key.
+// permissive: a false positive on a contrived field name only costs a
+// redacted value, not a broken response (see sensitiveKeyPrefix), and
+// that's far cheaper than a leaked credential. Do not word-boundary-anchor
+// "secret": doing so would break "aws_secret_access_key", where "secret"
+// sits mid-key. `secretKeyRef` is a known, accepted residual of this: a
+// Kubernetes {"secretKeyRef":{"name":"db","key":"password"}} loses the
+// whole ref object even though it only ever names which secret to use, not
+// a value — not worth narrowing further, since "secret" must stay broad.
 //
-// "key" alone is included (not just "api_key"/"private_key") to match
-// other compound key names such as signing_key, deploy_key, session_key,
-// and a bare "key".
-const sensitiveKeyNames = `token|secret|password|passwd|credential|key`
+// "key" is narrower than the rest: `[\w-]+key` requires at least one word
+// character (or hyphen) immediately before it. Bare "key" is deliberately
+// EXCLUDED here — it's the exact field-name spelling Kubernetes uses for
+// non-secret label-selector identifiers (a toleration's or node-affinity
+// matchExpression's "key", a ConfigMap/Secret projection's "key"), and
+// redacting it destroys output like "why won't this pod schedule" needs.
+// See bareKeyLongValue below for the narrow backstop that still catches a
+// genuinely long bare-"key" value.
+const sensitiveKeyNames = `token|secret|password|passwd|credential|[\w-]+key`
 
 // sensitiveKeyPrefix matches a sensitive key name plus the separator up to
 // (but not including) the start of its value, in either shell notation
@@ -59,8 +67,39 @@ var sensitiveKeyPrefix = regexp.MustCompile(
 	`(?i)"?[\w-]*(?:` + sensitiveKeyNames + `)[\w-]*"?[ \t]*[:=][ \t]*`,
 )
 
+// bareKeyLongValue restores this package's pre-JSON-fix behaviour for the
+// single bare identifier "key" (as opposed to any compound like
+// signing_key, which sensitiveKeyPrefix already covers with no length
+// floor). That prior behaviour was `(token|key|secret|password)\s*[=:"]\s*
+// [A-Za-z0-9_\-./+=]{40,}` — key redacted only alongside a 40+ character
+// value. sensitiveKeyPrefix's `[\w-]+key` deliberately excludes bare "key"
+// (see its doc comment — it's Kubernetes' non-secret label-selector field
+// name), which would otherwise silently regress a genuine `key=<40+ char
+// secret>` shell assignment; this restores exactly that one case, gated on
+// the same 40+ character floor, so a short, clearly-non-secret value like
+// `"key":"kubernetes.io/hostname"` (22 characters) still survives
+// untouched. \b on both sides of "key" is what makes this bare-only:
+// "signing_key" has a word character ("_") on both sides of "key", so \b
+// does not match there.
+var bareKeyLongValue = regexp.MustCompile(
+	`(?i)\bkey"?[ \t]*[:=][ \t]*"?[A-Za-z0-9_\-./+=]{40,}`,
+)
+
 // numberLiteral matches a bare JSON number.
 var numberLiteral = regexp.MustCompile(`^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$`)
+
+// maxBalancedScanBytes bounds how far scanBalanced (and the mirror-image
+// unterminated-quote case in scanSensitiveValue) will scan looking for a
+// closing delimiter. Fail-closed — redacting a value we couldn't fully
+// verify the end of, rather than risk leaking it — is correct for a
+// genuinely truncated JSON value (MCP output cut off mid-document by
+// limitedWriter, executor.go). But a single stray, unmatched `[`, `{`, or
+// `"` in ordinary non-JSON output (e.g. a `git log` commit body containing
+// "signing_key: {" with no closing brace anywhere in the rest of a
+// possibly-huge log) must not be allowed to swallow everything after it.
+// Beyond this budget with no closing delimiter found and more input still
+// remaining, only the delimiter character itself is redacted.
+const maxBalancedScanBytes = 4096
 
 // credentialPatterns matches value-shape or ALL_CAPS-assignment credential
 // patterns that don't need the key/value-aware handling in
@@ -89,10 +128,19 @@ var credentialPatterns = []*regexp.Regexp{
 	// name attached at all (e.g. embedded in a URL or a curl command).
 	regexp.MustCompile(`\bgl(?:pat|rt|dt|soat|imt|ptt|cbt)-[A-Za-z0-9_-]+`),
 	regexp.MustCompile(`\bGR1348941[A-Za-z0-9_-]+`),
+	// Bare "key" with a long (40+ char) value; see bareKeyLongValue's doc
+	// comment.
+	bareKeyLongValue,
 	// Environment variable assignments with sensitive names (ALL_CAPS=...
 	// shell/env-dump style; broader than sensitiveKeyNames since a bare
 	// AUTH prefix — not just AUTH_TOKEN — has always been treated as
-	// sensitive here).
+	// sensitive here). The value class excludes `[` and `]` specifically
+	// so this can't re-match (and mangle) a "[REDACTED]" marker that
+	// redactSensitiveValues already produced for the same key — e.g.
+	// "aws_secret_access_key=[REDACTED]" staying exactly that, rather
+	// than this pattern's case-insensitive "SECRET" branch re-matching
+	// "secret_access_key=[REDACTED]" and collapsing it to
+	// "aws_[REDACTED]".
 	regexp.MustCompile(`(?i)(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)[A-Z_]*=[^\s]+`),
 }
 
@@ -112,10 +160,11 @@ func ScrubCredentials(output string) string {
 // replacing only the value — never the key or separator — so redacted JSON
 // stays syntactically valid JSON (a client piping tool output through `jq`
 // must not see a syntax error just because the response happened to
-// contain a token). `true`, `false`, `null`, and bare numbers are never
-// redacted: they cannot be credentials, and blanket-redacting them (e.g.
-// "automount_service_account_token":false) destroys diagnostic output the
-// agent needs for no security benefit.
+// contain a token). `true`, `false`, and `null` are never redacted: they
+// cannot be credentials, and blanket-redacting them (e.g.
+// "ci_job_token_scope_enabled":false) destroys diagnostic output the agent
+// needs for no security benefit. A bare number is skipped only when the
+// key was JSON-quoted — see scanSensitiveValue's doc comment.
 func redactSensitiveValues(s string) string {
 	locs := sensitiveKeyPrefix.FindAllStringIndex(s, -1)
 	if locs == nil {
@@ -133,11 +182,18 @@ func redactSensitiveValues(s string) string {
 			continue
 		}
 
-		valueEnd, replacement, ok := scanSensitiveValue(s, end)
+		// The key was written in JSON notation ("key": ...) iff the match
+		// starts with the key's own opening quote — sensitiveKeyPrefix's
+		// leading `"?` is the very first thing it can consume, so if
+		// present it's always at s[start].
+		keyQuoted := start < len(s) && s[start] == '"'
+
+		valueEnd, replacement, ok := scanSensitiveValue(s, end, keyQuoted)
 		if !ok {
-			// No redactable value here (a bare literal/number, or no value
-			// at all on this line) — leave the key and everything after it
-			// untouched; it will be copied verbatim below.
+			// No redactable value here (a bare literal/skipped number, or
+			// no value at all on this line) — leave the key and
+			// everything after it untouched; it will be copied verbatim
+			// below.
 			continue
 		}
 
@@ -153,8 +209,14 @@ func redactSensitiveValues(s string) string {
 // position just past it, its redacted replacement, and whether it should
 // be redacted at all. pos is always right after a sensitiveKeyPrefix
 // match, i.e. right at the start of the value (or at whatever follows the
-// separator, if there was no value).
-func scanSensitiveValue(s string, pos int) (end int, replacement string, ok bool) {
+// separator, if there was no value). keyQuoted reports whether the key
+// itself was written in JSON notation ("key": ...) rather than shell/prose
+// notation (key=..., key: ...): a bare number is only ever a credential in
+// the latter case (base's own patterns redacted e.g. `password: 123456`),
+// while in genuine JSON a numeric field sharing a token-ish key name (e.g.
+// "token_count":12345, "runners_token_expires_at" paired with a Unix
+// timestamp) is routine diagnostic data, not a secret.
+func scanSensitiveValue(s string, pos int, keyQuoted bool) (end int, replacement string, ok bool) {
 	if pos >= len(s) {
 		return pos, "", false
 	}
@@ -164,14 +226,36 @@ func scanSensitiveValue(s string, pos int) (end int, replacement string, ok bool
 		if strEnd, closed := scanJSONString(s, pos); closed {
 			return strEnd, `"` + redacted + `"`, true
 		}
-		// Unterminated quoted value — MCP output can be truncated
-		// mid-document (executor.Result.Truncated). Fall through to the
-		// bare-token scan below, which (starting at the opening quote)
-		// consumes through to the end of the string and still redacts it,
-		// rather than leaking the truncated fragment untouched.
+		// Unterminated quoted value: MCP output can be truncated
+		// mid-document (executor.Result.Truncated, via limitedWriter in
+		// executor.go, which cuts output at defaultMaxOutput and can sever
+		// a value mid-string). Redact the remainder as one unit instead of
+		// falling through to scanBareToken, which stops at the first
+		// whitespace/comma/brace and would leak everything past it — for
+		// a PEM-shaped private key value, that's the base64 key material,
+		// and it also eats the "-----BEGIN" prefix, defeating the
+		// standalone PEM value-shape pattern that would otherwise have
+		// caught it.
+		//
+		// Bounded the same way as scanBalanced (see maxBalancedScanBytes):
+		// if a large amount of text follows with no closing quote found
+		// nearby, this isn't a truncated value, it's a stray quote in
+		// unrelated non-JSON output, so only the opening quote itself is
+		// redacted rather than swallowing everything after it.
+		if len(s)-pos <= maxBalancedScanBytes {
+			return len(s), redacted, true
+		}
+		return pos + 1, redacted, true
 	case '[', '{':
-		bracketEnd := scanBalanced(s, pos)
-		return bracketEnd, `"` + redacted + `"`, true
+		bracketEnd, complete := scanBalanced(s, pos)
+		if complete {
+			return bracketEnd, `"` + redacted + `"`, true
+		}
+		// scanBalanced gave up after maxBalancedScanBytes with brackets
+		// still unbalanced and much more input left — a stray delimiter,
+		// not a value. Only it was consumed; redact it bare, not quoted,
+		// since we're not claiming this was ever a JSON value.
+		return bracketEnd, redacted, true
 	}
 
 	tokenEnd := scanBareToken(s, pos)
@@ -179,7 +263,7 @@ func scanSensitiveValue(s string, pos int) (end int, replacement string, ok bool
 		return pos, "", false
 	}
 	token := s[pos:tokenEnd]
-	if isUnredactableLiteral(token) {
+	if isUnredactableLiteral(token, keyQuoted) {
 		return pos, "", false
 	}
 	return tokenEnd, redacted, true
@@ -205,21 +289,29 @@ func scanJSONString(s string, pos int) (end int, closed bool) {
 }
 
 // scanBalanced scans a bracketed JSON value (array or object) starting at
-// s[pos], which must be '[' or '{', and returns the index just past its
-// matching closing bracket — honoring nested brackets and quoted strings
-// (so a `]` or `}` inside a string value doesn't end the scan early). If
-// the end of s is reached before the brackets balance (a truncated value),
-// it returns len(s): the whole remaining, truncated fragment is treated as
-// the value and gets redacted rather than left leaking.
-func scanBalanced(s string, pos int) (end int) {
+// s[pos], which must be '[' or '{', honoring nested brackets and quoted
+// strings (so a `]` or `}` inside a string value doesn't end the scan
+// early). complete is true when a real value was fully identified — either
+// its matching closing bracket was found, or the end of s was reached
+// within maxBalancedScanBytes (a genuinely truncated value, still redacted
+// in full). complete is false when the budget was exhausted with brackets
+// still unbalanced and more of s left to scan: a stray, unmatched bracket
+// in non-JSON output, not a value: end is then just pos+1 (the bracket
+// character alone), so the caller doesn't swallow unrelated output that
+// follows it.
+func scanBalanced(s string, pos int) (end int, complete bool) {
 	depth := 0
+	limit := pos + maxBalancedScanBytes
+	if limit > len(s) {
+		limit = len(s)
+	}
 	i := pos
-	for i < len(s) {
+	for i < limit {
 		switch s[i] {
 		case '"':
 			j, closed := scanJSONString(s, i)
 			if !closed {
-				return len(s)
+				return len(s), true
 			}
 			i = j
 			continue
@@ -228,12 +320,15 @@ func scanBalanced(s string, pos int) (end int) {
 		case ']', '}':
 			depth--
 			if depth == 0 {
-				return i + 1
+				return i + 1, true
 			}
 		}
 		i++
 	}
-	return len(s)
+	if i >= len(s) {
+		return len(s), true
+	}
+	return pos + 1, false
 }
 
 // scanBareToken scans an unquoted value — a shell-style key=value
@@ -251,15 +346,19 @@ func scanBareToken(s string, pos int) (end int) {
 	return i
 }
 
-// isUnredactableLiteral reports whether token is a JSON literal (true,
-// false, null) or a bare number — values that can never be credentials, so
-// redacting them only destroys diagnostic output for no security benefit.
-func isUnredactableLiteral(token string) bool {
+// isUnredactableLiteral reports whether token can never be a credential and
+// so should be left untouched. `true`, `false`, and `null` never are,
+// regardless of context. A bare number is only skipped when keyQuoted is
+// true (genuine JSON, e.g. "token_count":12345) — see scanSensitiveValue's
+// doc comment for why a number is treated as redactable in shell/prose
+// context (keyQuoted false), matching this package's pre-JSON-fix
+// behaviour there.
+func isUnredactableLiteral(token string, keyQuoted bool) bool {
 	switch strings.ToLower(token) {
 	case "true", "false", "null":
 		return true
 	}
-	return numberLiteral.MatchString(token)
+	return keyQuoted && numberLiteral.MatchString(token)
 }
 
 // ScrubEnvVars removes specific environment variable values from output.

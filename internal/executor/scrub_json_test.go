@@ -159,11 +159,19 @@ func TestScrubCredentials_ArrayAndObjectValues(t *testing.T) {
 // fragment rather than leak it — that's the current, intended behaviour,
 // but it was previously unverified by any test, so a future refactor of
 // scanSensitiveValue/scanJSONString could silently regress it.
+//
+// The fragment deliberately contains a space, a comma, and a closing
+// brace: scanBareToken (the unquoted-value scanner) stops at all three, so
+// a version of this fix that fell through to it — rather than redacting
+// the whole remainder outright — would only redact up to the first one and
+// leak everything after it (see TestScrubCredentials_TruncatedValueMidString
+// for the exact production shape, a truncated PEM private key, that
+// motivated this).
 func TestScrubCredentials_TruncatedValue(t *testing.T) {
 	// zzzFAKEsecretTruncated carries none of the GitLab value-shape
 	// prefixes, so this exercises the key/value scanning path specifically
 	// rather than the standalone prefix patterns.
-	const secretFragment = "zzzFAKEsecretTruncated"
+	const secretFragment = `zzzFAKEsecretTruncated with a space, and a } brace STILLSECRET`
 	input := `{"id":42,"runners_token":"` + secretFragment
 
 	got := ScrubCredentials(input)
@@ -171,8 +179,64 @@ func TestScrubCredentials_TruncatedValue(t *testing.T) {
 	if strings.Contains(got, secretFragment) {
 		t.Errorf("expected truncated secret fragment to be scrubbed, got %q", got)
 	}
+	if strings.Contains(got, "STILLSECRET") {
+		t.Errorf("expected text after the first space/comma/brace to be scrubbed too, got %q", got)
+	}
 	if !strings.Contains(got, redacted) {
 		t.Errorf("expected %q in output, got %q", redacted, got)
+	}
+}
+
+// TestScrubCredentials_TruncatedValueMidString covers F8: an unterminated
+// quoted value used to fall through to scanBareToken, which stops at the
+// first whitespace, comma, or closing brace — so only the HEAD of the
+// secret was replaced and everything past that character leaked. Worse,
+// for a PEM-shaped key it ate the "-----BEGIN" prefix along with it,
+// defeating the standalone PEM value-shape pattern that would otherwise
+// have caught the leak as a backstop. This is not exotic: limitedWriter
+// (executor.go) cuts output at defaultMaxOutput and can sever a value
+// mid-string on any ordinary command whose output happens to be large.
+func TestScrubCredentials_TruncatedValueMidString(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		leak  []string
+	}{
+		{
+			name: "pem_private_key",
+			input: `{"type":"service_account","private_key":"-----BEGIN PRIVATE KEY-----` +
+				"\n" + `MIIEvQIBADANBgkqSYNTHETICKEYMATERIALFRAGMENT`,
+			leak: []string{"-----BEGIN", "MIIEvQIBADANBgkq", "SYNTHETICKEYMATERIALFRAGMENT"},
+		},
+		{
+			name:  "password_with_space",
+			input: `"password":"correct horse battery staple`,
+			leak:  []string{"correct horse battery staple", "battery staple"},
+		},
+		{
+			name:  "runners_token_comma_tail",
+			input: `"runners_token":"tok, with comma tail`,
+			leak:  []string{"tok, with comma tail", "comma tail"},
+		},
+		{
+			name:  "api_key_brace_tail",
+			input: `"api_key":"abc}tail`,
+			leak:  []string{"abc}tail", "}tail"},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ScrubCredentials(tt.input)
+			for _, frag := range tt.leak {
+				if strings.Contains(got, frag) {
+					t.Errorf("expected %q not to survive scrubbing, got:\n%s", frag, got)
+				}
+			}
+			if !strings.Contains(got, redacted) {
+				t.Errorf("expected %q in output, got:\n%s", redacted, got)
+			}
+		})
 	}
 }
 
@@ -366,5 +430,262 @@ func TestScrubCredentials_NoPartialLeak(t *testing.T) {
 		if strings.Contains(got, secret[len(secret)-i:]) {
 			t.Errorf("suffix %q of the secret survived scrubbing: %q", secret[len(secret)-i:], got)
 		}
+	}
+}
+
+// TestScrubCredentials_BareKeyNegatives covers F9: "key" is a label-selector
+// field name Kubernetes uses constantly — a pod toleration, a node-affinity
+// matchExpression, a ConfigMap/Secret volume projection item — and is never
+// itself a secret value. Narrowing sensitiveKeyNames' "key" alternative to
+// require a preceding word character (`[\w-]+key`) drops these while still
+// catching every compound spelling (signing_key, deploy_key, ...); see
+// TestScrubCredentials_BareKeyName and TestScrubCredentials_CompoundKeyStillMatches
+// for the positive side.
+func TestScrubCredentials_BareKeyNegatives(t *testing.T) {
+	cases := []string{
+		// kubectl: a pod toleration.
+		`{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}`,
+		// kubectl: a node-affinity matchExpression.
+		`{"key":"kubernetes.io/hostname","operator":"In","values":["node-1"]}`,
+		// kubectl: a ConfigMap/Secret volume projection item.
+		`{"key":"app.config","path":"app/config.yaml"}`,
+		// gcloud: a KMS key-ring identifier. No word character precedes
+		// "key" ("Ring" comes after it), so this is dropped; a sibling
+		// identifier like cryptoKeyId, where "crypto" DOES precede "key",
+		// is a known, accepted residual (still redacted) — not promised to
+		// be fixed, since undoing that would require anchoring "key" more
+		// tightly than "at least one preceding word character", which
+		// would also drop signing_key/deploy_key/session_key.
+		`"keyRingId":"my-ring"`,
+		// A short, bare-"key" JSON value — must also survive the
+		// bareKeyLongValue 40+-character backstop (see
+		// TestScrubCredentials_BareKeyLongValueFloor).
+		`"key":"kubernetes.io/hostname"`,
+		// Ordinary prose where "key" starts the word, with nothing before
+		// it to require a redaction.
+		`keyboard: broken`,
+	}
+
+	for _, input := range cases {
+		t.Run(input, func(t *testing.T) {
+			if got := ScrubCredentials(input); got != input {
+				t.Errorf("expected input unchanged, got:\ninput:  %s\noutput: %s", input, got)
+			}
+		})
+	}
+}
+
+// TestScrubCredentials_CompoundKeyStillMatches is the positive side of F9:
+// narrowing "key" to require a preceding word character must not regress
+// any compound key name, including ones with no separator at all before
+// "key" (pubkey) or where "key" sits mid-identifier (aws_secret_access_key,
+// already covered separately via "secret").
+func TestScrubCredentials_CompoundKeyStillMatches(t *testing.T) {
+	const secret40 = "abcdefghijklmnopqrstuvwxyz1234567890abcd"
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"pubkey", "pubkey=" + secret40},
+		{"aws_secret_access_key", "aws_secret_access_key=" + secret40},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ScrubCredentials(tt.input)
+			if strings.Contains(got, secret40) {
+				t.Errorf("expected %q to be scrubbed from %q, got %q", secret40, tt.input, got)
+			}
+			if !strings.Contains(got, redacted) {
+				t.Errorf("expected %q in output, got %q", redacted, got)
+			}
+		})
+	}
+}
+
+// TestScrubCredentials_BareKeyLongValueFloor covers bareKeyLongValue: the
+// bare (non-compound) spelling "key" only redacts alongside a 40+ character
+// value — restoring this package's pre-JSON-fix behaviour for that one
+// specific spelling, since the F9 narrowing above would otherwise silently
+// regress a genuine `key=<40+ char secret>` shell assignment.
+func TestScrubCredentials_BareKeyLongValueFloor(t *testing.T) {
+	const long40 = "abcdefghijklmnopqrstuvwxyz1234567890abcd" // exactly 40 chars
+
+	t.Run("long_value_redacts", func(t *testing.T) {
+		input := "key=" + long40
+		got := ScrubCredentials(input)
+		if strings.Contains(got, long40) {
+			t.Errorf("expected %q to be scrubbed, got %q", long40, got)
+		}
+		if !strings.Contains(got, redacted) {
+			t.Errorf("expected %q in output, got %q", redacted, got)
+		}
+	})
+
+	t.Run("short_value_survives", func(t *testing.T) {
+		input := `"key":"kubernetes.io/hostname"` // 22 characters
+		if got := ScrubCredentials(input); got != input {
+			t.Errorf("expected input unchanged, got:\ninput:  %s\noutput: %s", input, got)
+		}
+	})
+}
+
+// TestScrubCredentials_NumericValueContext covers F10: a bare number is
+// only ever a credential in shell/prose context (key: 123456, unquoted
+// key), which is what this package's own patterns redacted before the
+// JSON-separator fix; the fix's unconditional "never redact a number"
+// skip regressed that. In genuine JSON (a quoted key), a number sharing a
+// token-ish key name is routine diagnostic data (a count, a Unix
+// timestamp) and must survive — see TestScrubCredentials_GlabRunnersTokenFixture
+// for the JSON-literal case this preserves. true/false/null are skipped in
+// both contexts (also covered here).
+func TestScrubCredentials_NumericValueContext(t *testing.T) {
+	t.Run("unquoted_key_number_redacts", func(t *testing.T) {
+		cases := []string{
+			`password: 123456`,
+			`credential: 000123456789`,
+		}
+		for _, input := range cases {
+			t.Run(input, func(t *testing.T) {
+				got := ScrubCredentials(input)
+				if got == input {
+					t.Errorf("expected %q to be redacted (shell/prose context, base parity), got unchanged", input)
+				}
+				if !strings.Contains(got, redacted) {
+					t.Errorf("expected %q in output, got %q", redacted, got)
+				}
+			})
+		}
+	})
+
+	t.Run("quoted_key_number_survives", func(t *testing.T) {
+		cases := []string{
+			`{"token_count":12345}`,
+			`{"runners_token_expires_at":1735689600}`,
+		}
+		for _, input := range cases {
+			t.Run(input, func(t *testing.T) {
+				if got := ScrubCredentials(input); got != input {
+					t.Errorf("expected input unchanged (JSON context), got:\ninput:  %s\noutput: %s", input, got)
+				}
+			})
+		}
+	})
+
+	t.Run("literals_always_survive", func(t *testing.T) {
+		cases := []string{
+			`{"ci_job_token_scope_enabled":false}`,
+			`{"runners_token_expires_at":null}`,
+			`token_enabled: true`,
+		}
+		for _, input := range cases {
+			t.Run(input, func(t *testing.T) {
+				if got := ScrubCredentials(input); got != input {
+					t.Errorf("expected input unchanged (literal, any context), got:\ninput:  %s\noutput: %s", input, got)
+				}
+			})
+		}
+	})
+}
+
+// TestScrubCredentials_ScannerInvariants pins three scanner behaviours that
+// the test suite otherwise doesn't catch a regression of — each case below
+// leaks a real secret fragment if the described logic is broken or removed
+// (verified by deliberately reverting each fix locally and re-running this
+// test, per F11).
+func TestScrubCredentials_ScannerInvariants(t *testing.T) {
+	t.Run("escaped_quote_does_not_end_string_early", func(t *testing.T) {
+		// scanJSONString must treat \" as an escaped quote (skip 2 bytes),
+		// not as the closing quote (skip 1). Getting this wrong ends the
+		// "token" value's scan right after the escaped quote, leaking
+		// everything from there on — including the unrelated "x" field.
+		input := `{"token":"aa\"SECRETTAIL","x":"kept"}`
+		got := ScrubCredentials(input)
+		if strings.Contains(got, "SECRETTAIL") {
+			t.Errorf("expected escaped-quote value to be fully scrubbed, got %q", got)
+		}
+		if !strings.Contains(got, "kept") {
+			t.Errorf("expected unrelated field to survive, got %q", got)
+		}
+	})
+
+	t.Run("bracket_inside_string_does_not_end_array_early", func(t *testing.T) {
+		// scanBalanced must skip over quoted-string contents (via
+		// scanJSONString) when counting bracket depth, not count a `]`
+		// that appears inside a string element as the array's own close.
+		// Getting this wrong ends the array scan right after "a]b",
+		// leaking the second element in cleartext.
+		input := `{"tokens":["a]b","SECRET2"],"x":1}`
+		got := ScrubCredentials(input)
+		if strings.Contains(got, "SECRET2") {
+			t.Errorf("expected array element after an in-string bracket to be scrubbed, got %q", got)
+		}
+	})
+
+	t.Run("truncated_array_redacts_in_full", func(t *testing.T) {
+		// A truncated (never-closed) array value must still be redacted as
+		// a whole, the same fail-closed guarantee scanJSONString provides
+		// for a truncated quoted value (TestScrubCredentials_TruncatedValue).
+		input := `{"tokens":["aaaaSECRET1","bbbbFAKEtruncatedSECRETtail`
+		got := ScrubCredentials(input)
+		if strings.Contains(got, "aaaaSECRET1") || strings.Contains(got, "FAKEtruncatedSECRETtail") {
+			t.Errorf("expected truncated array to be scrubbed in full, got %q", got)
+		}
+		if !strings.Contains(got, redacted) {
+			t.Errorf("expected %q in output, got %q", redacted, got)
+		}
+	})
+
+	t.Run("truncated_object_redacts_in_full", func(t *testing.T) {
+		input := `{"credential":{"type":"pat","value":"FAKEtruncatedOBJECTsecret`
+		got := ScrubCredentials(input)
+		if strings.Contains(got, "FAKEtruncatedOBJECTsecret") {
+			t.Errorf("expected truncated object to be scrubbed in full, got %q", got)
+		}
+		if !strings.Contains(got, redacted) {
+			t.Errorf("expected %q in output, got %q", redacted, got)
+		}
+	})
+}
+
+// TestScrubCredentials_BoundedBalancedScan covers F12: a stray, unmatched
+// `[` or `{` after a sensitive key in ordinary (non-JSON) output — e.g. a
+// `git log` commit body containing "signing_key: {" with no closing brace
+// anywhere afterward — must not swallow everything that follows it up to
+// the end of a possibly-huge output. Beyond maxBalancedScanBytes with no
+// closing bracket found and more input left, only the bracket itself is
+// redacted.
+func TestScrubCredentials_BoundedBalancedScan(t *testing.T) {
+	filler := strings.Repeat("x", maxBalancedScanBytes+500)
+	const tail = "COMMIT-MESSAGE-TAIL-MUST-SURVIVE"
+	input := "signing_key: {\n" + filler + "\n" + tail
+
+	got := ScrubCredentials(input)
+
+	if !strings.Contains(got, tail) {
+		t.Errorf("expected trailing text beyond the scan budget to survive untouched, got a %d-byte result not containing %q", len(got), tail)
+	}
+	if !strings.Contains(got, redacted) {
+		t.Errorf("expected %q in output (the stray bracket itself), got a %d-byte result", redacted, len(got))
+	}
+}
+
+// TestScrubCredentials_NoLegacyReCollapse covers F13: the legacy ALL-CAPS
+// env-assignment pattern is case-insensitive and shares keywords (SECRET,
+// TOKEN, ...) with sensitiveKeyNames, so it used to re-match text
+// redactSensitiveValues had already redacted — e.g. matching "SECRET"
+// inside "aws_secret_access_key=[REDACTED]" and collapsing it down to
+// "aws_[REDACTED]", losing part of the key name for no reason (redaction
+// was already complete). Excluding `[`/`]` from its value class stops it
+// from ever matching a "[REDACTED]" marker as a "value".
+func TestScrubCredentials_NoLegacyReCollapse(t *testing.T) {
+	input := "aws_secret_access_key=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"
+	want := "aws_secret_access_key=" + redacted
+
+	got := ScrubCredentials(input)
+
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
 	}
 }
