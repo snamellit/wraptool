@@ -141,7 +141,7 @@ var credentialPatterns = []*regexp.Regexp{
 	// than this pattern's case-insensitive "SECRET" branch re-matching
 	// "secret_access_key=[REDACTED]" and collapsing it to
 	// "aws_[REDACTED]".
-	regexp.MustCompile(`(?i)(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)[A-Z_]*=[^\s]+`),
+	regexp.MustCompile(`(?i)(API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)[A-Z_]*=[^\s\[\]]+`),
 }
 
 const redacted = "[REDACTED]"
