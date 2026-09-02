@@ -85,6 +85,47 @@ other code-execution path:
 | `fetch` from a partial clone | lazy fetches honour the **source** repo's config and hooks |
 | `help` | `man.viewer`, `help.browser` |
 
+### The split is a policy boundary, not a preference
+
+The three lists above are not advice about where each command feels more
+natural to run. They divide the subcommands that genuinely need host
+credentials from those that do not, and only policy enforces that division.
+
+A subcommand that needs no host credentials but is allowed anyway costs nothing
+to remove and gives an attacker a foothold for free. `checkout` and `switch`
+are the clearest case. Both run `filter.<driver>.clean`, `.smudge`, and
+`.process` whenever a repository's `.gitattributes` selects a driver. The
+command-scope settings below close the hook path through `core.hooksPath` and
+the fsmonitor path through `core.fsmonitor=false`, but neither suppresses filter
+drivers, and no single wildcard disables them. Allowing `checkout` on the host
+therefore reopens a code-execution path that the environment recipe does not
+address, in exchange for a capability the agent already holds inside its own
+container.
+
+Write the boundary into policy:
+
+- Allow on the host only the subcommands from the transport list above.
+- Add an explicit `deny` entry for the local subcommands, so the intent
+  survives a later edit that adds an allow rule. Deny is evaluated first and
+  takes absolute precedence over allow.
+- Leave the rest to the container's own `git`, which operates on the same
+  worktree and holds no credentials.
+
+The worked example under [Hardened environment for
+wraptool](#hardened-environment-for-wraptool) applies exactly this split: it
+allows `fetch`, `push`, and `ls-remote`, and denies `pull`, `submodule`,
+`config`, `credential`, and the `remote` subcommands that rewrite a
+destination.
+
+::: {.callout-warning title="Audit the deployed policy, not only this recipe"}
+The common drift from this page is a policy that accumulated `checkout`,
+`switch`, or `branch` over time, usually because a local operation was easier to
+allow than to move into the container. Neither the environment recipe below nor
+the protocol allowlist detects that drift. Confirm what is actually exposed with
+the `wraptool_discover` tool, which reports the allowed subcommands as the agent
+sees them, rather than reading the configuration and assuming the two agree.
+:::
+
 ## Threats from a hostile working tree
 
 ### Buried bare repositories
