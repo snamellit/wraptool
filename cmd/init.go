@@ -40,17 +40,14 @@ Examples:
   wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
 
   # Set up for all harnesses with a Unix socket
-  wraptool init --harness all --transport unix --socket /run/user/1000/wraptool.sock
-
-  # Set up with stdio transport (wraptool started by the harness)
-  wraptool init --harness claude --transport stdio`,
+  wraptool init --harness all --transport unix --socket /run/user/1000/wraptool.sock`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runInit(harnesses, transport, url, socketPath, global, configPath)
 		},
 	}
 
 	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, cursor, opencode, gemini, pi, roo, all)")
-	cmd.Flags().StringVar(&transport, "transport", "sse", "transport type (stdio, sse, unix)")
+	cmd.Flags().StringVar(&transport, "transport", "sse", "transport type (sse, unix)")
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8717/sse", "SSE URL for the wraptool server")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (for unix transport)")
 	cmd.Flags().BoolVar(&global, "global", false, "write to user-level config instead of project-level")
