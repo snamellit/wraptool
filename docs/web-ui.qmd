@@ -13,11 +13,14 @@ reads the JSONL request log and applies approvals to the YAML config
 via the same merge as `requests approve --apply`; the running server
 then [hot-reloads](hot-reload.qmd) the change.
 
-::: {.callout-important}
+:::: {.callout-important}
 The review UI is **operator-facing, not agent-facing**. Bind it to
 `127.0.0.1` only. It is a separate listener from the MCP transport by
-design — the agent never reaches it.
-:::
+design, but it is not unreachable from the agent: under the Guix runtime's
+shared host network namespace, loopback — and so this listener — is
+routable from inside the container. Its `auth_token_file` is what keeps it
+private, not network separation.
+::::
 
 ## Enabling it
 

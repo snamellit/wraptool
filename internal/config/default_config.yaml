@@ -82,9 +82,14 @@ tools:
       GIT_CONFIG_VALUE_1: "false"
     allow:
       # Both reach the network with your credentials, and neither carries any
-      # flags: with no `flags:` list, only -h/--help are accepted, so there is
-      # nothing for a caller to smuggle in. Add flags deliberately, one at a
-      # time, and read the -c warning above before you do.
+      # flags in this list — but -h/--help are seeded into every allow rule
+      # regardless (config.SeedHelpFlags) and carry no constraint entry here,
+      # so their value is emitted into argv as-is: {"help":"somefile"} still
+      # smuggles a token past positional_max. SanitizeFlagValues blocks a
+      # leading '-', so this is a bounded smuggle, not flag injection — see
+      # docs/security.qmd's "Known limitations" section. Add flags
+      # deliberately, one at a time, and read the -c warning above before
+      # you do.
       - subcommand: [pull]
       - subcommand: [fetch]
 
