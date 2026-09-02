@@ -52,7 +52,7 @@ file to expose the tools you want; it hot-reloads on save.
 |-------|------|---------|-------------|
 | `transport` | `sse` \| `unix` | `sse` | MCP transport |
 | `listen`    | string | — | `host:port` (sse) or socket path (unix) |
-| `auth_token_file` | string | — | Bearer token file for sse/unix |
+| `auth_token_file` | string | auto-provisioned (`sse`) | Bearer token file. On `sse`, an unset key is auto-provisioned at `mcp-token` in the [config directory](#platform-paths) (mode 0600) rather than left tokenless; set this key to override the location. On `unix`, whose socket is already restricted to mode 0600, the key stays optional |
 | `log_level` | string | `info` | parsed and defaulted; currently does not change logging |
 | `request_log` | string | XDG data dir | path to capability-request JSONL |
 | `allowed_cwd_roots` | `[]string` | — | when non-empty, constrains a client-supplied cwd to these roots (symlinks resolved); a cwd outside them is refused. Empty = no containment |
