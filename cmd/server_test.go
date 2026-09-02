@@ -375,7 +375,13 @@ func TestReloadConfigConfigLoadedAt(t *testing.T) {
 // long-running server's state, recording a load that server never performed
 // and destroying the signal runtime.stale-policy reads.
 func TestUpdateServeStateConfigLoadedAtRequiresOwnership(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	// withIsolatedRuntime, not a bare t.Setenv: paths.RuntimeDir reads
+	// adrg/xdg's package-level snapshot, taken at init, so setting the env
+	// var without xdg.Reload() is a no-op — the state file lands in the
+	// REAL runtime dir (clobbering a running server's serve.state on a
+	// developer box, and failing outright on a CI runner whose uid has no
+	// /run/user/<uid> to create).
+	withIsolatedRuntime(t)
 
 	const original = "2020-01-01T00:00:00Z"
 	if err := writeServeState(serveState{
