@@ -402,7 +402,8 @@ current starting point.
 Before using this setup in production:
 
 - [ ] **Policy is minimal** — only allow subcommands the agent actually needs
-- [ ] **Auth token is set** — for SSE transport, always use `auth_token_file`
+- [ ] **Auth token is set** — automatic on `sse` (an unset `auth_token_file`
+  is provisioned at the default path); set it explicitly only to relocate it
 - [ ] **Socket permissions are restricted** — wraptool sets 0600 by default
 - [ ] **No credential files are mounted** — verify with `mount` inside the container
 - [ ] **No credential env vars leak** — verify with `env` inside the container

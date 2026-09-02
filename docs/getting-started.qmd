@@ -152,8 +152,9 @@ This writes the MCP config block for each harness. Supported values:
 `Authorization: Bearer` header in every networked harness config — so an
 auth-enabled server works out of the box, no hand-editing. On `sse`, `init`
 provisions the default token file itself if none exists yet, so the header is
-always written. On `unix`, with no `auth_token_file` configured, no header is
-written. `agy` (Antigravity) speaks Streamable HTTP, so its `serverUrl`
+written whenever a wraptool configuration exists (run `init` after the first
+`serve` or `up`, which scaffold one — the order this guide follows). On
+`unix`, with no `auth_token_file` configured, no header is written. `agy` (Antigravity) speaks Streamable HTTP, so its `serverUrl`
 targets `/mcp` rather than `/sse`; all others are written to the endpoint they
 use.
 

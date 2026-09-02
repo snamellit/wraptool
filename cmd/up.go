@@ -140,6 +140,14 @@ func runUp(opts upOptions) error {
 		}
 	}
 
+	// Provision even with --no-server: the already-running server requires
+	// the token (serve provisions its own on start), so the harness config
+	// written below must carry it — otherwise every MCP call 401s with no
+	// diagnostic at up time.
+	if err := provisionDefaultMCPToken(cfg); err != nil {
+		return err
+	}
+
 	if !opts.noServer {
 		if err := adjustServerBindForRuntime(cfg, rt); err != nil {
 			return err

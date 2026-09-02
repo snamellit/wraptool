@@ -126,7 +126,9 @@ defense-in-depth redaction, not a security boundary:
   `Authorization: Bearer ...` / `Basic ...` headers, AWS access key IDs
   (`AKIA...`), SSH private key block markers
   (`-----BEGIN ... PRIVATE KEY-----`), GitLab token prefixes, and
-  `ALL_CAPS=...` environment-style assignments.
+  environment-style assignments whose name contains `API_KEY`, `SECRET`,
+  `TOKEN`, `PASSWORD`, `CREDENTIAL`, or `AUTH` — an `ALL_CAPS` name outside
+  that list (`MY_PAT=...`, `DATABASE_URL=...`) passes through.
 - Any value listed in the tool's resolved `env`.
 
 There is no pattern for API-key prefixes like `sk-...` or `pk_...`: a bare
@@ -200,7 +202,10 @@ on both `/sse` and `/mcp`:
   attacker-controlled name to loopback but still sends that name. A wildcard
   bind (`0.0.0.0`, used for a Dev Container's bridge gateway) is reached under
   an address the server cannot predict, so the `Host` check does not apply
-  there.
+  there. The check compares names literally: a specific-address bind reached
+  through a DNS alias (`mcp.listen: 172.18.0.1` dialed as
+  `host.docker.internal`) is rejected — point the client at the bound address
+  itself.
 
 These checks survive a leaked token. They do not apply to `unix`, which no
 browser can reach.
@@ -242,6 +247,11 @@ operator reviews and approves out-of-band. This makes the policy
   filesystem race conditions.
 - **Positionals are count-only.** With no `arg_constraints`, they are unlimited;
   there is no positional path, URL, or regular-expression constraint.
+- **Help flags carry a value.** `-h`/`--help` are seeded into every allow rule
+  with no constraint entry, and an unconstrained flag's value is emitted into
+  argv as-is — so `{"help":"somefile"}` smuggles one extra token past
+  `positional_max`. Flag values may not start with `-`, so this is a bounded
+  smuggle, not flag injection.
 - **Schema validation is not an enforcement boundary.** The server does not
   enable MCP input-schema validation. Current boolean and empty-string handling
   has known argument-shape ambiguities; keep policy narrow and avoid assuming
