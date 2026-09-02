@@ -142,19 +142,10 @@ func runServe(configPath string, ov serveOverrides) error {
 	// before validation, so the effective addresses/tokens are what gets checked.
 	ov.apply(cfg)
 
-	// An sse listener is TCP-reachable, and that includes every web page the
-	// developer visits: mcp-go answers the SSE stream with
-	// Access-Control-Allow-Origin: *, so a hostile page can read the session
-	// endpoint and POST tool calls as a CORS simple request. A loopback bind is
-	// not a boundary against the browser. Provision a token rather than failing
-	// validation, so a first run still comes up. Runs before Validate, which
-	// stats the file.
-	if cfg.MCP.Transport == "sse" && cfg.MCP.AuthTokenFile == "" {
-		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
-		if err := ensureTokenFile(cfg.MCP.AuthTokenFile, "MCP"); err != nil {
-			return err
-		}
-		log.Printf("mcp.auth_token_file is unset — using %s; clients must send it as `Authorization: Bearer ...`", cfg.MCP.AuthTokenFile)
+	// Never start an unauthenticated sse listener. Runs before Validate, which
+	// stats the token file.
+	if err := provisionDefaultMCPToken(cfg); err != nil {
+		return err
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -490,11 +481,15 @@ func webURL(listen, token string) string {
 func browserGuard(next http.Handler, listen string) http.Handler {
 	listenHost := hostOnly(listen)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Log each rejection: a 403 with no server-side trace leaves an
+		// operator guessing, and these are the requests worth noticing.
 		if origin := r.Header.Get("Origin"); origin != "" && !originAllowed(origin) {
+			log.Printf("rejected %s %s: Origin %q is not a loopback origin (listener %s)", r.Method, r.URL.Path, origin, listen)
 			http.Error(w, "origin not allowed", http.StatusForbidden)
 			return
 		}
 		if !hostAllowed(hostOnly(r.Host), listenHost) {
+			log.Printf("rejected %s %s: Host %q does not name this listener (%s)", r.Method, r.URL.Path, r.Host, listen)
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}

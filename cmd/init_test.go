@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,47 @@ func TestInitEmbedsAuthHeader(t *testing.T) {
 	}
 	got := parsed.MCPServers["wraptool"].Headers["Authorization"]
 	if want := "Bearer sekret"; got != want {
+		t.Errorf("Authorization header = %q, want %q; config:\n%s", got, want, data)
+	}
+}
+
+// TestInitProvisionsTokenForTokenlessConfig covers the upgrade path
+// docs/security.qmd points at: an sse server is authenticated whether or not
+// the operator configured a token, so `wraptool init` against a config with no
+// auth_token_file must provision the default token and write the header —
+// otherwise the documented remedy for a 401 generates another 401.
+func TestInitProvisionsTokenForTokenlessConfig(t *testing.T) {
+	configHome := withIsolatedConfigHome(t)
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgFile, []byte("mcp:\n  listen: 127.0.0.1:8717\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Chdir(dir)
+
+	if err := runInit([]string{"agy"}, "sse", "http://127.0.0.1:8717/sse", "", false, cfgFile); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+
+	token, err := os.ReadFile(filepath.Join(configHome, "wraptool", "mcp-token"))
+	if err != nil {
+		t.Fatalf("init must provision the default token file: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".agents", "mcp_config.json"))
+	if err != nil {
+		t.Fatalf("read agy config: %v", err)
+	}
+	var parsed struct {
+		MCPServers map[string]struct {
+			Headers map[string]string `json:"headers"`
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("parse agy config: %v\n%s", err, data)
+	}
+	got := parsed.MCPServers["wraptool"].Headers["Authorization"]
+	if want := "Bearer " + strings.TrimSpace(string(token)); got != want {
 		t.Errorf("Authorization header = %q, want %q; config:\n%s", got, want, data)
 	}
 }

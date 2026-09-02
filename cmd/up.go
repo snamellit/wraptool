@@ -228,10 +228,30 @@ func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
 		cfg.MCP.Listen = net.JoinHostPort("0.0.0.0", port)
 		fmt.Printf("devcontainer: binding %s so the container can reach the server via its bridge gateway\n", cfg.MCP.Listen)
 	}
-	if cfg.MCP.AuthTokenFile == "" {
-		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
-		fmt.Printf("enabling an MCP auth token at %s (the listener must be authenticated)\n", cfg.MCP.AuthTokenFile)
+	return provisionDefaultMCPToken(cfg)
+}
+
+// provisionDefaultMCPToken gives an sse listener a token file when the operator
+// configured none, and creates it. An sse listener is TCP-reachable, and that
+// includes every web page the developer visits: mcp-go answers the SSE stream
+// with Access-Control-Allow-Origin: *, so a hostile page can read the session
+// endpoint and POST tool calls as a CORS simple request. A loopback bind is not
+// a boundary against the browser.
+//
+// Provisioning rather than failing validation keeps a first run working. Every
+// path that needs the effective token calls this — `serve` (which serves it),
+// `up` (which hands it to the container), and `init` (which writes it into a
+// harness config, possibly before any server has ever run, hence the file must
+// be created here and not merely named).
+func provisionDefaultMCPToken(cfg *config.Config) error {
+	if cfg.MCP.Transport != "sse" || cfg.MCP.AuthTokenFile != "" {
+		return nil
 	}
+	cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
+	if err := ensureTokenFile(cfg.MCP.AuthTokenFile, "MCP"); err != nil {
+		return err
+	}
+	fmt.Printf("mcp.auth_token_file is unset — using %s (clients must send it as `Authorization: Bearer ...`)\n", cfg.MCP.AuthTokenFile)
 	return nil
 }
 
@@ -460,12 +480,14 @@ func ensureAuthToken(cfg *config.Config) error {
 	return ensureTokenFile(cfg.Admin.AuthTokenFile, "admin UI")
 }
 
+// ensureTokenFile makes path hold a token, generating one if it does not. It is
+// create-exclusive: a read-then-write would let two provisioners racing outside
+// the runtime flock (a `serve` started by a service manager, a concurrent `up`)
+// each write a different token, so one would hand a container a token the
+// server never loaded. Once the file holds a value, that value never changes.
 func ensureTokenFile(path, name string) error {
 	path = expandTilde(path)
 	if path == "" {
-		return nil
-	}
-	if b, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(b))) > 0 {
 		return nil
 	}
 	buf := make([]byte, 32)
@@ -475,8 +497,24 @@ func ensureTokenFile(path, name string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("creating token dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(buf)+"\n"), 0600); err != nil {
-		return fmt.Errorf("writing auth token: %w", err)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if !os.IsExist(err) {
+			return fmt.Errorf("creating auth token %s: %w", path, err)
+		}
+		// Either another provisioner won the race — its token stands — or an
+		// earlier run left the file empty (created, then interrupted before the
+		// write). Only the second case is repaired.
+		if b, rerr := os.ReadFile(path); rerr != nil || len(strings.TrimSpace(string(b))) > 0 {
+			return nil
+		}
+		if f, err = os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600); err != nil {
+			return fmt.Errorf("writing auth token %s: %w", path, err)
+		}
+	}
+	defer f.Close()
+	if _, err := f.WriteString(base64.StdEncoding.EncodeToString(buf) + "\n"); err != nil {
+		return fmt.Errorf("writing auth token %s: %w", path, err)
 	}
 	fmt.Printf("generated %s auth token -> %s\n", name, path)
 	return nil
