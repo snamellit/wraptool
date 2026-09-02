@@ -68,19 +68,24 @@ func runInit(harnesses []string, transport, url, socketPath string, global bool,
 	// Read the server's auth token so networked harness configs carry the
 	// Authorization: Bearer header (agy/claude/… render it when a token is set).
 	// Without this the generated config is header-less and 401s against an
-	// auth-enabled server — which an sse server now always is, so provision the
-	// default token here too rather than emit a config that cannot connect.
-	// init may run before the server ever has, so the file must be created, not
-	// just named. Only a readable config implies a server to authenticate to.
+	// auth-enabled server — which an sse server now always is, so scaffold the
+	// config if absent (like serve and up do) and provision the default token,
+	// rather than emit a config that cannot connect. init may run before the
+	// server ever has, so both files must be created, not just named.
 	cfgFile := configOrDefault(configPath)
-	var token string
-	if cfg, cerr := config.Load(cfgFile); cerr == nil {
-		if err = provisionDefaultMCPToken(cfg); err != nil {
-			return err
-		}
-		if token, err = readAuthToken(cfg); err != nil {
-			return err
-		}
+	if _, err := config.EnsureConfigFile(cfgFile); err != nil {
+		return err
+	}
+	cfg, err := config.Load(cfgFile)
+	if err != nil {
+		return err
+	}
+	if err := provisionDefaultMCPToken(cfg); err != nil {
+		return err
+	}
+	token, err := readAuthToken(cfg)
+	if err != nil {
+		return err
 	}
 
 	p := harness.Params{
@@ -93,12 +98,39 @@ func runInit(harnesses []string, transport, url, socketPath string, global bool,
 		Token:       token,
 	}
 
-	for _, h := range harness.Expand(harnesses) {
-		path, err := harness.Write(h, p)
+	names := harness.Expand(harnesses)
+	// "all" means "every harness this setup supports": with a token in play,
+	// silently skip the auth-unverified ones instead of failing the whole run
+	// on them — an explicitly named harness still gets the hard error from
+	// harness.Prepare.
+	if token != "" && len(names) > len(harnesses) {
+		kept := names[:0]
+		for _, h := range names {
+			if harness.Registry[h].Auth == harness.AuthUnverified {
+				fmt.Printf("  %s: skipped (auth support unverified; name it explicitly to see why)\n", h)
+				continue
+			}
+			kept = append(kept, h)
+		}
+		names = kept
+	}
+
+	// Validate every harness before writing any, so a mid-list failure can't
+	// leave a partial set of configs behind.
+	plans := make([]*harness.Plan, 0, len(names))
+	for _, h := range names {
+		plan, err := harness.Prepare(h, p)
 		if err != nil {
 			return fmt.Errorf("generating config for %s: %w", h, err)
 		}
-		fmt.Printf("  %s: wrote %s\n", h, path)
+		plans = append(plans, plan)
+	}
+	for i, plan := range plans {
+		path, err := plan.Commit()
+		if err != nil {
+			return fmt.Errorf("writing config for %s: %w", names[i], err)
+		}
+		fmt.Printf("  %s: wrote %s\n", names[i], path)
 	}
 	return nil
 }

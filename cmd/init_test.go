@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/pti/wraptool/internal/harness"
 )
 
 // TestInitEmbedsAuthHeader is the regression test for the Antigravity 401: an
@@ -89,15 +91,22 @@ func TestInitProvisionsTokenForTokenlessConfig(t *testing.T) {
 	}
 }
 
-// TestInitNoConfigNoHeader confirms init stays localhost-friendly: with no config
-// (no auth token) the generated config carries no Authorization header.
-func TestInitNoConfigNoHeader(t *testing.T) {
+// TestInitNoConfigScaffoldsAndWritesHeader pins the first-run contract: run
+// before any serve/up, init scaffolds the config (like they do), provisions
+// the sse token, and the generated harness config carries the Authorization
+// header — never a tokenless config that 401s against the server serve will
+// start (PR #37 finding 1).
+func TestInitNoConfigScaffoldsAndWritesHeader(t *testing.T) {
+	withIsolatedConfigHome(t)
 	dir := t.TempDir()
 	t.Chdir(dir)
 
-	missing := filepath.Join(dir, "does-not-exist.yaml")
-	if err := runInit([]string{"agy"}, "sse", "http://127.0.0.1:8717/sse", "", false, missing); err != nil {
+	cfgPath := filepath.Join(dir, "cfg", "config.yaml")
+	if err := runInit([]string{"agy"}, "sse", "http://127.0.0.1:8717/sse", "", false, cfgPath); err != nil {
 		t.Fatalf("runInit (no config): %v", err)
+	}
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("config was not scaffolded: %v", err)
 	}
 
 	data, err := os.ReadFile(filepath.Join(dir, ".agents", "mcp_config.json"))
@@ -112,8 +121,45 @@ func TestInitNoConfigNoHeader(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatalf("parse agy config: %v\n%s", err, data)
 	}
-	if h := parsed.MCPServers["wraptool"].Headers; len(h) != 0 {
-		t.Errorf("expected no headers without a token, got %v", h)
+	if h := parsed.MCPServers["wraptool"].Headers["Authorization"]; !strings.HasPrefix(h, "Bearer ") {
+		t.Errorf("expected a Bearer Authorization header on first-run init, got %v", parsed.MCPServers["wraptool"].Headers)
+	}
+}
+
+// TestInitAllSkipsAuthUnverifiedAndIsAtomic covers PR #37 finding 2: with a
+// token in play, --harness all skips the auth-unverified harnesses instead of
+// dying on the first one mid-list, and nothing is written when any prepared
+// harness fails validation (prepare-then-commit, no partial sets).
+func TestInitAllSkipsAuthUnverifiedAndIsAtomic(t *testing.T) {
+	withIsolatedConfigHome(t)
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	cfgPath := filepath.Join(dir, "cfg", "config.yaml")
+	if err := runInit([]string{"all"}, "sse", "http://127.0.0.1:8717/sse", "", false, cfgPath); err != nil {
+		t.Fatalf("runInit --harness all: %v", err)
+	}
+	for name, d := range harness.Registry {
+		if d.Auth == harness.AuthUnverified && name == "roo" {
+			if _, err := os.Stat(filepath.Join(dir, ".roo", "mcp.json")); !os.IsNotExist(err) {
+				t.Errorf("auth-unverified harness %s must be skipped under all, stat err = %v", name, err)
+			}
+		}
+	}
+
+	// Atomicity: make one harness's existing target unmergeable; NO config may
+	// be (re)written, including the ones that would have preceded it.
+	dir2 := t.TempDir()
+	t.Chdir(dir2)
+	if err := os.WriteFile(filepath.Join(dir2, ".mcp.json"), []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	err := runInit([]string{"all"}, "sse", "http://127.0.0.1:8717/sse", "", false, cfgPath)
+	if err == nil {
+		t.Fatal("expected refuse-to-clobber error from the claude target")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir2, ".agents", "mcp_config.json")); !os.IsNotExist(statErr) {
+		t.Errorf("agy config written despite a later harness failing validation (partial set)")
 	}
 }
 

@@ -489,40 +489,42 @@ func ensureAuthToken(cfg *config.Config) error {
 	return ensureTokenFile(cfg.Admin.AuthTokenFile, "admin UI")
 }
 
-// ensureTokenFile makes path hold a token, generating one if it does not. It is
-// create-exclusive: a read-then-write would let two provisioners racing outside
-// the runtime flock (a `serve` started by a service manager, a concurrent `up`)
-// each write a different token, so one would hand a container a token the
-// server never loaded. Once the file holds a value, that value never changes.
+// ensureTokenFile makes path hold a token, generating one if it does not.
+// All provisioners (serve, up, init) serialize on a sidecar flock, so the
+// read-then-write below is race-free among them: the first writer's token
+// stands, a later caller reads it back, and a file left empty by an
+// interrupted run is repaired under the same lock — no window where two
+// processes hand out different tokens (the earlier O_EXCL scheme still had
+// one around the empty-file repair). Once the file holds a value, that value
+// never changes.
 func ensureTokenFile(path, name string) error {
 	path = expandTilde(path)
 	if path == "" {
 		return nil
 	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("creating token dir: %w", err)
+	}
+	lf, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return fmt.Errorf("opening token lock: %w", err)
+	}
+	defer lf.Close()
+	if err := lockFile(lf); err != nil {
+		return fmt.Errorf("locking token file: %w", err)
+	}
+	defer func() { _ = unlockFile(lf) }()
+
+	if b, rerr := os.ReadFile(path); rerr == nil && len(strings.TrimSpace(string(b))) > 0 {
+		return nil // an existing token stands, whoever wrote it
+	} else if rerr != nil && !os.IsNotExist(rerr) {
+		return fmt.Errorf("reading auth token %s: %w", path, rerr)
+	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return fmt.Errorf("generating auth token: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("creating token dir: %w", err)
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
-		if !os.IsExist(err) {
-			return fmt.Errorf("creating auth token %s: %w", path, err)
-		}
-		// Either another provisioner won the race — its token stands — or an
-		// earlier run left the file empty (created, then interrupted before the
-		// write). Only the second case is repaired.
-		if b, rerr := os.ReadFile(path); rerr != nil || len(strings.TrimSpace(string(b))) > 0 {
-			return nil
-		}
-		if f, err = os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0600); err != nil {
-			return fmt.Errorf("writing auth token %s: %w", path, err)
-		}
-	}
-	defer f.Close()
-	if _, err := f.WriteString(base64.StdEncoding.EncodeToString(buf) + "\n"); err != nil {
+	if err := os.WriteFile(path, []byte(base64.StdEncoding.EncodeToString(buf)+"\n"), 0600); err != nil {
 		return fmt.Errorf("writing auth token %s: %w", path, err)
 	}
 	fmt.Printf("generated %s auth token -> %s\n", name, path)

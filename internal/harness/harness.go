@@ -188,21 +188,32 @@ func Expand(names []string) []string {
 	return names
 }
 
-// Write renders the harness config and writes it to disk, merging into an
-// existing file so other MCP servers are preserved. It returns the path written.
-func Write(name string, p Params) (string, error) {
+// Plan is a validated, merged harness config that has not been written yet.
+// Prepare/Commit are split so a multi-harness caller (`init --harness all`)
+// can validate every target before writing any — a mid-list failure must not
+// leave a partial set of configs behind.
+type Plan struct {
+	Path    string
+	content []byte
+}
+
+// Prepare renders the harness config, resolves its target path, and merges
+// into an existing file (so other MCP servers are preserved) — every failure
+// mode of a write except the write itself. Commit the returned Plan to put it
+// on disk.
+func Prepare(name string, p Params) (*Plan, error) {
 	d, ok := Registry[name]
 	if !ok {
-		return "", fmt.Errorf("unknown harness %q; supported: %v", name, Names())
+		return nil, fmt.Errorf("unknown harness %q; supported: %v", name, Names())
 	}
 	if p.Token != "" && d.Auth == AuthUnverified {
-		return "", fmt.Errorf("harness %q cannot be used with a networked wraptool yet: "+
-			"its auth support is unverified. Use a localhost/stdio setup, or add its "+
+		return nil, fmt.Errorf("harness %q cannot be used with a networked wraptool yet: "+
+			"its auth support is unverified. Use a localhost setup, or add its "+
 			"AuthMode (design/harness/harness-descriptor.md phase 3)", name)
 	}
 	path, content, err := d.Render(p)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	// Resolve a project-relative path against Dir (empty = process cwd, init's
 	// behaviour). Absolute paths (global configs) are left as-is.
@@ -213,11 +224,26 @@ func Write(name string, p Params) (string, error) {
 	if existing, rerr := os.ReadFile(path); rerr == nil {
 		merged, merr := mergeJSON(existing, content)
 		if merr != nil {
-			return "", fmt.Errorf("refusing to overwrite %s: existing file is not JSON wraptool can merge: %w", path, merr)
+			return nil, fmt.Errorf("refusing to overwrite %s: existing file is not JSON wraptool can merge: %w", path, merr)
 		}
 		content = merged
 	}
+	return &Plan{Path: path, content: content}, nil
+}
 
+// Write renders the harness config and writes it to disk, merging into an
+// existing file so other MCP servers are preserved. It returns the path written.
+func Write(name string, p Params) (string, error) {
+	plan, err := Prepare(name, p)
+	if err != nil {
+		return "", err
+	}
+	return plan.Commit()
+}
+
+// Commit writes the prepared config to its path.
+func (plan *Plan) Commit() (string, error) {
+	path, content := plan.Path, plan.content
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("creating directory for %s: %w", path, err)
 	}
