@@ -135,7 +135,7 @@ guix shell --container \
   --network \
   --share=$HOME/src/myproject=$HOME/src/myproject \
   --expose=/run/user/1000/wraptool.sock=/run/user/1000/wraptool.sock \
-  coreutils grep sed findutils \
+  coreutils grep sed findutils git \
   -- bash
 ```
 
@@ -145,7 +145,10 @@ Flags explained:
   loopback access, including local databases and test services
 - `--share=...`: bind-mount your project directory read-write
 - `--expose=...`: expose the wraptool socket read-only into the container
-- The package list contains only basic tools — no git, no cloud CLIs, no SSH
+- The package list contains basic tools plus an uncredentialed `git` — no cloud
+  CLIs, no SSH. `git` is needed here: the policy above denies `checkout` and
+  `switch` on the host, precisely so those local operations run against this
+  in-container `git` instead
 
 `--network` is not harmless even when MCP uses a Unix socket: every service on
 host localhost becomes reachable from untrusted container code. wraptool accepts
@@ -204,6 +207,7 @@ For a reproducible setup, create a `container-manifest.scm`:
    "diffutils"
    "less"
    "which"
+   "git"          ; local branch work; checkout/switch are denied on the host
    "nss-certs"))   ; for HTTPS if using SSE transport
 ```
 
@@ -414,7 +418,7 @@ From inside the container, confirm that credentials are not accessible:
 cat ~/.ssh/id_ed25519          # No SSH keys
 cat ~/.kube/config             # No kubeconfig
 echo $AWS_SECRET_ACCESS_KEY    # No cloud credentials
-git push origin main           # git not installed / no credentials
+git push origin main           # git is installed but has no credentials
 
 # This should work (via wraptool MCP)
 # Claude Code calling git_status -> wraptool -> git on host

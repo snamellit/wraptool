@@ -11,9 +11,11 @@ description: "Connect MCP harnesses and proxy local MCP servers through Wraptool
 | `unix` | `/sse` and `/mcp` over a Unix socket | Persistent; client support usually needs a bridge |
 
 The HTTP listener serves legacy SSE at `/sse` and Streamable HTTP at `/mcp`.
-One optional Bearer-token wrapper covers both. Network authentication is not
-mandatory in validation, so configure `auth_token_file` whenever the listener is
-reachable beyond a trusted loopback boundary.
+One Bearer-token wrapper covers both. On `sse` the token is unconditional: an
+unset `auth_token_file` is auto-provisioned rather than left tokenless, and
+validation requires a token for any non-loopback bind. On `unix`, whose
+filesystem socket is already restricted to mode 0600, `auth_token_file` stays
+optional.
 
 ## Generate client configuration
 
