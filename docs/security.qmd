@@ -159,10 +159,44 @@ dependencies without exposing any credential.
 
 ### Auth on network transports
 
-`sse` and `unix` transports support `auth_token_file`. Requests
+`sse` and `unix` transports authenticate with `auth_token_file`. Requests
 without a matching `Authorization: Bearer ...` header are rejected
 with 401 (no header) or 403 (bad token), using constant-time
 comparison.
+
+On `sse` the token is not optional. When `mcp.auth_token_file` is unset, the
+server generates a token at `~/.config/wraptool/mcp-token` (mode 0600), logs
+the path, and requires it — a first run still comes up, but never
+unauthenticated. `wraptool up` provisions the same token for both container
+runtimes and writes it into the harness configuration it generates.
+
+A loopback bind is not a boundary against the browser, which is why the token
+is unconditional there. The MCP library serves the event stream with
+`Access-Control-Allow-Origin: *`, so a page the developer merely visits can
+open an `EventSource` to `127.0.0.1`, read the session endpoint, and POST tool
+calls as a CORS *simple* request that triggers no preflight. The `sse` listener
+therefore also checks two headers that a browser sets and a page cannot forge,
+on both `/sse` and `/mcp`:
+
+- An `Origin` naming anything other than `localhost`, `127.0.0.1`, or `::1` is
+  rejected with 403. `null` — a sandboxed frame or a `file://` page — is
+  rejected too.
+- A `Host` naming neither the configured bind nor a loopback name is rejected
+  with 403, which mitigates DNS rebinding: the browser resolves an
+  attacker-controlled name to loopback but still sends that name. A wildcard
+  bind (`0.0.0.0`, used for a Dev Container's bridge gateway) is reached under
+  an address the server cannot predict, so the `Host` check does not apply
+  there.
+
+These checks survive a leaked token. They do not apply to `unix`, which no
+browser can reach.
+
+::: {.callout-important title="Upgrade note"}
+A client configured against a tokenless listener now receives 401. Re-run
+`wraptool init` for that harness — or `wraptool up`, which rewrites the
+harness configuration itself — so the generated configuration carries the
+`Authorization` header.
+:::
 
 ### Hot-reload safety
 
@@ -202,9 +236,12 @@ operator reviews and approves out-of-band. This makes the policy
   structured secrets. Proxied MCP non-text content is not scrubbed.
 - **Introspection is trusted-host activity.** Help/version probes currently use
   the server environment and their raw output is cached.
-- **Network auth is optional in validation.** A TCP listener without
-  `auth_token_file` is unauthenticated. HTTP body and server timeout hardening is
-  limited; bind narrowly and use another network boundary when exposed.
+- **The `Origin` and `Host` checks bound the browser only.** An `sse` listener
+  is authenticated by default and refuses cross-origin and rebound requests, but
+  only a browser is obliged to send those headers honestly; any other local
+  process can set them freely, so the token file's permissions remain the
+  barrier there. HTTP body and server timeout hardening is limited; bind
+  narrowly and use another network boundary when exposed.
 - **Upstream MCP filtering is name-only.** Allowed tool arguments pass through
   unchanged, and `mcp_servers.*.working_dir` is not currently applied.
 - **Shared harness HOME persists across projects.** One project can alter state
