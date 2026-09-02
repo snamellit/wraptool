@@ -785,7 +785,9 @@ Delta since the baseline. Everything above stands except as noted here.
   - *Lint:* the channel pin brought Go 1.27.0 while golangci-lint 2.12.2 was
     built with go1.26.2 — its embedded go/types cannot parse the 1.27 stdlib
     (`math/rand/v2` generics). Fixed by bumping `manifest.scm` to
-    golangci-lint 2.13.2 (built with go1.27.0); verified locally, `0 issues`.
+    golangci-lint 2.13.2 (built with go1.27.0); verified locally, `0 issues`,
+    and confirmed in CI: lint run #295 on `1dab209` passed — the first green
+    `main` lint in nine runs.
   - *Publish (#279):* `publish-binaries.yml:70` runs `go test ./...`;
     `TestUpdateServeStateConfigLoadedAtRequiresOwnership` set
     `XDG_RUNTIME_DIR` with a bare `t.Setenv`, which adrg/xdg ignores, so the
