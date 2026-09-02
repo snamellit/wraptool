@@ -22,7 +22,7 @@
              (snamellit packages quarto-bin)
              ((guix licenses) #:prefix license:))
 
-(define %golangci-lint-version "2.12.2")
+(define %golangci-lint-version "2.13.2")
 
 ;; Runtime plumbing every self-contained use (image / --container) needs: a
 ;; shell + the standard text utils that job/prep scripts and harnesses assume
@@ -43,7 +43,7 @@
              "https://github.com/golangci/golangci-lint/releases/download/v"
              version "/golangci-lint-" version "-linux-amd64.tar.gz"))
        (sha256
-        (base32 "0lx5jcw99qrag9f5y8b5wrsz53dgk5q51h5ahjlqzv8gcz981xcd"))))
+        (base32 "1mi1l1fmdpaplrcqlrs44il9gblb4r9nphia1wl5807ck0xx8xr2"))))
     (build-system copy-build-system)
     (arguments
      (list #:install-plan
