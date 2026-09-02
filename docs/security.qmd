@@ -115,14 +115,23 @@ in as its own argument token:
 
 ### Credential scrubbing
 
-Output is filtered before being returned to the agent:
+Output is filtered before being returned to the agent. This is heuristic,
+defense-in-depth redaction, not a security boundary:
 
-- Bearer tokens (`Authorization: Bearer ...`)
-- API keys with common prefixes (`sk-...`, `pk_...`, AWS access key
-  ID format)
-- AWS secret access keys
-- SSH key block markers (`-----BEGIN ... PRIVATE KEY-----`)
-- Any value listed in the tool's resolved `env`
+- **Key-name matching.** Any field named `token`, `secret`, `password`,
+  `passwd`, `credential`, or ending in `key` — in shell (`key=...`,
+  `key: ...`) or JSON (`"key": ...`) notation — has its value replaced,
+  regardless of what the value looks like.
+- **A handful of value-shape patterns with no key name attached**:
+  `Authorization: Bearer ...` / `Basic ...` headers, AWS access key IDs
+  (`AKIA...`), SSH private key block markers
+  (`-----BEGIN ... PRIVATE KEY-----`), GitLab token prefixes, and
+  `ALL_CAPS=...` environment-style assignments.
+- Any value listed in the tool's resolved `env`.
+
+There is no pattern for API-key prefixes like `sk-...` or `pk_...`: a bare
+secret with no recognizable key name attached — for example a standalone
+`sk-ant-...` value with nothing labeling it — passes through unredacted.
 
 False negatives are still possible — never put unscrubbable secrets
 in stdout of a wrapped command.

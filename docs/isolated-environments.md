@@ -67,6 +67,18 @@ reproducible isolated environment using Linux namespaces (no Docker needed).
 
 ### Step 1: Start wraptool on the host
 
+This policy follows the split execution model from [Hardening `git` as a
+wrapped tool](git-hardening.qmd#split-execution-model): host credentials
+back the transport subcommands wraptool exposes, but `checkout` and
+`switch` are **denied**, not allowed. Both can run
+`filter.<driver>.clean`/`.smudge`/`.process` from an untrusted repository's
+`.gitattributes` — a code-execution path this credentialed host process
+gains nothing from opening, since branch checkout is a local operation and
+belongs in an uncredentialed `git` installed inside the container, not
+routed through wraptool. See [that page's policy-boundary
+section](git-hardening.qmd#the-split-is-a-policy-boundary-not-a-preference)
+for the full reasoning and a more thoroughly hardened environment.
+
 ```bash
 # Create the config
 mkdir -p ~/.config/wraptool
@@ -105,13 +117,11 @@ tools:
         flags: ["--all", "--prune"]
       - subcommand: [branch]
         flags: ["-a", "--list", "-v"]
-      - subcommand: [checkout]
-        flags: ["-b"]
-      - subcommand: [switch]
-        flags: ["-c"]
     deny:
       - subcommand: [remote, set-url]
       - subcommand: [config]
+      - subcommand: [checkout]
+      - subcommand: [switch]
 EOF
 
 # Start wraptool (runs in foreground, use tmux/screen or & for background)

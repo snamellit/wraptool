@@ -121,7 +121,12 @@ func (p *Policy) Evaluate(toolName string, subcommand []string, flags map[string
 }
 
 // subcommandMatches checks if the given subcommand matches the rule.
-// The rule tokens must be a prefix of (or equal to) the subcommand tokens.
+// The rule tokens must equal the subcommand tokens exactly, token for
+// token — this is NOT a prefix match. A deny rule for [auth] therefore
+// does not cover [auth, print-access-token]; it needs its own entry. Used
+// for both allow and deny rules, so the same exact-length semantics apply
+// to each (see docs/configuration.qmd's "Deny rules" section and
+// doctor's policy.deny-prefix-gap check, which flags this gap).
 func subcommandMatches(actual, rule []string) bool {
 	if len(rule) > len(actual) {
 		return false

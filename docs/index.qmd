@@ -57,8 +57,10 @@ event.
 ::: {.feature-card}
 ### Human escalation
 Denied calls can become capability requests. An operator reviews them through
-the CLI or local review UI; accepted changes hot-reload without exposing the
-admin boundary to the harness.
+the CLI or local review UI; accepted changes hot-reload. The review UI is a
+separate, token-gated listener from the harness's MCP connection — but under
+the Guix runtime's shared host network namespace it is routable, not
+unreachable, from inside the container.
 :::
 :::
 

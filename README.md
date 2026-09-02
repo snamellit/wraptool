@@ -16,7 +16,10 @@ workspace — the agent, its tool calls, and the build/test/dependency
 code they trigger — as untrusted**, and bounds what it can reach:
 
 - **Credentials stay isolated** -- wraptool runs as a separate process
-  with its own environment; secrets never enter the agent context.
+  with its own environment; raw host credentials (SSH keys, gcloud,
+  kubeconfig, service-account files) never enter the agent context. The
+  MCP bearer token and the harness pool's own auth state do reach the
+  agent's environment — see [Security model](docs/security.qmd).
 - **Bounded blast radius** -- inside `wraptool up`'s throwaway container
   the agent, your build scripts, and the dependencies they pull in
   all run with no host credentials. A hijacked agent *or* a poisoned
@@ -62,8 +65,10 @@ Brings up a credential-isolated container — a native **Guix container** built 
 your `manifest.scm` when Guix is available, otherwise a **Dev Container** — with
 your coding agent inside it (installed once: a shared pool for Guix, the
 `wraptool` feature for Dev Containers) wired to the wraptool server on the host.
-Secrets never enter the container: `git push`, `gcloud`, and `kubectl` run on the
-host through MCP. The host gateway is auto-detected — no URL to set.
+Raw host credentials never enter the container: `git push`, `gcloud`, and
+`kubectl` run on the host through MCP. (The MCP bearer token and the harness
+pool's own auth state do reach the container — see [Security
+model](docs/security.qmd).) The host gateway is auto-detected — no URL to set.
 
 ### 2. Scaffold a committed Dev Container
 

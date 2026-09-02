@@ -24,10 +24,14 @@ injects the real credential at the boundary. The safety claim is about
 blast radius: unattended "YOLO mode" is acceptable because the damage is
 confined to the box.
 
-**wraptool is capability mediation.** The agent never touches credentials
-in any form, proxied or otherwise. Privileged operations go through MCP
-tools policed per subcommand and per flag (deny > allow > constraints),
-executed as argv arrays with no shell, with output scrubbed of secrets
+**wraptool is capability mediation.** The agent never touches host
+credentials — SSH keys, gcloud, kubeconfig, cloud service-account files —
+in any form, proxied or otherwise; it only holds the MCP bearer token
+needed to reach wraptool itself (see [Security model](security.qmd)).
+Privileged operations go through MCP tools policed per subcommand and per
+flag (deny > allow > constraints), executed as argv arrays with no shell,
+with output passed through heuristic key-name/value-shape scrubbing (not
+a boundary; see [Credential scrubbing](security.qmd#credential-scrubbing))
 and every call audited. New capabilities are granted through an operator
 approve/deny workflow, not a static configuration. The container (Guix or
 Dev Container) is wraptool's *second* layer, not the whole story.
@@ -49,7 +53,7 @@ per-operation policy, output scrubbing, and the audit trail fill.
 | | Docker Sandboxes | wraptool |
 |---|---|---|
 | Boundary strength | microVM (hard) | user/mount namespaces or container (shared kernel) |
-| Credential model | proxied — agent *uses* credentials, scoped by the proxy | mediated — agent *requests operations*, never holds credentials |
+| Credential model | proxied — agent *uses* credentials, scoped by the proxy | mediated — agent *requests operations*, never holds host credentials (only the MCP token to reach wraptool) |
 | Policy granularity | filesystem, network, secrets on/off | per-subcommand, per-flag, value constraints |
 | Audit | enterprise tier (Docker AI Governance) | built-in append-only event log + review UI, self-hosted |
 | Approval workflow | none — grants are static | capability request → operator review → config merge |

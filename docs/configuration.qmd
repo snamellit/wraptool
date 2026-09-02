@@ -135,13 +135,24 @@ the flag under its `deny_flags` — deny wins.
 
 ### Deny rules
 
-Evaluated **before** allow rules. Take absolute precedence.
+Evaluated **before** allow rules, so a match here overrides any allow rule
+for the same subcommand.
+
+A deny rule's `subcommand` is matched **exactly**, the same as an allow
+rule's (see the table above) — it is not a prefix match. `deny: [auth]`
+blocks `auth` and nothing else; it does **not** cover `auth
+print-access-token`, which needs its own entry:
 
 ```yaml
 deny:
   - subcommand: [exec]
   - subcommand: [auth]
+  - subcommand: [auth, print-access-token]
 ```
+
+`wraptool doctor`'s `policy.deny-prefix-gap` check flags a deny rule whose
+subcommand is a strict prefix of an allowed one, since that shape is the
+usual sign the deny was meant to cover the longer form too.
 
 ### Flag constraints
 
