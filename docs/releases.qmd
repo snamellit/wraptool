@@ -14,6 +14,91 @@ Windows on AMD64 and ARM64. Each Forgejo release also includes a
 `checksums.txt` file containing SHA-256 checksums and `build-info.txt` recording
 the source commit, Go version, and hashes of the pinned Guix inputs.
 
+## Compatibility {#compatibility}
+
+Starting with 1.0, wraptool makes one promise: **the surfaces listed as frozen
+below do not break under any `1.x` release.** This is not a claim that
+everything in the repository is stable, or that wraptool is finished — only
+that the enumerated list holds.
+
+| Bump          | Promise                                                                                                                             |
+|---------------|--------------------------------------------------------------------------------------------------------------------------------------|
+| `1.0.x` → `1.0.y` | Bug fixes only. No new keys, flags, or tools.                                                                                    |
+| `1.x` → `1.y`     | New capability. Everything frozen below still works with no edit to your configuration, your generated harness configuration, or your `devcontainer.json`. |
+| `1` → `2`         | The frozen list may change.                                                                                                      |
+
+### Frozen
+
+- **The configuration schema**, as documented in [Configuration](configuration.qmd).
+  A `1.x` release may add keys and may add members to a value enum. It does not
+  remove a key, rename one, or change a documented default such that an
+  existing `config.yaml` behaves differently.
+- **CLI command names and their documented flags**, per
+  [CLI reference](cli-reference.qmd). New commands and new flags may appear.
+  Documented ones keep their name, meaning, and default.
+- **MCP tool naming.** A wrapped capability is named
+  `<tool>_<subcommand tokens joined by _>`. The three fixed tools
+  `wraptool_discover`, `wraptool_info`, and `wraptool_request_capability` keep
+  their names and their input schemas — these are wire identifiers an agent
+  has already learned, and renaming one is a break.
+- **Generated harness configuration**: the file path and JSON shape wraptool
+  writes for each harness.
+- **The `wraptool:1` Dev Container feature**: its option set, its
+  `containerEnv` (`HOME=/home/wraptool-harness`, appended pool `PATH`), and
+  the two pool mount targets it depends on.
+- **Release artifacts**: the tag format `wraptool-vX.Y.Z`, the six binary
+  asset names, `checksums.txt`, `build-info.txt`, and the release signing key
+  `C8ABC91CAB2DC195B9763877DFABC43C55F2E63A`.
+- **`wraptool doctor` exit codes** 0/1/2 and the `--json` schema version.
+- **The `/api/v1` admin JSON API.** It stabilizes through its path version: a
+  field rename or a semantic change requires `/api/v2`; adding a field is
+  fine.
+
+### Excluded
+
+Some surfaces are deliberately left out of the promise. Excluding them now, in
+writing, is what keeps them free to change in a minor release instead of
+forcing a major version later:
+
+- **`mcp_servers.*`** — experimental. Its shape may change in a `1.x` release.
+- **The experimental `harness` subcommands** — `sync`, `rollback`, `gc`,
+  `policy set`, and their `--backend`, `--platform`, and `--legacy` flags. The
+  stable pair-plus-two are `harness list`, `install`, `refresh`, and `update`.
+- **wraptool's own `stdio` server transport.** It exists for tests only, is
+  unsupported for real use, and may be removed in any `1.x` release. Use `sse`
+  or `unix`.
+- **The legacy harness pool `bin/` + `lib/` trees.** Already carries a
+  deprecation notice; not a supported surface.
+- **The `wraptool:0` feature major and the `wraptool-connect` feature.**
+  Deprecated and sunset respectively. Already-published artifacts keep working
+  indefinitely; nothing new ships for either.
+- **`serve`'s override flags** (`--listen`, `--auth-token-file`,
+  `--admin-listen`, `--admin-auth-token-file`) — internal plumbing between
+  `wraptool up` and `serve` on an already-hidden command.
+- **The review UI's HTML, URLs, and form fields.** Operator-facing, not an
+  API.
+- **Console output text**, including `wraptool server status`'s prose.
+- **The scaffolded starter configuration.** `EnsureConfigFile` never
+  overwrites an existing file, so its content is a starting point, not a
+  contract.
+- **Internal formats**: the introspection cache, pool generation IDs,
+  receipts, and `recipe_revision`. All self-heal by design.
+- **Go packages and the module path.** Everything real lives under
+  `internal/` and is unimportable; `cmd` is not a supported API and the
+  module path may move.
+- **`design/` notes.** See the callout below.
+
+### One reserved exception
+
+A security fix may narrow what policy permits in a minor release. wraptool's
+policy engine has four known permissive behaviours that a future release may
+tighten: exact-length deny matching, unbounded positionals when
+`arg_constraints` is absent, default-open `?cwd=` containment, and unenforced
+valuelessness on boolean flags. See [Security](security.qmd)'s "Known
+limitations" for the currently documented ones. Without this exception,
+tightening any of them would be a breaking change; with it, they are a roadmap
+instead.
+
 ## Homebrew tap
 
 The same workflow generates `wraptool.rb` from the checksums of the build it
@@ -86,6 +171,7 @@ when a long-lived server may not match the binary currently on `PATH`.
 
 ::: {.callout-note}
 Design files under `design/` can contain roadmaps and audit findings. They are
-not a release ledger; verify shipped behavior in source, tests, CLI help, and the
+not a release ledger and are excluded from the [compatibility
+promise](#compatibility); verify shipped behavior in source, tests, CLI help, and the
 documentation pages marked as current reference.
 :::
