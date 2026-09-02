@@ -211,17 +211,24 @@ func Write(name string, p Params) (string, error) {
 	}
 
 	if existing, rerr := os.ReadFile(path); rerr == nil {
-		if merged, merr := mergeJSON(existing, content); merr == nil {
-			content = merged
+		merged, merr := mergeJSON(existing, content)
+		if merr != nil {
+			return "", fmt.Errorf("refusing to overwrite %s: existing file is not JSON wraptool can merge: %w", path, merr)
 		}
-		// If the merge fails, fall through and write the freshly rendered content.
+		content = merged
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return "", fmt.Errorf("creating directory for %s: %w", path, err)
 	}
-	if err := os.WriteFile(path, content, 0644); err != nil {
+	// 0600: the rendered config carries an Authorization: Bearer token
+	// whenever one is set (see bearer), and it is written into the project
+	// worktree.
+	if err := os.WriteFile(path, content, 0600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
+	}
+	if err := ensureGitExclude(path); err != nil {
+		return "", fmt.Errorf("excluding %s from git: %w", path, err)
 	}
 	return path, nil
 }
