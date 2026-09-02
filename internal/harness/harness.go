@@ -227,6 +227,11 @@ func Write(name string, p Params) (string, error) {
 	if err := os.WriteFile(path, content, 0600); err != nil {
 		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
+	// WriteFile applies the mode only on creation; tighten a pre-existing
+	// 0644 config from before the hardening.
+	if err := os.Chmod(path, 0600); err != nil {
+		return "", fmt.Errorf("tightening permissions on %s: %w", path, err)
+	}
 	if err := ensureGitExclude(path); err != nil {
 		return "", fmt.Errorf("excluding %s from git: %w", path, err)
 	}

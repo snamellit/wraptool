@@ -8,32 +8,14 @@ import (
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/paths"
-
-	"github.com/adrg/xdg"
 )
 
 // withIsolatedConfigHome points XDG_CONFIG_HOME at a temp dir so a test that
 // provisions the default token file never writes into the developer's real
-// config dir. Same shape (and same cleanup ordering rationale) as
-// guixcontainer_test.go's withFakePoolRoot: restore the env first, reload xdg
-// second, in one cleanup.
+// config dir; see withIsolatedXDG.
 func withIsolatedConfigHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
-	old, had := os.LookupEnv("XDG_CONFIG_HOME")
-	if err := os.Setenv("XDG_CONFIG_HOME", home); err != nil {
-		t.Fatal(err)
-	}
-	xdg.Reload()
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("XDG_CONFIG_HOME", old)
-		} else {
-			os.Unsetenv("XDG_CONFIG_HOME")
-		}
-		xdg.Reload()
-	})
-	return home
+	return withIsolatedXDG(t, "XDG_CONFIG_HOME")
 }
 
 // TestProvisionDefaultMCPToken covers the one decision shared by serve, up and

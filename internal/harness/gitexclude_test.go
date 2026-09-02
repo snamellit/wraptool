@@ -151,3 +151,25 @@ func containsLine(text, line string) bool {
 	}
 	return false
 }
+
+// TestWriteTightensPreexistingPerms: a config written 0644 by an older
+// wraptool must end up 0600 after a re-Write (WriteFile alone applies the
+// mode only on creation).
+func TestWriteTightensPreexistingPerms(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	path := filepath.Join(dir, ".mcp.json")
+	if err := os.WriteFile(path, []byte(`{"mcpServers":{}}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Write("claude", Params{URL: "http://127.0.0.1:8717/sse"}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("expected 0600 after rewrite, got %o", perm)
+	}
+}

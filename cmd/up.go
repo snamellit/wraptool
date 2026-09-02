@@ -213,9 +213,10 @@ func configOrDefault(p string) string {
 // (no LAN exposure).
 //
 // Either way an sse listener gets a token file when the operator did not
-// configure one (ensureServer then generates it, and readAuthToken hands it to
-// the harness config both runtimes write). A loopback bind is not a boundary
-// against the browser — see browserGuard — so this is not devcontainer-only.
+// configure one (created here via provisionDefaultMCPToken; readAuthToken
+// hands it to the harness config both runtimes write). A loopback bind is not
+// a boundary against the browser — see browserGuard — so this is not
+// devcontainer-only.
 func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
 	if cfg.MCP.Transport != "sse" {
 		return nil

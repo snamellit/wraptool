@@ -12,7 +12,6 @@ import (
 	"github.com/pti/wraptool/internal/requestlog"
 	"github.com/pti/wraptool/internal/whitelist"
 
-	"github.com/adrg/xdg"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -44,23 +43,10 @@ tools:
 }
 
 // withIsolatedRuntime points XDG_RUNTIME_DIR at a temp dir (so pidfile/state
-// helpers never touch a real running server) and reloads xdg. Registers a
-// t.Cleanup that restores the prior env, so callers don't need to defer.
+// helpers never touch a real running server); see withIsolatedXDG.
 func withIsolatedRuntime(t *testing.T) {
 	t.Helper()
-	old, had := os.LookupEnv("XDG_RUNTIME_DIR")
-	if err := os.Setenv("XDG_RUNTIME_DIR", t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-	xdg.Reload()
-	t.Cleanup(func() {
-		if had {
-			os.Setenv("XDG_RUNTIME_DIR", old)
-		} else {
-			os.Unsetenv("XDG_RUNTIME_DIR")
-		}
-		xdg.Reload()
-	})
+	withIsolatedXDG(t, "XDG_RUNTIME_DIR")
 }
 
 // TestPidFileRoundTrip covers the single pidfile writer used by every start path

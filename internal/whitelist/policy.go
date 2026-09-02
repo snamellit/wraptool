@@ -2,6 +2,7 @@ package whitelist
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -128,15 +129,7 @@ func (p *Policy) Evaluate(toolName string, subcommand []string, flags map[string
 // to each (see docs/configuration.qmd's "Deny rules" section and
 // doctor's policy.deny-prefix-gap check, which flags this gap).
 func subcommandMatches(actual, rule []string) bool {
-	if len(rule) > len(actual) {
-		return false
-	}
-	for i, token := range rule {
-		if actual[i] != token {
-			return false
-		}
-	}
-	return len(rule) == len(actual)
+	return slices.Equal(actual, rule)
 }
 
 func containsFlag(allowed []string, flag string) bool {
