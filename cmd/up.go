@@ -208,16 +208,19 @@ func configOrDefault(p string) string {
 // adjustServerBindForRuntime widens the MCP bind for a bridged (devcontainer)
 // runtime, whose container reaches the host over the bridge gateway — not the
 // host's loopback — so a loopback bind is unreachable from inside it. A loopback
-// listen is rebound to 0.0.0.0 on the same port, and because a non-loopback bind
-// is reachable off-host it must be authenticated, so a token file is defaulted
-// in when the operator did not configure one (ensureServer then generates it).
-// The guix runtime shares the host netns, so loopback already works there and is
-// left untouched (no LAN exposure) — this is a no-op for it.
+// listen is rebound to 0.0.0.0 on the same port. The guix runtime shares the
+// host netns, so loopback already works there and the bind is left untouched
+// (no LAN exposure).
+//
+// Either way an sse listener gets a token file when the operator did not
+// configure one (ensureServer then generates it, and readAuthToken hands it to
+// the harness config both runtimes write). A loopback bind is not a boundary
+// against the browser — see browserGuard — so this is not devcontainer-only.
 func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
-	if rt != runtimeDevcontainer || cfg.MCP.Transport != "sse" {
+	if cfg.MCP.Transport != "sse" {
 		return nil
 	}
-	if config.ListenIsLoopback(cfg.MCP.Listen) {
+	if rt == runtimeDevcontainer && config.ListenIsLoopback(cfg.MCP.Listen) {
 		_, port, err := net.SplitHostPort(cfg.MCP.Listen)
 		if err != nil {
 			return fmt.Errorf("parsing mcp.listen %q: %w", cfg.MCP.Listen, err)
@@ -227,7 +230,7 @@ func adjustServerBindForRuntime(cfg *config.Config, rt containerRuntime) error {
 	}
 	if cfg.MCP.AuthTokenFile == "" {
 		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
-		fmt.Printf("devcontainer: enabling an MCP auth token at %s (a non-loopback bind must be authenticated)\n", cfg.MCP.AuthTokenFile)
+		fmt.Printf("enabling an MCP auth token at %s (the listener must be authenticated)\n", cfg.MCP.AuthTokenFile)
 	}
 	return nil
 }

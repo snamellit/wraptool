@@ -142,6 +142,21 @@ func runServe(configPath string, ov serveOverrides) error {
 	// before validation, so the effective addresses/tokens are what gets checked.
 	ov.apply(cfg)
 
+	// An sse listener is TCP-reachable, and that includes every web page the
+	// developer visits: mcp-go answers the SSE stream with
+	// Access-Control-Allow-Origin: *, so a hostile page can read the session
+	// endpoint and POST tool calls as a CORS simple request. A loopback bind is
+	// not a boundary against the browser. Provision a token rather than failing
+	// validation, so a first run still comes up. Runs before Validate, which
+	// stats the file.
+	if cfg.MCP.Transport == "sse" && cfg.MCP.AuthTokenFile == "" {
+		cfg.MCP.AuthTokenFile = defaultMCPTokenFile()
+		if err := ensureTokenFile(cfg.MCP.AuthTokenFile, "MCP"); err != nil {
+			return err
+		}
+		log.Printf("mcp.auth_token_file is unset — using %s; clients must send it as `Authorization: Bearer ...`", cfg.MCP.AuthTokenFile)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validating config: %w", err)
 	}
@@ -343,6 +358,7 @@ func serveSSE(s *server.MCPServer, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	handler = browserGuard(handler, cfg.MCP.Listen)
 
 	log.Printf("wraptool MCP server starting on %s (SSE at /sse, Streamable HTTP at /mcp)", cfg.MCP.Listen)
 
@@ -455,6 +471,70 @@ func webURL(listen, token string) string {
 		u += "?token=" + url.QueryEscape(token)
 	}
 	return u
+}
+
+// browserGuard rejects the two request shapes only a browser produces, before
+// the Bearer check ever runs. It is the layer that survives a leaked token.
+//
+//   - A cross-origin `Origin`. mcp-go serves the SSE stream with
+//     Access-Control-Allow-Origin: * and the message endpoint accepts a CORS
+//     simple request (text/plain, no preflight), so any page the developer
+//     visits can reach a loopback listener. Only loopback origins are allowed;
+//     a browser cannot forge the header.
+//   - An unexpected `Host`. This blocks DNS rebinding, where the browser
+//     resolves an attacker-controlled name to 127.0.0.1 but still sends that
+//     name as Host.
+//
+// Only the TCP (sse) listener is wrapped: a unix socket is not reachable from
+// a browser, and its clients pick an arbitrary Host for the dialled path.
+func browserGuard(next http.Handler, listen string) http.Handler {
+	listenHost := hostOnly(listen)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if origin := r.Header.Get("Origin"); origin != "" && !originAllowed(origin) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+		if !hostAllowed(hostOnly(r.Host), listenHost) {
+			http.Error(w, "host not allowed", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loopbackNames are the host names that always name this machine. Compared as
+// strings because they arrive in a header, not from a resolver — the point of
+// the Host check is to reject a name that merely *resolves* to loopback.
+var loopbackNames = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+
+// originAllowed reports whether a browser `Origin` may reach the listener.
+// "null" (a sandboxed iframe, a file:// page) and any non-loopback site fail.
+func originAllowed(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	return loopbackNames[u.Hostname()]
+}
+
+// hostAllowed reports whether a request's Host names this listener. A wildcard
+// bind (0.0.0.0, ::, no host) is reached under whatever address routes to it —
+// a devcontainer uses the bridge gateway — so the check cannot apply there.
+func hostAllowed(host, listenHost string) bool {
+	switch listenHost {
+	case "", "0.0.0.0", "::":
+		return true
+	}
+	return host == listenHost || loopbackNames[host]
+}
+
+// hostOnly strips the port from a host:port, tolerating a bare host and the
+// bracketed IPv6 form.
+func hostOnly(hostport string) string {
+	if host, _, err := net.SplitHostPort(hostport); err == nil {
+		return host
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(hostport, "["), "]")
 }
 
 // newAuthMiddleware creates an HTTP middleware that validates a Bearer token.

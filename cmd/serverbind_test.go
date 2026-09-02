@@ -72,13 +72,26 @@ func TestAdjustServerBindForRuntime(t *testing.T) {
 		t.Error("devcontainer non-loopback bind must get a default token file")
 	}
 
-	// guix: loopback left untouched, no token forced.
+	// guix: loopback left untouched (host netns, no LAN exposure), but a token
+	// is still provisioned — a loopback listener is reachable from the browser.
 	gx := &config.Config{MCP: config.MCPConfig{Transport: "sse", Listen: "127.0.0.1:8717"}}
 	if err := adjustServerBindForRuntime(gx, runtimeGuix); err != nil {
 		t.Fatal(err)
 	}
-	if gx.MCP.Listen != "127.0.0.1:8717" || gx.MCP.AuthTokenFile != "" {
-		t.Errorf("guix bind must be untouched, got listen=%q token=%q", gx.MCP.Listen, gx.MCP.AuthTokenFile)
+	if gx.MCP.Listen != "127.0.0.1:8717" {
+		t.Errorf("guix bind must be untouched, got %q", gx.MCP.Listen)
+	}
+	if gx.MCP.AuthTokenFile == "" {
+		t.Error("guix runtime must get a default token file")
+	}
+
+	// An operator-configured token file is never overridden.
+	set := &config.Config{MCP: config.MCPConfig{Transport: "sse", Listen: "127.0.0.1:8717", AuthTokenFile: "/my/token"}}
+	if err := adjustServerBindForRuntime(set, runtimeGuix); err != nil {
+		t.Fatal(err)
+	}
+	if set.MCP.AuthTokenFile != "/my/token" {
+		t.Errorf("operator token file was overridden: %q", set.MCP.AuthTokenFile)
 	}
 }
 
