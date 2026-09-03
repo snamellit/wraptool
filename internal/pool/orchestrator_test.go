@@ -1656,7 +1656,8 @@ func TestNPMRecipeRevisionFoldsProvisioningImage(t *testing.T) {
 // work package made was exactly this kind of change, and it shipped with no
 // golden-value test pinning the new format at all.
 func TestNPMRecipeRevisionGoldenValue(t *testing.T) {
-	const wantGolden = "sha256:731931a44a2ee5550777cc52c6183d10d7177125082669af5f62ce57414e61a5"
+	// Format 4 (issue #38: node runtime bump must invalidate existing locks).
+	const wantGolden = "sha256:63b70ceacb0184d3bc7689d221ed800e44114aa664385e6ef53cbe1bbb92f7e5"
 	got, err := npmRecipeRevision("x", "img")
 	if err != nil {
 		t.Fatalf("npmRecipeRevision: %v", err)

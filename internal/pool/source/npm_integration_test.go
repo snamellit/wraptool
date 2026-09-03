@@ -73,7 +73,7 @@ func (h hybridIntegrationBackend) Run(ctx context.Context, spec backend.RunSpec)
 //     downloaded object lands at the exact cache/sha256/<hex> path Fetch's
 //     contract promises, and that nothing is written directly under cache/.
 //   - MAJOR-2: internal/pool's defaultNodeVersion must be an exact,
-//     published Node version ("22.11.0"), not a bare major ("22") —
+//     published Node version ("22.23.2"), not a bare major ("22") —
 //     nodejs.org/dist has no v22/ directory, so a bare major 404s on every
 //     real resolve. Asserted below by capturing the exact SHASUMS256.txt
 //     path the orchestrator's own defaultNodeVersion constant drives NPM.Resolve
@@ -90,7 +90,7 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	// not passed in by this test — it must match what the orchestrator
 	// itself is pinned to (§8's MAJOR-2 fix) for the SHASUMS assertion
 	// below to mean anything.
-	const wantNodeVersion = "22.11.0"
+	const wantNodeVersion = "22.23.2"
 
 	// --- npm registry packument server ---
 	packument := map[string]any{
@@ -270,7 +270,7 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	}
 
 	// --- Assertion 3 (MAJOR-2): the SHASUMS256.txt path requested matches
-	// v22.11.0 exactly — proving the orchestrator's own defaultNodeVersion,
+	// v22.23.2 exactly — proving the orchestrator's own defaultNodeVersion,
 	// which this test never supplies, is a real, resolvable version. ---
 	wantPath := "/v" + wantNodeVersion + "/SHASUMS256.txt"
 	if len(shasumsRequests) != 1 || shasumsRequests[0] != wantPath {
