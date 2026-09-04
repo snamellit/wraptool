@@ -386,10 +386,10 @@ func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.
 
 	const pkg = "@earendil-works/pi-coding-agent"
 	const version = "1.0.0"
-	// nodeVersion must match orchestrator.go's own unexported
-	// defaultNodeVersion constant — UpdateHarnessLocked always resolves
-	// against that pinned Node version itself (npm_integration_test.go's
-	// wantNodeVersion documents the same constraint).
+	// nodeVersion is the one release this test's index.json fixture (below)
+	// reports on the pool's default line — pool.RefreshNodeLine +
+	// selectNodeVersion (design/harness/node-runtime-tracking.md WP1) must
+	// select exactly this version and hand it to NPM.Resolve.
 	const nodeVersion = "22.23.2"
 
 	packument := map[string]any{
@@ -423,8 +423,20 @@ func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.
 	shasums := fmt.Sprintf("%s  %s\n%s  %s\n",
 		sha256Hex(amd64Content), amd64Name,
 		sha256Hex(arm64Content), arm64Name)
+	// index.json-shaped fixture (design/harness/node-runtime-tracking.md
+	// WP1): reports the one release above on the pool's default line, so
+	// pool.RefreshNodeLine below has something to observe.
+	nodeIndexBody, err := json.Marshal([]map[string]string{
+		{"version": "v" + nodeVersion, "date": "2026-07-01"},
+	})
+	if err != nil {
+		t.Fatalf("marshaling fixture node index: %v", err)
+	}
 	nodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "index.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(nodeIndexBody)
 		case strings.HasSuffix(r.URL.Path, "SHASUMS256.txt"):
 			w.Write([]byte(shasums))
 		case strings.HasSuffix(r.URL.Path, amd64Name):
@@ -478,6 +490,9 @@ func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.
 
 	if _, err := pool.RefreshHarness(ctx, n, paths, pool.SourceNPM, pkg, now); err != nil {
 		t.Fatalf("RefreshHarness: %v", err)
+	}
+	if _, err := pool.RefreshNodeLine(ctx, paths, pool.NodeOptions{BaseURL: nodeSrv.URL}, "", now); err != nil {
+		t.Fatalf("RefreshNodeLine: %v", err)
 	}
 
 	result, err := pool.UpdateHarness(ctx, n, hb, paths, pool.UpdateOptions{

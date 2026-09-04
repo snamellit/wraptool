@@ -199,6 +199,18 @@ The rest of §16 Phase 5 ("quarantine automation") in
   `wraptool harness list` shows a live countdown (e.g. `2.1.221 (3d left)`)
   for anything still quarantined, so the wait is visible before you reach
   for the bypass.
+- **The bundled Node runtime is a locked input too**
+  (`design/harness/node-runtime-tracking.md`): for an npm-sourced harness,
+  `refresh` also fetches `nodejs.org/dist/index.json` for the harness's
+  pinned Node line and records each patch exactly like a package
+  candidate — the same `minimum_release_age`/`minimum_observation_age`
+  quarantine applies, with **no bypass**: there is no `--allow-young`
+  equivalent for node, so a quarantined line is a hard, actionable error
+  until it clears policy naturally. `update` locks the newest *eligible*
+  observed patch and folds it into `recipe_revision`, so a routine node
+  security release flows through the same refresh/update self-heal a
+  package version bump already gets — no code change needed for a patch,
+  only for moving to a new major line.
 
 Item 1 (this page) is scheduling *guidance* — refresh itself has run the
 observation clock since Phase 1; a systemd timer or launchd job is the
