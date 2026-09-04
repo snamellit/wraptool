@@ -119,6 +119,21 @@ func nodeCandidates(obs Observations, line string) ([]Candidate, error) {
 	return candidatesWithPrefix(obs, nodeObservationSubject(line)+"/")
 }
 
+// nodeVersionOnLine reports whether version's major segment equals line —
+// the same comparison RefreshNodeLine's own filter uses when deciding which
+// nodejs.org/dist entries belong to one line. Used by orchestrator.go's
+// nodeVersionForRecipe fallback (review MAJOR-2): a locked node version from
+// a DIFFERENT line (a descriptor's NodeLine moved, e.g. "22" -> "24") must
+// never be treated as still matching the line currently requested, or a
+// line move silently keeps building the OLD line with no output at all.
+func nodeVersionOnLine(version, line string) bool {
+	sv, err := semver.NewVersion(version)
+	if err != nil {
+		return false
+	}
+	return fmt.Sprint(sv.Major()) == line
+}
+
 // RefreshNodeLine fetches nodejs.org/dist/index.json (opts) and records
 // every patch found on line into observations.json under the
 // "node:<line>" subject (design/harness/node-runtime-tracking.md WP1 item
@@ -195,29 +210,35 @@ func RefreshNodeLine(ctx context.Context, paths PoolPaths, opts NodeOptions, lin
 
 // selectNodeVersion picks the Node patch UpdateHarnessLocked passes to
 // Source.Resolve for a SourceNPM harness pinned to line (design/harness/
-// node-runtime-tracking.md WP1 item 3), reusing decision.go's
+// node-runtime-tracking.md WP2 item 3), reusing decision.go's
 // scanCandidatesForConstraint with an empty constraint (line's own
 // observations, from nodeCandidates, are already scoped to that one line —
-// there is no further version constraint to apply) so node releases get
-// EXACTLY the same Eligible/§9 quarantine evaluation package versions do:
+// there is no further version constraint to apply) and mirroring
+// selectNewestEligible's own contract EXACTLY — a node release gets the
+// same §9 quarantine evaluation a package version does, no separate axis:
 //
 //   - the newest ELIGIBLE observed patch, when one exists;
-//   - otherwise the newest OBSERVED patch (still quarantined, or
-//     unconditionally ineligible — e.g. a missing publish date), so a
-//     recently-bumped-but-not-yet-eligible line does not block an
-//     otherwise-ready package update entirely — this MAY reach
-//     Source.Resolve with a quarantined-per-policy node version, which is
-//     accepted: the pool's own §9 gate is about DOWNLOADING a version, not
-//     about which already-decided default a resolve step is pinned to,
-//     mirroring how an existing locked version is kept "as is" elsewhere in
-//     this file rather than erroring on a policy tightening alone;
-//   - an error naming `wraptool harness refresh`, actionable and never a
-//     silently-reused hardcoded version, when NOTHING has ever been
-//     observed for line (a fresh pool, or refresh never run) — the MAJOR-2
-//     guarantee (design/harness/node-runtime-tracking.md's Problem section)
-//     that what reaches Source.Resolve is always an exact published
-//     version, never a bare major, extends here: there being no fallback
-//     constant left to reach for is precisely the point.
+//   - otherwise an error naming the newest OBSERVED-but-ineligible patch and,
+//     when the ineligibility is purely a matter of waiting, how much longer
+//     (QuarantineRemaining) — never silently bundling a quarantined,
+//     prerelease, or zero-published_at patch just because §9's gate is
+//     nominally "about downloading a version" (review finding MAJOR-1: that
+//     reasoning made scan.newest an unaudited quarantine bypass — a node
+//     patch published 2h ago could ship on the very first refresh after
+//     issue #38's fix, and scan.newest ignores Prerelease entirely, making
+//     AllowPrereleases unreachable for node);
+//   - an error naming `wraptool harness refresh`, when NOTHING has ever
+//     been observed for line (a fresh pool, or refresh never run) — the
+//     MAJOR-2 guarantee (design/harness/node-runtime-tracking.md's Problem
+//     section) that what reaches Source.Resolve is always an exact
+//     published version, never a bare major, extends here: there being no
+//     fallback constant left to reach for is precisely the point.
+//
+// No AllowYoung-style bypass exists for node (unlike the package axis):
+// nothing here can audit a caller-supplied --reason against a single node
+// release the way the package axis's request/approval flow does, so a
+// quarantined node line is a hard error, full stop, until it clears policy
+// naturally or minimum_observation_age/minimum_release_age is relaxed.
 //
 // The returned reason is a short, human-readable explanation for
 // UpdateResult.NodeVersionNote.
@@ -230,12 +251,16 @@ func selectNodeVersion(obs Observations, line string, policy EffectivePolicy, no
 	if err != nil {
 		return "", "", err
 	}
-	switch {
-	case scan.eligible != nil:
+	if scan.eligible != nil {
 		return scan.eligible.cand.Version, fmt.Sprintf("newest eligible on node line %s", line), nil
-	case scan.newest != nil:
-		return scan.newest.cand.Version, fmt.Sprintf("no eligible node release on line %s yet; using newest observed", line), nil
-	default:
+	}
+	if scan.newest == nil {
 		return "", "", fmt.Errorf("no observed Node release for line %q; run `wraptool harness refresh` first", line)
 	}
+	if remaining, ok := QuarantineRemaining(scan.newest.cand, policy, now); ok {
+		return "", "", fmt.Errorf("no eligible Node release on line %q: newest observed release %s is quarantined, %s remaining",
+			line, scan.newest.cand.Version, remaining)
+	}
+	return "", "", fmt.Errorf("no eligible Node release on line %q: newest observed release %s is not eligible (yanked, or a disallowed prerelease)",
+		line, scan.newest.cand.Version)
 }

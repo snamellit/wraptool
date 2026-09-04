@@ -107,11 +107,16 @@ func TestRefreshNodeLineFirstSeenWriteOnceAcrossRefreshes(t *testing.T) {
 	}
 }
 
-// TestSelectNodeVersionFallsBackToNewestObservedWhenNoneEligible is
-// deliverable 3's fallback rule: with observations present but none
-// eligible (all quarantined), selectNodeVersion falls back to the newest
-// OBSERVED patch rather than erroring.
-func TestSelectNodeVersionFallsBackToNewestObservedWhenNoneEligible(t *testing.T) {
+// TestSelectNodeVersionErrorsWhenNoneEligible is MAJOR-1's fix (review
+// round: selectNodeVersion's old scan.newest fallback was an unaudited
+// quarantine bypass — a node patch published 2h ago would ship on the very
+// first refresh after issue #38's fix, and scan.newest ignores Prerelease
+// entirely too). With observations present but none eligible (all
+// quarantined), selectNodeVersion must error — mirroring
+// selectNewestEligible's own contract exactly — naming the newest
+// (ineligible) observed candidate and its remaining quarantine time, never
+// silently selecting it.
+func TestSelectNodeVersionErrorsWhenNoneEligible(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	obs := Observations{}
 	// Both candidates published too recently under a 168h policy.
@@ -123,15 +128,73 @@ func TestSelectNodeVersionFallsBackToNewestObservedWhenNoneEligible(t *testing.T
 	}
 	policy := EffectivePolicy{MinimumReleaseAge: 168 * time.Hour}
 
-	version, reason, err := selectNodeVersion(obs, "22", policy, now)
+	_, _, err := selectNodeVersion(obs, "22", policy, now)
+	if err == nil {
+		t.Fatal("expected an error: nothing on line 22 is eligible yet, selectNodeVersion must not bundle a quarantined patch")
+	}
+	if got := err.Error(); !strings.Contains(got, "22.20.0") || !strings.Contains(got, "quarantined") || !strings.Contains(got, "remaining") {
+		t.Errorf("error = %q, want it to name the newest observed candidate 22.20.0 as quarantined with a remaining time", got)
+	}
+}
+
+// TestSelectNodeVersionErrorsOnDisallowedPrereleaseInsteadOfBypassing pins
+// MAJOR-1's second consequence: the deleted scan.newest fallback also
+// ignored Prerelease entirely, making AllowPrereleases unreachable for
+// node — a prerelease-only observation set must still be refused, not
+// silently selected, even once every AGE-based quarantine window has
+// cleared (QuarantineRemaining, mirrored unmodified from the package axis,
+// reports 0s remaining here since it only ever evaluates age — Prerelease
+// disqualification is Eligible's own, separate axis; selectNewestEligible
+// has this identical property for packages).
+func TestSelectNodeVersionErrorsOnDisallowedPrereleaseInsteadOfBypassing(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	obs := Observations{}
+	old := now.Add(-24 * 400 * time.Hour)
+	if err := obs.Observe(nodeObservationKey("22", "22.20.0-rc.1"), FormatTimestamp(old), FormatTimestamp(old), true, false, false); err != nil {
+		t.Fatal(err)
+	}
+	policy := EffectivePolicy{} // AllowPrereleases defaults to false
+
+	_, _, err := selectNodeVersion(obs, "22", policy, now)
+	if err == nil {
+		t.Fatal("expected an error: a disallowed prerelease must never be selected, regardless of age")
+	}
+	if got := err.Error(); !strings.Contains(got, "22.20.0-rc.1") {
+		t.Errorf("error = %q, want it to name the prerelease candidate", got)
+	}
+}
+
+// TestSelectNodeVersionQuarantinedByMinimumObservationAge proves node
+// releases get minimum_observation_age's own quarantine axis, not just
+// minimum_release_age — the same §9 policy dimension package versions are
+// evaluated under.
+func TestSelectNodeVersionQuarantinedByMinimumObservationAge(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	obs := Observations{}
+	// Published long ago (clears minimum_release_age), but FIRST SEEN by
+	// this pool only 1 hour ago — minimum_observation_age governs here.
+	published := now.Add(-24 * 400 * time.Hour)
+	firstSeen := now.Add(-1 * time.Hour)
+	if err := obs.Observe(nodeObservationKey("22", "22.20.0"), FormatTimestamp(firstSeen), FormatTimestamp(published), false, false, false); err != nil {
+		t.Fatal(err)
+	}
+	policy := EffectivePolicy{MinimumObservationAge: 24 * time.Hour}
+
+	_, _, err := selectNodeVersion(obs, "22", policy, now)
+	if err == nil {
+		t.Fatal("expected an error: 22.20.0 has only been observed for 1h, minimum_observation_age requires 24h")
+	}
+	if got := err.Error(); !strings.Contains(got, "22.20.0") || !strings.Contains(got, "quarantined") {
+		t.Errorf("error = %q, want it to name 22.20.0 as quarantined", got)
+	}
+
+	later := now.Add(24 * time.Hour)
+	version, _, err := selectNodeVersion(obs, "22", policy, later)
 	if err != nil {
-		t.Fatalf("selectNodeVersion: %v", err)
+		t.Fatalf("selectNodeVersion after the observation window: %v", err)
 	}
 	if version != "22.20.0" {
-		t.Errorf("selected version = %q, want the newest OBSERVED 22.20.0 (nothing eligible)", version)
-	}
-	if reason == "" {
-		t.Error("expected a non-empty fallback reason")
+		t.Errorf("version = %q, want 22.20.0 once minimum_observation_age has elapsed", version)
 	}
 }
 

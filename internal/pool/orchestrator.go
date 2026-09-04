@@ -481,11 +481,12 @@ type UpdateResult struct {
 	// NodeVersionNote reports the Node runtime version selection made on a
 	// fresh resolve (DecisionResolveVersion, SourceNPM only) whenever it
 	// differs from the harness's previously locked node version — e.g.
-	// "node runtime: 22.20.0 -> 22.23.2 (newest eligible on line 22)"
-	// (design/harness/node-runtime-tracking.md WP1 item 3: "log/print which
-	// node version was chosen and why when it differs from the lock's
-	// current one"). Empty when nothing changed, when this call did not
-	// resolve at all, or for a SourceArchive harness.
+	// "node runtime: 22.20.0 -> 22.23.2 (newest eligible on line 22)" (the
+	// WP1 work-package brief's own requirement: "log/print which node
+	// version was chosen and why when it differs from the lock's current
+	// one" — design/harness/node-runtime-tracking.md itself does not spell
+	// this out, WP1's brief added it). Empty when nothing changed, when
+	// this call did not resolve at all, or for a SourceArchive harness.
 	NodeVersionNote string
 }
 
@@ -760,18 +761,26 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// surfaced only if DecisionResolveVersion actually needs nodeVersion
 	// below. nodeVersionForRecipe falls back to the existing lock's own
 	// recorded node version in that case, so a missing observation cannot
-	// manufacture a spurious recipe mismatch out of thin air.
+	// manufacture a spurious recipe mismatch out of thin air — but ONLY when
+	// that recorded version is still on the REQUESTED line (nodeVersionOnLine,
+	// review MAJOR-2): without this guard, moving a harness's NodeLine (e.g.
+	// "22" -> "24", the design's one deliberately-supported code change)
+	// would keep recipeRevision computed from the OLD line's locked version,
+	// `harness update` would report up-to-date, and the pool would silently
+	// keep building the old line forever. line is hoisted out of the
+	// SourceNPM block below so this check has it even when selectNodeVersion
+	// itself was never reached for archive sources.
+	line := opts.NodeLine
+	if line == "" {
+		line = defaultNodeLine
+	}
 	var nodeVersion, nodeReason string
 	var nodeErr error
 	if kind == SourceNPM {
-		line := opts.NodeLine
-		if line == "" {
-			line = defaultNodeLine
-		}
 		nodeVersion, nodeReason, nodeErr = selectNodeVersion(obs, line, policy, opts.Now)
 	}
 	nodeVersionForRecipe := nodeVersion
-	if nodeErr != nil && hasLock && existing.Runtime != nil {
+	if nodeErr != nil && hasLock && existing.Runtime != nil && nodeVersionOnLine(existing.Runtime.Version, line) {
 		nodeVersionForRecipe = existing.Runtime.Version
 	}
 

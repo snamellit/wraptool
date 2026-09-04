@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1725,6 +1726,192 @@ func TestUpdateHarnessSelfHealsPhase4RecipeMismatch(t *testing.T) {
 	}
 	if lh.RecipeRevision != wantRecipe {
 		t.Errorf("persisted RecipeRevision = %q, want the new format's %q", lh.RecipeRevision, wantRecipe)
+	}
+}
+
+// TestUpdateHarnessLockedNoSpuriousMismatchWhenUnrefreshed is review
+// MAJOR-2's mutation-pinning test (minor 4a): a harness whose lock already
+// agrees on package, current-format recipe, AND its own recorded Runtime
+// node version must stay a no-op (no Resolve call) even when this pool has
+// NEVER observed anything for the node line at all (no `wraptool harness
+// refresh` run since node tracking shipped) — nodeVersionForRecipe's
+// fallback to the existing lock's own recorded node version is what makes
+// this possible. Deleting that fallback (orchestrator.go's nodeErr branch)
+// would compute recipeRevision with an empty node version instead, mismatch
+// the persisted one, and force a spurious re-resolve purely because the
+// pool hasn't refreshed — this test fails under exactly that mutation.
+func TestUpdateHarnessLockedNoSpuriousMismatchWhenUnrefreshed(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	// Package candidate only — deliberately NOT seedObservations, which
+	// would also auto-seed a node:22 observation (this test's whole point
+	// is that NOTHING has ever been observed for the node line).
+	seedObservationsForSource(t, paths, SourceNPM, pkg, []Candidate{
+		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+
+	const lockedNodeVersion = "22.10.0"
+	recipeRevision, err := npmRecipeRevision(pkg, "", lockedNodeVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLock(t, paths, &Lock{
+		SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+		Harnesses: map[string]LockHarness{
+			"claude": {
+				Source: npmSourceName, Package: pkg, Version: "2.1.220",
+				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+				RecipeRevision: recipeRevision,
+				Runtime:        &LockRuntime{Name: "node", Version: lockedNodeVersion},
+				NPMLock: &NPMLock{
+					LockfileVersion: 3,
+					Lockfile:        json.RawMessage(sampleLockNPMLockfile),
+					Packages: map[string]NPMLockPackage{
+						"node_modules/bar": {Version: "2.0.0", Resolved: "https://registry.npmjs.org/bar.tgz", Integrity: "sha512-abc", SHA256: "deadbeef"},
+					},
+				},
+			},
+		},
+	})
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if src.resolveCalls != 0 {
+		t.Errorf("resolveCalls = %d, want 0 — an unrefreshed node line must not force a spurious re-resolve", src.resolveCalls)
+	}
+	if res.Harness.Version != "2.1.220" {
+		t.Errorf("Version = %q, want unchanged 2.1.220", res.Harness.Version)
+	}
+}
+
+// TestUpdateHarnessLockedPrefersFreshlySelectedNodeVersionOverLockedOne is
+// review MAJOR-2's sibling mutation-pinning test (minor 4b): when the node
+// line HAS been refreshed and a newer eligible patch is observed,
+// recipeRevision must be computed from THAT freshly selected version, not
+// the existing lock's older recorded one — an "always prefer the locked
+// value" mutation of nodeVersionForRecipe would never notice the new
+// release and this harness would incorrectly stay a no-op forever.
+func TestUpdateHarnessLockedPrefersFreshlySelectedNodeVersionOverLockedOne(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	seedObservationsForSource(t, paths, SourceNPM, pkg, []Candidate{
+		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+	// A newer, comfortably-eligible node patch than the one already locked.
+	seedNodeObservation(t, paths)
+
+	const lockedNodeVersion = "22.10.0" // older than seedNodeObservation's testNodeVersion
+	staleRecipe, err := npmRecipeRevision(pkg, "", lockedNodeVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLock(t, paths, &Lock{
+		SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+		Harnesses: map[string]LockHarness{
+			"claude": {
+				Source: npmSourceName, Package: pkg, Version: "2.1.220",
+				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+				RecipeRevision: staleRecipe,
+				Runtime:        &LockRuntime{Name: "node", Version: lockedNodeVersion},
+				NPMLock: &NPMLock{
+					LockfileVersion: 3,
+					Lockfile:        json.RawMessage(sampleLockNPMLockfile),
+					Packages: map[string]NPMLockPackage{
+						"node_modules/bar": {Version: "2.0.0", Resolved: "https://registry.npmjs.org/bar.tgz", Integrity: "sha512-abc", SHA256: "deadbeef"},
+					},
+				},
+			},
+		},
+	})
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if !res.Changed {
+		t.Fatal("expected Changed=true: a newly eligible node release must force a re-resolve even with no package version change")
+	}
+	if src.resolveCalls != 1 {
+		t.Errorf("resolveCalls = %d, want 1", src.resolveCalls)
+	}
+	if src.lastResolve.nodeVersion != testNodeVersion {
+		t.Errorf("Resolve's nodeVersion = %q, want the freshly selected %q, not the stale locked %q", src.lastResolve.nodeVersion, testNodeVersion, lockedNodeVersion)
+	}
+	wantNote := fmt.Sprintf("node runtime: %s -> %s", lockedNodeVersion, testNodeVersion)
+	if res.NodeVersionNote == "" || !strings.Contains(res.NodeVersionNote, wantNote) {
+		t.Errorf("NodeVersionNote = %q, want it to contain %q", res.NodeVersionNote, wantNote)
+	}
+}
+
+// TestUpdateHarnessLockedNodeLineMoveIsNotANoOp is review MAJOR-2's direct
+// regression test: a harness whose NodeLine moved (e.g. "22" -> "24", the
+// design's one deliberately-supported code change for a runtime major bump)
+// must never silently report up-to-date while still holding an OLD line's
+// locked node version — nodeVersionForRecipe's fallback must only reuse the
+// existing lock's recorded node version when it is ALREADY on the
+// REQUESTED line (nodeVersionOnLine). Here nothing has been observed for
+// the new line 24 yet, so the fallback cannot apply at all; this must
+// surface the actionable "no observed Node release" error (not silently
+// match the stale line-22 recipe), proving the line move is never a no-op.
+func TestUpdateHarnessLockedNodeLineMoveIsNotANoOp(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+
+	seedObservationsForSource(t, paths, SourceNPM, pkg, []Candidate{
+		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
+	})
+	// No node:24 observation at all — the descriptor just moved to line 24
+	// and `wraptool harness refresh` has not run against it yet.
+
+	const lockedLine22Version = "22.10.0"
+	staleRecipe, err := npmRecipeRevision(pkg, "", lockedLine22Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLock(t, paths, &Lock{
+		SchemaVersion: LockSchemaVersion, GeneratedAt: FormatTimestamp(fixedNow.Add(-time.Hour)), PolicyHash: "sha256:x",
+		Harnesses: map[string]LockHarness{
+			"claude": {
+				Source: npmSourceName, Package: pkg, Version: "2.1.220",
+				PublishedAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)), FirstSeenAt: FormatTimestamp(fixedNow.Add(-200 * time.Hour)),
+				RecipeRevision: staleRecipe,
+				Runtime:        &LockRuntime{Name: "node", Version: lockedLine22Version},
+				NPMLock: &NPMLock{
+					LockfileVersion: 3,
+					Lockfile:        json.RawMessage(sampleLockNPMLockfile),
+					Packages: map[string]NPMLockPackage{
+						"node_modules/bar": {Version: "2.0.0", Resolved: "https://registry.npmjs.org/bar.tgz", Integrity: "sha512-abc", SHA256: "deadbeef"},
+					},
+				},
+			},
+		},
+	})
+
+	src := &fakeSource{}
+	_, err = UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, NodeLine: "24", Now: fixedNow,
+	})
+	if err == nil {
+		t.Fatal("expected an error: line 24 has never been observed, a stale line-22 lock must not be reported up-to-date")
+	}
+	if !strings.Contains(err.Error(), `"24"`) || !strings.Contains(err.Error(), "wraptool harness refresh") {
+		t.Errorf("error = %q, want it to name line 24 and `wraptool harness refresh`", err)
+	}
+	if src.resolveCalls != 0 {
+		t.Errorf("resolveCalls = %d, want 0 (Resolve must not run before the node line itself is refreshed)", src.resolveCalls)
 	}
 }
 
