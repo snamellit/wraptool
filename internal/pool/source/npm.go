@@ -275,19 +275,27 @@ func (n *NPM) Refresh(ctx context.Context, pkg string) ([]pool.Candidate, error)
 	return candidates, nil
 }
 
-// versionPublishedAt looks up version's publish time with a fresh registry
-// request (Resolve does not trust a caller-supplied Candidate, which may be
-// stale by the time Resolve runs). Unlike Refresh's candidate listing —
-// where a missing/unparsable time deliberately yields a zero,
-// ineligible-by-construction PublishedAt (§9's safety net) — Resolve's
-// success path requires a real value: published_at is a required lock
-// property (§8), so a missing, non-string, or unparsable registry time for
-// the exact version being locked fails here, at the cause, rather than
-// surfacing later as an opaque (*pool.Lock).Validate rejection.
-func (n *NPM) versionPublishedAt(ctx context.Context, pkg, version string) (time.Time, error) {
-	doc, err := n.fetchPackument(ctx, pkg)
-	if err != nil {
-		return time.Time{}, err
+// versionPublishedAt looks up version's publish time (Resolve does not
+// trust a caller-supplied Candidate, which may be stale by the time Resolve
+// runs). Unlike Refresh's candidate listing — where a missing/unparsable
+// time deliberately yields a zero, ineligible-by-construction PublishedAt
+// (§9's safety net) — Resolve's success path requires a real value:
+// published_at is a required lock property (§8), so a missing, non-string,
+// or unparsable registry time for the exact version being locked fails
+// here, at the cause, rather than surfacing later as an opaque
+// (*pool.Lock).Validate rejection. packuments is the SAME per-Resolve-call
+// cache checkEnginesNode/backfillIntegrity thread through this method's
+// caller (review NIT 8), so a single Resolve call fetches pkg's packument
+// at most once no matter how many of these three callers need it.
+func (n *NPM) versionPublishedAt(ctx context.Context, packuments map[string]*npmPackument, pkg, version string) (time.Time, error) {
+	doc, ok := packuments[pkg]
+	if !ok {
+		var err error
+		doc, err = n.fetchPackument(ctx, pkg)
+		if err != nil {
+			return time.Time{}, err
+		}
+		packuments[pkg] = doc
 	}
 	raw, ok := doc.Time[version]
 	if !ok {
@@ -334,13 +342,11 @@ type npmVersionEngines struct {
 // package that also needed integrity backfill fetches its packument only
 // once per Resolve call.
 //
-// A missing engines field, or an engines.node value neither this package's
-// nor npm's own semver dialect can parse (npm's constraint grammar is a
-// superset of Masterminds/semver's — e.g. npm's bare "20 - 22" hyphen
-// ranges are not valid Masterminds syntax), is a non-event: the design doc
-// is explicit that this check must never fail an update merely because it
-// couldn't understand the declaration, only because it definitively
-// understood one and found a real mismatch.
+// A missing engines field, or an engines.node value this package's
+// Masterminds/semver dialect cannot parse as a constraint, is a non-event:
+// the design doc is explicit that this check must never fail an update
+// merely because it couldn't understand the declaration, only because it
+// definitively understood one and found a real mismatch.
 func (n *NPM) checkEnginesNode(ctx context.Context, packuments map[string]*npmPackument, pkg, version, nodeVersion string) error {
 	doc, ok := packuments[pkg]
 	if !ok {
@@ -371,8 +377,8 @@ func (n *NPM) checkEnginesNode(ctx context.Context, packuments map[string]*npmPa
 		return nil
 	}
 	return fmt.Errorf(
-		"%s@%s requires node %s, but the pool's resolved node runtime is %s; change the harness's NodeLine (currently %d) to a line satisfying %s",
-		pkg, version, manifest.Engines.Node, nodeVersion, nv.Major(), manifest.Engines.Node)
+		"%s@%s requires node %s, but the pool's resolved node runtime is %s (line %d); moving this harness to a different Node line is a wraptool code change, not a config option",
+		pkg, version, manifest.Engines.Node, nodeVersion, nv.Major())
 }
 
 // lockKeyPackageName extracts the package name from a package-lock.json
@@ -768,7 +774,7 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 	}
 
 	// §8.1 step 4: pinned runtime requirement + per-platform artifacts.
-	publishedAt, err := n.versionPublishedAt(ctx, pkg, version)
+	publishedAt, err := n.versionPublishedAt(ctx, packuments, pkg, version)
 	if err != nil {
 		return pool.LockHarness{}, err
 	}

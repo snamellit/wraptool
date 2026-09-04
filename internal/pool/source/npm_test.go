@@ -1164,6 +1164,37 @@ func newPackumentServerWithVersionBody(t *testing.T, version, versionBody string
 	return newRawPackumentServer(t, []byte(body))
 }
 
+// TestResolve_FetchesPackumentOnlyOnce is review NIT 8's required test:
+// versionPublishedAt and checkEnginesNode both need pkg's packument, but
+// share the SAME per-Resolve-call cache (the packuments map already
+// threaded through backfillIntegrity) — one Resolve call must hit the
+// registry's packument endpoint exactly once per package, not once per
+// caller.
+func TestResolve_FetchesPackumentOnlyOnce(t *testing.T) {
+	var requests int32
+	body := []byte(`{"time":{"1.0.0":"2026-01-01T00:00:00.000Z"},"versions":{"1.0.0":{"engines":{"node":">=20"}}}}`)
+	registrySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+	}))
+	defer registrySrv.Close()
+	nodeSrv := newNodeDistServer(t, shasums)
+	defer nodeSrv.Close()
+
+	lockJSON := resolveFixture("example", "1.0.0", "")
+	n := NewNPM(registrySrv.URL)
+	n.nodeDistBaseURL = nodeSrv.URL
+	fb := &fakeBackend{lockJSON: []byte(lockJSON)}
+
+	if _, err := n.Resolve(context.Background(), fb, "example", "1.0.0", t.TempDir(), "24.18.1", "sha256:rev"); err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Errorf("packument endpoint hit %d times, want exactly 1 (versionPublishedAt and checkEnginesNode must share one cache)", got)
+	}
+}
+
 // TestResolve_EnginesNodeSatisfiedPasses is deliverable-required test 1
 // (design/harness/node-runtime-tracking.md WP2 item 5): a package version
 // whose engines.node is satisfied by the resolved node version must not be
@@ -1187,8 +1218,9 @@ func TestResolve_EnginesNodeSatisfiedPasses(t *testing.T) {
 // TestResolve_EnginesNodeViolatedFailsActionably is deliverable-required
 // test 2: a package version whose engines.node the resolved node version
 // violates must fail Resolve, naming the package version, its engines
-// constraint, the resolved node version, and the NodeLine to change (design
-// doc item 5's exact wording).
+// constraint, the resolved node version, and the Node line it resolved on
+// (design doc item 5's exact wording) — worded as a wraptool code change,
+// never an instruction to edit a Go field name (review NIT 7).
 func TestResolve_EnginesNodeViolatedFailsActionably(t *testing.T) {
 	registrySrv := newPackumentServerWithVersionBody(t, "1.0.0", `{"engines":{"node":">=99"}}`)
 	defer registrySrv.Close()
@@ -1204,7 +1236,7 @@ func TestResolve_EnginesNodeViolatedFailsActionably(t *testing.T) {
 	if err == nil {
 		t.Fatal("Resolve: got nil error, want rejection when node fails the package's engines.node constraint")
 	}
-	for _, want := range []string{"example@1.0.0", ">=99", "24.18.1", "NodeLine"} {
+	for _, want := range []string{"example@1.0.0", ">=99", "24.18.1", "line 24", "wraptool code change"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to contain %q", err.Error(), want)
 		}
