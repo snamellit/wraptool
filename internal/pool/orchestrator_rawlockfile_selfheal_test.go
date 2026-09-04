@@ -87,7 +87,7 @@ func TestUpdateHarnessLockedSelfHealsIncompleteRawLockfile(t *testing.T) {
 		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
 	})
 
-	wantRecipe, err := npmRecipeRevision(pkg, "")
+	wantRecipe, err := npmRecipeRevision(pkg, "", testNodeVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestUpdateHarnessLockedDoesNotResolveWhenRawLockfileIsComplete(t *testing.T
 		{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour), FirstSeenAt: fixedNow.Add(-200 * time.Hour)},
 	})
 
-	wantRecipe, err := npmRecipeRevision(pkg, "")
+	wantRecipe, err := npmRecipeRevision(pkg, "", testNodeVersion)
 	if err != nil {
 		t.Fatal(err)
 	}

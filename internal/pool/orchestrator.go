@@ -120,7 +120,19 @@ var defaultNodeLine = "22"
 // serving generations built on the old runtime forever. The bump forces the
 // standard self-heal: Decide returns DecisionResolveVersion, Resolve runs
 // with the new constant, and the next realize ships the new runtime.
-const recipeFormatVersion = 4
+//
+// 4 -> 5 (design/harness/node-runtime-tracking.md WP2): the node version is
+// now a genuine input to npmRecipeRevision (see its doc comment for the
+// "would resolve to now" semantics) instead of an unhashed side channel, so
+// a routine node-line bump on nodejs.org — no code change at all — makes
+// recipe_revision itself change and drives the same self-heal every prior
+// bump needed a format version for. A format-4-era lock's recipe_revision
+// was computed with no node input whatsoever, so it cannot be reinterpreted
+// under the new formula; the bump forces the same self-heal path as every
+// entry above: Decide returns DecisionResolveVersion, Resolve re-resolves
+// (picking up whatever node patch is currently eligible), and the next
+// realize ships a generation actually built against that runtime.
+const recipeFormatVersion = 5
 
 // npmRecipeRevision computes recipe_revision (§8: "sha256 over the
 // descriptor's serialized install recipe + the backend provisioning-image
@@ -132,12 +144,32 @@ const recipeFormatVersion = 4
 // resolve/realize now do run inside a backend (this work package), so the
 // image identity is a genuine input to the realization-environment contract,
 // not a placeholder.
-func npmRecipeRevision(pkg, provisioningImage string) (string, error) {
+//
+// nodeVersion (design/harness/node-runtime-tracking.md WP2) is the node
+// patch the lock WOULD resolve to right now — the same value
+// selectNodeVersion would hand to Source.Resolve on a fresh
+// DecisionResolveVersion call, not merely whatever an existing lock happens
+// to record — computed by UpdateHarnessLocked BEFORE Decide runs (deviation
+// from §8's own inputs list becoming testable ordering: recipe_revision is
+// itself one of Decide's inputs, so it must reflect the CURRENT would-
+// resolve-to node version, not last time's). That is what gives a fresh
+// eligible node release on nodejs.org — no package version change, no code
+// change — the power to make lockMatchesRecipe false and trigger the
+// standard resolve self-heal: the hashed payload changes the moment a newer
+// eligible patch appears, precisely mirroring how a package version bump
+// already drives DecisionResolveVersion via the version-selection axis.
+// UpdateHarnessLocked falls back to the existing lock's own recorded node
+// version when nothing can be selected right now (no node observation yet,
+// e.g. a pool that has never run `wraptool harness refresh`) so a missing
+// observation cannot manufacture a spurious recipe mismatch — see that
+// function's own nodeVersionForRecipe local for the exact fallback.
+func npmRecipeRevision(pkg, provisioningImage, nodeVersion string) (string, error) {
 	data, err := json.Marshal(struct {
 		Package           string `json:"package"`
 		ProvisioningImage string `json:"provisioning_image"`
+		NodeVersion       string `json:"node_version"`
 		Format            int    `json:"recipe_format_version"`
-	}{Package: pkg, ProvisioningImage: provisioningImage, Format: recipeFormatVersion})
+	}{Package: pkg, ProvisioningImage: provisioningImage, NodeVersion: nodeVersion, Format: recipeFormatVersion})
 	if err != nil {
 		return "", fmt.Errorf("marshaling recipe for hashing: %w", err)
 	}
@@ -177,15 +209,17 @@ func archiveRecipeRevision(pkg string) (string, error) {
 
 // recipeRevisionForSource computes recipe_revision (§8) for pkg under kind,
 // dispatching to npmRecipeRevision or archiveRecipeRevision. provisioningImage
-// is passed through to npmRecipeRevision only — archiveRecipeRevision ignores
-// it (archive resolve/realize invoke no backend, §6.2). Exhaustive over
-// SourceKind (golangci-lint's exhaustive check, .golangci.yml): a future
-// SourceKind added without wiring its own recipe formula fails loudly here
-// instead of silently reusing another source's revision.
-func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage string) (string, error) {
+// and nodeVersion are passed through to npmRecipeRevision only —
+// archiveRecipeRevision ignores both (archive resolve/realize invoke no
+// backend and bundle no node runtime, §6.2/node-runtime-tracking.md
+// non-goals). Exhaustive over SourceKind (golangci-lint's exhaustive check,
+// .golangci.yml): a future SourceKind added without wiring its own recipe
+// formula fails loudly here instead of silently reusing another source's
+// revision.
+func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage, nodeVersion string) (string, error) {
 	switch kind {
 	case SourceNPM:
-		return npmRecipeRevision(pkg, provisioningImage)
+		return npmRecipeRevision(pkg, provisioningImage, nodeVersion)
 	case SourceArchive:
 		return archiveRecipeRevision(pkg)
 	default:
@@ -695,10 +729,6 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	policy := m.EffectivePolicy(opts.Harness)
 
 	kind := opts.Source.effective()
-	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage)
-	if err != nil {
-		return nil, err
-	}
 
 	lockDoc, err := loadLockOrEmpty(paths.Lock)
 	if err != nil {
@@ -711,6 +741,41 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, fmt.Errorf("loading observations: %w", err)
 	}
 	candidates, err := candidatesForPackage(obs, kind, opts.Package)
+	if err != nil {
+		return nil, err
+	}
+
+	// nodeVersion (design/harness/node-runtime-tracking.md WP2): computed
+	// HERE, before recipeRevision, not merely inside the DecisionResolveVersion
+	// branch below (WP1's original placement) — recipe_revision is itself one
+	// of Decide's inputs, so it must fold in the node patch the lock WOULD
+	// resolve to RIGHT NOW (see npmRecipeRevision's doc comment) for a fresh
+	// eligible node release to make lockMatchesRecipe false and trigger the
+	// standard resolve self-heal. Only SourceNPM ever resolves a node runtime
+	// at all (SourceArchive/agy bundles none). nodeErr is deliberately not
+	// returned yet: a pool that has never observed anything for this line
+	// (no `wraptool harness refresh` run yet) must not fail every OTHER
+	// decision axis (up-to-date, keep-existing, realize-only) just because
+	// recipe_revision can't be computed with a fresh node input — it is
+	// surfaced only if DecisionResolveVersion actually needs nodeVersion
+	// below. nodeVersionForRecipe falls back to the existing lock's own
+	// recorded node version in that case, so a missing observation cannot
+	// manufacture a spurious recipe mismatch out of thin air.
+	var nodeVersion, nodeReason string
+	var nodeErr error
+	if kind == SourceNPM {
+		line := opts.NodeLine
+		if line == "" {
+			line = defaultNodeLine
+		}
+		nodeVersion, nodeReason, nodeErr = selectNodeVersion(obs, line, policy, opts.Now)
+	}
+	nodeVersionForRecipe := nodeVersion
+	if nodeErr != nil && hasLock && existing.Runtime != nil {
+		nodeVersionForRecipe = existing.Runtime.Version
+	}
+
+	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage, nodeVersionForRecipe)
 	if err != nil {
 		return nil, err
 	}
@@ -877,33 +942,27 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		workDir = dir
 	}
 
-	// nodeVersion (design/harness/node-runtime-tracking.md WP1): only
-	// SourceNPM ever resolves a node runtime at all — a SourceArchive call
-	// passes "" through unused (Archive.Resolve ignores this parameter,
-	// agy bundles no node runtime). selectNodeVersion reuses the exact same
-	// eligibility/quarantine machinery (Eligible, via
-	// scanCandidatesForConstraint) package versions already get — see its
-	// own doc comment for the fallback/error rules.
-	var nodeVersion, nodeNote string
+	// nodeVersion/nodeReason were already selected above (before recipeRevision
+	// was computed, so a fresh eligible node release can drive this very
+	// DecisionResolveVersion) — a SourceArchive call passes "" through unused
+	// (Archive.Resolve ignores this parameter, agy bundles no node runtime).
+	// The error selectNodeVersion could produce was deferred rather than
+	// returned immediately up there (some other decision axis might not have
+	// needed it at all); an actual resolve DOES need it, so it surfaces here.
+	var nodeNote string
 	if kind == SourceNPM {
-		line := opts.NodeLine
-		if line == "" {
-			line = defaultNodeLine
+		if nodeErr != nil {
+			return nil, nodeErr
 		}
-		v, reason, nerr := selectNodeVersion(obs, line, policy, opts.Now)
-		if nerr != nil {
-			return nil, nerr
-		}
-		nodeVersion = v
 		var priorNode string
 		if hasLock && existing.Runtime != nil {
 			priorNode = existing.Runtime.Version
 		}
 		if priorNode != nodeVersion {
 			if priorNode == "" {
-				nodeNote = fmt.Sprintf("node runtime: %s (%s)", nodeVersion, reason)
+				nodeNote = fmt.Sprintf("node runtime: %s (%s)", nodeVersion, nodeReason)
 			} else {
-				nodeNote = fmt.Sprintf("node runtime: %s -> %s (%s)", priorNode, nodeVersion, reason)
+				nodeNote = fmt.Sprintf("node runtime: %s -> %s (%s)", priorNode, nodeVersion, nodeReason)
 			}
 		}
 	}
