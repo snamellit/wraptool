@@ -64,3 +64,22 @@ func TestValidateRejectsCollisionCreatedBySanitizing(t *testing.T) {
 		t.Fatalf("err = %v, want a collision error for a/b and a_b (both sanitize to sigil_a_b)", err)
 	}
 }
+
+// A subcommand token may legitimately carry a character the tool-name grammar
+// forbids — `npm run build:prod`, `mvn clean:install`. Those names are
+// sanitized at the mint site (and logged there), never rejected at load:
+// refusing to start over one would break a config that works today.
+func TestValidateAcceptsSubcommandNeedingSanitization(t *testing.T) {
+	cfg := &Config{
+		MCP: MCPConfig{Transport: "stdio"},
+		Tools: map[string]ToolConfig{
+			"npm": {
+				Binary: os.Args[0],
+				Allow:  []AllowRule{{Subcommand: []string{"run", "build:prod"}}},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config with a colon in a subcommand rejected: %v", err)
+	}
+}
