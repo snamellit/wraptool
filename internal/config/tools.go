@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 
+	"github.com/pti/wraptool/internal/toolname"
 	"github.com/pti/wraptool/internal/yamledit"
 	"gopkg.in/yaml.v3"
 )
@@ -17,8 +18,8 @@ func AddTool(path, name, binary string) error {
 	// Reuse the MCP property-key charset: it excludes '/' (which would break the
 	// /tools/{tool}/... routes) and matches what the tool name must satisfy when
 	// it becomes part of an MCP tool name. Rejects the empty name too ({1,64}).
-	if !paramNameRe.MatchString(name) {
-		return fmt.Errorf("tool name %q must match %s", name, paramNamePattern)
+	if !toolname.ValidParam(name) {
+		return fmt.Errorf("tool name %q must match %s", name, toolname.ParamPattern)
 	}
 	if binary == "" {
 		return fmt.Errorf("binary path is required")

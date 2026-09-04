@@ -9,6 +9,7 @@ import (
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/requestlog"
+	"github.com/pti/wraptool/internal/toolname"
 	"github.com/pti/wraptool/internal/whitelist"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -48,7 +49,7 @@ func NewSource(serverName string, cfg *config.MCPServerConfig, policy *whitelist
 // Tools spawns the upstream (if not already running), discovers its tools, and
 // returns one RegisteredTool per allow-listed upstream tool. The tool's input
 // schema is the upstream's, passed through unchanged (mcp.NewToolWithRawSchema),
-// and its final name comes from config.ProxyToolName (see there for why an
+// and its final name comes from toolname.Proxy (see there for why an
 // upstream's own naming convention has to be sanitized). Only the EXPOSED name
 // is rewritten — the handler still calls the upstream by its own unmodified
 // ut.Name, so dispatch is unaffected.
@@ -91,7 +92,7 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			log.Printf("mcpproxy: skipping tool %q on %q: marshaling schema: %v", ut.Name, s.serverName, err)
 			continue
 		}
-		finalName := config.ProxyToolName(s.cfg.NamePrefix, ut.Name)
+		finalName := toolname.Proxy(s.cfg.NamePrefix, ut.Name)
 		if joined := s.cfg.NamePrefix + "_" + ut.Name; joined != finalName {
 			// The operator sees the rewritten name in their client but greps
 			// their config for the upstream's own spelling, so say both once

@@ -6,7 +6,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/toolname"
 )
 
 // Source produces registrable MCP tools and their invocation handlers.
@@ -45,10 +45,10 @@ type RegisteredTool struct {
 // Source can hand the registrar a name a model API would reject.
 //
 // This is the choke point every Source funnels through: minting sites sanitize
-// too (ToolName, config.ProxyToolName) because they need the final name for
-// collision checks and logging, but SanitizeToolName is idempotent, so this
+// too (toolname.CLI, toolname.Proxy) because they need the final name for
+// collision checks and logging, but toolname.Sanitize is idempotent, so this
 // pass costs nothing and holds for a Source that forgets.
 func NewRegisteredTool(tool mcp.Tool, handler server.ToolHandlerFunc) RegisteredTool {
-	tool.Name = config.SanitizeToolName(tool.Name)
+	tool.Name = toolname.Sanitize(tool.Name)
 	return RegisteredTool{Name: tool.Name, Tool: tool, Handler: handler}
 }

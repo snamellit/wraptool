@@ -4,27 +4,21 @@ import (
 	"strings"
 
 	"github.com/pti/wraptool/internal/config"
+	"github.com/pti/wraptool/internal/toolname"
 )
 
 // ToolName generates the MCP tool name from a tool name and subcommand.
 // e.g. ("git", ["commit"]) -> "git_commit"
 // e.g. ("gcloud", ["compute", "instances", "list"]) -> "gcloud_compute_instances_list"
-//
-// The joined name is passed through config.SanitizeToolName so a subcommand
-// carrying a character no model API accepts in a function name cannot reach
-// the wire (see that function for why one bad name breaks a whole session).
 func ToolName(toolName string, subcommand []string) string {
-	parts := make([]string, 0, 1+len(subcommand))
-	parts = append(parts, toolName)
-	parts = append(parts, subcommand...)
-	return config.SanitizeToolName(strings.Join(parts, "_"))
+	return toolname.CLI(toolName, subcommand)
 }
 
 // FlagToParam converts a CLI flag name to a JSON Schema parameter name.
 // e.g. "--set-upstream" -> "set_upstream"
 // e.g. "-m" -> "m"
 func FlagToParam(flag string) string {
-	return config.FlagParamName(flag)
+	return toolname.Param(flag)
 }
 
 // ParamToFlag converts a JSON Schema parameter name back to a CLI flag.
