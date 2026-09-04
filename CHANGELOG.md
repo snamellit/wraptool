@@ -4,7 +4,76 @@ Release tags (`wraptool-vX.Y.Z`) are the sole version source; binaries for
 each tag are published by CI with SHA-256 checksums. Notes here cover what
 changed and anything an upgrade should know.
 
-## 0.7.0 — unreleased
+## 0.8.0 — 2026-09-04
+
+The 1.0 release-candidate line: the MCP listener is authenticated by default,
+the bundled Node runtime becomes a tracked input, and the compatibility
+promise is published.
+
+### Security
+
+- **The sse MCP listener is authenticated by default.** `serve`, `up`, and
+  `init` share one token provisioner: an unset `mcp.auth_token_file` is
+  auto-provisioned (0600, default path under the config dir) instead of left
+  tokenless, on both the guix and devcontainer runtimes. The listener also
+  rejects browser requests whose `Origin` is not loopback and requests with
+  an unrecognized `Host`, on `/sse`, `/mcp`, and `/message` — closing a
+  drive-by tool-execution path from ordinary web pages. **Upgrade note:** a
+  harness config generated against a tokenless listener now gets 401 — re-run
+  `wraptool init` (or `wraptool up`) once to embed the token.
+- Generated harness configs are written 0600 (and re-tightened on rewrite),
+  refuse to overwrite an existing file wraptool cannot merge, and are
+  appended to `.git/info/exclude` so a token-bearing file can't ride along
+  with `git add -A`.
+- Credential scrubbing redacts JSON notation (`"token":"..."`), which
+  previously passed through unredacted, and no longer mangles
+  already-redacted markers.
+
+### Added
+
+- **Node runtime tracking** (#38): the node version each npm harness bundles
+  is now an observed, quarantined, locked input. `harness refresh` observes
+  the nodejs.org release index per pinned line under the same
+  `minimum_release_age`/`minimum_observation_age` quarantine as package
+  versions (no bypass); `update` resolves the newest eligible patch, locks
+  it, folds it into `recipe_revision` (format 5) so a new eligible node
+  release alone self-heals every pool; the package's `engines.node` is
+  checked at resolve time with an actionable error. Routine node bumps need
+  no wraptool release; moving a major line stays a code change.
+- The compatibility promise: `docs/releases.qmd` now enumerates the frozen
+  surfaces, the excluded ones, the version-bump rules, and the reserved
+  security exception that 1.0 will stand on.
+- Upstream MCP tool names are sanitized for model APIs (a namespaced
+  upstream tool no longer breaks the whole session on strict clients).
+
+### Changed
+
+- `wraptool init` scaffolds the configuration when absent (as `serve` and
+  `up` do) and fails loudly on an unreadable one instead of silently writing
+  a config that cannot authenticate; `--harness all` validates every target
+  before writing any and skips auth-unverified harnesses with a notice.
+- The stdio server transport no longer appears in any user-visible surface
+  (help, examples, error strings); it remains tests-only and unsupported.
+- Documentation accuracy pass over every claim of protection: scrubbing is
+  described as the heuristic it is, the review UI as token-gated rather than
+  unreachable, deny rules as exact-match (with the `doctor` check that flags
+  prefix gaps), and the flagship isolation example now teaches the hardened
+  allow/deny split.
+
+## 0.7.2 — 2026-09-04
+
+- Bumped the pool's bundled Node runtime to 22.23.2 (from 22.11.0, which
+  predates node's zstd API — new pi releases crashed on start, #38) and
+  bumped the lock recipe format so every existing pool self-heals on its
+  next `harness update`.
+
+## 0.7.1 — 2026-09-02
+
+First published 0.7 binaries. Also fixes the CI toolchain: golangci-lint
+2.13.2 (built with go1.27) and a serve-state test that broke the release
+pipeline on the runner.
+
+## 0.7.0 — 2026-08-13 (tag only — the release pipeline failed; no binaries were published. 0.7.1 is the first installable 0.7)
 
 `wraptool doctor`: an operator preflight that checks the installation, the
 configuration's posture, and the policy's own content. It automates the manual
