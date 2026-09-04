@@ -390,7 +390,7 @@ func TestIntegration_InstallWarnsAndContinuesForShrinkwrappedHarness(t *testing.
 	// defaultNodeVersion constant — UpdateHarnessLocked always resolves
 	// against that pinned Node version itself (npm_integration_test.go's
 	// wantNodeVersion documents the same constraint).
-	const nodeVersion = "22.11.0"
+	const nodeVersion = "22.23.2"
 
 	packument := map[string]any{
 		"time": map[string]string{

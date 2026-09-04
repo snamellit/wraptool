@@ -69,18 +69,19 @@ func (k SourceKind) effective() SourceKind {
 // nodejs.org URLs (https://nodejs.org/dist/v<ver>/SHASUMS256.txt and
 // node-v<ver>-linux-*.tar.xz), and nodejs.org/dist has no directory for a
 // bare major like "v22/": every real resolve against a bare major 404s.
-// "22.11.0" is the first Node 22 LTS release (nodejs.org/dist/v22.11.0/
-// exists and is the LTS "Jod" baseline). §8.1 describes selecting the
-// runtime requirement "from the descriptor-declared runtime requirement
-// (node major)"; Phase 1's internal/harness.Descriptor carries no such
-// field yet (this work package's brief scopes Descriptor's only addition to
-// PoolPackage), and every current pool-lockable harness (claude, opencode,
-// pi) is fine on this one pinned LTS, so a single exact-version constant is
-// the Phase-1 answer. Two follow-ups, both Phase 2: sourcing the runtime
-// requirement per-descriptor instead of one pool-wide constant, and
-// resolving "latest patch on the v22.x line" instead of a hand-pinned exact
-// version.
-const defaultNodeVersion = "22.11.0"
+// "22.23.2" is the newest v22 LTS ("Jod") patch as of 2026-09-03. The pin
+// was 22.11.0 (the Jod baseline) until issue #38: node's zlib gained the
+// zstd API only in v22.15.0, and a pi release that calls it crashed on the
+// bundled 22.11.0 with no path that ever re-realizes the runtime — the
+// version is a constant, not a lock input, so neither update (same constant
+// on re-resolve) nor reinstall (recipe_revision still matches) could move
+// it. §8.1 describes selecting the runtime requirement "from the
+// descriptor-declared runtime requirement (node major)"; until that Phase-2
+// work lands (see #38's design: observe nodejs.org's index per pinned line
+// at refresh, quarantine like package versions, lock the resolved patch,
+// fold it into recipe_revision), bumping THIS constant requires bumping
+// recipeFormatVersion with it, or existing locks never notice.
+const defaultNodeVersion = "22.23.2"
 
 // recipeFormatVersion is bumped whenever this package's Phase-1 install
 // recipe (the legacy npm-install-pinned-to-an-exact-version path, driven
@@ -116,7 +117,15 @@ const defaultNodeVersion = "22.11.0"
 // the 1->2 bump above — a stale recipe_revision no longer matches, Decide
 // returns DecisionResolveVersion, and the ensuing Resolve+Fetch+Realize
 // re-locks under the new, image-aware recipe_revision.
-const recipeFormatVersion = 3
+//
+// 3 -> 4 (issue #38): defaultNodeVersion moved 22.11.0 -> 22.23.2 (the
+// bundled runtime lacked node's zstd API, added in v22.15.0, crashing new
+// pi releases). The node version is not part of the hashed payload, so
+// without a format bump every existing lock still "matches" and keeps
+// serving generations built on the old runtime forever. The bump forces the
+// standard self-heal: Decide returns DecisionResolveVersion, Resolve runs
+// with the new constant, and the next realize ships the new runtime.
+const recipeFormatVersion = 4
 
 // npmRecipeRevision computes recipe_revision (§8: "sha256 over the
 // descriptor's serialized install recipe + the backend provisioning-image
