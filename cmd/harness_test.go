@@ -506,6 +506,39 @@ func TestHarnessRefreshCallsNodeLineRefreshForNPMHarness(t *testing.T) {
 	}
 }
 
+// TestHarnessRefreshDedupsNodeLineRefreshAcrossNPMHarnesses is review NIT
+// 9's required test: a bare `harness refresh` (no harness argument) run
+// against two npm-sourced harnesses sharing the same (default, empty) Node
+// line must only fetch nodejs.org/dist/index.json once, not once per
+// harness — mirroring TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses'
+// own backendCache proof, for refreshNodeLineOnce's cache instead.
+func TestHarnessRefreshDedupsNodeLineRefreshAcrossNPMHarnesses(t *testing.T) {
+	paths := testHarnessPaths(t)
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n  opencode: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudePkg := harness.Registry["claude"].PoolPackage
+	opencodePkg := harness.Registry["opencode"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg:   {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+		opencodePkg: {{Version: "1.0.0", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	nodeOptionsCalls := 0
+	deps.nodeOptions = func() pool.NodeOptions {
+		nodeOptionsCalls++
+		return fakeNodeOptions
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "refresh")
+	if err != nil {
+		t.Fatalf("refresh: %v\noutput:\n%s", err, out)
+	}
+	if nodeOptionsCalls != 1 {
+		t.Errorf("deps.nodeOptions called %d times across 2 npm-sourced harnesses sharing a Node line, want exactly 1 (deduped)", nodeOptionsCalls)
+	}
+}
+
 // TestHarnessRefreshSkipsNodeLineRefreshForArchiveHarness is the above
 // test's archive-sourced control: agy bundles no node runtime (§6.2, this
 // design's non-goals), so refresh must never call deps.nodeOptions for it.
@@ -527,6 +560,55 @@ func TestHarnessRefreshSkipsNodeLineRefreshForArchiveHarness(t *testing.T) {
 	out, err := runHarnessCmdWithDeps(t, deps, "refresh", "agy")
 	if err != nil {
 		t.Fatalf("refresh: %v\noutput:\n%s", err, out)
+	}
+}
+
+// TestHarnessInstallCallsNodeLineRefreshAndPrintsNodeVersionNote is MINOR
+// 4c's required test (review round: the seam-call assertion previously
+// covered only the bare `refresh` command, not install's own composed
+// refresh call site — deleting refreshNodeLineIfNPM's call from
+// runHarnessInstall would go undetected). Deliberately builds a
+// harnessDeps WITHOUT seedTestNodeObservation's direct seed (unlike
+// testHarnessDeps): the only way this install can ever select a node
+// version at all is via the real refreshNodeLineIfNPM call reaching
+// deps.nodeOptions. Also pins MINOR 3: the resulting NodeVersionNote must
+// actually reach the printed output, not just be computed and dropped.
+func TestHarnessInstallCallsNodeLineRefreshAndPrintsNodeVersionNote(t *testing.T) {
+	swapHasGuix(t, true)
+	swapRunInstallArgv(t, func([]string) error { return nil })
+
+	paths := testHarnessPaths(t)
+	binDir := t.TempDir()
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	nodeOptionsCalls := 0
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return src, nil },
+		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
+			return fakeHarnessBackend{}, nil
+		},
+		nodeOptions: func() pool.NodeOptions {
+			nodeOptionsCalls++
+			return fakeNodeOptions
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := bareHarnessCmd()
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	if err := runHarnessInstall(context.Background(), cmd, deps, "claude", harness.Registry["claude"], ">=2 <3", false, ""); err != nil {
+		t.Fatalf("runHarnessInstall: %v\noutput:\n%s", err, buf.String())
+	}
+	if nodeOptionsCalls != 1 {
+		t.Errorf("deps.nodeOptions called %d times, want exactly 1 — install's own composed flow must refresh the node line", nodeOptionsCalls)
+	}
+	if !strings.Contains(buf.String(), "node runtime: 22.99.0") {
+		t.Errorf("output = %q, want it to contain the NodeVersionNote (node runtime: 22.99.0, fakeNodeOptions' fixture version)", buf.String())
 	}
 }
 

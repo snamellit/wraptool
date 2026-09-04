@@ -289,6 +289,31 @@ func refreshNodeLineIfNPM(ctx context.Context, deps harnessDeps, paths pool.Pool
 	return nil
 }
 
+// refreshNodeLineOnce is refreshNodeLineIfNPM's dedup wrapper for a run that
+// may refresh several npm-sourced harnesses in one invocation — the bare
+// `harness refresh` loop (review NIT 9): two harnesses pinned to the SAME
+// Node line (including two both left at the empty/default line) must not
+// each trigger their own nodejs.org/dist/index.json fetch. cached is keyed
+// by d.NodeLine's raw string (empty included — RefreshNodeLine itself
+// resolves that to the pool-wide default, so grouping on the raw value
+// still dedupes every default-line harness together) and shared across the
+// whole run, one instance per command invocation — mirroring backendCache's
+// own per-run memoization for deps.resolveBackend, just keyed by line
+// instead of being single-slot. A failure is cached too: a broken node
+// line fails identically for every later harness that shares it, without
+// retrying the fetch.
+func refreshNodeLineOnce(ctx context.Context, deps harnessDeps, paths pool.PoolPaths, d harness.Descriptor, kind pool.SourceKind, now time.Time, cached map[string]error) error {
+	if kind != pool.SourceNPM {
+		return nil
+	}
+	if err, ok := cached[d.NodeLine]; ok {
+		return err
+	}
+	err := refreshNodeLineIfNPM(ctx, deps, paths, d, kind, now)
+	cached[d.NodeLine] = err
+	return err
+}
+
 // guixResolveRealizePackages is the guix package set BOTH the npm resolve
 // phase (§6.2/§8.1) AND the realize phase (§6.2/§11.4) need, since one guix
 // Backend value serves both: node (npm, for Resolve's `npm install
@@ -968,6 +993,9 @@ func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResul
 	if result.RealizedGenerationID != "" {
 		msg += fmt.Sprintf("; realized %s", result.RealizedGenerationID)
 	}
+	if result.NodeVersionNote != "" {
+		msg += "; " + result.NodeVersionNote
+	}
 	fmt.Fprintln(out, msg)
 }
 
@@ -1377,6 +1405,7 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 			// inside the per-harness closure below — a bare `refresh` may
 			// touch harnesses of both source styles in one invocation.
 			now := time.Now().UTC()
+			nodeLinesRefreshed := map[string]error{}
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
 				src, err := deps.newSource(d)
@@ -1388,7 +1417,7 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 				if err != nil {
 					return err
 				}
-				if err := refreshNodeLineIfNPM(context.Background(), deps, paths, d, kind, now); err != nil {
+				if err := refreshNodeLineOnce(context.Background(), deps, paths, d, kind, now, nodeLinesRefreshed); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: observed %d candidate version(s)\n", name, len(candidates))
