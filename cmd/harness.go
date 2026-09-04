@@ -85,6 +85,15 @@ type harnessDeps struct {
 	// target platform (§11.2's auto policy: guix when available AND the
 	// target's arch matches the host's, else oci) — see defaultResolveBackend.
 	resolveBackend func(target pool.PlatformKey) (backend.Backend, error)
+	// nodeOptions returns the pool.NodeOptions RefreshNodeLine's
+	// nodejs.org/dist/index.json fetch uses (design/harness/
+	// node-runtime-tracking.md WP2) — a test seam mirroring newSource/
+	// resolveBackend's own per-field injection: production
+	// (defaultHarnessDeps) returns the zero value (the real nodejs.org), a
+	// test points BaseURL/Client at a local fixture instead. Read only for
+	// an npm-sourced harness (refreshNodeLineIfNPM); an archive-sourced one
+	// (agy) never calls it, same reasoning as resolveBackend's own §6.2 gate.
+	nodeOptions func() pool.NodeOptions
 }
 
 // defaultHarnessDeps returns the real, production harnessDeps: the
@@ -144,6 +153,10 @@ func defaultHarnessDeps() harnessDeps {
 			return source.NewNPM(""), nil // "" = the default npm registry
 		},
 		resolveBackend: defaultResolveBackend,
+		// nodeOptions: the zero value hits the real nodejs.org/dist
+		// (pool.NodeOptions's own doc comment) — nothing in production ever
+		// needs a non-default BaseURL/Client.
+		nodeOptions: func() pool.NodeOptions { return pool.NodeOptions{} },
 	}
 }
 
@@ -251,6 +264,29 @@ func poolSourceKind(d harness.Descriptor) pool.SourceKind {
 		return pool.SourceArchive
 	}
 	return pool.SourceNPM
+}
+
+// refreshNodeLineIfNPM calls pool.RefreshNodeLine for d's pinned Node major
+// line (d.NodeLine; empty defers to the pool-wide default, RefreshNodeLine's
+// own doc comment) so UpdateHarnessLocked's selectNodeVersion has something
+// to choose from on d's very next resolve (design/harness/
+// node-runtime-tracking.md WP2 — this closes WP1's own explicit follow-up:
+// without it, every real `harness install`/`update` errors with "no
+// observed Node release"). kind == pool.SourceArchive (agy) is a deliberate
+// no-op: an archive-sourced harness bundles no node runtime at all (§6.2,
+// this design's non-goals). Shared by runHarnessInstall's composed flow and
+// the bare `harness refresh` command loop — the brief's own two named
+// refresh call sites — so both observe the node line exactly once per
+// invocation, alongside (never instead of) the package's own
+// RefreshHarnessLocked call.
+func refreshNodeLineIfNPM(ctx context.Context, deps harnessDeps, paths pool.PoolPaths, d harness.Descriptor, kind pool.SourceKind, now time.Time) error {
+	if kind != pool.SourceNPM {
+		return nil
+	}
+	if _, err := pool.RefreshNodeLine(ctx, paths, deps.nodeOptions(), d.NodeLine, now); err != nil {
+		return fmt.Errorf("refreshing node runtime line: %w", err)
+	}
+	return nil
 }
 
 // guixResolveRealizePackages is the guix package set BOTH the npm resolve
@@ -851,9 +887,12 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 	if _, err := pool.RefreshHarnessLocked(ctx, src, paths, kind, pkg, now); err != nil {
 		return fmt.Errorf("refreshing %s: %w", name, err)
 	}
+	if err := refreshNodeLineIfNPM(ctx, deps, paths, d, kind, now); err != nil {
+		return fmt.Errorf("refreshing %s: %w", name, err)
+	}
 
 	result, err := pool.UpdateHarnessLocked(ctx, src, b, paths, pool.UpdateOptions{
-		Harness: name, Package: pkg, Source: kind, BinName: d.Bin, Now: now,
+		Harness: name, Package: pkg, Source: kind, BinName: d.Bin, NodeLine: d.NodeLine, Now: now,
 		AllowYoung: allowYoung, Reason: reason,
 		// install never advances a floating constraint (§10) — it's
 		// idempotent once manifest/lock/recipe agree, even if a newer
@@ -1344,8 +1383,12 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 				if err != nil {
 					return err
 				}
-				candidates, err := pool.RefreshHarnessLocked(context.Background(), src, paths, poolSourceKind(d), d.PoolPackageID(), now)
+				kind := poolSourceKind(d)
+				candidates, err := pool.RefreshHarnessLocked(context.Background(), src, paths, kind, d.PoolPackageID(), now)
 				if err != nil {
+					return err
+				}
+				if err := refreshNodeLineIfNPM(context.Background(), deps, paths, d, kind, now); err != nil {
 					return err
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: observed %d candidate version(s)\n", name, len(candidates))
@@ -1411,7 +1454,7 @@ listed in the pool manifest.`,
 					return err
 				}
 				result, err := pool.UpdateHarnessLocked(context.Background(), src, b, paths, pool.UpdateOptions{
-					Harness: name, Package: d.PoolPackageID(), Source: poolSourceKind(d), BinName: d.Bin, Now: now,
+					Harness: name, Package: d.PoolPackageID(), Source: poolSourceKind(d), BinName: d.Bin, NodeLine: d.NodeLine, Now: now,
 					AllowYoung: allowYoung, Reason: reason,
 					// update is the only normal command that advances a
 					// floating constraint (§10): always scan for a newer

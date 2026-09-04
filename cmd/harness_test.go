@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -183,8 +185,10 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 
 // testHarnessDeps builds a harnessDeps for tests: poolPaths returns paths,
 // poolBinDir points at a fresh subdirectory of binDir, newSource returns
-// src, and resolveBackend always succeeds with a no-op fake backend. This
-// is constructor injection, not global mutation — a test builds its own
+// src, resolveBackend always succeeds with a no-op fake backend, and
+// nodeOptions points at the shared fakeNodeOptions fixture (design/harness/
+// node-runtime-tracking.md WP2) rather than the real nodejs.org. This is
+// constructor injection, not global mutation — a test builds its own
 // harnessDeps value and passes it directly to newHarnessCmdWithDeps or a
 // helper function, so concurrent tests (t.Parallel()) using their own
 // testHarnessDeps never contend with each other. Tests that swap a
@@ -206,23 +210,50 @@ func testHarnessDeps(paths pool.PoolPaths, binDir string, src pool.Source) harne
 		poolBinDir:     func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:      func(harness.Descriptor) (pool.Source, error) { return src, nil },
 		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) { return fakeHarnessBackend{}, nil },
+		nodeOptions:    func() pool.NodeOptions { return fakeNodeOptions },
 	}
 }
+
+// fakeNodeIndexTransport is an http.RoundTripper stub for
+// pool.NodeOptions.Client (node.go's own test seam), serving one
+// comfortably-eligible v22 patch matching seedTestNodeObservation's
+// "22.99.0" — cmd-level tests that reach a refresh call site (install's
+// composed flow, the bare `harness refresh` loop, design/harness/
+// node-runtime-tracking.md WP2) point deps.nodeOptions at fakeNodeOptions
+// instead of hitting the real nodejs.org/dist/index.json.
+type fakeNodeIndexTransport struct{}
+
+func (fakeNodeIndexTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	published := fixedTestNow.Add(-24 * 400 * time.Hour).Format("2006-01-02")
+	body := fmt.Sprintf(`[{"version":"v22.99.0","date":%q}]`, published)
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     make(http.Header),
+	}, nil
+}
+
+// fakeNodeOptions is the shared pool.NodeOptions value every cmd-level test
+// exercising a real refresh call site wires deps.nodeOptions to.
+var fakeNodeOptions = pool.NodeOptions{Client: &http.Client{Transport: fakeNodeIndexTransport{}}}
 
 // seedTestNodeObservation records one comfortably-eligible "node:22/..."
 // observation directly into paths.Observations, bypassing HTTP entirely
 // (node-runtime-observe-resolve, design/harness/node-runtime-tracking.md
-// WP1): UpdateHarnessLocked now requires an eligible node-line observation
-// for ANY SourceNPM fresh resolve (internal/pool's selectNodeVersion), and
-// cmd's production install/update commands do not yet call
-// pool.RefreshNodeLine to produce one (that wiring — threading
-// pool.NodeOptions through harnessDeps and the refresh/install/update call
-// sites — is an explicit, flagged follow-up, not part of this work
-// package). Every cmd-level test that drives a real install/update through
-// fakeHarnessSource needs this precondition seeded directly, exactly like
-// it already gets a package observation for free via the real
-// RefreshHarnessLocked + fakeHarnessSource.Refresh path. "22" (this
-// package's own default Node line, internal/pool's unexported
+// WP1): UpdateHarnessLocked requires an eligible node-line observation for
+// ANY SourceNPM fresh resolve (internal/pool's selectNodeVersion). `update`
+// itself never refreshes anything (its own doc comment: "update never
+// fetches metadata itself"), so any cmd-level test driving a real `update`
+// (or runHarnessInstall/refresh's own precondition before the real
+// RefreshNodeLine call runs, harmlessly re-observing the same version) still
+// needs this precondition seeded directly — exactly like it already gets a
+// package observation for free via the real RefreshHarnessLocked +
+// fakeHarnessSource.Refresh path. WP2 (this work package) wired production
+// install/refresh to a real (fake-transport-backed in tests, see
+// fakeNodeOptions) pool.RefreshNodeLine call, but this direct seed stays for
+// every `update`-only test that never reaches a refresh call site at all.
+// "22" (this package's own default Node line, internal/pool's unexported
 // defaultNodeLine) is spelled out literally since that constant isn't
 // exported; changing the pool's default line would need an update here too.
 func seedTestNodeObservation(paths pool.PoolPaths) {
@@ -438,6 +469,64 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestHarnessRefreshCallsNodeLineRefreshForNPMHarness pins deliverable 1's
+// own required test (design/harness/node-runtime-tracking.md WP2 cmd
+// wiring): the bare `harness refresh` command must actually call
+// pool.RefreshNodeLine for an npm-sourced harness, alongside its own
+// package-candidate refresh — asserted via deps.nodeOptions itself, the
+// seam RefreshNodeLine's index.json fetch goes through, not merely by
+// inspecting observations.json (which testHarnessDeps' own
+// seedTestNodeObservation already seeds directly, so its mere presence
+// would not prove this call actually ran).
+func TestHarnessRefreshCallsNodeLineRefreshForNPMHarness(t *testing.T) {
+	paths := testHarnessPaths(t)
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  claude: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	claudePkg := harness.Registry["claude"].PoolPackage
+	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
+		claudePkg: {{Version: "2.1.220", PublishedAt: fixedTestNow.Add(-200 * time.Hour)}},
+	}}
+	deps := testHarnessDeps(paths, t.TempDir(), src)
+	nodeOptionsCalls := 0
+	deps.nodeOptions = func() pool.NodeOptions {
+		nodeOptionsCalls++
+		return fakeNodeOptions
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "refresh", "claude")
+	if err != nil {
+		t.Fatalf("refresh: %v\noutput:\n%s", err, out)
+	}
+	if nodeOptionsCalls != 1 {
+		t.Errorf("deps.nodeOptions called %d times, want exactly 1 — refresh must also refresh the node line for an npm-sourced harness", nodeOptionsCalls)
+	}
+}
+
+// TestHarnessRefreshSkipsNodeLineRefreshForArchiveHarness is the above
+// test's archive-sourced control: agy bundles no node runtime (§6.2, this
+// design's non-goals), so refresh must never call deps.nodeOptions for it.
+func TestHarnessRefreshSkipsNodeLineRefreshForArchiveHarness(t *testing.T) {
+	paths := testHarnessPaths(t)
+	if err := os.WriteFile(paths.Manifest, []byte("schema_version: 1\nharnesses:\n  agy: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps := harnessDeps{
+		poolPaths:  func() pool.PoolPaths { return paths },
+		poolBinDir: func() (string, string, error) { return t.TempDir(), "", nil },
+		newSource:  func(harness.Descriptor) (pool.Source, error) { return &fakeArchiveSource{}, nil },
+		nodeOptions: func() pool.NodeOptions {
+			t.Fatal("deps.nodeOptions must not be called for an archive-sourced harness (agy)")
+			return pool.NodeOptions{}
+		},
+	}
+
+	out, err := runHarnessCmdWithDeps(t, deps, "refresh", "agy")
+	if err != nil {
+		t.Fatalf("refresh: %v\noutput:\n%s", err, out)
 	}
 }
 
@@ -2612,6 +2701,7 @@ func TestPrintRealizeWarningNamesImageForOCIBackendFailure(t *testing.T) {
 			poolBinDir:     func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 			newSource:      func(harness.Descriptor) (pool.Source, error) { return src, nil },
 			resolveBackend: func(pool.PlatformKey) (backend.Backend, error) { return b, nil },
+			nodeOptions:    func() pool.NodeOptions { return fakeNodeOptions },
 		}
 
 		var buf bytes.Buffer
@@ -3096,6 +3186,7 @@ func TestHarnessInstallClaudeOnDockerOnlyHostDowngradesGuixAbsentToWarning(t *te
 			backendCalled = true
 			return fakeHarnessBackend{}, nil // simulates a working oci backend
 		},
+		nodeOptions: func() pool.NodeOptions { return fakeNodeOptions },
 	}
 
 	var buf bytes.Buffer
@@ -3181,6 +3272,7 @@ func TestHarnessInstallClaudeGuixHostFailingLegacyInstallerStillFails(t *testing
 		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			return fakeHarnessBackend{}, nil // simulates the guix backend
 		},
+		nodeOptions: func() pool.NodeOptions { return fakeNodeOptions },
 	}
 
 	err := runHarnessInstall(context.Background(), bareHarnessCmd(), deps, "claude", harness.Registry["claude"], ">=2 <3", false, "")
@@ -3238,6 +3330,7 @@ func TestHarnessInstallClaudeStaysFailedWhenRealizeFailsOnDockerOnlyHost(t *test
 		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) {
 			return fakeHarnessBackend{}, nil
 		},
+		nodeOptions: func() pool.NodeOptions { return fakeNodeOptions },
 	}
 
 	swapHasGuix(t, true)
