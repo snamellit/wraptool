@@ -195,13 +195,50 @@ func testHarnessPaths(t *testing.T) pool.PoolPaths {
 // or runInstallArgv, which stay package vars (out of the MR59 review's
 // scope — see runInstallArgv's doc comment) — a test that reaches the
 // legacy npm-install recipe still needs swapHasGuix/swapRunInstallArgv
-// alongside this.
+// alongside this. It also seeds paths.Observations with a comfortably
+// eligible node-line observation (seedTestNodeObservation) — see that
+// function's doc comment for why every test driving a real install/update
+// through this deps value needs one now.
 func testHarnessDeps(paths pool.PoolPaths, binDir string, src pool.Source) harnessDeps {
+	seedTestNodeObservation(paths)
 	return harnessDeps{
 		poolPaths:      func() pool.PoolPaths { return paths },
 		poolBinDir:     func() (string, string, error) { return binDir, filepath.Join(binDir, "bin"), nil },
 		newSource:      func(harness.Descriptor) (pool.Source, error) { return src, nil },
 		resolveBackend: func(pool.PlatformKey) (backend.Backend, error) { return fakeHarnessBackend{}, nil },
+	}
+}
+
+// seedTestNodeObservation records one comfortably-eligible "node:22/..."
+// observation directly into paths.Observations, bypassing HTTP entirely
+// (node-runtime-observe-resolve, design/harness/node-runtime-tracking.md
+// WP1): UpdateHarnessLocked now requires an eligible node-line observation
+// for ANY SourceNPM fresh resolve (internal/pool's selectNodeVersion), and
+// cmd's production install/update commands do not yet call
+// pool.RefreshNodeLine to produce one (that wiring — threading
+// pool.NodeOptions through harnessDeps and the refresh/install/update call
+// sites — is an explicit, flagged follow-up, not part of this work
+// package). Every cmd-level test that drives a real install/update through
+// fakeHarnessSource needs this precondition seeded directly, exactly like
+// it already gets a package observation for free via the real
+// RefreshHarnessLocked + fakeHarnessSource.Refresh path. "22" (this
+// package's own default Node line, internal/pool's unexported
+// defaultNodeLine) is spelled out literally since that constant isn't
+// exported; changing the pool's default line would need an update here too.
+func seedTestNodeObservation(paths pool.PoolPaths) {
+	if paths.Observations == "" {
+		// A test exercising something that never touches observations.json
+		// at all (e.g. maybeInstallLocked directly) may pass a zero-value
+		// pool.PoolPaths{} — nothing meaningful to seed there.
+		return
+	}
+	obs := pool.Observations{}
+	published := pool.FormatTimestamp(fixedTestNow.Add(-24 * 400 * time.Hour))
+	if err := obs.Observe("node:22/22.99.0", published, published, false, false, false); err != nil {
+		panic(fmt.Sprintf("seedTestNodeObservation: %v", err))
+	}
+	if err := pool.MergeObservations(paths.Observations, obs); err != nil {
+		panic(fmt.Sprintf("seedTestNodeObservation: %v", err))
 	}
 }
 
@@ -2159,6 +2196,14 @@ func TestHarnessUpdateDedupsBackendProbeAcrossNPMHarnesses(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// node-runtime-observe-resolve WP1: both harnesses are npm-sourced, so
+	// UpdateHarnessLocked needs an eligible node-line observation too — this
+	// test builds harnessDeps as a raw literal (not testHarnessDeps, whose
+	// doc comment explains why that helper seeds one automatically).
+	if err := obs.Observe("node:22/22.99.0",
+		pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), pool.FormatTimestamp(fixedTestNow.Add(-200*time.Hour)), false, false, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := obs.Save(paths.Observations); err != nil {
 		t.Fatal(err)
 	}
@@ -2553,6 +2598,7 @@ func TestPrintRealizeWarningNamesImageForOCIBackendFailure(t *testing.T) {
 	runInstall := func(t *testing.T, b backend.Backend) string {
 		t.Helper()
 		paths := testHarnessPaths(t)
+		seedTestNodeObservation(paths)
 		binDir := t.TempDir()
 		claudePkg := harness.Registry["claude"].PoolPackage
 		src := &fakeHarnessSource{
@@ -3035,6 +3081,7 @@ func TestHarnessInstallClaudeOnDockerOnlyHostDowngradesGuixAbsentToWarning(t *te
 	swapHasGuix(t, false)
 
 	paths := testHarnessPaths(t)
+	seedTestNodeObservation(paths)
 	binDir := t.TempDir()
 	claudePkg := harness.Registry["claude"].PoolPackage
 	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
@@ -3121,6 +3168,7 @@ func TestHarnessInstallClaudeGuixHostFailingLegacyInstallerStillFails(t *testing
 	})
 
 	paths := testHarnessPaths(t)
+	seedTestNodeObservation(paths)
 	binDir := t.TempDir()
 	claudePkg := harness.Registry["claude"].PoolPackage
 	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{
@@ -3177,6 +3225,7 @@ func TestHarnessInstallClaudeGuixHostFailingLegacyInstallerStillFails(t *testing
 // here.
 func TestHarnessInstallClaudeStaysFailedWhenRealizeFailsOnDockerOnlyHost(t *testing.T) {
 	paths := testHarnessPaths(t)
+	seedTestNodeObservation(paths)
 	binDir := t.TempDir()
 	claudePkg := harness.Registry["claude"].PoolPackage
 	src := &fakeHarnessSource{candidates: map[string][]pool.Candidate{

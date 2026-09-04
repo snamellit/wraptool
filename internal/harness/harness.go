@@ -77,7 +77,18 @@ type Descriptor struct {
 	// single per-platform .tar.gz with no npm package at all. Mutually
 	// exclusive with PoolPackage; see PoolLockable/PoolPackageID.
 	PoolArchive bool
-	Render      func(Params) (path string, content []byte, err error)
+	// NodeLine pins the Node major line (e.g. "22") this npm-sourced
+	// harness's pool generation bundles (design/harness/node-runtime-
+	// tracking.md: "pin the line, not the patch") — passed through as
+	// pool.UpdateOptions.NodeLine. Empty means the pool-wide default line
+	// (internal/pool's defaultNodeLine). Moving a harness — or the default —
+	// to a new major stays a deliberate code change: majors are
+	// compatibility decisions, the exact patch within a line is a
+	// maintenance detail the pool now resolves itself (§9's quarantine,
+	// applied to node releases exactly like package versions). Meaningless
+	// for an archive-sourced harness (agy bundles no node runtime at all).
+	NodeLine string
+	Render   func(Params) (path string, content []byte, err error)
 }
 
 // IsCLI reports whether the harness runs as a binary inside the container pool

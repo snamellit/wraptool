@@ -63,25 +63,20 @@ func (k SourceKind) effective() SourceKind {
 	return k
 }
 
-// defaultNodeVersion is the pinned Node runtime every Phase-1 npm harness
-// resolves against, passed to Source.Resolve. It MUST be an exact, real,
-// published Node version — the npm Source interpolates it verbatim into
-// nodejs.org URLs (https://nodejs.org/dist/v<ver>/SHASUMS256.txt and
-// node-v<ver>-linux-*.tar.xz), and nodejs.org/dist has no directory for a
-// bare major like "v22/": every real resolve against a bare major 404s.
-// "22.23.2" is the newest v22 LTS ("Jod") patch as of 2026-09-03. The pin
-// was 22.11.0 (the Jod baseline) until issue #38: node's zlib gained the
-// zstd API only in v22.15.0, and a pi release that calls it crashed on the
-// bundled 22.11.0 with no path that ever re-realizes the runtime — the
-// version is a constant, not a lock input, so neither update (same constant
-// on re-resolve) nor reinstall (recipe_revision still matches) could move
-// it. §8.1 describes selecting the runtime requirement "from the
-// descriptor-declared runtime requirement (node major)"; until that Phase-2
-// work lands (see #38's design: observe nodejs.org's index per pinned line
-// at refresh, quarantine like package versions, lock the resolved patch,
-// fold it into recipe_revision), bumping THIS constant requires bumping
-// recipeFormatVersion with it, or existing locks never notice.
-const defaultNodeVersion = "22.23.2"
+// defaultNodeLine is the pool-wide default Node major line an npm-sourced
+// harness resolves against when its descriptor's NodeLine
+// (internal/harness.Descriptor.NodeLine) is empty (design/harness/
+// node-runtime-tracking.md, WP1: "pin the line, not the patch" — replaces
+// the old defaultNodeVersion exact-patch constant issue #38's interim fix
+// introduced). The exact patch within this line is no longer a compile-time
+// pin at all: selectNodeVersion resolves it at UPDATE time, from whatever
+// patch RefreshNodeLine most recently observed on nodejs.org/dist and §9's
+// quarantine currently admits — see both functions' doc comments. A var,
+// not a const, only because it is read alongside other package-level state
+// in this file; nothing outside a test ever reassigns it, and moving a
+// harness (or this default) to a new major stays a deliberate code change,
+// exactly as §-non-goals intends.
+var defaultNodeLine = "22"
 
 // recipeFormatVersion is bumped whenever this package's Phase-1 install
 // recipe (the legacy npm-install-pinned-to-an-exact-version path, driven
@@ -217,10 +212,14 @@ type Source interface {
 	// / package-lock.json (§8.1 steps 1-3) — always non-empty (UpdateHarness
 	// creates one under staging/ when the caller didn't supply one; the
 	// Source seam never sees ""). nodeVersion and recipeRevision are supplied
-	// by this package, not discovered by Source: nodeVersion is the pinned
-	// Node runtime this harness resolves against (defaultNodeVersion, a
-	// Phase-1 constant — see its doc comment), and recipeRevision is this
-	// package's own recipe hash (npmRecipeRevision, §8's recipe_revision).
+	// by this package, not discovered by Source: nodeVersion is the EXACT,
+	// published Node patch this harness resolves against for a SourceNPM
+	// call — selectNodeVersion's choice, the newest observed patch on the
+	// harness's Node line (UpdateOptions.NodeLine, default defaultNodeLine)
+	// that §9's quarantine currently admits (design/harness/node-runtime-
+	// tracking.md) — and is unused/ignored for a SourceArchive call (agy
+	// bundles no node runtime). recipeRevision is this package's own recipe
+	// hash (npmRecipeRevision, §8's recipe_revision).
 	Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (LockHarness, error)
 	// Fetch downloads every artifact h describes into cacheDir, verifying
 	// integrity before admission (host, pure Go, locked URLs only — §6.2).
@@ -379,6 +378,18 @@ type UpdateOptions struct {
 	// cmd/harness.go always passes its provisioningImage constant here, even
 	// on a call that resolves to use the guix backend.
 	ProvisioningImage string
+	// NodeLine is the npm-sourced harness's pinned Node major line
+	// (internal/harness.Descriptor.NodeLine); empty means defaultNodeLine,
+	// the pool-wide default. Only meaningful for SourceNPM — ignored for a
+	// SourceArchive call, which never resolves a node version at all (agy
+	// bundles no node runtime). On a fresh resolve (DecisionResolveVersion),
+	// UpdateHarnessLocked passes selectNodeVersion's choice — the newest
+	// ELIGIBLE observed patch on this line, §9's quarantine applied exactly
+	// as it is to package versions — to Source.Resolve in place of the old
+	// defaultNodeVersion constant (design/harness/node-runtime-tracking.md
+	// WP1). See selectNodeVersion's doc comment for the fallback/error rules
+	// when nothing is eligible.
+	NodeLine string
 }
 
 // UpdateResult is UpdateHarness's outcome.
@@ -433,6 +444,15 @@ type UpdateResult struct {
 	// use this field — sync's whole purpose is realization, so a sync
 	// failure stays a hard error returned normally.
 	RealizeErr error
+	// NodeVersionNote reports the Node runtime version selection made on a
+	// fresh resolve (DecisionResolveVersion, SourceNPM only) whenever it
+	// differs from the harness's previously locked node version — e.g.
+	// "node runtime: 22.20.0 -> 22.23.2 (newest eligible on line 22)"
+	// (design/harness/node-runtime-tracking.md WP1 item 3: "log/print which
+	// node version was chosen and why when it differs from the lock's
+	// current one"). Empty when nothing changed, when this call did not
+	// resolve at all, or for a SourceArchive harness.
+	NodeVersionNote string
 }
 
 // RefreshHarness runs the metadata-only refresh phase (§9 phase 1, §6.2)
@@ -857,7 +877,38 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		workDir = dir
 	}
 
-	resolved, err := src.Resolve(ctx, b, opts.Package, selected.Version, workDir, defaultNodeVersion, recipeRevision)
+	// nodeVersion (design/harness/node-runtime-tracking.md WP1): only
+	// SourceNPM ever resolves a node runtime at all — a SourceArchive call
+	// passes "" through unused (Archive.Resolve ignores this parameter,
+	// agy bundles no node runtime). selectNodeVersion reuses the exact same
+	// eligibility/quarantine machinery (Eligible, via
+	// scanCandidatesForConstraint) package versions already get — see its
+	// own doc comment for the fallback/error rules.
+	var nodeVersion, nodeNote string
+	if kind == SourceNPM {
+		line := opts.NodeLine
+		if line == "" {
+			line = defaultNodeLine
+		}
+		v, reason, nerr := selectNodeVersion(obs, line, policy, opts.Now)
+		if nerr != nil {
+			return nil, nerr
+		}
+		nodeVersion = v
+		var priorNode string
+		if hasLock && existing.Runtime != nil {
+			priorNode = existing.Runtime.Version
+		}
+		if priorNode != nodeVersion {
+			if priorNode == "" {
+				nodeNote = fmt.Sprintf("node runtime: %s (%s)", nodeVersion, reason)
+			} else {
+				nodeNote = fmt.Sprintf("node runtime: %s -> %s (%s)", priorNode, nodeVersion, reason)
+			}
+		}
+	}
+
+	resolved, err := src.Resolve(ctx, b, opts.Package, selected.Version, workDir, nodeVersion, recipeRevision)
 	if err != nil {
 		return nil, fmt.Errorf("resolving %s@%s: %w", opts.Package, selected.Version, err)
 	}
@@ -918,7 +969,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		return nil, err
 	}
 
-	result := &UpdateResult{Harness: &resolved, Changed: true}
+	result := &UpdateResult{Harness: &resolved, Changed: true, NodeVersionNote: nodeNote}
 
 	// Only an effective bypass is audited — "only an effective bypass gets
 	// audited" (§9 minor) — and only after the lock write above succeeded.
@@ -1416,7 +1467,18 @@ func StatusHarness(paths PoolPaths, harnessName string, kind SourceKind, pkg str
 // same convention UpdateOptions.Source uses) so a caller's zero-value kind
 // can never silently mean "match nothing" instead of "npm".
 func candidatesForPackage(obs Observations, kind SourceKind, pkg string) ([]Candidate, error) {
-	prefix := string(kind.effective()) + "/" + pkg + "/"
+	return candidatesWithPrefix(obs, string(kind.effective())+"/"+pkg+"/")
+}
+
+// candidatesWithPrefix extracts every observation whose key starts with
+// prefix out of the flat Observations map, parsing each into a Candidate
+// ready for Eligible/QuarantineRemaining — the shared body behind
+// candidatesForPackage's "<source>/<package>/" namespace (§8.1) and
+// node.go's nodeCandidates' "node:<line>/" namespace (design/harness/
+// node-runtime-tracking.md WP1). See candidatesForPackage's own doc comment
+// for the trailing-slash-is-load-bearing rationale, which applies here
+// unchanged regardless of which prefix shape a caller passes.
+func candidatesWithPrefix(obs Observations, prefix string) ([]Candidate, error) {
 	var out []Candidate
 	for key, o := range obs {
 		version, ok := strings.CutPrefix(key, prefix)

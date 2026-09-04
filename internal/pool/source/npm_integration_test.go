@@ -72,12 +72,15 @@ func (h hybridIntegrationBackend) Run(ctx context.Context, spec backend.RunSpec)
 //     silent, permanent cache miss. Asserted below by checking every
 //     downloaded object lands at the exact cache/sha256/<hex> path Fetch's
 //     contract promises, and that nothing is written directly under cache/.
-//   - MAJOR-2: internal/pool's defaultNodeVersion must be an exact,
-//     published Node version ("22.23.2"), not a bare major ("22") —
+//   - MAJOR-2: what reaches NPM.Resolve as a Node version must be an exact,
+//     published Node version ("22.23.2"), never a bare major ("22") —
 //     nodejs.org/dist has no v22/ directory, so a bare major 404s on every
 //     real resolve. Asserted below by capturing the exact SHASUMS256.txt
-//     path the orchestrator's own defaultNodeVersion constant drives NPM.Resolve
-//     to request (this test never supplies a Node version itself).
+//     path the orchestrator's own node-line selection (pool.RefreshNodeLine
+//     and selectNodeVersion, design/harness/node-runtime-tracking.md WP1)
+//     drives NPM.Resolve to request — this test observes ONE node release
+//     via a real nodejs.org/dist/index.json-shaped fixture and never
+//     supplies a Node version itself.
 func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	if _, err := exec.LookPath("npm"); err != nil {
 		t.Skip("npm not on PATH; this integration test's realize phase now runs real npm")
@@ -86,10 +89,10 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	const pkg = "@example/test-harness"
 	const version = "1.2.3"
 	const binName = "test-harness"
-	// defaultNodeVersion (internal/pool/orchestrator.go) is unexported and
-	// not passed in by this test — it must match what the orchestrator
-	// itself is pinned to (§8's MAJOR-2 fix) for the SHASUMS assertion
-	// below to mean anything.
+	// wantNodeVersion is the one node release this test's index.json fixture
+	// (below) reports on the pool's default line — the exact version
+	// pool.RefreshNodeLine/selectNodeVersion must select and hand to
+	// NPM.Resolve, for the SHASUMS assertion below to mean anything.
 	const wantNodeVersion = "22.23.2"
 
 	// --- npm registry packument server ---
@@ -145,9 +148,25 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 		sha256Hex(amd64Tarball), amd64Name,
 		sha256Hex(arm64Tarball), arm64Name)
 
+	// index.json-shaped fixture (design/harness/node-runtime-tracking.md
+	// WP1): a single release on the pool's default line ("22"), reported
+	// with a real-shaped past date so it clears the fixture manifest's
+	// (below) 0h minimum_release_age — pool.RefreshNodeLine's real HTTP
+	// fetch + JSON decode, exercised against a local server just like the
+	// registry/SHASUMS256.txt fixtures above.
+	nodeIndexBody, err := json.Marshal([]map[string]string{
+		{"version": "v" + wantNodeVersion, "date": "2026-07-01"},
+	})
+	if err != nil {
+		t.Fatalf("marshaling fixture node index: %v", err)
+	}
+
 	var shasumsRequests []string
 	nodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "index.json"):
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(nodeIndexBody)
 		case strings.HasSuffix(r.URL.Path, "SHASUMS256.txt"):
 			shasumsRequests = append(shasumsRequests, r.URL.Path)
 			w.Write([]byte(shasums))
@@ -211,6 +230,14 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	// --- Refresh (real Source.Refresh, one registry GET) ---
 	if _, err := pool.RefreshHarness(ctx, n, paths, pool.SourceNPM, pkg, now); err != nil {
 		t.Fatalf("RefreshHarness: %v", err)
+	}
+
+	// --- Observe the node line (real pool.RefreshNodeLine, one
+	// nodejs.org/dist/index.json-shaped GET against nodeSrv) — the WP1
+	// counterpart of the package refresh above; UpdateHarness below now
+	// requires this to have run. ---
+	if _, err := pool.RefreshNodeLine(ctx, paths, pool.NodeOptions{BaseURL: nodeSrv.URL}, "", now); err != nil {
+		t.Fatalf("RefreshNodeLine: %v", err)
 	}
 
 	// --- Update (real Source.Resolve via hybridIntegrationBackend's faked

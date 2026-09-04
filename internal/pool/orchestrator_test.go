@@ -737,17 +737,52 @@ harnesses:
     constraint: ">=2 <3"
 `
 
+// testNodeVersion/testNodeFirstSeen are seedObservations'/seedNodeObservation's
+// default node-runtime candidate: comfortably eligible under every policy
+// this file exercises (published/first-seen well over a year before
+// fixedNow, clearing the 168h maximum minimum_release_age any test here
+// sets — node-runtime-observe-resolve WP1).
+const testNodeVersion = "22.99.0"
+
+var testNodeFirstSeen = fixedNow.Add(-24 * 400 * time.Hour)
+
 func seedObservations(t *testing.T, paths PoolPaths, pkg string, candidates []Candidate) {
 	t.Helper()
-	obs := make(Observations, len(candidates))
+	obs := make(Observations, len(candidates)+1)
 	for _, c := range candidates {
 		key := ObservationKey(npmSourceName, pkg, c.Version)
 		if err := obs.Observe(key, FormatTimestamp(c.FirstSeenAt), FormatTimestamp(c.PublishedAt), c.Prerelease, c.Yanked, c.PublishedAtSynthesized); err != nil {
 			t.Fatalf("seeding observation %s: %v", key, err)
 		}
 	}
+	// node-runtime-observe-resolve (WP1): UpdateHarnessLocked now needs an
+	// ELIGIBLE observed node-line candidate for ANY SourceNPM fresh resolve
+	// (selectNodeVersion, orchestrator.go) — every caller of this helper
+	// gets one for free, exactly like they already get one for the package
+	// without having to think about observations.json's own mechanics.
+	nodeKey := nodeObservationKey(defaultNodeLine, testNodeVersion)
+	if err := obs.Observe(nodeKey, FormatTimestamp(testNodeFirstSeen), FormatTimestamp(testNodeFirstSeen), false, false, false); err != nil {
+		t.Fatalf("seeding node observation %s: %v", nodeKey, err)
+	}
 	if err := obs.Save(paths.Observations); err != nil {
 		t.Fatalf("saving observations: %v", err)
+	}
+}
+
+// seedNodeObservation records a single, comfortably-eligible node candidate
+// directly into observations.json via MergeObservations (not Save) — the
+// node-runtime counterpart of seedObservations for a test whose package
+// observations come from a REAL RefreshHarnessLocked call rather than
+// seedObservations itself (a Save would clobber those).
+func seedNodeObservation(t *testing.T, paths PoolPaths) {
+	t.Helper()
+	key := nodeObservationKey(defaultNodeLine, testNodeVersion)
+	obs := Observations{}
+	if err := obs.Observe(key, FormatTimestamp(testNodeFirstSeen), FormatTimestamp(testNodeFirstSeen), false, false, false); err != nil {
+		t.Fatalf("seeding node observation %s: %v", key, err)
+	}
+	if err := MergeObservations(paths.Observations, obs); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2059,6 +2094,7 @@ func TestSequentialRefreshThenUpdateDoesNotDeadlock(t *testing.T) {
 	src := &fakeSource{candidates: map[string][]Candidate{
 		pkg: {{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour)}},
 	}}
+	seedNodeObservation(t, paths)
 
 	done := make(chan error, 1)
 	go func() {
@@ -2095,6 +2131,7 @@ func TestLockPoolComposesRefreshAndUpdateLockedWithoutDeadlock(t *testing.T) {
 	src := &fakeSource{candidates: map[string][]Candidate{
 		pkg: {{Version: "2.1.220", PublishedAt: fixedNow.Add(-200 * time.Hour)}},
 	}}
+	seedNodeObservation(t, paths)
 
 	done := make(chan error, 1)
 	go func() {
