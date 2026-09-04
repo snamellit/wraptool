@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -58,8 +57,8 @@ func TestFlagParamName(t *testing.T) {
 		"--no-edit":      "no_edit",
 	}
 	for flag, want := range cases {
-		if got := flagParamName(flag); got != want {
-			t.Errorf("flagParamName(%q) = %q, want %q", flag, got, want)
+		if got := FlagParamName(flag); got != want {
+			t.Errorf("FlagParamName(%q) = %q, want %q", flag, got, want)
 		}
 	}
 }
@@ -67,22 +66,18 @@ func TestFlagParamName(t *testing.T) {
 func TestSanitizeToolName(t *testing.T) {
 	// The permitted set is the intersection wraptool mints into: Gemini's
 	// `[A-Za-z_][A-Za-z0-9_.:-]{0,127}` minus ":".
-	valid := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
 	cases := []struct{ in, want string }{
 		{"sigil_sigil/lookup", "sigil_sigil_lookup"},                   // the reported agy/Gemini failure
 		{"kubectl_config_get-contexts", "kubectl_config_get-contexts"}, // dashes are fine, unchanged
-		{"git_push", "git_push"},
-		{"9lives", "_9lives"}, // must not start with a digit
+		{"9lives", "_9lives"},                                          // must not start with a digit
+		{".hidden", "_.hidden"},
 		{"a b:c", "a_b_c"},
+		{"café/x", "caf__x"}, // one "_" per RUNE, not per byte
 		{"", "_"},
 	}
 	for _, c := range cases {
-		got := SanitizeToolName(c.in)
-		if got != c.want {
+		if got := SanitizeToolName(c.in); got != c.want {
 			t.Errorf("SanitizeToolName(%q) = %q, want %q", c.in, got, c.want)
-		}
-		if !valid.MatchString(got) {
-			t.Errorf("SanitizeToolName(%q) = %q, which still violates the tool-name grammar", c.in, got)
 		}
 	}
 }

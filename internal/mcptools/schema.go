@@ -24,8 +24,7 @@ func ToolName(toolName string, subcommand []string) string {
 // e.g. "--set-upstream" -> "set_upstream"
 // e.g. "-m" -> "m"
 func FlagToParam(flag string) string {
-	name := strings.TrimLeft(flag, "-")
-	return strings.ReplaceAll(name, "-", "_")
+	return config.FlagParamName(flag)
 }
 
 // ParamToFlag converts a JSON Schema parameter name back to a CLI flag.

@@ -297,14 +297,10 @@ func containsPrefix(env []string, prefix string) bool {
 	return false
 }
 
-// TestSourceSanitizesUpstreamToolNameForModelAPI pins the reported agy/Gemini
-// failure: sigil publishes its tools as "sigil/lookup", and the raw
-// "<name_prefix>_<upstream_tool>" join carried that slash into the registered
-// name. Gemini rejects the whole GenerateContentRequest over one invalid
-// function name ("tools[54].function_declarations[0].name: [FIELD_INVALID]"),
-// so a single upstream naming convention disabled every wraptool tool in the
-// session. The exposed name must be sanitized; the upstream call must still
-// use the unmodified name.
+// TestSourceSanitizesUpstreamToolNameForModelAPI pins the two properties of an
+// upstream whose tools are namespaced with a character no model API accepts in
+// a function name (sigil publishes "sigil/lookup"): the EXPOSED name is
+// sanitized, and the upstream is still called by its unmodified name.
 func TestSourceSanitizesUpstreamToolNameForModelAPI(t *testing.T) {
 	srv := server.NewMCPServer("stub", "0.0.1", server.WithToolCapabilities(true))
 	called := ""

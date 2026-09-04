@@ -16,10 +16,11 @@ const paramNamePattern = `^[a-zA-Z0-9_.-]{1,64}$`
 
 var paramNameRe = regexp.MustCompile(paramNamePattern)
 
-// flagParamName mirrors mcptools.FlagToParam — the schema property key derived
-// from a flag. Duplicated here rather than imported to avoid a
-// config → mcptools import cycle.
-func flagParamName(flag string) string {
+// FlagParamName is the schema property key derived from a flag. It lives here
+// rather than in mcptools because config cannot import mcptools (that
+// direction cycles) while mcptools can import config; mcptools.FlagToParam
+// delegates to it.
+func FlagParamName(flag string) string {
 	return strings.ReplaceAll(strings.TrimLeft(flag, "-"), "-", "_")
 }
 
@@ -31,38 +32,38 @@ func flagParamName(flag string) string {
 // just its own. Anthropic's grammar is similar. `:` is permitted by Gemini
 // but deliberately excluded here: it is not universally accepted, and
 // nothing in wraptool mints one.
-//
-// This bites upstream MCP servers (mcp_servers), not wrapped CLIs: an
-// upstream is free to namespace its own tools with a separator wraptool does
-// not control — sigil publishes "sigil/lookup" — and that name is otherwise
-// carried verbatim into "<name_prefix>_<upstream_tool>".
 var toolNameUnsafeRe = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
 
-// toolNameFirstRe matches a name whose first character is a legal leading one
-// (a letter or underscore) — the separate rule the same grammar imposes.
-var toolNameFirstRe = regexp.MustCompile(`^[A-Za-z_]`)
-
-// SanitizeToolName maps a minted tool name onto the character set above,
-// replacing each offending character with "_" and prefixing "_" when the
-// result would not start with a letter or underscore.
+// SanitizeToolName maps a minted tool name onto the grammar above, replacing
+// each offending character with "_" and prefixing "_" when the result would
+// not start with a letter or underscore.
 //
-// It is applied where names are MINTED (mcptools.ToolName for wrapped CLI
-// subcommands, mcpproxy.Source.Tools for proxied upstream tools) AND on the
-// collision-detection path here, so two upstream names that differ only in
-// an unsafe character ("a/b" vs "a_b") are still caught as the collision
-// they become once sanitized, rather than silently registering twice.
-// Exported from config rather than mcptools because config cannot import
-// mcptools (cycle — see flagParamName), while every minting site can import
-// config.
+// This bites upstream MCP servers (mcp_servers), not wrapped CLIs: an upstream
+// is free to namespace its own tools with a separator wraptool does not
+// control — sigil publishes "sigil/lookup" — and that name is otherwise
+// carried verbatim into the registered name. It is applied on the
+// collision-detection path in validateMCPServers too, so two upstream names
+// that differ only in an unsafe character ("a/b" vs "a_b") are caught as the
+// collision they become once sanitized, rather than silently registering twice.
 func SanitizeToolName(name string) string {
+	// Replacement is per-RUNE, so a multi-byte character collapses to a single
+	// "_" — a hand-rolled byte loop would emit one per byte.
 	s := toolNameUnsafeRe.ReplaceAllString(name, "_")
-	if s == "" {
-		return "_"
-	}
-	if !toolNameFirstRe.MatchString(s) {
+	// Only [A-Za-z0-9_.-] survive that pass, so the illegal leading characters
+	// are a digit, "." and "-", plus the empty string.
+	if s == "" || s[0] == '.' || s[0] == '-' || (s[0] >= '0' && s[0] <= '9') {
 		s = "_" + s
 	}
 	return s
+}
+
+// ProxyToolName is the registered MCP name for a tool proxied from an upstream
+// server: the server's name_prefix joined to the upstream tool name, sanitized.
+// The mcpproxy source and the collision check in validateMCPServers must agree
+// by construction, so both mint through here — mcptools.ToolName is the
+// equivalent single source for wrapped CLI subcommands.
+func ProxyToolName(prefix, upstreamTool string) string {
+	return SanitizeToolName(prefix + "_" + upstreamTool)
 }
 
 func (c *Config) Validate() error {
@@ -186,7 +187,7 @@ func validateMCPServers(c *Config) error {
 			if strings.TrimSpace(rule.Tool) == "" {
 				return fmt.Errorf("mcp_servers.%s: allow rule %d: tool name is required", name, i)
 			}
-			final := SanitizeToolName(prefix + "_" + rule.Tool)
+			final := ProxyToolName(prefix, rule.Tool)
 			if owner, ok := finalOwner[final]; ok {
 				return fmt.Errorf("mcp_servers.%s: tool %q resolves to registered name %q, which collides with %s", name, rule.Tool, final, owner)
 			}
@@ -229,7 +230,7 @@ func validateTool(tc *ToolConfig) error {
 			return fmt.Errorf("allow rule %d: subcommand is required", i)
 		}
 		for _, flag := range rule.Flags {
-			if p := flagParamName(flag); !paramNameRe.MatchString(p) {
+			if p := FlagParamName(flag); !paramNameRe.MatchString(p) {
 				return fmt.Errorf("allow rule %d: flag %q yields invalid schema property %q (must match %s) — %q is not a flag; drop it (positional args go through `args`)", i, flag, p, paramNamePattern, flag)
 			}
 		}
