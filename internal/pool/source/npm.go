@@ -313,6 +313,68 @@ type npmVersionDist struct {
 	} `json:"dist"`
 }
 
+// npmVersionEngines is the subset of one packument version manifest
+// checkEnginesNode reads: the package author's own "engines.node" semver
+// range for that version (design/harness/node-runtime-tracking.md WP2 item
+// 5, issue #38's class of bug — a harness release calling a node API newer
+// than the pool's bundled runtime).
+type npmVersionEngines struct {
+	Engines struct {
+		Node string `json:"node"`
+	} `json:"engines"`
+}
+
+// checkEnginesNode evaluates pkg@version's packument-declared engines.node
+// constraint (if any) against nodeVersion — the exact patch this resolve is
+// pinning the harness's runtime to (Resolve's own nodeVersion parameter,
+// selectNodeVersion's choice one layer up) — failing outright on a genuine
+// mismatch (design doc: "catching #38's class at update time instead of
+// harness startup"). packuments is the SAME per-Resolve-call cache
+// backfillIntegrity already threads through this method's caller, so a
+// package that also needed integrity backfill fetches its packument only
+// once per Resolve call.
+//
+// A missing engines field, or an engines.node value neither this package's
+// nor npm's own semver dialect can parse (npm's constraint grammar is a
+// superset of Masterminds/semver's — e.g. npm's bare "20 - 22" hyphen
+// ranges are not valid Masterminds syntax), is a non-event: the design doc
+// is explicit that this check must never fail an update merely because it
+// couldn't understand the declaration, only because it definitively
+// understood one and found a real mismatch.
+func (n *NPM) checkEnginesNode(ctx context.Context, packuments map[string]*npmPackument, pkg, version, nodeVersion string) error {
+	doc, ok := packuments[pkg]
+	if !ok {
+		var err error
+		doc, err = n.fetchPackument(ctx, pkg)
+		if err != nil {
+			return err
+		}
+		packuments[pkg] = doc
+	}
+	raw, ok := doc.Versions[version]
+	if !ok {
+		return nil
+	}
+	var manifest npmVersionEngines
+	if err := json.Unmarshal(raw, &manifest); err != nil || manifest.Engines.Node == "" {
+		return nil
+	}
+	constraint, err := semver.NewConstraint(manifest.Engines.Node)
+	if err != nil {
+		return nil
+	}
+	nv, err := semver.NewVersion(nodeVersion)
+	if err != nil {
+		return nil
+	}
+	if constraint.Check(nv) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s@%s requires node %s, but the pool's resolved node runtime is %s; change the harness's NodeLine (currently %d) to a line satisfying %s",
+		pkg, version, manifest.Engines.Node, nodeVersion, nv.Major(), manifest.Engines.Node)
+}
+
 // lockKeyPackageName extracts the package name from a package-lock.json
 // "packages" key: everything after the key's last "node_modules/" segment,
 // which for nested entries like
@@ -708,6 +770,9 @@ func (n *NPM) Resolve(ctx context.Context, b backend.Backend, pkg, version, work
 	// §8.1 step 4: pinned runtime requirement + per-platform artifacts.
 	publishedAt, err := n.versionPublishedAt(ctx, pkg, version)
 	if err != nil {
+		return pool.LockHarness{}, err
+	}
+	if err := n.checkEnginesNode(ctx, packuments, pkg, version, nodeVersion); err != nil {
 		return pool.LockHarness{}, err
 	}
 	runtimeArtifacts, err := n.nodeRuntimeArtifacts(ctx, nodeVersion)
