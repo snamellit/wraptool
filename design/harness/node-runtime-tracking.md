@@ -1,6 +1,6 @@
 # Tracking the bundled Node runtime (issue #38)
 
-Status: **proposed**
+Status: **implemented** (WP1 `internal/pool/node.go`; WP2 recipe_revision fold-in, engines.node check, and cmd wiring)
 
 ## Problem
 
