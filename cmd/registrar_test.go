@@ -39,13 +39,12 @@ func (f *fakeSource) Tools(ctx context.Context) ([]mcptools.RegisteredTool, erro
 	var out []mcptools.RegisteredTool
 	for _, t := range f.tools {
 		name := t
-		out = append(out, mcptools.RegisteredTool{
-			Name: name,
-			Tool: mcp.NewTool(name),
-			Handler: func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		out = append(out, mcptools.NewRegisteredTool(
+			mcp.NewTool(name),
+			func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return mcp.NewToolResultText("ok"), nil
 			},
-		})
+		))
 	}
 	return out, nil
 }

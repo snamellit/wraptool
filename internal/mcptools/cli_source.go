@@ -160,11 +160,7 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 			Store:      store,
 		}
 
-		out = append(out, RegisteredTool{
-			Name:    mcpName,
-			Tool:    tool,
-			Handler: handler.Handle,
-		})
+		out = append(out, NewRegisteredTool(tool, handler.Handle))
 	}
 
 	return out, nil

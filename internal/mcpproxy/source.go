@@ -92,6 +92,12 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			continue
 		}
 		finalName := config.ProxyToolName(s.cfg.NamePrefix, ut.Name)
+		if joined := s.cfg.NamePrefix + "_" + ut.Name; joined != finalName {
+			// The operator sees the rewritten name in their client but greps
+			// their config for the upstream's own spelling, so say both once
+			// per registration rather than leaving the mapping invisible.
+			log.Printf("mcpproxy: %s: exposing upstream tool %q as %q (the joined name %q is not a valid tool name)", s.serverName, ut.Name, finalName, joined)
+		}
 		tool := mcp.NewToolWithRawSchema(finalName, ut.Description, raw)
 		h := &handler{
 			client:     s.client,
@@ -100,11 +106,7 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			policy:     s.policy,
 			store:      s.store,
 		}
-		out = append(out, mcptools.RegisteredTool{
-			Name:    finalName,
-			Tool:    tool,
-			Handler: h.Handle,
-		})
+		out = append(out, mcptools.NewRegisteredTool(tool, h.Handle))
 	}
 	return out, nil
 }

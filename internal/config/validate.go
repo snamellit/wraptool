@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,17 +36,31 @@ func FlagParamName(flag string) string {
 // nothing in wraptool mints one.
 var toolNameUnsafeRe = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
 
-// SanitizeToolName maps a minted tool name onto the grammar above, replacing
-// each offending character with "_" and prefixing "_" when the result would
-// not start with a letter or underscore.
+// MaxToolNameLen is the longest tool name the grammar above admits (Gemini's
+// {0,127} quantifier follows a mandatory leading character, so 128 total).
+const MaxToolNameLen = 128
+
+// toolNameDigestLen is the hex digest width appended to a truncated name. 8
+// hex chars = 32 bits: ample to separate the handful of names one server can
+// mint, while leaving the human-readable prefix as long as possible.
+const toolNameDigestLen = 8
+
+// SanitizeToolName maps a minted tool name onto the grammar above: each
+// character outside the permitted set becomes "_", a result that would not
+// start with a letter or underscore is prefixed with "_", and a result longer
+// than MaxToolNameLen is truncated with a digest suffix that keeps distinct
+// long names distinct. It is idempotent — sanitizing a sanitized name is a
+// no-op — which is what lets the registration choke point
+// (mcptools.NewRegisteredTool) re-apply it as defense in depth.
 //
 // This bites upstream MCP servers (mcp_servers), not wrapped CLIs: an upstream
 // is free to namespace its own tools with a separator wraptool does not
 // control — sigil publishes "sigil/lookup" — and that name is otherwise
 // carried verbatim into the registered name. It is applied on the
 // collision-detection path in validateMCPServers too, so two upstream names
-// that differ only in an unsafe character ("a/b" vs "a_b") are caught as the
-// collision they become once sanitized, rather than silently registering twice.
+// that differ only in an unsafe character ("a/b" vs "a_b"), or only past the
+// truncation point, are caught as the collision they become once sanitized,
+// rather than silently registering twice.
 func SanitizeToolName(name string) string {
 	// Replacement is per-RUNE, so a multi-byte character collapses to a single
 	// "_" — a hand-rolled byte loop would emit one per byte.
@@ -53,6 +69,13 @@ func SanitizeToolName(name string) string {
 	// are a digit, "." and "-", plus the empty string.
 	if s == "" || s[0] == '.' || s[0] == '-' || (s[0] >= '0' && s[0] <= '9') {
 		s = "_" + s
+	}
+	if len(s) > MaxToolNameLen {
+		// Every surviving byte is ASCII, so a byte-index cut cannot split a
+		// rune. The digest covers the whole pre-truncation name, so two names
+		// sharing a prefix past the cut still differ.
+		sum := sha256.Sum256([]byte(s))
+		s = s[:MaxToolNameLen-toolNameDigestLen-1] + "_" + hex.EncodeToString(sum[:])[:toolNameDigestLen]
 	}
 	return s
 }
