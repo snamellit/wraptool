@@ -43,7 +43,19 @@ whereas the admin token must remain host-only. When using `wraptool up`, the
 admin token file must also resolve outside the writable workspace, including
 through symlinks.
 
-On startup wraptool logs a click-through URL with the token embedded:
+## Opening it
+
+Run:
+
+```bash
+wraptool admin open
+```
+
+It reads `admin.listen` and `admin.auth_token_file` from the config, builds
+the login URL, and opens it in the default browser — no token to copy. Use
+`--print` to print the URL instead of opening a browser.
+
+On startup wraptool also logs a click-through URL with the token embedded:
 
 ```
 wraptool admin ui: http://127.0.0.1:8718/requests?token=…

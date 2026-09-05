@@ -18,7 +18,7 @@ func newAdminCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "admin",
-		Short: "Administration web UI helpers",
+		Short: "Review UI helpers",
 	}
 
 	cmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to config file")
@@ -33,8 +33,8 @@ func newAdminOpenCmd(configPath *string) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "open",
-		Short: "Open the admin web UI in a browser, already logged in",
-		Long: `Open the admin web UI in the default browser, authenticated via a one-shot
+		Short: "Open the review UI in a browser, already logged in",
+		Long: `Open the review UI in the default browser, authenticated via a one-shot
 ?token= login link (the UI immediately swaps it for a session cookie and strips
 the token from the URL). Reads admin.listen and admin.auth_token_file from the
 config, so there is nothing to copy-paste.`,
@@ -45,7 +45,7 @@ config, so there is nothing to copy-paste.`,
 				return err
 			}
 			if cfg.Admin.Listen == "" {
-				return fmt.Errorf("admin.listen is not set in %s: the admin UI is disabled", resolveConfigPath(configPath))
+				return fmt.Errorf("admin.listen is not set in %s: the review UI is disabled", resolveConfigPath(configPath))
 			}
 			token, err := webui.LoadToken(cfg.Admin.AuthTokenFile)
 			if err != nil {

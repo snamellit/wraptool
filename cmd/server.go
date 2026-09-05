@@ -40,8 +40,12 @@ func newServerStatusCmd() *cobra.Command {
 			alive := pid > 0 && processAlive(pid)
 
 			var probe string
-			if cfg, err := config.Load(configOrDefault(configPath)); err == nil && cfg.MCP.Listen != "" {
-				probe = probeAddr(cfg.MCP.Listen)
+			var adminEnabled bool
+			if cfg, err := config.Load(configOrDefault(configPath)); err == nil {
+				if cfg.MCP.Listen != "" {
+					probe = probeAddr(cfg.MCP.Listen)
+				}
+				adminEnabled = cfg.Admin.Listen != ""
 			}
 			reachable := probe != "" && dialOK(probe)
 
@@ -54,6 +58,9 @@ func newServerStatusCmd() *cobra.Command {
 				fmt.Printf("reachable at %s (no pidfile — started externally or by an older wraptool)\n", probe)
 			default:
 				fmt.Println("not running")
+			}
+			if adminEnabled && (alive || reachable) {
+				fmt.Println("review UI: wraptool admin open")
 			}
 			return nil
 		},

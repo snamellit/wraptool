@@ -120,11 +120,14 @@ not install host IDEs. Gemini currently has no automated installer.
 wraptool requests list [--status pending|approved|denied|""]
 wraptool requests approve REQUEST_ID [--apply]
 wraptool requests deny REQUEST_ID [--reason TEXT]
+wraptool admin open [--print]
 wraptool config validate [PATH]
 wraptool config validate --config PATH
 ```
 
 The default request-list filter is `pending`; an empty status displays all.
+`admin open` opens the [review UI](web-ui.qmd) in the default browser, logged
+in via its token; `--print` prints the login URL instead.
 `approve --apply` first records approval, then attempts the atomic config edit.
 If editing fails, request status remains approved while policy remains unchanged.
 
