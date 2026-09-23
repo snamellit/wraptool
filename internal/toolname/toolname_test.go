@@ -24,14 +24,19 @@ func TestSanitize(t *testing.T) {
 	// The permitted set is the intersection wraptool mints into: Gemini's
 	// `[A-Za-z_][A-Za-z0-9_.:-]{0,127}` minus ":".
 	cases := []struct{ in, want string }{
-		{"sigil_sigil/lookup", "sigil_sigil_lookup"},                   // the reported agy/Gemini failure
-		{"kubectl_config_get-contexts", "kubectl_config_get-contexts"}, // dashes are fine, unchanged
-		{"9lives", "_9lives"},                                          // must not start with a digit
+		// the reported agy/Gemini failure
+		{"sigil_sigil/lookup", "sigil_sigil_lookup"},
+		// dashes are fine, unchanged
+		{"kubectl_config_get-contexts", "kubectl_config_get-contexts"},
+		// must not start with a digit
+		{"9lives", "_9lives"},
 		{".hidden", "_.hidden"},
 		{"a b:c", "a_b_c"},
-		{"café/x", "caf__x"}, // one "_" per RUNE, not per byte
+		// one "_" per RUNE, not per byte
+		{"caf\u00e9/x", "caf__x"},
 		{"", "_"},
-		{strings.Repeat("a", MaxLen), strings.Repeat("a", MaxLen)}, // exactly at the cap, untouched
+		// exactly at the cap, untouched
+		{strings.Repeat("a", MaxLen), strings.Repeat("a", MaxLen)},
 	}
 	for _, c := range cases {
 		if got := Sanitize(c.in); got != c.want {
