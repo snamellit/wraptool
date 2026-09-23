@@ -24,6 +24,7 @@ first (the foundational wrapping model), then browse by area below.
 | `mcp-server-wrapping.md` | core | draft | Wrapping local stdio MCP servers (the foundational model) |
 | `release-1-0.md` | release | proposed | The minimal blocker set for tagging 1.0, the compatibility promise, and what is deferred to 1.x |
 | `documentation-onboarding.md` | docs | proposed | Close the 0.5.0 docs gap; make first-run the documented path |
+| `harness/acp-bridge.md` | harness | proposed | ACP editors (Zed, Neovim, Emacs) driving a harness inside a container — a transparent pipe and documentation, not a mediating bridge |
 | `harness/guix-container-runtime.md` | harness | implemented | Guix-container runtime for `wraptool up` |
 | `harness/harness-descriptor.md` | harness | implemented | A shared harness descriptor registry |
 | `harness/harness-pool-devcontainer.md` | harness | superseded | Shared harness pool for the devcontainer runtime → `unified-harness-pool.md` |
