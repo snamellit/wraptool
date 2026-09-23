@@ -73,12 +73,13 @@ So the container boundary is in the way twice over:
 
 The launch problem is cheap in bring-up terms: ACP's transport is the child
 process's own stdin and stdout, and the container process is already a child
-of whatever launched it, so no network hop is needed. The bridge is therefore
-a **host-side launcher**, not a network service. But cheap bring-up is not the
-same as a cheap component: §4.1 states the invariant that the bridge must own
-the pipes rather than hand the container the editor's own descriptors, and §7
-is why. The launcher has to be built as a policy point from the first commit
-rather than as a pipe that grows one later.
+of whatever launched it, so no network hop is needed. What the editor spawns
+is therefore a **host-side launcher**, not a network service. Under R1 that
+launcher is deliberately *not* a policy point: §4.1 states the invariant that
+the container inherits the editor's own descriptors and that nothing on the
+host sits on the message path. §7 is why that choice has a cost, and §10 is
+why it is accepted — the channel back is carried to the developer by the
+documentation, not closed by the launcher.
 
 ### 1.1 Three unrelated pipes — do not conflate them
 
@@ -942,12 +943,17 @@ UI chrome the developer is trained to read as the **editor** asking, usually
 with a one-keystroke accept — and what the click authorizes is in-container
 tool execution, which per `docs/security.qmd` ("Scope") can invoke the same
 policy-allowed host tools the agent can. It is strictly worse than terminal
-prose. Requirements: the bridge marks every forwarded prompt as
-harness-authored in a way the editor can render (a bridge-owned prefix, or a
-bridge-set `_meta` key the harness cannot overwrite — consistent with §7.2's
-rule that harness-supplied `_meta` never passes through), and the
-documentation states plainly that **a granted permission is recorded
-nowhere** — R1 builds no audit for it (§10.3).
+prose. Under R1 nothing on the host can mark the prompt: the harness's
+`session/request_permission` reaches the editor unmodified, with its
+harness-authored text rendered as editor chrome. The requirement therefore
+lands on the documentation (WP3): it states plainly that **the text in an
+ACP permission prompt is written by the harness**, not the editor, and that
+**a granted permission is recorded nowhere** — R1 builds no audit for it
+(§10.3). Marking every forwarded prompt as harness-authored (a bridge-owned
+prefix, or a bridge-set `_meta` key the harness cannot overwrite, consistent
+with §7.2's rule that harness-supplied `_meta` never passes through) is a
+relay capability and belongs to §10.4's specification, not to anything R1
+ships.
 
 **Under R1, restated honestly.** The list below was written for the relay of
 §10 and describes what that relay *would* have done. R1 builds none of it, so
@@ -1343,7 +1349,8 @@ only control surface that exists (§10.2). A `docs/` page carrying:
 - **The §7 exposures, in the developer's language.** At minimum: the harness
   can ask the editor to run commands on the host and to touch files outside
   the worktree, the editor's prompt is the only thing between them and the
-  developer, and none of it appears in wraptool's audit log (§10.3).
+  developer, the text in that prompt is written by the harness (§7.11), and
+  none of it appears in wraptool's audit log (§10.3).
 - §7.7's bypass, and §7.6's warning that an editor honouring project-local
   spawn configuration turns worktree write access into host execution.
 - **`docs/security.qmd`**, per §7.10: qualify the "only path across the
