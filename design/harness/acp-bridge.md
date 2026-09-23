@@ -396,8 +396,9 @@ non-interactive entry path must hand the child the inherited descriptors
 - `wantShell`'s `auto` branch is TTY-driven (`cmd/up.go:189`, `isTTY` at
   `cmd/up.go:193-196`). Under an ACP editor, stdin and stdout are pipes, so
   `auto` resolves to `false` — and on the Guix path `shell == false` never
-  enters a container at all (`cmd/guixcontainer.go:99-111`). **A bridge must
-  not route through `wantShell`'s auto branch.**
+  enters a container at all (`cmd/guixcontainer.go:99-111`). **The
+  non-interactive launch path must not route through `wantShell`'s auto
+  branch.**
 - `buildContainerEntry` (`cmd/guixcontainer.go:597`) and
   `buildDevcontainerExecArgs` / `buildDevcontainerShellEntry`
   (`cmd/up.go:877-894`) each hardcode the login shell and must take the
@@ -492,12 +493,13 @@ stderr on a non-interactive launch, which changes nothing for an ordinary
 
 On the Guix runtime, a cold profile realizes on first entry. The existing
 non-shell path deliberately warms it and *shows* the output
-(`cmd/guixcontainer.go:103-105`). A bridge must do the same warm-up, before
-the ACP-carrying container starts, with the child's stdout pointed at stderr
-— so the editor sees the harness's first JSON-RPC frame rather than a build
-log. (Guix normally writes build progress to stderr already, but that has
-not been verified empirically here; the warm-up must not depend on it.
-§14.2.)
+(`cmd/guixcontainer.go:103-105`). The non-interactive launch path should do the same
+warm-up, before the ACP-carrying container starts, with the child's stdout
+pointed at stderr — so the editor sees the harness's first JSON-RPC frame
+rather than a build log. (§13.1 found guix's output goes to stderr, including
+under `--rebuild-cache`, which demotes this warm-up from required to probably
+unnecessary; the cold-store case is still untested, so it is kept until that
+is. §14.2.)
 
 ### 5.4 The login shell can echo before the harness starts
 
@@ -536,8 +538,10 @@ sets `workspaceFolder` or `workspaceMount`, so the devcontainer CLI's default
 applies and the workspace appears at `/workspaces/<basename>`, while
 `WRAPTOOL_CWD` is injected as the *host* path (`cmd/up.go:916`). The pool
 `home/` is pinned to `/home/wraptool-harness` by the wiring-only feature, not
-mounted at its host path. So for this runtime the bridge must rewrite paths
-in both directions.
+mounted at its host path. So for this runtime something on the message path
+would have to rewrite paths in both directions — and under R1 nothing is on
+the message path. Rewriting is therefore a relay capability (§10), and the
+two alternatives below are the only options R1 leaves.
 
 Path rewriting is genuinely lossy and should be treated as such. Paths appear
 in `session/new`.`cwd`, `session/load`/`session/resume` `cwd`,
