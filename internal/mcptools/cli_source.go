@@ -58,6 +58,15 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 		rule := &tc.Allow[i]
 		mcpName := ToolName(toolName, rule.Subcommand)
 		subcmdKey := strings.Join(rule.Subcommand, " ")
+		if joined := strings.Join(append([]string{toolName}, rule.Subcommand...), "_"); joined != mcpName {
+			// Config-owned names are sanitized rather than rejected: a
+			// subcommand token may legitimately carry a character the tool-name
+			// grammar forbids (npm run build:prod, mvn clean:install), and
+			// refusing to start over one would break a working setup. But the
+			// operator writes the config and reads the rewritten name in their
+			// client, so state the mapping instead of leaving them to infer it.
+			log.Printf("mcptools: %s: exposing %q as %q (the joined name %q is not a valid tool name)", toolName, subcmdKey, mcpName, joined)
+		}
 
 		// Build description from introspection or fallback.
 		description := fmt.Sprintf("%s %s", toolName, subcmdKey)
@@ -160,11 +169,7 @@ func buildCLITools(toolName string, tc *config.ToolConfig, policy *whitelist.Pol
 			Store:      store,
 		}
 
-		out = append(out, RegisteredTool{
-			Name:    mcpName,
-			Tool:    tool,
-			Handler: handler.Handle,
-		})
+		out = append(out, NewRegisteredTool(tool, handler.Handle))
 	}
 
 	return out, nil

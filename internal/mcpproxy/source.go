@@ -9,6 +9,7 @@ import (
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/mcptools"
 	"github.com/pti/wraptool/internal/requestlog"
+	"github.com/pti/wraptool/internal/toolname"
 	"github.com/pti/wraptool/internal/whitelist"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -48,12 +49,10 @@ func NewSource(serverName string, cfg *config.MCPServerConfig, policy *whitelist
 // Tools spawns the upstream (if not already running), discovers its tools, and
 // returns one RegisteredTool per allow-listed upstream tool. The tool's input
 // schema is the upstream's, passed through unchanged (mcp.NewToolWithRawSchema),
-// and its final name is "<name_prefix>_<upstream_tool>", sanitized by
-// config.SanitizeToolName: an upstream namespaces its tools however it likes
-// ("sigil/lookup"), and a separator wraptool does not control must not reach a
-// model API that rejects the entire tool list over one invalid name. Only the
-// EXPOSED name is rewritten — the handler still calls the upstream by its own
-// unmodified ut.Name, so dispatch is unaffected.
+// and its final name comes from toolname.Proxy (see there for why an
+// upstream's own naming convention has to be sanitized). Only the EXPOSED name
+// is rewritten — the handler still calls the upstream by its own unmodified
+// ut.Name, so dispatch is unaffected.
 //
 // A spawn/handshake/list failure is non-fatal: it is logged and the server
 // contributes no tools, mirroring how CLI introspection failures are tolerated.
@@ -93,7 +92,13 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			log.Printf("mcpproxy: skipping tool %q on %q: marshaling schema: %v", ut.Name, s.serverName, err)
 			continue
 		}
-		finalName := config.SanitizeToolName(s.cfg.NamePrefix + "_" + ut.Name)
+		finalName := toolname.Proxy(s.cfg.NamePrefix, ut.Name)
+		if joined := s.cfg.NamePrefix + "_" + ut.Name; joined != finalName {
+			// The operator sees the rewritten name in their client but greps
+			// their config for the upstream's own spelling, so say both once
+			// per registration rather than leaving the mapping invisible.
+			log.Printf("mcpproxy: %s: exposing upstream tool %q as %q (the joined name %q is not a valid tool name)", s.serverName, ut.Name, finalName, joined)
+		}
 		tool := mcp.NewToolWithRawSchema(finalName, ut.Description, raw)
 		h := &handler{
 			client:     s.client,
@@ -102,11 +107,7 @@ func (s *Source) Tools(ctx context.Context) ([]mcptools.RegisteredTool, error) {
 			policy:     s.policy,
 			store:      s.store,
 		}
-		out = append(out, mcptools.RegisteredTool{
-			Name:    finalName,
-			Tool:    tool,
-			Handler: h.Handle,
-		})
+		out = append(out, mcptools.NewRegisteredTool(tool, h.Handle))
 	}
 	return out, nil
 }

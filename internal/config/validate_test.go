@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -49,44 +48,6 @@ func TestValidateRejectsBadFlagParamNames(t *testing.T) {
 	}
 }
 
-func TestFlagParamName(t *testing.T) {
-	cases := map[string]string{
-		"--set-upstream": "set_upstream",
-		"-m":             "m",
-		"--":             "",
-		"-":              "",
-		"--no-edit":      "no_edit",
-	}
-	for flag, want := range cases {
-		if got := flagParamName(flag); got != want {
-			t.Errorf("flagParamName(%q) = %q, want %q", flag, got, want)
-		}
-	}
-}
-
-func TestSanitizeToolName(t *testing.T) {
-	// The permitted set is the intersection wraptool mints into: Gemini's
-	// `[A-Za-z_][A-Za-z0-9_.:-]{0,127}` minus ":".
-	valid := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.-]*$`)
-	cases := []struct{ in, want string }{
-		{"sigil_sigil/lookup", "sigil_sigil_lookup"},                   // the reported agy/Gemini failure
-		{"kubectl_config_get-contexts", "kubectl_config_get-contexts"}, // dashes are fine, unchanged
-		{"git_push", "git_push"},
-		{"9lives", "_9lives"}, // must not start with a digit
-		{"a b:c", "a_b_c"},
-		{"", "_"},
-	}
-	for _, c := range cases {
-		got := SanitizeToolName(c.in)
-		if got != c.want {
-			t.Errorf("SanitizeToolName(%q) = %q, want %q", c.in, got, c.want)
-		}
-		if !valid.MatchString(got) {
-			t.Errorf("SanitizeToolName(%q) = %q, which still violates the tool-name grammar", c.in, got)
-		}
-	}
-}
-
 // Two upstream tools differing only in an unsafe character collapse to one
 // registered name once sanitized — config validation must reject that rather
 // than silently registering the same name twice.
@@ -101,5 +62,24 @@ func TestValidateRejectsCollisionCreatedBySanitizing(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "collides") {
 		t.Fatalf("err = %v, want a collision error for a/b and a_b (both sanitize to sigil_a_b)", err)
+	}
+}
+
+// A subcommand token may legitimately carry a character the tool-name grammar
+// forbids — `npm run build:prod`, `mvn clean:install`. Those names are
+// sanitized at the mint site (and logged there), never rejected at load:
+// refusing to start over one would break a config that works today.
+func TestValidateAcceptsSubcommandNeedingSanitization(t *testing.T) {
+	cfg := &Config{
+		MCP: MCPConfig{Transport: "stdio"},
+		Tools: map[string]ToolConfig{
+			"npm": {
+				Binary: os.Args[0],
+				Allow:  []AllowRule{{Subcommand: []string{"run", "build:prod"}}},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config with a colon in a subcommand rejected: %v", err)
 	}
 }

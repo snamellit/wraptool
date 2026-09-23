@@ -4,66 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/pti/wraptool/internal/toolname"
 )
-
-// paramNamePattern is the property-key pattern the Anthropic API enforces on
-// tool input schemas. A flag whose derived parameter name violates it would
-// be rejected with a 400 mid-session, so reject it at config-load time.
-const paramNamePattern = `^[a-zA-Z0-9_.-]{1,64}$`
-
-var paramNameRe = regexp.MustCompile(paramNamePattern)
-
-// flagParamName mirrors mcptools.FlagToParam — the schema property key derived
-// from a flag. Duplicated here rather than imported to avoid a
-// config → mcptools import cycle.
-func flagParamName(flag string) string {
-	return strings.ReplaceAll(strings.TrimLeft(flag, "-"), "-", "_")
-}
-
-// toolNameUnsafeRe matches every character NOT permitted in an MCP tool name
-// by the strictest model API wraptool's tools are handed to. Gemini (and
-// therefore Antigravity/agy) enforces `[A-Za-z_][A-Za-z0-9_.:-]{0,127}` on a
-// function declaration name and rejects the WHOLE request when one entry
-// violates it — a single bad name disables every tool in the session, not
-// just its own. Anthropic's grammar is similar. `:` is permitted by Gemini
-// but deliberately excluded here: it is not universally accepted, and
-// nothing in wraptool mints one.
-//
-// This bites upstream MCP servers (mcp_servers), not wrapped CLIs: an
-// upstream is free to namespace its own tools with a separator wraptool does
-// not control — sigil publishes "sigil/lookup" — and that name is otherwise
-// carried verbatim into "<name_prefix>_<upstream_tool>".
-var toolNameUnsafeRe = regexp.MustCompile(`[^A-Za-z0-9_.-]`)
-
-// toolNameFirstRe matches a name whose first character is a legal leading one
-// (a letter or underscore) — the separate rule the same grammar imposes.
-var toolNameFirstRe = regexp.MustCompile(`^[A-Za-z_]`)
-
-// SanitizeToolName maps a minted tool name onto the character set above,
-// replacing each offending character with "_" and prefixing "_" when the
-// result would not start with a letter or underscore.
-//
-// It is applied where names are MINTED (mcptools.ToolName for wrapped CLI
-// subcommands, mcpproxy.Source.Tools for proxied upstream tools) AND on the
-// collision-detection path here, so two upstream names that differ only in
-// an unsafe character ("a/b" vs "a_b") are still caught as the collision
-// they become once sanitized, rather than silently registering twice.
-// Exported from config rather than mcptools because config cannot import
-// mcptools (cycle — see flagParamName), while every minting site can import
-// config.
-func SanitizeToolName(name string) string {
-	s := toolNameUnsafeRe.ReplaceAllString(name, "_")
-	if s == "" {
-		return "_"
-	}
-	if !toolNameFirstRe.MatchString(s) {
-		s = "_" + s
-	}
-	return s
-}
 
 func (c *Config) Validate() error {
 	switch c.MCP.Transport {
@@ -186,7 +131,7 @@ func validateMCPServers(c *Config) error {
 			if strings.TrimSpace(rule.Tool) == "" {
 				return fmt.Errorf("mcp_servers.%s: allow rule %d: tool name is required", name, i)
 			}
-			final := SanitizeToolName(prefix + "_" + rule.Tool)
+			final := toolname.Proxy(prefix, rule.Tool)
 			if owner, ok := finalOwner[final]; ok {
 				return fmt.Errorf("mcp_servers.%s: tool %q resolves to registered name %q, which collides with %s", name, rule.Tool, final, owner)
 			}
@@ -229,8 +174,8 @@ func validateTool(tc *ToolConfig) error {
 			return fmt.Errorf("allow rule %d: subcommand is required", i)
 		}
 		for _, flag := range rule.Flags {
-			if p := flagParamName(flag); !paramNameRe.MatchString(p) {
-				return fmt.Errorf("allow rule %d: flag %q yields invalid schema property %q (must match %s) — %q is not a flag; drop it (positional args go through `args`)", i, flag, p, paramNamePattern, flag)
+			if p := toolname.Param(flag); !toolname.ValidParam(p) {
+				return fmt.Errorf("allow rule %d: flag %q yields invalid schema property %q (must match %s) — %q is not a flag; drop it (positional args go through `args`)", i, flag, p, toolname.ParamPattern, flag)
 			}
 		}
 	}

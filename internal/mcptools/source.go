@@ -5,6 +5,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/pti/wraptool/internal/toolname"
 )
 
 // Source produces registrable MCP tools and their invocation handlers.
@@ -26,8 +28,27 @@ type Source interface {
 
 // RegisteredTool is a fully-built MCP tool plus the handler that services its
 // calls, ready to hand to server.AddTool.
+//
+// Build one with NewRegisteredTool rather than a struct literal: Name and
+// Tool.Name are two copies of one string that the registrar relies on being
+// equal — it registers under Tool.Name but deregisters by Name, so a divergent
+// pair leaks a registration across every reload — and the constructor derives
+// both from a single sanitized value.
 type RegisteredTool struct {
 	Name    string                 // final (namespaced) MCP tool name
 	Tool    mcp.Tool               // built schema (flag options, or raw schema)
 	Handler server.ToolHandlerFunc // per-tool invocation handler
+}
+
+// NewRegisteredTool sanitizes the built tool's name and derives the
+// registration name from it, so Name and Tool.Name cannot disagree and no
+// Source can hand the registrar a name a model API would reject.
+//
+// This is the choke point every Source funnels through: minting sites sanitize
+// too (toolname.CLI, toolname.Proxy) because they need the final name for
+// collision checks and logging, but toolname.Sanitize is idempotent, so this
+// pass costs nothing and holds for a Source that forgets.
+func NewRegisteredTool(tool mcp.Tool, handler server.ToolHandlerFunc) RegisteredTool {
+	tool.Name = toolname.Sanitize(tool.Name)
+	return RegisteredTool{Name: tool.Name, Tool: tool, Handler: handler}
 }

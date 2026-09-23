@@ -107,3 +107,11 @@ func TestParamToFlag(t *testing.T) {
 		}
 	}
 }
+
+// The CLI mint sanitizes rather than rejects, so a subcommand carrying a
+// character the grammar forbids still yields a registrable name.
+func TestToolNameSanitizesSubcommand(t *testing.T) {
+	if got, want := ToolName("npm", []string{"run", "build:prod"}), "npm_run_build_prod"; got != want {
+		t.Errorf("ToolName = %q, want %q", got, want)
+	}
+}
