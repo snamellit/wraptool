@@ -4,6 +4,26 @@ Release tags (`wraptool-vX.Y.Z`) are the sole version source; binaries for
 each tag are published by CI with SHA-256 checksums. Notes here cover what
 changed and anything an upgrade should know.
 
+## Unreleased
+
+### Fixed
+
+- **Realize no longer empties a shared npm tarball.** When two lock entries
+  named the same tarball (pi 0.87.1 vendors `agent-base` twice), realize
+  truncated the pool's downloaded copy to zero bytes, and `npm cache add`
+  failed with `ENODATA: Cache input stream was empty`. **Upgrade note:** a
+  pool already hit by this keeps failing until the file is downloaded
+  again — run `wraptool harness sync <harness>` once after upgrading.
+
+### Added
+
+- `harness install`, `update`, and `sync` report each download on stderr:
+  its size, then progress every 5 seconds. A claude update downloads several
+  hundred megabytes, which used to look like a hang on a slow network.
+- An interrupted `install` or `update` resumes: downloads that already
+  finished are found again by their upstream integrity hash and re-verified
+  instead of downloaded again.
+
 ## 0.8.0 — 2026-09-04
 
 The 1.0 release-candidate line: the MCP listener is authenticated by default,

@@ -229,10 +229,18 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	// (confirmed empirically: `npm cache add <bare-hex-file>` fails with
 	// "DirFetcher requires either a tree or an Arborist constructor to pack";
 	// the identical file renamed to end in ".tgz" succeeds).
+	//
+	// Several lock entries can share one tarball (the same package@version
+	// vendored under two parents), so each digest is staged once.
 	sp := newRealizeStagingPaths()
 	containerTarballs := make([]string, 0, len(pkgNames))
+	staged := make(map[string]bool, len(pkgNames))
 	for _, name := range pkgNames {
 		digest := h.NPMLock.Packages[name].SHA256
+		if staged[digest] {
+			continue
+		}
+		staged[digest] = true
 		dst := filepath.Join(buildTarballsDir, digest+".tgz")
 		if err := hardlinkOrCopy(filepath.Join(cacheDir, digest), dst); err != nil {
 			return nil, fmt.Errorf("realize: %s: staging npm tarball for %q: %w", harnessName, name, err)
@@ -653,22 +661,38 @@ func hardlinkOrCopy(src, dst string) error {
 // symlink semantics, src is followed transparently if it is itself a
 // symlink — callers that need the FINAL target's own path (not just its
 // content) resolve the chain explicitly first (see resolveSymlinkChain).
-func copyFile(src, dst string) error {
+//
+// It writes a temp file next to dst and renames it over dst, never opening
+// an existing dst for writing: dst may be a hardlink to a pool cache object
+// (staged by hardlinkOrCopy), and truncating it would empty the cache object
+// in place, still named by its old sha256.
+func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".wraptool-copy-*.tmp")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+	defer func() {
+		if err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+		}
+	}()
+	if err = tmp.Chmod(0o644); err != nil {
 		return err
 	}
-	return out.Close()
+	if _, err = io.Copy(tmp, in); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
 }
 
 // --- host-side post-processing (§11.4 step 5, §6.4) -------------------------

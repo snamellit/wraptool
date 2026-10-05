@@ -74,6 +74,32 @@ conflict, unknown tool, or invalid resulting config can leave the request marked
 approved without changing policy. Correct the YAML and rely on hot reload, or
 submit/review a new request.
 
+## A harness install or update seems stuck
+
+A harness download can be large. A `claude` update fetches several hundred
+megabytes. wraptool prints each download and its progress on stderr:
+
+```text
+fetching @anthropic-ai/claude-code-linux-x64 (102.3 MiB)
+  @anthropic-ai/claude-code-linux-x64: 41.0 MiB / 102.3 MiB (40%, 862.4 KiB/s)
+```
+
+If the progress lines keep moving, wait. If you must stop, press Ctrl-C. Run
+the same command again later. Finished downloads are reused, not fetched again.
+
+## Realize fails with `Cache input stream was empty`
+
+Older wraptool versions could empty a downloaded npm tarball while
+realizing a harness. The next realize then fails with
+`npm error code ENODATA`.
+
+1. Upgrade wraptool.
+2. Run `wraptool harness sync <harness>`.
+
+`sync` downloads the damaged file again and realizes the harness. Do not use
+`update` for this repair. When the lock is already current, `update` does not
+download anything.
+
 ## `doctor` reports a symlinked config
 
 Run `wraptool doctor`. If it reports `config.symlinked`, hot-reload will not

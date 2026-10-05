@@ -106,7 +106,16 @@ type NPM struct {
 	// different timeout budgets.
 	metadataClient *http.Client
 	downloadClient *http.Client
+	// progress receives Fetch's per-artifact download progress (see
+	// SetProgress); nil means silent.
+	progress io.Writer
 }
+
+// SetProgress makes Fetch report each artifact download to w — a start line
+// with its size, then periodic byte counts — so a large multi-artifact fetch
+// on a slow link is visibly progressing rather than silent. A nil w (the
+// default) disables reporting.
+func (n *NPM) SetProgress(w io.Writer) { n.progress = w }
 
 // NewNPM constructs an NPM source. An empty registryBaseURL defaults to the
 // public npm registry (https://registry.npmjs.org); a non-empty value is
@@ -963,7 +972,7 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 			if pkg.Integrity == "" && pkg.SHA256 == "" {
 				return fmt.Errorf("npm package %q: neither integrity nor sha256 recorded in lock — nothing to verify against", name)
 			}
-			sha256Hex, err := n.downloadVerify(ctx, pkg.Resolved, pkg.Integrity, pkg.SHA256, cacheDir)
+			sha256Hex, err := n.downloadVerify(ctx, strings.TrimPrefix(name, "node_modules/"), pkg.Resolved, pkg.Integrity, pkg.SHA256, cacheDir)
 			if err != nil {
 				return fmt.Errorf("npm package %q: %w", name, err)
 			}
@@ -982,7 +991,7 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 			if artifact.SHA256 == "" {
 				return fmt.Errorf("runtime artifact %s: no sha256 recorded in lock — nothing to verify against", key)
 			}
-			if _, err := n.downloadVerify(ctx, artifact.URL, "", artifact.SHA256, cacheDir); err != nil {
+			if _, err := n.downloadVerify(ctx, fmt.Sprintf("node runtime %s (%s)", h.Runtime.Version, key), artifact.URL, "", artifact.SHA256, cacheDir); err != nil {
 				return fmt.Errorf("runtime artifact %s: %w", key, err)
 			}
 		}
@@ -994,7 +1003,8 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 // downloadVerify downloads url, streaming it simultaneously into a temp file
 // under cacheDir and a sha256 hash (always) plus a sha512 hash (only when
 // sri is non-empty, allocated only in that case). It returns the downloaded
-// object's hex sha256 digest.
+// object's hex sha256 digest. label names the artifact in progress output
+// (SetProgress); a cache hit prints nothing.
 //
 //   - If knownSHA256 is non-empty, it must already match sha256HexPattern —
 //     it is about to be used as a cache filename, and this is the only line
@@ -1011,7 +1021,7 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 //     and renamed to cacheDir/<sha256hex> (same directory, so the rename
 //     stays on one volume — the same discipline as pool.WriteFileAtomic, but
 //     streaming rather than whole-buffer since artifacts can be large).
-func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDir string) (string, error) {
+func (n *NPM) downloadVerify(ctx context.Context, label, url, sri, knownSHA256, cacheDir string) (string, error) {
 	if knownSHA256 != "" {
 		if !validSHA256Hex(knownSHA256) {
 			return "", fmt.Errorf("malformed sha256 %q recorded in lock", knownSHA256)
@@ -1031,6 +1041,11 @@ func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDi
 			return "", fmt.Errorf("unsupported integrity algorithm %q (want sha512)", algo)
 		}
 		wantSRI = digest
+	}
+	// No recorded sha256 (a fresh resolve): an object downloaded by an
+	// earlier, interrupted fetch is still found through the integrity index.
+	if hit, err := findCached(cacheDir, wantSRI, knownSHA256); err != nil || hit != "" {
+		return hit, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -1060,7 +1075,7 @@ func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDi
 	}
 
 	sha256h := sha256.New()
-	writers := []io.Writer{tmp, sha256h}
+	writers := []io.Writer{tmp, sha256h, newDownloadProgress(n.progress, label, resp.ContentLength)}
 	var sha512h hash.Hash
 	if sri != "" {
 		sha512h = sha512.New()
@@ -1111,6 +1126,7 @@ func (n *NPM) downloadVerify(ctx context.Context, url, sri, knownSHA256, cacheDi
 			_ = dirFile.Close()
 		}
 	}
+	recordCached(cacheDir, wantSRI, sha256Hex)
 
 	return sha256Hex, nil
 }

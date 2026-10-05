@@ -17,7 +17,7 @@ for the binary you have installed.
 | `wraptool down` | Stop or remove this worktree's Dev Container |
 | `wraptool init` | Generate harness MCP configuration |
 | `wraptool init devcontainer` | Scaffold a new Dev Container config |
-| `wraptool harness` | Inspect or install shared harness binaries |
+| `wraptool harness` | Manage the version-locked harness pool |
 | `wraptool requests` | Review capability requests |
 | `wraptool server` | Inspect or stop the shared server |
 | `wraptool config validate` | Strictly decode and validate configuration |
@@ -108,11 +108,66 @@ harnesses automatically add the Node feature. It is a scaffold, not a merger.
 
 ```text
 wraptool harness list
-wraptool harness install HARNESS
+wraptool harness install HARNESS [--constraint EXPR] [--backend auto|guix|oci]
+                                 [--allow-young --reason TEXT]
+wraptool harness refresh [HARNESS]
+wraptool harness update [HARNESS] [--backend auto|guix|oci]
+                                  [--allow-young --reason TEXT]
+wraptool harness sync [HARNESS] [--platform KEY] [--backend auto|guix|oci]
+wraptool harness rollback HARNESS [--to VERSION] [--platform KEY]
+wraptool harness gc [--dry-run] [--legacy]
+wraptool harness policy set [--harness NAME]
+                            [--minimum-release-age DURATION]
+                            [--minimum-observation-age DURATION]
+                            [--allow-prereleases]
 ```
 
-`install` manages container CLI harnesses in the developer harness pool. It does
-not install host IDEs. Gemini currently has no automated installer.
+These commands manage container CLI harnesses in the developer
+[harness pool](harness-pool.qmd), shared by every project. They do not
+install host IDEs. `claude`, `opencode`, `pi`, and `agy` are locked and
+realized in the pool. `gemini` has no automated installer.
+
+`manifest.yaml` records which harnesses you want and their version
+constraints. `harness-lock.json` records the exact versions they resolved
+to. A version moves through refresh (candidate metadata), resolve (the lock),
+fetch (downloads), and realize (an offline-built generation). Activation
+then points the pool at that generation.
+
+| Command | Network | Effect |
+|---|---|---|
+| `list` | none | Show each harness's constraint, locked, active, latest, and eligible versions, and remaining quarantine |
+| `install` | yes | Record intent, then refresh, resolve, fetch, and realize; keeps an existing lock |
+| `refresh` | metadata only | Record candidate versions in `observations.json`; no download, no lock change |
+| `update` | yes | Lock the newest eligible candidate already refreshed, then fetch and realize it |
+| `sync` | downloads only | Fetch missing or empty downloads for the current lock, then realize it; never resolves |
+| `rollback` | none | Activate a previously realized generation; the lock is not changed |
+| `gc` | none | Remove unreferenced generations, downloads, and staging directories |
+| `policy set` | none | Edit quarantine and prerelease policy in `manifest.yaml`, keeping comments |
+
+Without a `HARNESS` argument, `refresh` and `update` act on every harness in
+`manifest.yaml`, and `sync` on every harness in the lock.
+
+| Flag | Commands | Default | Meaning |
+|---|---|---|---|
+| `--constraint EXPR` | `install` | keep existing, else stable | Version constraint, such as `'>=2 <3'` or `'=2.1.220'` |
+| `--backend` | `install`, `update`, `sync` | `auto` | `auto` uses Guix when it can build the target, else Docker or Podman |
+| `--allow-young` | `install`, `update` | off | Bypass quarantine; requires `--reason`, which goes to the pool audit log |
+| `--platform KEY` | `sync`, `rollback` | this host | `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, or `linux-arm64-musl` |
+| `--to VERSION` | `rollback` | newest other generation | Exact version to activate |
+| `--dry-run` | `gc` | off | Report what would be removed |
+| `--legacy` | `gc` | off | Also remove the pre-generation `bin/` and `lib/` trees; refused unless every harness is active |
+| `--harness NAME` | `policy set` | pool-wide | Apply the policy to one harness |
+
+`--backend guix` fails for a target architecture other than the host's.
+`--backend oci` fails when neither `docker` nor `podman` is on `PATH`.
+
+Each download prints its size, then progress every five seconds, on
+stderr. An interrupted `install` or `update` reuses downloads that already
+finished. `update` does not fetch when the lock is already current, so
+use `sync` to repair a missing or empty download.
+
+A later `sync`, `update`, or `install` can re-activate the lock's own
+generation and undo a `rollback`.
 
 ## Requests and validation
 
