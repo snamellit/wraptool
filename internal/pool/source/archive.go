@@ -63,8 +63,6 @@ type Archive struct {
 	downloadClient *http.Client
 	// progress receives Fetch's download progress; see SetProgress.
 	progress io.Writer
-	// index finds already-cached objects by sha512; see cacheIndex.
-	index cacheIndex
 }
 
 // SetProgress makes Fetch report each artifact download to w, mirroring
@@ -486,14 +484,9 @@ func (a *Archive) downloadVerify(ctx context.Context, label, url, wantSHA512Hex,
 		if fi, err := os.Stat(filepath.Join(cacheDir, knownSHA256)); err == nil && fi.Size() > 0 {
 			return knownSHA256, nil
 		}
-	} else {
-		hit, err := a.index.lookup(cacheDir, wantSHA512)
-		if err != nil {
-			return "", err
-		}
-		if hit != "" {
-			return hit, nil
-		}
+	}
+	if hit, err := findCached(cacheDir, wantSHA512, knownSHA256); err != nil || hit != "" {
+		return hit, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -567,7 +560,7 @@ func (a *Archive) downloadVerify(ctx context.Context, label, url, wantSHA512Hex,
 			_ = dirFile.Close()
 		}
 	}
-	recordIndex(cacheDir, wantSHA512, sha256Hex)
+	recordCached(cacheDir, wantSHA512, sha256Hex)
 
 	return sha256Hex, nil
 }

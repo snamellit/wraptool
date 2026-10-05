@@ -169,7 +169,7 @@ func newHarnessSource(deps harnessDeps, d harness.Descriptor, cmd *cobra.Command
 	if err != nil {
 		return nil, err
 	}
-	if p, ok := src.(interface{ SetProgress(io.Writer) }); ok {
+	if p, ok := src.(source.ProgressReporter); ok {
 		p.SetProgress(cmd.ErrOrStderr())
 	}
 	return src, nil

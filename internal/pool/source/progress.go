@@ -11,10 +11,21 @@ import (
 // tarballs stay one line each.
 const progressInterval = 5 * time.Second
 
-// downloadProgress reports one artifact download to out: a start line naming
-// the artifact and its size, then a byte-count line every progressInterval.
-// A nil out disables reporting. It is an io.Writer so it can sit in the
-// download's io.MultiWriter and count bytes as they stream past.
+// ProgressReporter is implemented by Sources that can report artifact
+// downloads (NPM, Archive). cmd attaches the command's stderr through it.
+type ProgressReporter interface {
+	SetProgress(w io.Writer)
+}
+
+var (
+	_ ProgressReporter = (*NPM)(nil)
+	_ ProgressReporter = (*Archive)(nil)
+)
+
+// downloadProgress reports one artifact download to out: a start line
+// naming the artifact and its size, then a byte-count line every
+// progressInterval. It is an io.Writer so it can sit in the download's
+// io.MultiWriter and count bytes as they stream past.
 type downloadProgress struct {
 	out   io.Writer
 	label string
@@ -25,25 +36,27 @@ type downloadProgress struct {
 	now   func() time.Time // test seam; time.Now in production
 }
 
-func newDownloadProgress(out io.Writer, label string, total int64) *downloadProgress {
-	p := &downloadProgress{out: out, label: label, total: total, now: time.Now}
-	p.start = p.now()
-	p.last = p.start
-	if out != nil {
-		if total > 0 {
-			fmt.Fprintf(out, "fetching %s (%s)\n", label, formatBytes(total))
-		} else {
-			fmt.Fprintf(out, "fetching %s\n", label)
-		}
+// newDownloadProgress prints the start line and returns the byte counter
+// for one download; a nil out disables reporting (io.Discard).
+func newDownloadProgress(out io.Writer, label string, total int64) io.Writer {
+	if out == nil {
+		return io.Discard
 	}
-	return p
+	return startDownloadProgress(out, label, total, time.Now)
+}
+
+func startDownloadProgress(out io.Writer, label string, total int64, now func() time.Time) *downloadProgress {
+	t := now()
+	if total > 0 {
+		fmt.Fprintf(out, "fetching %s (%s)\n", label, formatBytes(total))
+	} else {
+		fmt.Fprintf(out, "fetching %s\n", label)
+	}
+	return &downloadProgress{out: out, label: label, total: total, start: t, last: t, now: now}
 }
 
 func (p *downloadProgress) Write(b []byte) (int, error) {
 	p.done += int64(len(b))
-	if p.out == nil {
-		return len(b), nil
-	}
 	if t := p.now(); t.Sub(p.last) >= progressInterval {
 		p.last = t
 		rate := float64(p.done) / t.Sub(p.start).Seconds()

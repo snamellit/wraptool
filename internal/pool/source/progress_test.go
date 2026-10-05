@@ -3,8 +3,7 @@ package source
 import (
 	"bytes"
 	"context"
-	"net/http"
-	"net/http/httptest"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,8 +37,8 @@ func TestFormatBytes(t *testing.T) {
 func TestDownloadProgress_ThrottlesByInterval(t *testing.T) {
 	var out bytes.Buffer
 	clock := time.Unix(1000, 0)
-	p := &downloadProgress{out: &out, label: "pkg", total: 4 << 20, now: func() time.Time { return clock }}
-	p.start, p.last = clock, clock
+	p := startDownloadProgress(&out, "pkg", 4<<20, func() time.Time { return clock })
+	out.Reset() // drop the start line; this test is about the progress lines
 
 	p.Write(make([]byte, 1<<20))
 	clock = clock.Add(progressInterval - time.Millisecond)
@@ -57,9 +56,8 @@ func TestDownloadProgress_ThrottlesByInterval(t *testing.T) {
 }
 
 func TestDownloadProgress_NilOutIsSilent(t *testing.T) {
-	p := newDownloadProgress(nil, "pkg", 10)
-	if n, err := p.Write([]byte("abc")); n != 3 || err != nil {
-		t.Errorf("Write = (%d, %v), want (3, nil)", n, err)
+	if w := newDownloadProgress(nil, "pkg", 10); w != io.Discard {
+		t.Errorf("newDownloadProgress(nil, ...) = %T, want io.Discard", w)
 	}
 }
 
@@ -68,10 +66,7 @@ func TestDownloadProgress_NilOutIsSilent(t *testing.T) {
 // Content-Length, and a cache hit prints nothing.
 func TestFetch_ReportsProgress(t *testing.T) {
 	content := []byte("tarball bytes for the npm package")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(content)
-	}))
-	defer srv.Close()
+	srv, _ := countingServer(t, content)
 
 	newLock := func() *pool.LockHarness {
 		return &pool.LockHarness{NPMLock: &pool.NPMLock{Packages: map[string]pool.NPMLockPackage{
@@ -105,10 +100,7 @@ func TestFetch_ReportsProgress(t *testing.T) {
 
 func TestArchiveFetch_ReportsProgress(t *testing.T) {
 	content := []byte("archive bytes")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write(content)
-	}))
-	defer srv.Close()
+	srv, _ := countingServer(t, content)
 
 	lh := &pool.LockHarness{Package: "agy", Archive: &pool.LockArchive{Artifacts: map[pool.PlatformKey]pool.LockArchiveArtifact{
 		pool.PlatformLinuxAMD64Glibc: {URL: srv.URL + "/agy.tar.gz", SHA512: sha512Hex(content)},

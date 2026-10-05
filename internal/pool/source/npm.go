@@ -109,9 +109,6 @@ type NPM struct {
 	// progress receives Fetch's per-artifact download progress (see
 	// SetProgress); nil means silent.
 	progress io.Writer
-	// index finds already-cached objects by sha512 when the lock has no
-	// sha256 for them yet; see cacheIndex.
-	index cacheIndex
 }
 
 // SetProgress makes Fetch report each artifact download to w — a start line
@@ -1044,17 +1041,11 @@ func (n *NPM) downloadVerify(ctx context.Context, label, url, sri, knownSHA256, 
 			return "", fmt.Errorf("unsupported integrity algorithm %q (want sha512)", algo)
 		}
 		wantSRI = digest
-		// No recorded sha256 (a fresh resolve): an object downloaded by an
-		// earlier, interrupted fetch is still found through the index.
-		if knownSHA256 == "" {
-			hit, err := n.index.lookup(cacheDir, wantSRI)
-			if err != nil {
-				return "", err
-			}
-			if hit != "" {
-				return hit, nil
-			}
-		}
+	}
+	// No recorded sha256 (a fresh resolve): an object downloaded by an
+	// earlier, interrupted fetch is still found through the integrity index.
+	if hit, err := findCached(cacheDir, wantSRI, knownSHA256); err != nil || hit != "" {
+		return hit, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -1135,9 +1126,7 @@ func (n *NPM) downloadVerify(ctx context.Context, label, url, sri, knownSHA256, 
 			_ = dirFile.Close()
 		}
 	}
-	if sri != "" {
-		recordIndex(cacheDir, wantSRI, sha256Hex)
-	}
+	recordCached(cacheDir, wantSRI, sha256Hex)
 
 	return sha256Hex, nil
 }

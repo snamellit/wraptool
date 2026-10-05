@@ -3,7 +3,6 @@ package source
 import (
 	"context"
 	"crypto/sha512"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -89,7 +88,7 @@ func TestFetch_IndexEntryIsReverified(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha512.Sum512(content)
-	entry := filepath.Join(cacheDir, pool.CacheSHA512IndexDirName, hex.EncodeToString(sum[:]))
+	entry := pool.CacheIndexEntryPath(cacheDir, sum[:])
 	if err := os.MkdirAll(filepath.Dir(entry), 0o755); err != nil {
 		t.Fatal(err)
 	}

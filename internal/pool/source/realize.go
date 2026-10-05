@@ -649,38 +649,11 @@ func marshalDeterministicJSON(v interface{}) ([]byte, error) {
 
 // hardlinkOrCopy hardlinks src to dst, falling back to a byte copy if the
 // link fails (e.g. cacheDir and stagingGenDir are on different volumes).
-//
-// The fallback copies into a temp file and renames it over dst; it never
-// opens an existing dst for writing. dst may already be a hardlink to src
-// (staged earlier), and truncating it would truncate src too: a cache
-// object emptied in place, still named by its old sha256.
 func hardlinkOrCopy(src, dst string) error {
 	if err := os.Link(src, dst); err == nil {
 		return nil
 	}
-	if srcInfo, err := os.Stat(src); err == nil {
-		if dstInfo, err := os.Stat(dst); err == nil && os.SameFile(srcInfo, dstInfo) {
-			return nil
-		}
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".wraptool-copy-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := copyFile(src, tmpPath); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, dst); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	return copyFile(src, dst)
 }
 
 // copyFile copies src's content to dst (mode 0o644; callers that need a
@@ -688,22 +661,38 @@ func hardlinkOrCopy(src, dst string) error {
 // symlink semantics, src is followed transparently if it is itself a
 // symlink — callers that need the FINAL target's own path (not just its
 // content) resolve the chain explicitly first (see resolveSymlinkChain).
-func copyFile(src, dst string) error {
+//
+// It writes a temp file next to dst and renames it over dst, never opening
+// an existing dst for writing: dst may be a hardlink to a pool cache object
+// (staged by hardlinkOrCopy), and truncating it would empty the cache object
+// in place, still named by its old sha256.
+func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".wraptool-copy-*.tmp")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
+	defer func() {
+		if err != nil {
+			tmp.Close()
+			os.Remove(tmp.Name())
+		}
+	}()
+	if err = tmp.Chmod(0o644); err != nil {
 		return err
 	}
-	return out.Close()
+	if _, err = io.Copy(tmp, in); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
 }
 
 // --- host-side post-processing (§11.4 step 5, §6.4) -------------------------

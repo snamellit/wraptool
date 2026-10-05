@@ -9,97 +9,102 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/pti/wraptool/internal/pool"
 )
 
-// cacheIndex finds a cache object by its upstream sha512 when the lock does
-// not record the object's sha256 cache address yet: right after a fresh
-// resolve, every npm package's sha256 is empty, so without this index an
-// interrupted update re-downloads everything it had already cached.
+// The integrity index (pool.CacheSHA512IndexDirName) finds a cache object
+// by its upstream sha512 when the lock does not record the object's sha256
+// cache address yet: right after a fresh resolve, every npm package's
+// sha256 is empty, so without the index an interrupted update re-downloads
+// everything it had already cached.
 //
-// Index entries live under cacheDir/pool.CacheSHA512IndexDirName. An entry
-// is only a hint: lookup re-hashes the object it points at and returns it
-// only if both digests match, so a stale, truncated, or tampered entry can
-// never admit bytes that did not pass the upstream integrity check.
+// An entry is only a hint: findCached re-hashes the object it points at and
+// returns it only if both digests match, so a stale, truncated, or tampered
+// entry can never admit bytes that did not pass the upstream integrity
+// check.
 //
 // Objects cached before the index existed have no entries. The first miss
-// in a cacheDir indexes them once (hashing each unindexed object); later
-// misses go straight to the download. The zero value is ready to use.
-type cacheIndex struct {
-	mu      sync.Mutex
-	scanned map[string]bool // cacheDir -> backfill already ran in this process
-}
+// for a cacheDir in this process indexes them (hashing each unindexed
+// object); later misses go straight to the download. The memo is
+// process-wide because cmd builds a fresh Source per harness, and every one
+// of them shares the same pool cache.
+var (
+	backfillMu   sync.Mutex
+	backfillDone = map[string]bool{}
+)
 
-// lookup returns the sha256 address of the cached object whose sha512 is
-// want, or "" when there is none.
-func (ix *cacheIndex) lookup(cacheDir string, want []byte) (string, error) {
+// findCached returns the sha256 address of the cached object whose sha512
+// is want, or "" when there is none. It returns "" without looking when
+// knownSHA256 is set (the caller's own cache-hit check already covers that
+// case) or when want is nil (no upstream sha512 to verify against).
+func findCached(cacheDir string, want []byte, knownSHA256 string) (string, error) {
+	if knownSHA256 != "" || want == nil {
+		return "", nil
+	}
 	if sha256Hex := verifiedEntry(cacheDir, want); sha256Hex != "" {
 		return sha256Hex, nil
 	}
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	if ix.scanned[cacheDir] {
+	backfillMu.Lock()
+	defer backfillMu.Unlock()
+	if backfillDone[cacheDir] {
 		return "", nil
 	}
-	if err := backfillIndex(cacheDir); err != nil {
+	hit, err := backfillIndex(cacheDir, want)
+	if err != nil {
 		return "", err
 	}
-	if ix.scanned == nil {
-		ix.scanned = map[string]bool{}
+	backfillDone[cacheDir] = true
+	return hit, nil
+}
+
+// recordCached writes the index entry for an object just admitted to
+// cacheDir. Best-effort: the index only saves re-downloads, so a failure to
+// write it must not fail the fetch that produced a valid object. A nil
+// sha512Digest (no upstream sha512) records nothing.
+func recordCached(cacheDir string, sha512Digest []byte, sha256Hex string) {
+	if sha512Digest != nil {
+		_ = pool.WriteCacheIndexEntry(cacheDir, sha512Digest, sha256Hex)
 	}
-	ix.scanned[cacheDir] = true
-	return verifiedEntry(cacheDir, want), nil
 }
 
 // verifiedEntry reads want's index entry and returns the sha256 it names if
 // the object exists and re-hashes to both digests. A bad entry is removed
 // so the next lookup does not re-check it.
 func verifiedEntry(cacheDir string, want []byte) string {
-	entryPath := indexEntryPath(cacheDir, want)
-	data, err := os.ReadFile(entryPath)
-	if err != nil {
+	entryPath := pool.CacheIndexEntryPath(cacheDir, want)
+	sha256Hex, ok := pool.ReadCacheIndexEntry(entryPath)
+	if !ok {
 		return ""
 	}
-	sha256Hex := strings.TrimSpace(string(data))
-	if validSHA256Hex(sha256Hex) {
-		got512, got256, err := hashFile(filepath.Join(cacheDir, sha256Hex))
-		if err == nil && bytes.Equal(got512, want) && got256 == sha256Hex {
-			return sha256Hex
-		}
+	got512, got256, err := hashFile(filepath.Join(cacheDir, sha256Hex))
+	if err == nil && bytes.Equal(got512, want) && got256 == sha256Hex {
+		return sha256Hex
 	}
 	_ = os.Remove(entryPath)
 	return ""
 }
 
-// recordIndex writes the index entry for an object just admitted to
-// cacheDir. Best-effort: the index only saves re-downloads, so a failure to
-// write it must not fail the fetch that produced a valid object.
-func recordIndex(cacheDir string, sha512Digest []byte, sha256Hex string) {
-	_ = pool.WriteFileAtomic(indexEntryPath(cacheDir, sha512Digest), []byte(sha256Hex+"\n"), 0o644)
-}
-
-// backfillIndex hashes every cache object that no index entry names yet and
-// records it. Objects whose content does not match their sha256 name are
-// skipped (they are corrupt, and verifiedEntry would reject them anyway).
-func backfillIndex(cacheDir string) error {
+// backfillIndex hashes every cache object that no index entry names yet,
+// records it, and returns the sha256 of the one whose sha512 is want (""
+// if none). Objects whose content does not match their sha256 name are
+// skipped: they are corrupt, and verifiedEntry would reject them anyway.
+func backfillIndex(cacheDir string, want []byte) (string, error) {
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("listing cache %s: %w", cacheDir, err)
+		return "", fmt.Errorf("listing cache %s: %w", cacheDir, err)
 	}
 	indexed := map[string]bool{}
-	if idx, err := os.ReadDir(filepath.Join(cacheDir, pool.CacheSHA512IndexDirName)); err == nil {
-		for _, e := range idx {
-			if data, err := os.ReadFile(filepath.Join(cacheDir, pool.CacheSHA512IndexDirName, e.Name())); err == nil {
-				indexed[strings.TrimSpace(string(data))] = true
-			}
+	for _, p := range pool.CacheIndexEntries(cacheDir) {
+		if sha256Hex, ok := pool.ReadCacheIndexEntry(p); ok {
+			indexed[sha256Hex] = true
 		}
 	}
+	hit := ""
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !validSHA256Hex(name) || indexed[name] {
@@ -109,13 +114,12 @@ func backfillIndex(cacheDir string) error {
 		if err != nil || got256 != name {
 			continue
 		}
-		recordIndex(cacheDir, got512, name)
+		recordCached(cacheDir, got512, name)
+		if bytes.Equal(got512, want) {
+			hit = name
+		}
 	}
-	return nil
-}
-
-func indexEntryPath(cacheDir string, sha512Digest []byte) string {
-	return filepath.Join(cacheDir, pool.CacheSHA512IndexDirName, hex.EncodeToString(sha512Digest))
+	return hit, nil
 }
 
 // hashFile returns path's sha512 digest and hex sha256 digest.

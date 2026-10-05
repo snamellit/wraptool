@@ -670,15 +670,8 @@ func gcCache(paths PoolPaths, retained map[string]bool, dryRun bool, report *GCR
 // that re-verifies every hit, so a leftover entry costs a few bytes, never
 // correctness, and must not fail gc.
 func pruneCacheIndex(cacheDir string, retained map[string]bool) {
-	indexDir := filepath.Join(cacheDir, CacheSHA512IndexDirName)
-	entries, err := os.ReadDir(indexDir)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		p := filepath.Join(indexDir, entry.Name())
-		data, err := os.ReadFile(p)
-		if err != nil || !retained[strings.TrimSpace(string(data))] {
+	for _, p := range CacheIndexEntries(cacheDir) {
+		if sha256Hex, ok := ReadCacheIndexEntry(p); !ok || !retained[sha256Hex] {
 			_ = os.Remove(p)
 		}
 	}
