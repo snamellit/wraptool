@@ -1789,7 +1789,7 @@ again, since a legacy install needs them.`,
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be removed without deleting anything")
 	cmd.Flags().BoolVar(&legacy, "legacy", false, "also remove the pool's legacy bin/+lib/ trees entirely; "+
-		"safe only once every harness you use is ACTIVE (`wraptool harness list`) on every machine sharing this "+
+		"safe only once every harness you use is ACTIVE (wraptool harness list) on every machine sharing this "+
 		"pool and every devcontainer is on feature :1 or declares the runtime mount in its devcontainer.json; refused otherwise")
 	return cmd
 }
