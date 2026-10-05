@@ -229,10 +229,18 @@ func (n *NPM) Realize(ctx context.Context, b backend.Backend, harnessName, binNa
 	// (confirmed empirically: `npm cache add <bare-hex-file>` fails with
 	// "DirFetcher requires either a tree or an Arborist constructor to pack";
 	// the identical file renamed to end in ".tgz" succeeds).
+	//
+	// Several lock entries can share one tarball (the same package@version
+	// vendored under two parents), so each digest is staged once.
 	sp := newRealizeStagingPaths()
 	containerTarballs := make([]string, 0, len(pkgNames))
+	staged := make(map[string]bool, len(pkgNames))
 	for _, name := range pkgNames {
 		digest := h.NPMLock.Packages[name].SHA256
+		if staged[digest] {
+			continue
+		}
+		staged[digest] = true
 		dst := filepath.Join(buildTarballsDir, digest+".tgz")
 		if err := hardlinkOrCopy(filepath.Join(cacheDir, digest), dst); err != nil {
 			return nil, fmt.Errorf("realize: %s: staging npm tarball for %q: %w", harnessName, name, err)
@@ -641,11 +649,38 @@ func marshalDeterministicJSON(v interface{}) ([]byte, error) {
 
 // hardlinkOrCopy hardlinks src to dst, falling back to a byte copy if the
 // link fails (e.g. cacheDir and stagingGenDir are on different volumes).
+//
+// The fallback copies into a temp file and renames it over dst; it never
+// opens an existing dst for writing. dst may already be a hardlink to src
+// (staged earlier), and truncating it would truncate src too: a cache
+// object emptied in place, still named by its old sha256.
 func hardlinkOrCopy(src, dst string) error {
 	if err := os.Link(src, dst); err == nil {
 		return nil
 	}
-	return copyFile(src, dst)
+	if srcInfo, err := os.Stat(src); err == nil {
+		if dstInfo, err := os.Stat(dst); err == nil && os.SameFile(srcInfo, dstInfo) {
+			return nil
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".wraptool-copy-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := copyFile(src, tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // copyFile copies src's content to dst (mode 0o644; callers that need a

@@ -688,3 +688,74 @@ func TestPlatformArch(t *testing.T) {
 		}
 	}
 }
+
+// TestRealize_SharedTarballLeavesCacheIntact covers two lock entries naming
+// one tarball (the same package@version vendored under two parents, as pi's
+// nested agent-base is). Staging the second entry used to fall back to a
+// truncating copy onto the first entry's hardlink, emptying the shared cache
+// object in place.
+func TestRealize_SharedTarballLeavesCacheIntact(t *testing.T) {
+	h := testLockHarness()
+	shared := h.NPMLock.Packages["node_modules/leftpad"]
+	h.NPMLock.Packages["node_modules/@example/harness/node_modules/leftpad"] = shared
+	cacheDir := t.TempDir()
+	seedCache(t, cacheDir, h)
+	stagingGenDir := t.TempDir()
+	fb := newRealizeFakeBackend(stagingGenDir)
+
+	if _, err := NewNPM("").Realize(context.Background(), fb, "example-harness", fb.binName, h, pool.PlatformLinuxAMD64Glibc, cacheDir, stagingGenDir); err != nil {
+		t.Fatalf("Realize: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(cacheDir, shared.SHA256))
+	if err != nil || string(data) != "x" {
+		t.Errorf("shared cache object = %q (err %v), want it untouched (\"x\")", data, err)
+	}
+	cacheAdd := strings.Join(fb.calls[0].Argv, " ")
+	if n := strings.Count(cacheAdd, shared.SHA256+".tgz"); n != 1 {
+		t.Errorf("npm cache add lists the shared tarball %d times, want 1: %s", n, cacheAdd)
+	}
+}
+
+// TestHardlinkOrCopy_NeverWritesThroughExistingLink: when dst already
+// exists as a hardlink to src, hardlinkOrCopy must leave both intact.
+func TestHardlinkOrCopy_NeverWritesThroughExistingLink(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(src, dst); err != nil {
+		t.Skipf("hardlinks unsupported here: %v", err)
+	}
+	if err := hardlinkOrCopy(src, dst); err != nil {
+		t.Fatalf("hardlinkOrCopy: %v", err)
+	}
+	for _, p := range []string{src, dst} {
+		if data, err := os.ReadFile(p); err != nil || string(data) != "payload" {
+			t.Errorf("%s = %q (err %v), want \"payload\"", filepath.Base(p), data, err)
+		}
+	}
+}
+
+// TestHardlinkOrCopy_ReplacesUnrelatedDst: the copy fallback replaces an
+// existing, unrelated dst with src's content without touching src.
+func TestHardlinkOrCopy_ReplacesUnrelatedDst(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := hardlinkOrCopy(src, dst); err != nil {
+		t.Fatalf("hardlinkOrCopy: %v", err)
+	}
+	if data, _ := os.ReadFile(dst); string(data) != "payload" {
+		t.Errorf("dst = %q, want \"payload\"", data)
+	}
+	if data, _ := os.ReadFile(src); string(data) != "payload" {
+		t.Errorf("src = %q, want \"payload\" (untouched)", data)
+	}
+}
