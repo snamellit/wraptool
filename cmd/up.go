@@ -1007,7 +1007,7 @@ func bringUpContainer(root, token, hname string, shell bool) error {
 Scaffold one, then re-run `+"`wraptool up`"+`:
 
   wraptool init devcontainer --lang go        # writes .devcontainer/devcontainer.json
-                                              # (--harness claude|opencode|pi|agy|gemini, --base, --lang; see --help)
+                                              # (--harness claude|opencode|pi|agy, --base, --lang; see --help)
 
 Or, with Guix installed, add a manifest.scm to the project root and wraptool
 uses the Guix container runtime instead — no dev container needed`, root)

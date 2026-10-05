@@ -17,7 +17,7 @@ substitute for each other.
 | Term        | Means                                                                                                                                                   | Not                                          |
 |-------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------|
 | **agent**   | The AI acting through a harness: it decides what to do and calls MCP tools                                                                              | The program it runs in; the model weights    |
-| **harness** | The CLI program or IDE integration the agent runs in — `claude`, `opencode`, `gemini`, `cursor`, `roo`, `pi`, `agy`. Version-locked in the harness pool | The AI itself; a container; a wrapper script |
+| **harness** | The CLI program the agent runs in — `claude`, `opencode`, `pi`, `agy`. Version-locked in the harness pool                                               | The AI itself; a container; a wrapper script |
 | **model**   | The language model behind the agent. Use only when the point is genuinely about the model                                                               | The agent; the harness                       |
 
 Write **agent**, or **coding agent** on first use in a page. Do not write "the

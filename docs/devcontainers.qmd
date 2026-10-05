@@ -186,9 +186,7 @@ variable-substituted):
 bundles its own pinned node for npm-sourced harnesses (claude/opencode/pi); the
 feature's own scripts are POSIX sh with no npm/node dependency. Add
 `ghcr.io/devcontainers/features/node:1` only if your *project* code needs node.
-`agy` installs via its own channel; `gemini` has no automated pool installer
-(not pool-lockable) — its binary is never in the runtime mount, so bake it into
-your image or install it by hand if you select it.
+`agy` installs via its own channel.
 :::
 
 See the [feature definition](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool/devcontainer-feature.json)

@@ -29,15 +29,12 @@ func newInitCmd() *cobra.Command {
 Supported harnesses:
   agy       - Antigravity CLI (.agents/mcp_config.json)
   claude    - Claude Code (.mcp.json)
-  cursor    - Cursor IDE (.cursor/mcp.json)
   opencode  - OpenCode (opencode.json)
-  gemini    - Gemini CLI (.gemini/settings.json)
   pi        - Pi coding agent, via pi-mcp-adapter (.pi/mcp.json)
-  roo       - Roo Code (.roo/mcp.json)
 
 Examples:
-  # Set up for Claude Code and Cursor with SSE transport
-  wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
+  # Set up for Claude Code and OpenCode with SSE transport
+  wraptool init --harness claude --harness opencode --url http://127.0.0.1:8717/sse
 
   # Set up for all harnesses with a Unix socket
   wraptool init --harness all --transport unix --socket /run/user/1000/wraptool.sock`,
@@ -46,7 +43,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, cursor, opencode, gemini, pi, roo, all)")
+	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, opencode, pi, all)")
 	cmd.Flags().StringVar(&transport, "transport", "sse", "transport type (sse, unix)")
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8717/sse", "SSE URL for the wraptool server")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (for unix transport)")

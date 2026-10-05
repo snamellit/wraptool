@@ -877,7 +877,7 @@ func TestGCLegacyIgnoresNonPoolLockableManifestEntries(t *testing.T) {
 	t.Parallel()
 	paths := testPaths(t)
 	bin, lib := gcTestLegacyDirs(t)
-	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  gemini: {}\n")
+	writeManifest(t, paths, "schema_version: 1\nharnesses:\n  legacy-only: {}\n")
 
 	opts := legacyOpts(bin, lib)
 	opts.IsPoolLockable = func(string) bool { return false }

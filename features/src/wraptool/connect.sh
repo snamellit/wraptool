@@ -98,9 +98,7 @@ else
   fi
 fi
 
-# Per-harness config shape, mirroring the Go renderers in internal/harness. Only
-# the container-CLI harnesses (those that run inside the container) are here; the
-# host IDEs (cursor, roo) are configured host-side by `wraptool init`, never this.
+# Per-harness config shape, mirroring the Go renderers in internal/harness.
 #   EP      endpoint path — legacy SSE (/sse) or Streamable HTTP (/mcp, agy)
 #   TOP     top-level object key ("mcpServers", or opencode's "mcp")
 #   URL_KEY the server entry's URL field (url / serverUrl / httpUrl)
@@ -111,9 +109,8 @@ case "$WT_HARNESS" in
   claude)   EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"sse",';    EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
   agy)      EP="/mcp"; TOP="mcpServers"; URL_KEY="serverUrl"; TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.agents/mcp_config.json}" ;;
   opencode) EP="/sse"; TOP="mcp";        URL_KEY="url";       TYPE='"type":"remote",'; EXTRA=',"enabled":true'; TARGET="${WT_CONFIG_OUT:-$PWD/opencode.json}" ;;
-  gemini)   EP="/sse"; TOP="mcpServers"; URL_KEY="httpUrl";   TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.gemini/settings.json}" ;;
   pi)       EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.pi/mcp.json}" ;;
-  *) echo "wraptool: ERROR unsupported harness '$WT_HARNESS' (container CLIs: claude agy opencode gemini pi)" >&2; exit 1 ;;
+  *) echo "wraptool: ERROR unsupported harness '$WT_HARNESS' (container CLIs: claude agy opencode pi)" >&2; exit 1 ;;
 esac
 
 URL="${BASE}${EP}"
@@ -129,7 +126,7 @@ else
 fi
 SERVER=$(printf '{%s"%s":"%s"%s%s}' "$TYPE" "$URL_KEY" "$URL" "$HDR" "$EXTRA")
 
-# Ensure the config's parent dir exists (agy/gemini/pi write under a subdir).
+# Ensure the config's parent dir exists (agy/pi write under a subdir).
 mkdir -p "$(dirname "$TARGET")"
 
 # Merge into an existing config with jq when available (preserves other MCP

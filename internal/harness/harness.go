@@ -1,5 +1,5 @@
 // Package harness is the single source of truth for how each supported coding
-// harness (Claude Code, Cursor, opencode, …) is pointed at the wraptool MCP
+// harness (Claude Code, opencode, …) is pointed at the wraptool MCP
 // server. It is shared by `wraptool init` and, over time, the container
 // bring-up paths, so adding a harness is a one-descriptor change rather than a
 // reimplementation in several places.
@@ -57,9 +57,7 @@ const (
 type Descriptor struct {
 	Name string
 	Auth AuthMode
-	// Bin is the executable name in the harness pool. Empty means the harness is
-	// a host-side IDE/extension (cursor, roo), not a container CLI, so
-	// it is not pool-installable.
+	// Bin is the executable name in the harness pool.
 	Bin string
 	// Install is an argv template run by `wraptool harness install` to fetch the
 	// binary into the pool; the token "{prefix}" is replaced with the pool root.
@@ -91,10 +89,6 @@ type Descriptor struct {
 	Render   func(Params) (path string, content []byte, err error)
 }
 
-// IsCLI reports whether the harness runs as a binary inside the container pool
-// (vs a host-side IDE/extension).
-func (d Descriptor) IsCLI() bool { return d.Bin != "" }
-
 // PoolLockable reports whether the version-locked harness pool
 // (design/harness/unified-harness-pool.md) can refresh/resolve/realize this
 // harness at all — via either PoolPackage (npm) or PoolArchive (direct
@@ -125,7 +119,7 @@ func (d Descriptor) PoolPackageID() string {
 }
 
 // order is the stable listing order (used for `all`, help, and error messages).
-var order = []string{"agy", "claude", "cursor", "opencode", "gemini", "pi", "roo"}
+var order = []string{"agy", "claude", "opencode", "pi"}
 
 // Registry maps a harness name to its descriptor.
 // Auth defaults to AuthUnverified (the zero value) for every harness except the
@@ -171,15 +165,9 @@ var Registry = map[string]Descriptor{
 		PoolArchive: true},
 	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
 		Install: npmInstall("@anthropic-ai/claude-code"), PoolPackage: "@anthropic-ai/claude-code"},
-	"cursor":   {Name: "cursor", Auth: AuthHeader, Render: renderCursor}, // host IDE, not pool CLI
 	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode, Install: npmInstall("opencode-ai"), PoolPackage: "opencode-ai"},
-	"gemini":   {Name: "gemini", Auth: AuthHeader, Bin: "gemini", Render: renderGemini},
 	"pi": {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi, Install: npmInstall("@earendil-works/pi-coding-agent"),
 		PoolPackage: "@earendil-works/pi-coding-agent"},
-	// roo accepts a headers object but a known bug drops the Authorization
-	// header on SSE connections (RooCodeInc/Roo-Code#2480), so networked auth is
-	// unverified — a token forces a loud failure rather than a silent 401.
-	"roo": {Name: "roo", Render: renderRoo}, // host VS Code ext
 }
 
 // Names returns the supported harness names in stable order.
@@ -324,19 +312,6 @@ func bearer(server map[string]any, p Params) {
 	}
 }
 
-func renderCursor(p Params) (string, []byte, error) {
-	path := ".cursor/mcp.json"
-	if p.Global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".cursor", "mcp.json")
-	}
-	server := stdioOr(p, func(s map[string]any) {
-		s["url"] = appendCWD(effectiveURL(p), p)
-		bearer(s, p)
-	})
-	return path, mcpServers(server), nil
-}
-
 func renderOpenCode(p Params) (string, []byte, error) {
 	path := "opencode.json"
 	if p.Global {
@@ -359,19 +334,6 @@ func renderOpenCode(p Params) (string, []byte, error) {
 	return path, mustJSON(cfg), nil
 }
 
-func renderGemini(p Params) (string, []byte, error) {
-	path := ".gemini/settings.json"
-	if p.Global {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".gemini", "settings.json")
-	}
-	server := stdioOr(p, func(s map[string]any) {
-		s["httpUrl"] = appendCWD(effectiveURL(p), p)
-		bearer(s, p)
-	})
-	return path, mcpServers(server), nil
-}
-
 // renderPi targets the Pi coding agent. Pi has no native MCP; the third-party
 // pi-mcp-adapter (github.com/nicobailon/pi-mcp-adapter) reads this config. We
 // write the Pi-specific .pi/mcp.json (project) / ~/.pi/agent/mcp.json (global)
@@ -388,17 +350,6 @@ func renderPi(p Params) (string, []byte, error) {
 		bearer(s, p)
 	})
 	return path, mcpServers(server), nil
-}
-
-func renderRoo(p Params) (string, []byte, error) {
-	if p.Global {
-		return "", nil, fmt.Errorf("roo global config is managed via VS Code UI; use project-level instead")
-	}
-	server := stdioOr(p, func(s map[string]any) {
-		s["type"] = "sse"
-		s["url"] = appendCWD(effectiveURL(p), p)
-	})
-	return ".roo/mcp.json", mcpServers(server), nil
 }
 
 // --- helpers ---

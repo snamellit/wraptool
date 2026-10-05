@@ -395,7 +395,7 @@ type poolPlanInput struct {
 	Harness string
 	// PoolLockable is true when Harness is pool-lockable
 	// (harness.Registry[Harness].PoolLockable(): an npm package or an
-	// archive source). Non-lockable harnesses (gemini/cursor/roo today)
+	// archive source). Non-lockable harnesses (none registered today)
 	// have no runtime/ path to move to, so their legacy fallback is silent —
 	// a notice promising a fix command that can't exist for them would be
 	// noise (§16).
