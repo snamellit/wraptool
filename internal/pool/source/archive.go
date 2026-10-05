@@ -61,7 +61,15 @@ type Archive struct {
 	// Archive literal with clients pointed at httptest.Servers.
 	metadataClient *http.Client
 	downloadClient *http.Client
+	// progress receives Fetch's download progress; see SetProgress.
+	progress io.Writer
+	// index finds already-cached objects by sha512; see cacheIndex.
+	index cacheIndex
 }
+
+// SetProgress makes Fetch report each artifact download to w, mirroring
+// NPM.SetProgress. A nil w (the default) disables reporting.
+func (a *Archive) SetProgress(w io.Writer) { a.progress = w }
 
 // defaultArchiveManifestBaseURL is the production Antigravity CLI release
 // channel this package resolves against when NewArchive is given an empty
@@ -441,7 +449,7 @@ func (a *Archive) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir strin
 		if artifact.SHA512 == "" {
 			return fmt.Errorf("archive artifact %s: no sha512 recorded in lock — nothing to verify against", key)
 		}
-		sha256Hex, err := a.downloadVerify(ctx, artifact.URL, artifact.SHA512, artifact.SHA256, cacheDir)
+		sha256Hex, err := a.downloadVerify(ctx, fmt.Sprintf("%s (%s)", h.Package, key), artifact.URL, artifact.SHA512, artifact.SHA256, cacheDir)
 		if err != nil {
 			return fmt.Errorf("archive artifact %s: %w", key, err)
 		}
@@ -462,7 +470,7 @@ func (a *Archive) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir strin
 // discipline exactly; see that method's doc comment for the reasoning
 // behind each step (knownSHA256 cache-hit shortcut, temp-file-then-rename,
 // parent-dir fsync skipped on Windows).
-func (a *Archive) downloadVerify(ctx context.Context, url, wantSHA512Hex, knownSHA256, cacheDir string) (string, error) {
+func (a *Archive) downloadVerify(ctx context.Context, label, url, wantSHA512Hex, knownSHA256, cacheDir string) (string, error) {
 	if !validSHA512Hex(wantSHA512Hex) {
 		return "", fmt.Errorf("malformed sha512 %q recorded in lock", wantSHA512Hex)
 	}
@@ -477,6 +485,14 @@ func (a *Archive) downloadVerify(ctx context.Context, url, wantSHA512Hex, knownS
 		}
 		if fi, err := os.Stat(filepath.Join(cacheDir, knownSHA256)); err == nil && fi.Size() > 0 {
 			return knownSHA256, nil
+		}
+	} else {
+		hit, err := a.index.lookup(cacheDir, wantSHA512)
+		if err != nil {
+			return "", err
+		}
+		if hit != "" {
+			return hit, nil
 		}
 	}
 
@@ -508,7 +524,7 @@ func (a *Archive) downloadVerify(ctx context.Context, url, wantSHA512Hex, knownS
 
 	sha256h := sha256.New()
 	sha512h := sha512.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, sha256h, sha512h), resp.Body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(tmp, sha256h, sha512h, newDownloadProgress(a.progress, label, resp.ContentLength)), resp.Body); err != nil {
 		cleanup()
 		return "", fmt.Errorf("downloading %s: %w", url, err)
 	}
@@ -551,6 +567,7 @@ func (a *Archive) downloadVerify(ctx context.Context, url, wantSHA512Hex, knownS
 			_ = dirFile.Close()
 		}
 	}
+	recordIndex(cacheDir, wantSHA512, sha256Hex)
 
 	return sha256Hex, nil
 }

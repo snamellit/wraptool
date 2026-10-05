@@ -659,7 +659,29 @@ func gcCache(paths PoolPaths, retained map[string]bool, dryRun bool, report *GCR
 			}
 		}
 	}
+	if !dryRun {
+		pruneCacheIndex(paths.Cache, retained)
+	}
 	return nil
+}
+
+// pruneCacheIndex removes integrity-index entries (CacheSHA512IndexDirName)
+// that name no retained object. Best-effort: the index is a lookup hint
+// that re-verifies every hit, so a leftover entry costs a few bytes, never
+// correctness, and must not fail gc.
+func pruneCacheIndex(cacheDir string, retained map[string]bool) {
+	indexDir := filepath.Join(cacheDir, CacheSHA512IndexDirName)
+	entries, err := os.ReadDir(indexDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		p := filepath.Join(indexDir, entry.Name())
+		data, err := os.ReadFile(p)
+		if err != nil || !retained[strings.TrimSpace(string(data))] {
+			_ = os.Remove(p)
+		}
+	}
 }
 
 // gcStaging removes every directory under staging/ unconditionally (§15,

@@ -77,6 +77,16 @@ func CacheSHA256Dir() string {
 	return filepath.Join(CacheDir(), "sha256")
 }
 
+// CacheSHA512IndexDirName is the subdirectory of the sha256 cache
+// (cache/sha256/.by-sha512/<sha512 hex>) holding the integrity index: one
+// small file per cache object, named by the object's upstream sha512 and
+// containing its sha256 cache address. It lets Fetch find an object it
+// already downloaded when the lock does not yet record the sha256 (a fresh
+// resolve, an interrupted update). The index is a lookup hint only; every
+// hit is re-verified against the sha512 before it is trusted. gc skips
+// subdirectories when collecting objects and prunes this one separately.
+const CacheSHA512IndexDirName = ".by-sha512"
+
 // CacheObjectPath returns the path of the cached artifact for the given
 // sha256 hex digest.
 func CacheObjectPath(digest string) string {

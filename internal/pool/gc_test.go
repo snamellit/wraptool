@@ -360,6 +360,19 @@ func TestGCCacheObjectRetentionAndDryRun(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// One integrity-index entry per object: gc must keep the retained
+	// object's entry and prune the orphan's (but only on a real run).
+	indexDir := filepath.Join(paths.Cache, CacheSHA512IndexDirName)
+	retainedEntry := filepath.Join(indexDir, strings.Repeat("c", 128))
+	orphanEntry := filepath.Join(indexDir, strings.Repeat("d", 128))
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for entry, d := range map[string]string{retainedEntry: retainedDigest, orphanEntry: orphanDigest} {
+		if err := os.WriteFile(entry, []byte(d+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	gcWriteLock(t, paths, map[string]LockHarness{
 		gcTestHarness: {
@@ -391,6 +404,9 @@ func TestGCCacheObjectRetentionAndDryRun(t *testing.T) {
 			t.Errorf("dry run must not remove %s: %v", d, err)
 		}
 	}
+	if _, err := os.Stat(orphanEntry); err != nil {
+		t.Errorf("dry run must not prune index entries: %v", err)
+	}
 
 	report, err := GCPoolLocked(paths, GCOptions{})
 	if err != nil {
@@ -404,6 +420,12 @@ func TestGCCacheObjectRetentionAndDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(paths.Cache, orphanDigest)); !os.IsNotExist(err) {
 		t.Errorf("expected the orphaned cache object to be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(retainedEntry); err != nil {
+		t.Errorf("expected the retained object's index entry to survive GC: %v", err)
+	}
+	if _, err := os.Stat(orphanEntry); !os.IsNotExist(err) {
+		t.Errorf("expected the orphaned object's index entry to be pruned, stat err = %v", err)
 	}
 }
 

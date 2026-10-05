@@ -160,6 +160,21 @@ func defaultHarnessDeps() harnessDeps {
 	}
 }
 
+// newHarnessSource is deps.newSource plus progress wiring: a Source that
+// can report artifact downloads (source.NPM, source.Archive) reports them
+// to cmd's stderr, so a large fetch on a slow link shows it is progressing
+// instead of looking hung. Test fakes without SetProgress are used as-is.
+func newHarnessSource(deps harnessDeps, d harness.Descriptor, cmd *cobra.Command) (pool.Source, error) {
+	src, err := deps.newSource(d)
+	if err != nil {
+		return nil, err
+	}
+	if p, ok := src.(interface{ SetProgress(io.Writer) }); ok {
+		p.SetProgress(cmd.ErrOrStderr())
+	}
+	return src, nil
+}
+
 // platformTarget is the target-resolution thunk harnessBackend/backendCache
 // take, rather than a plain pool.PlatformKey value: an archive-sourced
 // harness needs no backend at all (harnessBackend's own gate below), so it
@@ -887,7 +902,7 @@ func newHarnessInstallCmd(deps harnessDeps) *cobra.Command {
 func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, constraint string, allowYoung bool, reason string) error {
 	paths := deps.poolPaths()
 
-	src, err := deps.newSource(d)
+	src, err := newHarnessSource(deps, d, cmd)
 	if err != nil {
 		return err
 	}
@@ -1408,7 +1423,7 @@ harnesses' candidate data current between installs (e.g. before "update").`,
 			nodeLinesRefreshed := map[string]error{}
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
-				src, err := deps.newSource(d)
+				src, err := newHarnessSource(deps, d, cmd)
 				if err != nil {
 					return err
 				}
@@ -1474,7 +1489,7 @@ listed in the pool manifest.`,
 			var bc backendCache
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
-				src, err := deps.newSource(d)
+				src, err := newHarnessSource(deps, d, cmd)
 				if err != nil {
 					return err
 				}
@@ -1576,7 +1591,7 @@ the host's own legacy bin/ is out of scope for it.`,
 			syncTarget := func() (pool.PlatformKey, error) { return key, nil }
 			return runPerHarness(cmd, names, func(name string) error {
 				d := harness.Registry[name]
-				src, err := deps.newSource(d)
+				src, err := newHarnessSource(deps, d, cmd)
 				if err != nil {
 					return err
 				}
