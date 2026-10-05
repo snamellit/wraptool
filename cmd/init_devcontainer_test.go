@@ -121,9 +121,8 @@ func TestInitDevcontainer(t *testing.T) {
 	t.Run("no harness version or provision option scaffolded", func(t *testing.T) {
 		// §16 Phase 4 item 2: the project version option and any provision
 		// toggle are gone from the wiring-only feature schema, and the
-		// scaffolder must not emit them for any harness, including gemini
-		// (which used to get an explicit "provision": false).
-		for _, h := range []string{"claude", "opencode", "pi", "agy", "gemini"} {
+		// scaffolder must not emit them for any harness.
+		for _, h := range []string{"claude", "opencode", "pi", "agy"} {
 			out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
 			if err := runInitDevcontainer(h, nil, "ubuntu", out, "", false); err != nil {
 				t.Fatalf("scaffold %s: %v", h, err)
@@ -269,37 +268,6 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 	})
 
-	t.Run("gemini next-steps and comment point at baking in the binary, not a dead-end install", func(t *testing.T) {
-		// gemini has no PoolPackage/PoolArchive (harness.Registry) — it is not
-		// pool-lockable, so `wraptool harness install gemini` is a dead end, and
-		// "install it by hand inside the container" is equally wrong: with
-		// connect:true (this scaffold's default) connect.sh hard-fails postCreate
-		// before a hand-install could ever happen.
-		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
-		stdout := captureStdout(t, func() {
-			if err := runInitDevcontainer("gemini", nil, "ubuntu", out, "", false); err != nil {
-				t.Fatalf("scaffold: %v", err)
-			}
-		})
-		if strings.Contains(stdout, "harness install gemini") {
-			t.Errorf("gemini is not pool-lockable; must not suggest `wraptool harness install gemini`; got:\n%s", stdout)
-		}
-		if !strings.Contains(stdout, "not pool-lockable") {
-			t.Errorf("expected the printed next-steps to say gemini is not pool-lockable; got:\n%s", stdout)
-		}
-
-		raw, err := os.ReadFile(out)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(raw), "install it by hand inside the container") {
-			t.Errorf("comment must not suggest a hand-install inside the container (postCreate hard-fails first); got:\n%s", raw)
-		}
-		if !strings.Contains(string(raw), "not pool-lockable") {
-			t.Errorf("expected the generated comment to say gemini is not pool-lockable; got:\n%s", raw)
-		}
-	})
-
 	t.Run("overwrite guard", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), ".devcontainer", "devcontainer.json")
 		if err := runInitDevcontainer("claude", nil, "ubuntu", out, "", false); err != nil {
@@ -313,10 +281,10 @@ func TestInitDevcontainer(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects host IDE and unknown language", func(t *testing.T) {
+	t.Run("rejects unknown harness and unknown language", func(t *testing.T) {
 		out := filepath.Join(t.TempDir(), "dc.json")
 		if err := runInitDevcontainer("cursor", nil, "ubuntu", out, "", false); err == nil {
-			t.Error("cursor (host IDE) must be rejected")
+			t.Error("unknown harness must be rejected")
 		}
 		if err := runInitDevcontainer("claude", []string{"cobol"}, "ubuntu", out, "", false); err == nil {
 			t.Error("unknown language must be rejected")

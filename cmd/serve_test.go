@@ -93,7 +93,7 @@ func TestStreamableInitializeWithoutAuth(t *testing.T) {
 }
 
 // TestSSEEndpointStillServed guards against regressing the legacy SSE clients
-// (claude, cursor): GET /sse must open an event stream (200 text/event-stream),
+// (claude, opencode): GET /sse must open an event stream (200 text/event-stream),
 // not 404/405, now that /mcp shares the mux.
 func TestSSEEndpointStillServed(t *testing.T) {
 	ts := httptest.NewServer(newTestHandler(t))

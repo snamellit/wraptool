@@ -316,7 +316,7 @@ func newStreamableServer(s *server.MCPServer, allowedCWDRoots []string) *server.
 
 // newMCPHTTPHandler mounts both transports on one mux — Streamable HTTP at /mcp,
 // legacy SSE at /sse (+ its /message endpoint) — behind a single Bearer-auth
-// wrapper, so SSE clients (claude, cursor) and Streamable clients (Antigravity)
+// wrapper, so SSE clients (claude, opencode) and Streamable clients (Antigravity)
 // hit the same listener with the same tool registry and auth.
 func newMCPHTTPHandler(s *server.MCPServer, cfg *config.Config, sseExtra ...server.SSEOption) (http.Handler, error) {
 	mux := http.NewServeMux()

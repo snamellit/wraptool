@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/pti/wraptool/internal/harness"
 )
 
 // TestInitEmbedsAuthHeader is the regression test for the Antigravity 401: an
@@ -136,15 +134,11 @@ func TestInitAllSkipsAuthUnverifiedAndIsAtomic(t *testing.T) {
 	t.Chdir(dir)
 
 	cfgPath := filepath.Join(dir, "cfg", "config.yaml")
+	// Succeeding at all is the skip check: an auth-unverified harness reaching
+	// harness.Prepare with a token fails the whole run. (None is registered
+	// since roo's removal; the guard stays for the next one.)
 	if err := runInit([]string{"all"}, "sse", "http://127.0.0.1:8717/sse", "", false, cfgPath); err != nil {
 		t.Fatalf("runInit --harness all: %v", err)
-	}
-	for name, d := range harness.Registry {
-		if d.Auth == harness.AuthUnverified && name == "roo" {
-			if _, err := os.Stat(filepath.Join(dir, ".roo", "mcp.json")); !os.IsNotExist(err) {
-				t.Errorf("auth-unverified harness %s must be skipped under all, stat err = %v", name, err)
-			}
-		}
 	}
 
 	// Atomicity: make one harness's existing target unmergeable; NO config may

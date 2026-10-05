@@ -115,7 +115,7 @@ The available transports:
 | `unix`    | `transport: unix`, `listen: /path/to.sock` | Independent process, Unix socket |
 
 The TCP listener (`sse`/`unix`) serves **both** MCP HTTP transports on one port:
-legacy SSE at `/sse` (Claude Code, Cursor) and Streamable HTTP at `/mcp` (the
+legacy SSE at `/sse` (Claude Code, OpenCode) and Streamable HTTP at `/mcp` (the
 2025-03 transport — Antigravity and other clients that POST `initialize` to the
 URL). One Bearer-auth wrapper guards both; you don't choose — each harness's
 generated config points at the endpoint it speaks.
@@ -142,11 +142,11 @@ head -c 32 /dev/urandom | base64 > ~/.config/wraptool/auth_token
 ## 4. Connect your coding agent
 
 ```bash
-wraptool init --harness claude --harness cursor --url http://127.0.0.1:8717/sse
+wraptool init --harness claude --harness opencode --url http://127.0.0.1:8717/sse
 ```
 
 This writes the MCP config block for each harness. Supported values:
-`agy`, `claude`, `cursor`, `opencode`, `gemini`, `pi`, `roo`, or `all`.
+`agy`, `claude`, `opencode`, `pi`, or `all`.
 
 `init` reads `auth_token_file` from your config and embeds the
 `Authorization: Bearer` header in every networked harness config — so an

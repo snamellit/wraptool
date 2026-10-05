@@ -437,19 +437,14 @@ func TestHarnessCommandArgValidation(t *testing.T) {
 		wantErr string
 	}{
 		{"install: unknown harness", []string{"install", "bogus"}, "unknown harness"},
-		{"install: host IDE harness is not a container CLI", []string{"install", "cursor"}, "host-side IDE"},
 		{"install: --allow-young without --reason", []string{"install", "claude", "--allow-young"}, "--reason"},
 		{"refresh: unknown harness", []string{"refresh", "bogus"}, "unknown harness"},
-		{"refresh: legacy (non-lockable) harness", []string{"refresh", "gemini"}, "not pool-lockable"},
 		{"update: unknown harness", []string{"update", "bogus"}, "unknown harness"},
-		{"update: legacy (non-lockable) harness", []string{"update", "gemini"}, "not pool-lockable"},
 		{"update: --allow-young without --reason", []string{"update", "claude", "--allow-young"}, "--reason"},
 		{"sync: unknown harness", []string{"sync", "bogus"}, "unknown harness"},
-		{"sync: legacy (non-lockable) harness", []string{"sync", "roo"}, "not pool-lockable"},
 		{"sync: unknown --platform lists the closed enum", []string{"sync", "--platform", "bogus-platform"},
 			"linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl"},
 		{"rollback: unknown harness", []string{"rollback", "bogus"}, "unknown harness"},
-		{"rollback: legacy (non-lockable) harness", []string{"rollback", "roo"}, "not pool-lockable"},
 		{"rollback: unknown --platform lists the closed enum", []string{"rollback", "claude", "--platform", "bogus-platform"},
 			"linux-amd64-glibc, linux-arm64-glibc, linux-amd64-musl, linux-arm64-musl"},
 		{"rollback: requires exactly one harness", []string{"rollback"}, "accepts 1 arg"},
@@ -728,51 +723,8 @@ func TestRunHarnessListRendersColumnsAndQuarantineCountdown(t *testing.T) {
 	if !strings.Contains(out, ">=2 <3") {
 		t.Errorf("expected the claude row's constraint, got:\n%s", out)
 	}
-	if !strings.Contains(out, "legacy (not lockable)") {
-		t.Errorf("expected a legacy-harness row (e.g. agy/gemini/cursor/roo), got:\n%s", out)
-	}
 	if !strings.Contains(out, "linux-amd64-glibc,linux-arm64-glibc") {
 		t.Errorf("expected claude's REALIZED cell to comma-join its two realized platforms, got:\n%s", out)
-	}
-	// A legacy (not pool-lockable) harness's REALIZED cell is "-", same as
-	// every other column that doesn't apply to it. Locate the actual REALIZED
-	// column position from the header (tabwriter aligns every row's column
-	// starts identically) rather than trusting the line's trailing "-" —
-	// QUARANTINED's own value ("legacy (not lockable)") contains no
-	// whitespace-delimited "-", but a naive HasSuffix check would pass even
-	// if REALIZED's cell silently went missing and some earlier column's
-	// padding happened to end in "-".
-	lines := strings.Split(out, "\n")
-	var header string
-	for _, line := range lines {
-		if strings.HasPrefix(line, "HARNESS") {
-			header = line
-			break
-		}
-	}
-	if header == "" {
-		t.Fatalf("no header line found in output:\n%s", out)
-	}
-	col := strings.Index(header, "REALIZED")
-	if col < 0 {
-		t.Fatalf("REALIZED not found in header %q", header)
-	}
-	sawLegacyRow := false
-	for _, line := range lines {
-		if !strings.Contains(line, "legacy (not lockable)") {
-			continue
-		}
-		sawLegacyRow = true
-		if col >= len(line) {
-			t.Fatalf("legacy row %q is shorter than the REALIZED column offset %d", line, col)
-		}
-		cell := strings.TrimRight(line[col:], " ")
-		if cell != "-" {
-			t.Errorf("expected a legacy harness's REALIZED cell to be exactly %q, got %q (row: %q)", "-", cell, line)
-		}
-	}
-	if !sawLegacyRow {
-		t.Fatal("no legacy (not lockable) row found to check")
 	}
 }
 

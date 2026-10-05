@@ -740,13 +740,9 @@ func runHarnessList(paths pool.PoolPaths, poolBin string, now time.Time, out io.
 		d := harness.Registry[name]
 
 		if !d.PoolLockable() {
-			active := "-"
-			if d.IsCLI() {
-				if fileExists(filepath.Join(poolBin, d.Bin)) {
-					active = "yes"
-				} else {
-					active = "no"
-				}
+			active := "no"
+			if fileExists(filepath.Join(poolBin, d.Bin)) {
+				active = "yes"
 			}
 			fmt.Fprintf(w, "%s\t-\t-\t%s\t-\t-\tlegacy (not lockable)\t-\n", name, active)
 			continue
@@ -857,10 +853,6 @@ func newHarnessInstallCmd(deps harnessDeps) *cobra.Command {
 			d, ok := harness.Registry[name]
 			if !ok {
 				return fmt.Errorf("unknown harness %q; supported: %v", name, harness.Names())
-			}
-			if !d.IsCLI() {
-				return fmt.Errorf("%q is a host-side IDE/extension, not a container CLI; "+
-					"configure it with `wraptool init --harness %s`", name, name)
 			}
 			if allowYoung && reason == "" {
 				return fmt.Errorf("--allow-young requires --reason")

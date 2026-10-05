@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -98,8 +99,6 @@ func TestRenderURLKeys(t *testing.T) {
 		urlKey string
 	}{
 		"claude":   {"mcpServers", "url"},
-		"cursor":   {"mcpServers", "url"},
-		"gemini":   {"mcpServers", "httpUrl"},
 		"agy":      {"mcpServers", "serverUrl"},
 		"opencode": {"mcp", "url"},
 	}
@@ -166,8 +165,7 @@ func TestWriteMergesPreservingOtherServers(t *testing.T) {
 // Authorization: Bearer header when a token is set, and none when it isn't.
 func TestAuthHeaderHarnesses(t *testing.T) {
 	topKey := map[string]string{
-		"claude": "mcpServers", "cursor": "mcpServers", "gemini": "mcpServers",
-		"agy": "mcpServers", "opencode": "mcp", "pi": "mcpServers",
+		"claude": "mcpServers", "agy": "mcpServers", "opencode": "mcp", "pi": "mcpServers",
 	}
 	for name, d := range Registry {
 		if d.Auth != AuthHeader {
@@ -197,8 +195,12 @@ func TestAuthHeaderHarnesses(t *testing.T) {
 }
 
 func TestWriteRejectsTokenForUnverifiedHarness(t *testing.T) {
-	// roo is AuthUnverified (SSE header bug): a token (networked use) must fail loudly.
-	if _, err := Write("roo", Params{Transport: "sse", URL: "http://x/sse", Token: "t", Dir: t.TempDir()}); err == nil {
+	// No registered harness is AuthUnverified today, so register a throwaway
+	// one: a token (networked use) must fail loudly rather than emit a config
+	// that will 401.
+	Registry["unverified"] = Descriptor{Name: "unverified", Render: renderClaude}
+	t.Cleanup(func() { delete(Registry, "unverified") })
+	if _, err := Write("unverified", Params{Transport: "sse", URL: "http://x/sse", Token: "t", Dir: t.TempDir()}); err == nil {
 		t.Fatal("expected error using an unverified harness with a token")
 	}
 	// claude is AuthHeader: a token is fine (write to a temp dir, not real home).
@@ -225,7 +227,7 @@ func TestWriteDirResolution(t *testing.T) {
 // wraptool feature's connect.sh (the devcontainer path) for every
 // container-CLI harness. Comparison is semantic, not byte (connect.sh minimally
 // URL-encodes cwd; the Go path uses url.QueryEscape) — they must decode
-// identically. Host IDEs (cursor, roo) run host-side and are not in connect.sh.
+// identically.
 func TestHarnessParityWithConnectSh(t *testing.T) {
 	sh, err := exec.LookPath("sh")
 	if err != nil {
@@ -255,7 +257,6 @@ func TestHarnessParityWithConnectSh(t *testing.T) {
 		{"claude", "mcpServers", "url", "sse", "/sse", ".mcp.json"},
 		{"agy", "mcpServers", "serverUrl", "", "/mcp", ".agents/mcp_config.json"},
 		{"opencode", "mcp", "url", "remote", "/sse", "opencode.json"},
-		{"gemini", "mcpServers", "httpUrl", "", "/sse", ".gemini/settings.json"},
 		{"pi", "mcpServers", "url", "", "/sse", ".pi/mcp.json"},
 	}
 
@@ -380,15 +381,17 @@ func TestPoolPackageID(t *testing.T) {
 
 // TestPoolLockable pins Descriptor.PoolLockable(): true for both an
 // npm-sourced (claude) and an archive-sourced (agy) descriptor, false for a
-// harness with neither (gemini).
+// descriptor with neither.
 func TestPoolLockable(t *testing.T) {
+	if (Descriptor{Name: "legacy", Bin: "legacy"}).PoolLockable() {
+		t.Error("a descriptor with neither PoolPackage nor PoolArchive must not be pool-lockable")
+	}
 	cases := []struct {
 		name string
 		want bool
 	}{
 		{"agy", true},
 		{"claude", true},
-		{"gemini", false},
 	}
 	for _, tc := range cases {
 		d, ok := Registry[tc.name]
@@ -434,6 +437,43 @@ func TestPoolLockableDescriptorsHaveNameEqualBin(t *testing.T) {
 		}
 		if d.Name != d.Bin {
 			t.Errorf("Registry[%q]: Name = %q, Bin = %q — a pool-lockable descriptor's dispatcher/guix-plan lookups assume these are equal", name, d.Name, d.Bin)
+		}
+	}
+}
+
+// TestFeatureEnumMatchesRegistry pins the wraptool feature's `harness` option
+// enum to the registry, so retiring or adding a harness can't leave the
+// feature offering one the registry doesn't wire (or the reverse).
+func TestFeatureEnumMatchesRegistry(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "features", "src", "wraptool", "devcontainer-feature.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var feature struct {
+		Options struct {
+			Harness struct {
+				Enum []string `json:"enum"`
+			} `json:"harness"`
+		} `json:"options"`
+	}
+	if err := json.Unmarshal(raw, &feature); err != nil {
+		t.Fatal(err)
+	}
+	got := slices.Sorted(slices.Values(feature.Options.Harness.Enum))
+	want := slices.Sorted(slices.Values(Names()))
+	if !slices.Equal(got, want) {
+		t.Errorf("feature harness enum = %v, registry = %v", got, want)
+	}
+}
+
+// TestEveryHarnessIsPoolLockedCLI: every harness runs in the container from
+// the pool. The wiring-only feature installs no binary, so a harness without a
+// pool binary, or one the pool can't lock, would have no way onto PATH; `init
+// devcontainer` and `harness install` rely on this and carry no fallback.
+func TestEveryHarnessIsPoolLockedCLI(t *testing.T) {
+	for name, d := range Registry {
+		if d.Bin == "" || !d.PoolLockable() {
+			t.Errorf("Registry[%q]: Bin = %q, PoolLockable = %v; want a pool-locked CLI", name, d.Bin, d.PoolLockable())
 		}
 	}
 }

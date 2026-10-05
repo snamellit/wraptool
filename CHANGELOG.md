@@ -24,6 +24,26 @@ changed and anything an upgrade should know.
   finished are found again by their upstream integrity hash and re-verified
   instead of downloaded again.
 
+### Removed
+
+- **The `roo`, `cursor`, and `gemini` harnesses.** Every remaining harness
+  (`agy`, `claude`, `opencode`, `pi`) is a CLI that runs in the container
+  from the harness pool.
+  - Roo Code was shut down upstream on 15 May 2026. Its SSE bug dropped the
+    `Authorization` header, so `init` had skipped it since the listener
+    began requiring auth.
+  - Google retired Gemini CLI for consumer accounts on 18 June 2026 in favor
+    of Antigravity (`agy`). It was never pool-lockable, so no container could
+    get its binary.
+  - Cursor is a GUI editor, not a container CLI.
+
+  `init --harness` with any of the three now fails as an unknown harness.
+  The `wraptool` Dev Container feature moves to `1.1.0`, and its `harness`
+  option no longer accepts `gemini`. **Upgrade notes:** delete any
+  `.roo/mcp.json`, `.cursor/mcp.json`, or `.gemini/settings.json` an earlier
+  `init` wrote (they hold the MCP token). A `devcontainer.json` that sets
+  `"harness": "gemini"` must switch to `agy`, or pin the feature to `:1.0`.
+
 ## 0.8.0 — 2026-09-04
 
 The 1.0 release-candidate line: the MCP listener is authenticated by default,

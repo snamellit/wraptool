@@ -29,7 +29,7 @@ wraptool init --harness claude \
 For multiple clients:
 
 ```bash
-wraptool init --harness claude,cursor,opencode \
+wraptool init --harness claude,opencode,pi \
   --url http://127.0.0.1:8717/sse
 ```
 
@@ -47,11 +47,8 @@ not commit `.mcp.json`, `opencode.json`, or equivalent harness configuration.
 |---|---|---|
 | Antigravity (`agy`) | `.agents/mcp_config.json` | `~/.gemini/antigravity-cli/mcp_config.json` |
 | Claude Code | `.mcp.json` | `~/.claude.json` |
-| Cursor | `.cursor/mcp.json` | `~/.cursor/mcp.json` |
 | OpenCode | `opencode.json` | `~/.config/opencode/config.json` |
-| Gemini CLI | `.gemini/settings.json` | `~/.gemini/settings.json` |
 | Pi | `.pi/mcp.json` | `~/.pi/agent/mcp.json` |
-| Roo Code | `.roo/mcp.json` | no global target |
 
 Antigravity uses Streamable HTTP, so generation changes the supplied endpoint
 path to `/mcp`. Pi integration uses the third-party `pi-mcp-adapter` because Pi
