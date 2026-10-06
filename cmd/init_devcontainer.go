@@ -104,7 +104,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVar(&harnessName, "harness", "claude", "container harness to wire (claude, opencode, pi, agy)")
+	cmd.Flags().StringVar(&harnessName, "harness", "claude", "container harness to wire ("+strings.Join(harness.Names(), ", ")+")")
 	cmd.Flags().StringSliceVar(&langs, "lang", nil, "language features to add (go, node, java, python, rust)")
 	cmd.Flags().StringVar(&base, "base", "ubuntu", "base image: ubuntu, debian, alpine, or a full image ref")
 	cmd.Flags().StringVar(&out, "out", ".devcontainer/devcontainer.json", "output path")

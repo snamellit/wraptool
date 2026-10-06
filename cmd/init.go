@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/pti/wraptool/internal/config"
 	"github.com/pti/wraptool/internal/harness"
@@ -30,6 +31,7 @@ Supported harnesses:
   agy       - Antigravity CLI (.agents/mcp_config.json)
   claude    - Claude Code (.mcp.json)
   opencode  - OpenCode (opencode.json)
+  omp       - oh-my-pi (.omp/mcp.json)
   pi        - Pi coding agent, via pi-mcp-adapter (.pi/mcp.json)
 
 Examples:
@@ -43,7 +45,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure (agy, claude, opencode, pi, all)")
+	cmd.Flags().StringSliceVar(&harnesses, "harness", nil, "coding harness to configure ("+strings.Join(harness.Names(), ", ")+", all)")
 	cmd.Flags().StringVar(&transport, "transport", "sse", "transport type (sse, unix)")
 	cmd.Flags().StringVar(&url, "url", "http://127.0.0.1:8717/sse", "SSE URL for the wraptool server")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Unix socket path (for unix transport)")

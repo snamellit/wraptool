@@ -110,7 +110,9 @@ it by the release's `SHA256SUMS.txt`. No guix, docker, or podman is involved.
   publication". Releases before 17.2.10 have binaries but no checksum file, so
   `--constraint` and `rollback --to` cannot reach them.
 - **Downloads** cover only the platform being realized, and each is checked
-  against its SHA-256 before it enters the cache.
+  against its SHA-256 before it enters the cache. A download aborts after 60
+  seconds without receiving data, but has no overall time limit, so a slow
+  link still completes. An aborted download restarts from zero.
 - **`gc`** keeps a cache object while the lock names it.
 
 The checksum file and the binary share an origin, so the lock proves the

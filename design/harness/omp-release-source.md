@@ -320,9 +320,13 @@ can run in parallel once WP1 lands.
    windows and `omp-browser-relay-extension.zip`, which the parser ignores.
 3. **Signatures.** Still open: unverified, because the GitHub API was
    rate-limited during research.
-4. **Resumable downloads.** Still open. HTTP `Range` resume was not
-   implemented. The implementation has no stall detector either; an interrupted
-   download restarts from zero.
+4. **Resumable downloads.** Partly closed. The release source has a stall
+   detector: a download aborts after 60 seconds without receiving any data
+   (`downloadStallTimeout` in `internal/pool/source/release.go`), while the
+   overall transfer time is unbounded, so a slow but moving link succeeds.
+   HTTP `Range` resume is still not implemented: an interrupted or stalled
+   download restarts from zero. The npm and archive sources still use a
+   wall-clock timeout.
 5. **Token-free configs.** Still open, out of scope here.
 
 ## 10. Non-goals
