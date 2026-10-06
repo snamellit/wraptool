@@ -186,7 +186,8 @@ variable-substituted):
 bundles its own pinned node for npm-sourced harnesses (claude/opencode/pi); the
 feature's own scripts are POSIX sh with no npm/node dependency. Add
 `ghcr.io/devcontainers/features/node:1` only if your *project* code needs node.
-`agy` installs via its own channel.
+`agy` installs via its own channel. `omp` is a single release binary and needs
+no node or bun either.
 :::
 
 See the [feature definition](https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool/devcontainer-feature.json)

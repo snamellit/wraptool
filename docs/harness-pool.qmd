@@ -94,6 +94,29 @@ With no harness argument this only touches harnesses the pool manifest
 already lists (i.e. that `wraptool harness install` has recorded intent
 for) — nothing to refresh before a first install.
 
+## The release source (`omp`)
+
+Oh My Pi (`omp`) comes from a third kind of pool source, the **release
+source**. It acquires one binary per platform from a GitHub release and locks
+it by the release's `SHA256SUMS.txt`. No guix, docker, or podman is involved.
+
+- **Versions and publish times** come from the npm packument of
+  `@oh-my-pi/pi-coding-agent`, so `minimum_release_age` applies against a real
+  publish timestamp. `omp` releases several times a day, and the default seven
+  days keeps the pool behind upstream.
+- **The lock** is the checksum file. A platform missing from it is left out of
+  the lock. A release with no checksum file, or no Linux asset, cannot be
+  locked: the error says the assets are "not published yet or predate checksum
+  publication". Releases before 17.2.10 have binaries but no checksum file, so
+  `--constraint` and `rollback --to` cannot reach them.
+- **Downloads** cover only the platform being realized, and each is checked
+  against its SHA-256 before it enters the cache.
+- **`gc`** keeps a cache object while the lock names it.
+
+The checksum file and the binary share an origin, so the lock proves the
+download matches the release, not that the release is genuine. Quarantine
+mitigates a bad release. It does not prevent one.
+
 ## Scheduling it
 
 ### Linux: a systemd user timer

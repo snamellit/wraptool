@@ -83,7 +83,7 @@ wraptool init --harness NAME[,NAME...] [--transport sse|unix]
 ```
 
 `--harness` is required and repeatable; comma-separated values and `all` are
-accepted. Known names are `agy`, `claude`, `opencode`, and `pi`. Project output
+accepted. Known names are `agy`, `claude`, `omp`, `opencode`, and `pi`. Project output
 is merged into each harness's JSON file when that file contains valid JSON.
 
 ::: {.callout-warning}
@@ -95,7 +95,7 @@ or choose TCP.
 ### `init devcontainer`
 
 ```text
-wraptool init devcontainer [--harness claude|opencode|pi|agy]
+wraptool init devcontainer [--harness claude|opencode|pi|agy|omp]
   [--lang go,node,java,python,rust] [--base ubuntu|debian|alpine|IMAGE]
   [--out PATH] [--name NAME] [--force]
 ```
@@ -123,7 +123,16 @@ wraptool harness policy set [--harness NAME]
 
 These commands manage harnesses in the developer
 [harness pool](harness-pool.qmd), shared by every project. `claude`,
-`opencode`, `pi`, and `agy` are locked and realized in the pool.
+`opencode`, `pi`, `agy`, and `omp` are locked and realized in the pool.
+
+`omp` is a pool-only harness: it has no legacy installer, so `install`,
+`update`, and `sync` skip that step without a warning, and a realize failure
+fails the command. It needs no guix, docker, or podman: the pool downloads one
+release binary per platform and checks it against the release's
+`SHA256SUMS.txt`. The `sync --platform` option downloads only the named
+platform. Run `wraptool harness install omp` before `wraptool up --harness omp`.
+The release source locks only versions whose release publishes a checksum file,
+which starts at `omp` 17.2.10.
 
 `manifest.yaml` records which harnesses you want and their version
 constraints. `harness-lock.json` records the exact versions they resolved
