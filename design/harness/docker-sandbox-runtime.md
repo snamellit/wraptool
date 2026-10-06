@@ -1,7 +1,8 @@
 # Design: Docker Sandboxes runtime for `wraptool up`
 
-Status: proposed (implementation plan; Phase 0 is a hands-on spike that gates
-everything after it)
+Status: test implementation built on `feat/sbx-runtime` ahead of Phase 0
+(§16); never run against a real `sbx`. The first real-host run (§17) is the
+spike, and its findings decide whether the rulings in §16 stand.
 
 Supersedes the investigation note `design/harness/microvm-sandbox-runtime.md`,
 whose blocking questions are carried forward in §3 with their current answers.
@@ -580,3 +581,46 @@ Open question added to §12:
 6. Which of the non-GitHub built-in services count as model providers for
    D8? `copilot` authenticates with a GitHub token, so it is not obviously
    one.
+
+## 17. First real-host run
+
+What exists: `wraptool up --runtime=sbx` and `wraptool down [--rm]` for the
+sandbox, covering the `sbx-runtime-core` and `sbx-down` packages of §9.
+Not built: `sbx-host-allowlist` (R10), the doctor checks, `test-sandbox.sh`,
+user documentation.
+
+Prerequisites on the host: `sbx` ≥ 0.47.0, `sbx login`, `sbx policy init
+balanced`, and `wraptool harness install claude` so an active generation
+exists for the host platform.
+
+Checks, in the order most likely to stop the run. Each answers an
+S-question; record the raw output in §14 and replace the transcribed
+fixtures in `testdata/sbx/` with captures.
+
+1. `sbx secret ls --global`: is the table on stdout, with exactly the
+   `SCOPE TYPE NAME SECRET` header, and does `--global` omit sandbox-scoped
+   rows? Colour, another header, or stderr-only output makes every `up`
+   refuse until `--allow-sbx-secrets` is passed. (S5, R3)
+2. `sbx version`: does the text contain `x.y.z`, and does it work signed
+   out? (R1)
+3. Signed out: which stream carries `not authenticated`, and what is the
+   exit status of `sbx ls --quiet`? (R2)
+4. Does `sbx ls --quiet` list stopped sandboxes? A new sandbox stops by
+   itself after creation; if stopped ones are hidden, the second `up` tries
+   to create again and `down` reports no sandbox.
+5. Does `sbx mcp ls --quiet` print nothing when no server is registered? A
+   header line would refuse every `up`. (R4)
+6. Does `sbx create` need `sbx policy init` first, and is `policy allow
+   network --sandbox … localhost:<port>` idempotent across repeated `up`
+   runs? Do sandbox-scoped rules survive `sbx rm`? (S8)
+7. The `Host` header: 403 responses in the sandbox and `rejected … Host
+   "host.docker.internal:<port>"` in the server log mean the proxy preserves
+   it and `sbx-host-allowlist` has to be built. (S3, R10)
+8. Does the SSE stream stay open through the proxy? (S2)
+9. Inside the sandbox: `ssh-add -l` fails; repeat after exporting
+   `SSH_AUTH_SOCK` on the host to confirm the test can fail. Check `sbx
+   settings` for `ssh.agentSocketPath`. (S4)
+10. Probe output for `localhost:22` and the review UI port. (S12)
+11. The workspace at its host absolute path, a write to the pool `runtime/`
+    mount returning `EROFS`, the dispatcher running the harness, and sane
+    ownership of files written to pool `home/`. (S1, S9)
