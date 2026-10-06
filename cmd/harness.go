@@ -358,6 +358,17 @@ func requirePoolOnlyActive(deps harnessDeps, name string, realizeErr error) erro
 	return nil
 }
 
+// printActiveGenerationHint tells the reader where an activated pool
+// generation's binary is and how to put the pool dispatcher on PATH — the
+// success line for a harness whose binary comes from the pool alone (an
+// archive-sourced harness whose legacy copy was skipped, or a pool-only one).
+func printActiveGenerationHint(cmd *cobra.Command, paths pool.PoolPaths, name, version string) {
+	binPath := filepath.Join(pool.RuntimeBinDirAt(paths.Runtime), name)
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"%s %s is active in the harness pool — run it at\n  %s\nor put the pool dispatcher on your PATH:\n  %s\n(`wraptool up` mounts that directory into project containers for you.)\n",
+		name, version, binPath, "export PATH=$PATH:"+shellQuote(pool.RuntimeBinDirAt(paths.Runtime)))
+}
+
 // refreshNodeLineIfNPM calls pool.RefreshNodeLine for d's pinned Node major
 // line (d.NodeLine; empty defers to the pool-wide default, RefreshNodeLine's
 // own doc comment) so UpdateHarnessLocked's selectNodeVersion has something
@@ -1179,7 +1190,14 @@ func realizeErrorHint(b backend.Backend) string {
 // harness).
 func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult) error {
 	if poolOnly(d) {
-		return requirePoolOnlyActive(deps, name, result.RealizeErr)
+		if err := requirePoolOnlyActive(deps, name, result.RealizeErr); err != nil {
+			return err
+		}
+		// Only after a fresh realize: an up-to-date re-install stays quiet.
+		if result.RealizedGenerationID != "" {
+			printActiveGenerationHint(cmd, deps.poolPaths(), name, result.Harness.Version)
+		}
+		return nil
 	}
 	_, poolBin, err := deps.poolBinDir()
 	if err != nil {
@@ -1249,10 +1267,7 @@ func warnInsteadOfFailForRealizedGeneration(cmd *cobra.Command, deps harnessDeps
 		// that is simply FALSE for this source, which never consults a
 		// backend, and which made a successful install read as a failure with
 		// no actionable next step. Only the cause's short form is echoed.
-		binPath := filepath.Join(pool.RuntimeBinDirAt(paths.Runtime), name)
-		fmt.Fprintf(cmd.OutOrStdout(),
-			"%s %s is active in the harness pool — run it at\n  %s\nor put the pool dispatcher on your PATH:\n  %s\n(`wraptool up` mounts that directory into project containers for you.)\n",
-			name, version, binPath, "export PATH=$PATH:"+shellQuote(pool.RuntimeBinDirAt(paths.Runtime)))
+		printActiveGenerationHint(cmd, paths, name, version)
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"note: %s: the legacy harness-pool/bin copy was skipped (%v) — nothing to do, the active generation above replaces it\n",
 			name, legacyInstallCause(installErr))

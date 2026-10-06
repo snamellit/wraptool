@@ -407,13 +407,13 @@ func TestPoolLockable(t *testing.T) {
 	}
 }
 
-// TestRegistryNeverSetsBothPoolPackageAndPoolArchive is a registry-wide
+// TestRegistrySetsAtMostOnePoolSource is a registry-wide
 // invariant check: PoolPackage and PoolArchive are documented as mutually
 // exclusive (each Descriptor field's own doc comment) — a descriptor
 // setting both would make PoolPackageID's dispatch order silently pick one
 // over the other. Guards against a future harness's descriptor entry
 // accidentally setting both.
-func TestRegistryNeverSetsBothPoolPackageAndPoolArchive(t *testing.T) {
+func TestRegistrySetsAtMostOnePoolSource(t *testing.T) {
 	for name, d := range Registry {
 		n := 0
 		if d.PoolPackage != "" {

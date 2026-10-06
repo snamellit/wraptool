@@ -106,8 +106,8 @@ it by the release's `SHA256SUMS.txt`. No guix, docker, or podman is involved.
   days keeps the pool behind upstream.
 - **The lock** is the checksum file. A platform missing from it is left out of
   the lock. A release with no checksum file, or no Linux asset, cannot be
-  locked: the error says the assets are "not published yet or predate checksum
-  publication". Releases before 17.2.10 have binaries but no checksum file, so
+  locked: the error says the assets may not be published yet, or that the
+  release predates checksum publication. Releases before 17.2.10 have binaries but no checksum file, so
   `--constraint` and `rollback --to` cannot reach them.
 - **Downloads** cover only the platform being realized, and each is checked
   against its SHA-256 before it enters the cache. A download aborts after 60

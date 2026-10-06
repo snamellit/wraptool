@@ -381,3 +381,11 @@ Manual checks:
 - **`recipe_revision` hashes more than §3.5 lists.** `releaseRecipeRevision`
   (format 1) also hashes the `VersionFeed` and the tag scheme (`v{version}`),
   besides the repo, asset mapping and checksum name.
+- **A realize-only update does not fetch.** When the lock already agrees,
+  `update` and `install` realize without calling `Fetch`. A pool shared by
+  hosts of different architectures (for example over NFS) can therefore hold
+  a lock whose artifact for the second host was never fetched; realize then
+  fails with "cache object … not found", and `wraptool harness sync` repairs
+  it. This is the follow-up "fetch before a realize-only update" in
+  `platform-scoped-fetch.md`, accepted here as an edge case. For `omp` the
+  command fails outright, because there is no legacy installer to fall back to.

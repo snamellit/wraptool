@@ -322,7 +322,7 @@ func (r *Release) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir strin
 		if artifact.URL == "" {
 			return fmt.Errorf("release artifact %s: no URL recorded in lock", key)
 		}
-		if err := r.downloadVerify(ctx, fmt.Sprintf("%s (%s)", h.Package, key), artifact.URL, artifact.SHA256, cacheDir); err != nil {
+		if err := r.downloadVerify(ctx, fmt.Sprintf("%s@%s (%s)", h.Package, h.Version, key), artifact.URL, artifact.SHA256, cacheDir); err != nil {
 			return fmt.Errorf("release artifact %s: %w", key, err)
 		}
 	}

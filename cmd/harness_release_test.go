@@ -189,11 +189,17 @@ func TestHarnessInstallOmpIsPoolOnlyAndSilent(t *testing.T) {
 	if _, ok := pool.ActiveGeneration(paths, "omp", hostKey); !ok {
 		t.Error("expected an active generation for omp")
 	}
+	if !strings.Contains(out, "is active in the harness pool") {
+		t.Errorf("a fresh pool-only install should say where the binary is:\n%s", out)
+	}
 
 	// Idempotent re-run (nothing changed) stays silent and succeeds.
 	out, err = runHarnessCmdWithDeps(t, deps, "install", "omp")
 	if err != nil || strings.Contains(out, "warning") {
 		t.Errorf("second install omp: err=%v output:\n%s", err, out)
+	}
+	if strings.Contains(out, "is active in the harness pool") {
+		t.Errorf("an up-to-date re-install should not repeat the hint:\n%s", out)
 	}
 }
 
