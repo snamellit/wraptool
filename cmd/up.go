@@ -149,9 +149,15 @@ func runUp(opts upOptions) error {
 	// sbx preflight (design/harness/docker-sandbox-runtime.md §7): before
 	// anything touches the server, and never for the other runtimes.
 	var sbxPre sbxPreflightResult
-	if !opts.noContainer && rt == runtimeSbx {
+	var sbxPlan sbxPoolPlan
+	if sbxPreflightWanted(rt, opts.noContainer) {
 		sbxPre, err = sbxPreflight(cfg, root, opts.allowSbxSecrets)
 		if err != nil {
+			return err
+		}
+		// A missing generation is the likeliest first-run failure; find it
+		// before a server is spawned.
+		if sbxPlan, err = sbxPoolPlanForHarness(opts.harness); err != nil {
 			return err
 		}
 	}
@@ -171,7 +177,7 @@ func runUp(opts upOptions) error {
 		if !opts.noAdmin {
 			enableAdminDefault(cfg)
 		}
-		if err := ensureServer(cfg, configPath); err != nil {
+		if err := ensureServerFn(cfg, configPath); err != nil {
 			return err
 		}
 		if cfg.Admin.Listen != "" && cfg.Admin.AuthTokenFile != "" {
@@ -201,10 +207,19 @@ func runUp(opts upOptions) error {
 		return bringUpSbxContainer(sbxBringUpInput{
 			Root: root, Token: token, Listen: cfg.MCP.Listen, AdminListen: cfg.Admin.Listen,
 			Harness: opts.harness, Template: opts.sandboxTemplate, Shell: shell,
-			Exists: sbxPre.Exists,
+			Exists: sbxPre.Exists, Plan: sbxPlan,
 		})
 	}
 	return fmt.Errorf("unhandled runtime %v", rt)
+}
+
+// ensureServerFn is a seam over ensureServer so tests can prove ordering.
+var ensureServerFn = ensureServer
+
+// sbxPreflightWanted gates the sbx preflight: the sbx runtime only, and never
+// under --no-container.
+func sbxPreflightWanted(rt containerRuntime, noContainer bool) bool {
+	return !noContainer && rt == runtimeSbx
 }
 
 // wantShell resolves the --shell mode. "auto" opens a shell only when stdin and

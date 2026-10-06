@@ -84,7 +84,7 @@ func TestSbxArgvGolden(t *testing.T) {
 		t.Errorf("create = %s", got)
 	}
 	tmpl := buildSbxCreateArgs("wt-p-1", "ghcr.io/x/y:1", "/w/p", "/pool/runtime", "/pool/home")
-	if got, want := join(tmpl), "create --name wt-p-1 -t ghcr.io/x/y:1 --skills off -e WRAPTOOL_CONTAINER=1 -e WRAPTOOL_CWD=/w/p shell /w/p /pool/runtime:ro /pool/home"; got != want {
+	if got, want := join(tmpl), "create --name wt-p-1 --template=ghcr.io/x/y:1 --skills off -e WRAPTOOL_CONTAINER=1 -e WRAPTOOL_CWD=/w/p shell /w/p /pool/runtime:ro /pool/home"; got != want {
 		t.Errorf("create+template = %s", got)
 	}
 	if got, want := join(buildSbxPolicyArgs("n", "8717")), "policy allow network --sandbox n localhost:8717"; got != want {
@@ -222,9 +222,16 @@ func TestSbxStateRoundTripAndDrift(t *testing.T) {
 	}
 	other := st
 	other.WraptoolVersion = "v2"
-	other.PinholeResource = "localhost:1"
 	if d := sbxStateDrift(st, other); len(d) != 0 {
-		t.Errorf("version/pinhole must not drift: %v", d)
+		t.Errorf("version must not drift: %v", d)
+	}
+	other.PinholeResource = "localhost:1"
+	if d := sbxStateDrift(st, other); !slices.Equal(d, []string{"pinhole"}) {
+		t.Errorf("pinhole drift = %v", d)
+	}
+	other.PinholeResource = ""
+	if d := sbxStateDrift(st, other); !slices.Equal(d, []string{"pinhole"}) {
+		t.Errorf("empty pinhole drift = %v", d)
 	}
 }
 
@@ -236,7 +243,12 @@ func bringUpFixture(t *testing.T) (in sbxBringUpInput) {
 	t.Helper()
 	pin := sbxPoolInput(t)
 	activateSbxPool(t, pin, "gen1", true)
+	plan, err := sbxPoolPlanForHarness("claude")
+	if err != nil {
+		t.Fatal(err)
+	}
 	return sbxBringUpInput{
+		Plan: plan,
 		Root: t.TempDir(), Token: "s3cr3t-bearer", Listen: "127.0.0.1:8717", AdminListen: "127.0.0.1:8718",
 		Harness: "claude", Template: "", Shell: true,
 	}
@@ -355,6 +367,26 @@ func TestBringUpSbxSequencing(t *testing.T) {
 		}
 		if len(f.calls) != 0 {
 			t.Errorf("sbx called on drift: %v", f.lines())
+		}
+	})
+
+	t.Run("port change refuses, config untouched; same port passes", func(t *testing.T) {
+		f := installFakeSbx(t, healthySbxReply(t, name))
+		in2 := in
+		in2.Exists, in2.Listen = true, "127.0.0.1:9999"
+		cfgPath := filepath.Join(in.Root, ".mcp.json")
+		before, _ := os.ReadFile(cfgPath)
+		err := bringUpSbxContainer(in2)
+		if err == nil || !strings.Contains(err.Error(), "port changed") || !strings.Contains(err.Error(), "wraptool down --rm") || len(f.calls) != 0 {
+			t.Fatalf("err = %v calls = %v", err, f.lines())
+		}
+		after, _ := os.ReadFile(cfgPath)
+		if string(before) != string(after) {
+			t.Error("harness config rewritten on a refused run")
+		}
+		in2.Listen = in.Listen
+		if err := bringUpSbxContainer(in2); err != nil {
+			t.Errorf("unchanged port: %v", err)
 		}
 	})
 

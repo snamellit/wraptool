@@ -117,6 +117,27 @@ func TestSbxEnvAllowlist(t *testing.T) {
 	}
 }
 
+func TestSbxEnvNeverNil(t *testing.T) {
+	for _, parent := range [][]string{nil, {"SSH_AUTH_SOCK=/x", "FOO=1"}} {
+		if got := sbxEnv(parent); got == nil || len(got) != 0 {
+			t.Errorf("sbxEnv(%v) = %#v", parent, got)
+		}
+	}
+	if got := orEmptyEnv(nil); got == nil {
+		t.Error("orEmptyEnv(nil) is nil")
+	}
+}
+
+func TestSbxPreflightWanted(t *testing.T) {
+	for _, rt := range []containerRuntime{runtimeGuix, runtimeDevcontainer, runtimeSbx} {
+		for _, noC := range []bool{false, true} {
+			if got, want := sbxPreflightWanted(rt, noC), rt == runtimeSbx && !noC; got != want {
+				t.Errorf("rt=%v noContainer=%v: %v", rt, noC, got)
+			}
+		}
+	}
+}
+
 func TestCheckSbxVersion(t *testing.T) {
 	cases := []struct {
 		name, in   string
@@ -200,9 +221,18 @@ func TestClassifySbxSecretsShapes(t *testing.T) {
 			t.Errorf("%v %v %v", a, o, err)
 		}
 	})
-	t.Run("empty output means none", func(t *testing.T) {
-		if _, o, err := classifySbxSecrets("\n"); err != nil || len(o) != 0 {
-			t.Errorf("%v %v", o, err)
+	t.Run("empty output is a parse error", func(t *testing.T) {
+		for _, in := range []string{"", "\n", "  \n\t"} {
+			if _, _, err := classifySbxSecrets(in); err == nil {
+				t.Errorf("%q accepted", in)
+			}
+		}
+	})
+	t.Run("foreign scope spellings and trailing prose refuse", func(t *testing.T) {
+		for _, row := range []string{"global service github x", "Global service github x", "my-box service github x", "Use sbx secret rm to remove"} {
+			if _, _, err := classifySbxSecrets(hdr + "(global) service anthropic x\n" + row + "\n"); err == nil {
+				t.Errorf("%q accepted", row)
+			}
 		}
 	})
 	t.Run("no header", func(t *testing.T) {
@@ -226,10 +256,9 @@ func TestClassifySbxSecretsShapes(t *testing.T) {
 			t.Errorf("%v %v", a, err)
 		}
 	})
-	t.Run("sandbox scoped row ignored", func(t *testing.T) {
-		a, o, err := classifySbxSecrets(hdr + "my-box service github x\n")
-		if err != nil || len(a) != 0 || len(o) != 0 {
-			t.Errorf("%v %v %v", a, o, err)
+	t.Run("sandbox scoped row refuses", func(t *testing.T) {
+		if _, _, err := classifySbxSecrets(hdr + "my-box service github x\n"); err == nil {
+			t.Error("want parse error")
 		}
 	})
 	t.Run("every model provider allowed", func(t *testing.T) {
@@ -357,6 +386,20 @@ func TestSbxPreflight(t *testing.T) {
 			t.Errorf("override should pass: %v", err)
 		}
 	})
+	t.Run("secret ls failure leaks no output", func(t *testing.T) {
+		h := healthySbxReply(t, "")
+		f := installFakeSbx(t, func(l string) (string, error) {
+			if l == "secret ls --global" {
+				return "STDOUT-MARKER", errors.New("exit 1")
+			}
+			return h(l)
+		})
+		_ = f
+		_, err := sbxPreflight(sbxTestCfg(), root, true)
+		if err == nil || strings.Contains(err.Error(), "MARKER") || strings.Contains(err.Error(), "stderr-of") {
+			t.Errorf("err = %v", err)
+		}
+	})
 	t.Run("mcp server registered", func(t *testing.T) {
 		h := healthySbxReply(t, "")
 		refuse(t, sbxTestCfg(), func(l string) (string, error) {
@@ -373,24 +416,48 @@ func TestSbxPreflight(t *testing.T) {
 	})
 }
 
-// TestRunUpSbxPreflightBeforeServer: a failing preflight returns from runUp
-// before ensureServer could spawn a server (this test would otherwise start a
-// real detached `wraptool serve`).
-func TestRunUpSbxPreflightBeforeServer(t *testing.T) {
-	origIsInContainer := isInContainer
+// runUpSbxHarness runs runUp with the server seam stubbed and all XDG dirs
+// isolated; returns the error and how often the server seam was hit.
+func runUpSbxHarness(t *testing.T, opts upOptions) (error, int) {
+	t.Helper()
+	origIsInContainer, origServer := isInContainer, ensureServerFn
 	isInContainer = func() bool { return false }
-	t.Cleanup(func() { isInContainer = origIsInContainer })
+	served := 0
+	ensureServerFn = func(*config.Config, string) error { served++; return nil }
+	t.Cleanup(func() { isInContainer, ensureServerFn = origIsInContainer, origServer })
 	withIsolatedXDG(t, "XDG_RUNTIME_DIR")
-	installFakeSbx(t, nil)
-	hasSbx = func() bool { return false }
+	withIsolatedXDG(t, "XDG_CONFIG_HOME")
+	withIsolatedXDG(t, "XDG_DATA_HOME")
+	opts.workspace = t.TempDir()
+	opts.configPath = filepath.Join(t.TempDir(), "config.yaml") // scaffolded valid starter config
+	opts.harness, opts.shell = "claude", "never"
+	return runUp(opts), served
+}
 
-	workspace := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
-		t.Fatal(err)
+// A failing preflight, or a failing pool plan, returns before the server seam.
+func TestRunUpSbxFailuresBeforeServer(t *testing.T) {
+	f := installFakeSbx(t, nil)
+	hasSbx = func() bool { return false }
+	err, served := runUpSbxHarness(t, upOptions{runtime: "sbx"})
+	if err == nil || !strings.Contains(err.Error(), "`sbx` CLI") || served != 0 || len(f.calls) != 0 {
+		t.Fatalf("preflight: err=%v served=%d", err, served)
 	}
-	err := runUp(upOptions{configPath: configPath, workspace: workspace, runtime: "sbx", harness: "claude", shell: "never"})
-	if err == nil || !strings.Contains(err.Error(), "`sbx` CLI") {
-		t.Fatalf("err = %v", err)
+	installFakeSbx(t, healthySbxReply(t, ""))
+	err, served = runUpSbxHarness(t, upOptions{runtime: "sbx"})
+	if err == nil || !strings.Contains(err.Error(), "wraptool harness install") || served != 0 {
+		t.Fatalf("pool plan: err=%v served=%d", err, served)
+	}
+}
+
+// --no-container and the guix runtime make no sbx call at all.
+func TestRunUpSbxGating(t *testing.T) {
+	f := installFakeSbx(t, healthySbxReply(t, ""))
+	_, served := runUpSbxHarness(t, upOptions{runtime: "sbx", noContainer: true})
+	if served != 1 || len(f.calls) != 0 {
+		t.Errorf("noContainer: served=%d sbx calls=%v", served, f.lines())
+	}
+	_, _ = runUpSbxHarness(t, upOptions{runtime: "guix", noServer: true})
+	if len(f.calls) != 0 {
+		t.Errorf("guix runtime called sbx: %v", f.lines())
 	}
 }

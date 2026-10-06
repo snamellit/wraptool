@@ -128,8 +128,9 @@ func removeSbxState(name string) error {
 }
 
 // sbxStateDrift names the compared fields that differ (R7: agent, template,
-// mounts with modes, env names, skills mode). WraptoolVersion and the pinhole
-// resource are not compared.
+// mounts with modes, env names, skills mode) plus the pinhole resource: the
+// sandbox's network rule keeps allowing the old port. WraptoolVersion is not
+// compared.
 func sbxStateDrift(have, want sbxState) []string {
 	var d []string
 	if have.Agent != want.Agent {
@@ -147,6 +148,9 @@ func sbxStateDrift(have, want sbxState) []string {
 	if have.Skills != want.Skills {
 		d = append(d, "skills")
 	}
+	if have.PinholeResource != want.PinholeResource {
+		d = append(d, "pinhole")
+	}
 	return d
 }
 
@@ -156,6 +160,34 @@ type sbxPoolPlan struct {
 	runtimeDir string
 	pathDirs   []string
 	err        error
+}
+
+// sbxPoolPlanForHarness resolves the sbx pool plan for the named harness
+// against the host pool, creating only home/ and runtime/ (never legacy bin/
+// and lib/, D6). runUp calls it before the server is touched.
+func sbxPoolPlanForHarness(name string) (sbxPoolPlan, error) {
+	desc, ok := harness.Registry[name]
+	if !ok {
+		return sbxPoolPlan{}, fmt.Errorf("unknown harness %q resolving the pool plan (registry lookup after validation — this is a bug)", name)
+	}
+	for _, d := range []string{pool.HomeDir(), pool.RuntimeDir()} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return sbxPoolPlan{}, fmt.Errorf("creating harness pool directory %s: %w", d, err)
+		}
+	}
+	var pointerPath string
+	if key, err := pool.HostPlatformKey(); err == nil {
+		pointerPath = pool.PointerFile(key, name)
+	}
+	plan := resolveSbxPoolPlan(poolPlanInput{
+		Harness:               name,
+		PoolLockable:          desc.PoolLockable(),
+		PointerPath:           pointerPath,
+		RuntimeDir:            pool.RuntimeDir(),
+		RuntimeBinDir:         pool.RuntimeBinDir(),
+		RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
+	})
+	return plan, plan.err
 }
 
 // resolveSbxPoolPlan applies resolveGuixPoolPlan's liveness rule (pointer
@@ -189,7 +221,7 @@ func resolveSbxPoolPlan(in poolPlanInput) sbxPoolPlan {
 func buildSbxCreateArgs(name, template, root, runtimeDir, homeDir string) []string {
 	args := []string{"create", "--name", name}
 	if template != "" {
-		args = append(args, "-t", template)
+		args = append(args, "--template="+template)
 	}
 	args = append(args, "--skills", sbxSkillsMode,
 		"-e", "WRAPTOOL_CONTAINER=1",
@@ -242,7 +274,8 @@ type sbxBringUpInput struct {
 	Harness     string
 	Template    string
 	Shell       bool
-	Exists      bool // from the preflight's `sbx ls --quiet`
+	Exists      bool        // from the preflight's `sbx ls --quiet`
+	Plan        sbxPoolPlan // resolved before the server was touched (sbxPoolPlanForHarness)
 }
 
 // sbxStdinIsTTY picks -it vs -i; a var so tests can pin both.
@@ -250,37 +283,11 @@ var sbxStdinIsTTY = func() bool { return isTTY(os.Stdin) }
 
 // bringUpSbxContainer runs §5.1 steps 2–7. Preflight (step 1) has already run.
 func bringUpSbxContainer(in sbxBringUpInput) error {
-	desc, ok := harness.Registry[in.Harness]
-	if !ok {
-		return fmt.Errorf("unknown harness %q resolving the pool plan (registry lookup after validation — this is a bug)", in.Harness)
-	}
 	_, port, err := net.SplitHostPort(in.Listen)
 	if err != nil {
 		return fmt.Errorf("parsing mcp.listen %q: %w", in.Listen, err)
 	}
-
-	// Only home/ and runtime/ — never the legacy bin/+lib/ (D6).
-	runtimeDir, homeDir := pool.RuntimeDir(), pool.HomeDir()
-	for _, d := range []string{homeDir, runtimeDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return fmt.Errorf("creating harness pool directory %s: %w", d, err)
-		}
-	}
-	var pointerPath string
-	if key, err := pool.HostPlatformKey(); err == nil {
-		pointerPath = pool.PointerFile(key, in.Harness)
-	}
-	plan := resolveSbxPoolPlan(poolPlanInput{
-		Harness:               in.Harness,
-		PoolLockable:          desc.PoolLockable(),
-		PointerPath:           pointerPath,
-		RuntimeDir:            runtimeDir,
-		RuntimeBinDir:         pool.RuntimeBinDir(),
-		RuntimeGenerationsDir: pool.RuntimeGenerationsDir(),
-	})
-	if plan.err != nil {
-		return plan.err
-	}
+	plan, homeDir := in.Plan, pool.HomeDir()
 
 	name := sbxSandboxName(in.Root)
 	want := sbxState{
@@ -306,6 +313,9 @@ func bringUpSbxContainer(in sbxBringUpInput) error {
 		}
 		if !found {
 			return fmt.Errorf("sandbox %s exists but has no wraptool state file (%s), so it was not created by this wraptool; refusing to reuse it — remove it with `wraptool down --rm`", name, sbxStatePath(name))
+		}
+		if have.PinholeResource != want.PinholeResource {
+			return fmt.Errorf("sandbox %s was created for %q but this run needs %q (the MCP port changed); its network rule still allows the old port and cannot be changed in place — recreate it with `wraptool down --rm` (this deletes the sandbox's VM state)", name, have.PinholeResource, want.PinholeResource)
 		}
 		if drift := sbxStateDrift(have, want); len(drift) > 0 {
 			return fmt.Errorf("sandbox %s was created with different %s than this run wants; its mounts and environment are fixed at creation — recreate it with `wraptool down --rm` (this deletes the sandbox's VM state)", name, strings.Join(drift, ", "))

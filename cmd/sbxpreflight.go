@@ -35,9 +35,18 @@ type sbxRunner interface {
 
 type execSbxRunner struct{}
 
+// orEmptyEnv guards the exec.Cmd rule that a nil Env inherits the whole parent
+// environment (including SSH_AUTH_SOCK): a nil env becomes an empty one.
+func orEmptyEnv(env []string) []string {
+	if env == nil {
+		return []string{}
+	}
+	return env
+}
+
 func (execSbxRunner) Capture(argv, env []string) (string, string, error) {
 	cmd := exec.CommandContext(context.Background(), "sbx", argv...)
-	cmd.Env = env
+	cmd.Env = orEmptyEnv(env)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	err := cmd.Run()
@@ -46,7 +55,7 @@ func (execSbxRunner) Capture(argv, env []string) (string, string, error) {
 
 func (execSbxRunner) Attach(argv, env []string) error {
 	cmd := exec.CommandContext(context.Background(), "sbx", argv...)
-	cmd.Env = env
+	cmd.Env = orEmptyEnv(env)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
 }
@@ -79,7 +88,7 @@ var (
 // case-sensitively and exactly (LANGUAGE and PATHOLOGY do not pass LANG/PATH);
 // prefix families include the underscore.
 func sbxEnv(parent []string) []string {
-	var out []string
+	out := []string{} // never nil: see orEmptyEnv
 	for _, kv := range parent {
 		name, _, ok := strings.Cut(kv, "=")
 		if !ok || name == "" {
@@ -140,11 +149,17 @@ func (e sbxSecretEntry) String() string { return e.Scope + "/" + e.Type + "/" + 
 
 // classifySbxSecrets parses `sbx secret ls --global` (documented table
 // SCOPE TYPE NAME SECRET; further columns are tolerated) into allowed and
-// offending entries. Empty output means no secrets. Non-empty output without a
-// recognisable header, or a row too short to name scope/type/name, is a parse
-// error — callers treat it as a refusal. Rows whose scope is not "(global)"
-// are sandbox-scoped and ignored. The error text never quotes the input.
+// offending entries. A header with no rows means no secrets. Anything else the
+// parser does not recognise is a parse error — callers treat it as a refusal:
+// empty or whitespace-only output (sbx may have written the table elsewhere),
+// no header, a row too short to name scope/type/name, and any row whose scope
+// is not exactly "(global)" (the command asked for --global, so such a row is
+// output we do not understand, including trailing prose). The error text never
+// quotes the input.
 func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err error) {
+	if strings.TrimSpace(out) == "" {
+		return nil, nil, errors.New("`sbx secret ls --global` printed nothing (cannot tell whether secrets exist)")
+	}
 	var headerSeen bool
 	for i, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
@@ -163,7 +178,7 @@ func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err er
 		}
 		e := sbxSecretEntry{Scope: f[0], Type: f[1], Name: f[2]}
 		if e.Scope != "(global)" {
-			continue
+			return nil, nil, fmt.Errorf("`sbx secret ls --global` output line %d has a scope other than `(global)` (format not recognised)", i+1)
 		}
 		if e.Type == "service" && sbxModelProviders[e.Name] {
 			allowed = append(allowed, e)
@@ -235,7 +250,9 @@ func sbxPreflight(cfg *config.Config, root string, allowSecrets bool) (sbxPrefli
 
 	out, errOut, err = sbxCapture([]string{"secret", "ls", "--global"})
 	if err != nil {
-		return res, fmt.Errorf("running `sbx secret ls --global`: %w: %s", err, strings.TrimSpace(errOut))
+		// Deliberately no output in this error: this is the one command whose
+		// output can carry secret material.
+		return res, fmt.Errorf("running `sbx secret ls --global` failed (%v); run it yourself to see why", err)
 	}
 	_, offending, perr := classifySbxSecrets(out)
 	switch {
