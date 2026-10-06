@@ -716,13 +716,13 @@ func TestArchiveRecipeRevisionDistinctFromNPMAndStable(t *testing.T) {
 	}
 
 	// recipeRevisionForSource must dispatch to exactly the same functions.
-	if got, err := recipeRevisionForSource(SourceNPM, pkg, "", ""); err != nil || got != npmRev {
+	if got, err := recipeRevisionForSource(SourceNPM, pkg, "", "", nil); err != nil || got != npmRev {
 		t.Errorf("recipeRevisionForSource(SourceNPM, %q) = %q, %v, want %q, nil", pkg, got, err, npmRev)
 	}
-	if got, err := recipeRevisionForSource(SourceArchive, pkg, "", ""); err != nil || got != archRev1 {
+	if got, err := recipeRevisionForSource(SourceArchive, pkg, "", "", nil); err != nil || got != archRev1 {
 		t.Errorf("recipeRevisionForSource(SourceArchive, %q) = %q, %v, want %q, nil", pkg, got, err, archRev1)
 	}
-	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg, "", ""); err == nil {
+	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg, "", "", nil); err == nil {
 		t.Error("recipeRevisionForSource with an unknown SourceKind should fail closed, got nil error")
 	}
 }
