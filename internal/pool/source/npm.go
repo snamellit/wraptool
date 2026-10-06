@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -959,9 +960,17 @@ func parseIntegrity(sri string) (algo string, digest []byte, err error) {
 // object already present at the expected sha256-named path (size > 0) is
 // trusted as-is and the download is skipped entirely — content-addressed
 // storage means a name match already is a content match (§6.4).
-func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) error {
+//
+// targets scopes runtime artifacts only: one is fetched iff its platform key
+// is in targets. Every npm package is still fetched whatever targets is
+// (platform-scoped-fetch.md §Design 1's package gating is not implemented).
+func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string, targets []pool.PlatformKey) error {
 	if h == nil {
 		return fmt.Errorf("fetch: nil LockHarness")
+	}
+
+	if len(targets) == 0 {
+		return fmt.Errorf("fetch: no target platforms given")
 	}
 
 	if h.NPMLock != nil {
@@ -985,6 +994,9 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) e
 
 	if h.Runtime != nil {
 		for key, artifact := range h.Runtime.Artifacts {
+			if !slices.Contains(targets, key) {
+				continue
+			}
 			if artifact.URL == "" {
 				return fmt.Errorf("runtime artifact %s: no URL recorded in lock", key)
 			}

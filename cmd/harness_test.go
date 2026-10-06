@@ -84,7 +84,7 @@ func (f *fakeHarnessSource) Resolve(_ context.Context, _ backend.Backend, pkg, v
 	}, nil
 }
 
-func (f *fakeHarnessSource) Fetch(_ context.Context, h *pool.LockHarness, _ string) error {
+func (f *fakeHarnessSource) Fetch(_ context.Context, h *pool.LockHarness, _ string, _ []pool.PlatformKey) error {
 	if f.onCall != nil {
 		f.onCall("fetch:" + h.Package)
 	}
@@ -3139,7 +3139,7 @@ func (f *fakeArchiveSource) Resolve(_ context.Context, _ backend.Backend, pkg, v
 	}, nil
 }
 
-func (f *fakeArchiveSource) Fetch(_ context.Context, h *pool.LockHarness, _ string) error {
+func (f *fakeArchiveSource) Fetch(_ context.Context, h *pool.LockHarness, _ string, _ []pool.PlatformKey) error {
 	for key, artifact := range h.Archive.Artifacts {
 		artifact.SHA256 = strings.Repeat("b", 64)
 		h.Archive.Artifacts[key] = artifact

@@ -108,7 +108,7 @@ func (f *fakeSource) Resolve(_ context.Context, _ backend.Backend, pkg, version,
 	return lh, nil
 }
 
-func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string) error {
+func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string, _ []PlatformKey) error {
 	f.fetchCalls++
 	f.fetchedVersions = append(f.fetchedVersions, h.Version)
 	if f.fetchErr != nil {

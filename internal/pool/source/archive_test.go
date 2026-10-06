@@ -318,7 +318,7 @@ func TestFetch_ArchiveVerifiesSHA512AndFillsSHA256(t *testing.T) {
 	}
 
 	a := NewArchive(unroutableManifestBaseURL)
-	if err := a.Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := a.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if requests != 1 {
@@ -357,7 +357,7 @@ func TestFetch_ArchiveSHA512MismatchAdmitsNothing(t *testing.T) {
 	}
 
 	a := NewArchive(unroutableManifestBaseURL)
-	err := a.Fetch(context.Background(), lh, cacheDir)
+	err := a.Fetch(context.Background(), lh, cacheDir, allTargets)
 	if err == nil {
 		t.Fatal("Fetch: got nil error, want a sha512 mismatch rejection")
 	}
@@ -403,7 +403,7 @@ func TestFetch_ArchiveAlreadyCachedSkipsDownload(t *testing.T) {
 	}
 
 	a := NewArchive(unroutableManifestBaseURL)
-	if err := a.Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := a.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if requests != 0 {

@@ -184,7 +184,7 @@ func TestIntegration_ResolveFetchRealizeWithBackfilledIntegrity(t *testing.T) {
 	// map (already correct even before the fix — this is the "Fetch works"
 	// half of the bug report). ---
 	cacheDir := t.TempDir()
-	if err := n.Fetch(ctx, &lh, cacheDir); err != nil {
+	if err := n.Fetch(ctx, &lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 
