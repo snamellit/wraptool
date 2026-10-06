@@ -109,7 +109,7 @@ case "$WT_HARNESS" in
   claude)   EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"sse",';    EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
   agy)      EP="/mcp"; TOP="mcpServers"; URL_KEY="serverUrl"; TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.agents/mcp_config.json}" ;;
   opencode) EP="/sse"; TOP="mcp";        URL_KEY="url";       TYPE='"type":"remote",'; EXTRA=',"enabled":true'; TARGET="${WT_CONFIG_OUT:-$PWD/opencode.json}" ;;
-  omp)      EP="/mcp"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"http",';    EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.omp/mcp.json}" ;;
+  omp)      EP="/mcp"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"http",';   EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.omp/mcp.json}" ;;
   pi)       EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.pi/mcp.json}" ;;
   *) echo "wraptool: ERROR unsupported harness '$WT_HARNESS' (container CLIs: claude agy omp opencode pi)" >&2; exit 1 ;;
 esac
