@@ -28,7 +28,8 @@ first (the foundational wrapping model), then browse by area below.
 | `harness/guix-container-runtime.md` | harness | implemented | Guix-container runtime for `wraptool up` |
 | `harness/harness-descriptor.md` | harness | implemented | A shared harness descriptor registry |
 | `harness/harness-pool-devcontainer.md` | harness | superseded | Shared harness pool for the devcontainer runtime → `unified-harness-pool.md` |
-| `harness/microvm-sandbox-runtime.md` | harness | proposed | Investigate Docker Sandboxes microVMs as a harder container boundary |
+| `harness/docker-sandbox-runtime.md` | harness | proposed | `--runtime=sbx`: run the harness in a Docker Sandboxes microVM, with the vendor's credential paths closed; spike-gated plan |
+| `harness/microvm-sandbox-runtime.md` | harness | superseded | Investigate Docker Sandboxes microVMs as a harder container boundary → `docker-sandbox-runtime.md` |
 | `harness/node-runtime-tracking.md` | harness | proposed | Track the bundled Node runtime as an observed, quarantined, locked input (#38) |
 | `harness/unified-harness-pool.md` | harness | proposed | One version-locked harness pool for Guix and Dev Containers |
 | `webui/webui-management-completion.md` | webui | planned | Complete the operator Web UI for flag typing and policy management |

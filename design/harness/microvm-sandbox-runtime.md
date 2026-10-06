@@ -1,7 +1,9 @@
 # Docker Sandboxes microVMs as a wraptool container runtime
 
-Status: proposed (investigation only — no implementation planned until the
-spike below answers the blocking questions)
+Status: superseded → `design/harness/docker-sandbox-runtime.md`, which
+answers the blocking questions below from Docker's documentation, carries the
+spike forward as its Phase 0, and plans the implementation. This note is kept
+as the record of the original investigation scope.
 
 ## Motivation
 
