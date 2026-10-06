@@ -1312,7 +1312,7 @@ func TestFetch_NPMPackage(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	if err := n.Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := n.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if requests != 1 {
@@ -1354,7 +1354,7 @@ func TestFetch_SRIMismatchAdmitsNothing(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	err := n.Fetch(context.Background(), lh, cacheDir)
+	err := n.Fetch(context.Background(), lh, cacheDir, allTargets)
 	if err == nil {
 		t.Fatal("Fetch: got nil error, want SRI mismatch")
 	}
@@ -1395,7 +1395,7 @@ func TestFetch_SHA256VerifyAndMismatch(t *testing.T) {
 			},
 		}
 		n := NewNPM("")
-		if err := n.Fetch(context.Background(), lh, cacheDir); err != nil {
+		if err := n.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 			t.Fatalf("Fetch: %v", err)
 		}
 	})
@@ -1410,7 +1410,7 @@ func TestFetch_SHA256VerifyAndMismatch(t *testing.T) {
 			},
 		}
 		n := NewNPM("")
-		err := n.Fetch(context.Background(), lh, cacheDir)
+		err := n.Fetch(context.Background(), lh, cacheDir, allTargets)
 		if err == nil {
 			t.Fatal("Fetch: got nil error, want sha256 mismatch")
 		}
@@ -1434,7 +1434,7 @@ func TestFetch_RejectsMalformedSHA256(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	err := n.Fetch(context.Background(), lh, t.TempDir())
+	err := n.Fetch(context.Background(), lh, t.TempDir(), allTargets)
 	if err == nil {
 		t.Fatal("Fetch: got nil error, want rejection of a malformed sha256 before any request")
 	}
@@ -1464,7 +1464,7 @@ func TestFetch_RejectsUnverifiableNPMEntry(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	err := n.Fetch(context.Background(), lh, t.TempDir())
+	err := n.Fetch(context.Background(), lh, t.TempDir(), allTargets)
 	if err == nil {
 		t.Fatal("Fetch: got nil error, want rejection of an entry with neither integrity nor sha256")
 	}
@@ -1493,7 +1493,7 @@ func TestFetch_RejectsRuntimeArtifactWithoutSHA256(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	err := n.Fetch(context.Background(), lh, t.TempDir())
+	err := n.Fetch(context.Background(), lh, t.TempDir(), allTargets)
 	if err == nil {
 		t.Fatal("Fetch: got nil error, want rejection of a runtime artifact with no recorded sha256")
 	}
@@ -1530,7 +1530,7 @@ func TestFetch_CacheHitSkipsDownload(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	if err := n.Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := n.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if requests != 0 {
@@ -1583,7 +1583,7 @@ func TestFetch_OnlyRequestsListedURLs(t *testing.T) {
 	}
 
 	n := NewNPM("")
-	if err := n.Fetch(context.Background(), lh, t.TempDir()); err != nil {
+	if err := n.Fetch(context.Background(), lh, t.TempDir(), allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -427,12 +428,16 @@ func (a *Archive) Resolve(ctx context.Context, b backend.Backend, pkg, version, 
 // and never consults any URL that is not already present on h: an unlisted
 // URL is a bug, not a fallback (mirrors NPM.Fetch's contract exactly).
 //
-// h is MUTATED in place: each artifact's pool-local SHA256 cache-address
-// field is filled when empty, or re-verified when already set. cacheDir
+// Only artifacts whose platform key is in targets are fetched; the others
+// are left untouched (an empty SHA256 means "not fetched on this pool",
+// platform-scoped-fetch.md §Design 2).
+//
+// h is MUTATED in place: each fetched artifact's pool-local SHA256
+// cache-address field is filled when empty, or re-verified when already set. cacheDir
 // must be the flat, content-addressed cache root (pool.CacheSHA256Dir()),
 // not CacheDir() — see NPM.Fetch's doc comment for why getting this wrong
 // silently makes every subsequent lookup a permanent cache miss.
-func (a *Archive) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string) error {
+func (a *Archive) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string, targets []pool.PlatformKey) error {
 	if h == nil {
 		return fmt.Errorf("fetch: nil LockHarness")
 	}
@@ -441,6 +446,9 @@ func (a *Archive) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir strin
 	}
 
 	for key, artifact := range h.Archive.Artifacts {
+		if !slices.Contains(targets, key) {
+			continue
+		}
 		if artifact.URL == "" {
 			return fmt.Errorf("archive artifact %s: no URL recorded in lock", key)
 		}

@@ -255,13 +255,18 @@ type Source interface {
 	// bundles no node runtime). recipeRevision is this package's own recipe
 	// hash (npmRecipeRevision, §8's recipe_revision).
 	Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (LockHarness, error)
-	// Fetch downloads every artifact h describes into cacheDir, verifying
-	// integrity before admission (host, pure Go, locked URLs only — §6.2).
-	// It MUTATES h in place: each npm package entry's pool-local SHA256
-	// cache-address field is filled (existing ones re-verified) as objects
-	// are admitted to cache, so UpdateHarness calls Fetch before persisting
-	// h into harness-lock.json, never after.
-	Fetch(ctx context.Context, h *LockHarness, cacheDir string) error
+	// Fetch downloads the artifacts h describes that targets need into
+	// cacheDir, verifying integrity before admission (host, pure Go, locked
+	// URLs only — §6.2). An archive or runtime artifact is fetched only if
+	// its platform key is in targets; an npm package is still always fetched
+	// (platform-scoped-fetch.md §Design 1 — package scoping is not
+	// implemented yet). It MUTATES h in place: each fetched artifact's
+	// pool-local SHA256 cache-address field is filled (existing ones
+	// re-verified) as objects are admitted to cache, so UpdateHarness calls
+	// Fetch before persisting h into harness-lock.json, never after. An
+	// artifact outside targets keeps its (possibly empty) SHA256: empty means
+	// "not fetched on this pool" (platform-scoped-fetch.md §Design 2).
+	Fetch(ctx context.Context, h *LockHarness, cacheDir string, targets []PlatformKey) error
 	// Realize builds one platform generation for harnessName (executable
 	// binName) from h's locked artifacts, inside b with no network access
 	// (§6.2 Realize phase, §11.4), unpacking into stagingGenDir (a fresh,
@@ -1011,7 +1016,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// leave the pool exactly as it was: since the previous lock file has not
 	// been touched yet at this point, returning here does that for free —
 	// no half-fetched resolution is ever persisted.
-	if err := src.Fetch(ctx, &resolved, paths.Cache); err != nil {
+	if err := src.Fetch(ctx, &resolved, paths.Cache, []PlatformKey{platformKey}); err != nil {
 		return nil, fmt.Errorf("fetching %s@%s: %w", opts.Package, selected.Version, err)
 	}
 
@@ -1155,13 +1160,109 @@ func SyncHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths
 	if !ok {
 		return nil, fmt.Errorf("no lock entry for harness %q; run `wraptool harness install %s` first", harnessName, harnessName)
 	}
-	if err := src.Fetch(ctx, &lh, paths.Cache); err != nil {
+	if err := src.Fetch(ctx, &lh, paths.Cache, []PlatformKey{key}); err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", harnessName, err)
+	}
+	// Record any cache address Fetch just filled in (platform-scoped-fetch.md
+	// §Design 3) before realizing, so a later sync for the same key finds the
+	// object by address instead of re-verifying it through the integrity index.
+	if err := persistCacheAddresses(paths, harnessName, &lh); err != nil {
+		return nil, err
 	}
 	if _, err := RealizeGeneration(ctx, src, b, paths, harnessName, binName, &lh, key); err != nil {
 		return nil, err
 	}
 	return &lh, nil
+}
+
+// persistCacheAddresses copies the non-empty sha256 cache addresses of lh's
+// archive artifacts, runtime artifacts, and npm packages into the matching
+// on-disk harness-lock.json entry's still-empty ones, leaving every other
+// field untouched (platform-scoped-fetch.md §Design 3). It re-reads the lock
+// under the caller's held pool lock, like persistGeneration. It refuses (an
+// error, nothing written) when the on-disk entry is not the same version and
+// recipe_revision as lh: lh was then not derived from that entry, so its
+// addresses must not be merged into it. An address is never cleared and never
+// overwritten: a differing non-empty value is a hard error, since two
+// different objects would have passed the same upstream integrity check.
+// A no-op (no write) when nothing needs filling.
+func persistCacheAddresses(paths PoolPaths, harnessName string, lh *LockHarness) error {
+	lockDoc, err := loadLockOrEmpty(paths.Lock)
+	if err != nil {
+		return err
+	}
+	disk, ok := lockDoc.Harnesses[harnessName]
+	if !ok {
+		return fmt.Errorf("no lock entry for harness %q to record cache addresses", harnessName)
+	}
+	if disk.Version != lh.Version {
+		return fmt.Errorf("harness %q: refusing to record cache addresses: lock version is %q, fetched %q", harnessName, disk.Version, lh.Version)
+	}
+	if disk.RecipeRevision != lh.RecipeRevision {
+		return fmt.Errorf("harness %q: refusing to record cache addresses: lock recipe_revision is %q, fetched %q", harnessName, disk.RecipeRevision, lh.RecipeRevision)
+	}
+
+	changed := false
+	merge := func(what string, have *string, want string) error {
+		switch {
+		case want == "" || *have == want:
+			return nil
+		case *have != "":
+			return fmt.Errorf("harness %q: %s: cache address mismatch: lock has %s, fetched %s", harnessName, what, *have, want)
+		}
+		*have = want
+		changed = true
+		return nil
+	}
+	if lh.Archive != nil && disk.Archive != nil {
+		for key, a := range lh.Archive.Artifacts {
+			d, ok := disk.Archive.Artifacts[key]
+			if !ok {
+				continue
+			}
+			if err := merge("archive artifact "+string(key), &d.SHA256, a.SHA256); err != nil {
+				return err
+			}
+			disk.Archive.Artifacts[key] = d
+		}
+	}
+	if lh.Runtime != nil && disk.Runtime != nil {
+		for key, a := range lh.Runtime.Artifacts {
+			d, ok := disk.Runtime.Artifacts[key]
+			if !ok {
+				continue
+			}
+			if err := merge("runtime artifact "+string(key), &d.SHA256, a.SHA256); err != nil {
+				return err
+			}
+			disk.Runtime.Artifacts[key] = d
+		}
+	}
+	if lh.NPMLock != nil && disk.NPMLock != nil {
+		for name, p := range lh.NPMLock.Packages {
+			d, ok := disk.NPMLock.Packages[name]
+			if !ok {
+				continue
+			}
+			if err := merge("npm package "+name, &d.SHA256, p.SHA256); err != nil {
+				return err
+			}
+			disk.NPMLock.Packages[name] = d
+		}
+	}
+	if !changed {
+		return nil
+	}
+
+	lockDoc.Harnesses[harnessName] = disk
+	if err := lockDoc.Validate(); err != nil {
+		return fmt.Errorf("validating lock after recording cache addresses: %w", err)
+	}
+	data, err := lockDoc.Marshal()
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(paths.Lock, data, 0o644)
 }
 
 // rollbackCandidate is one realized generation this package's rollback scan

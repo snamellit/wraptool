@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -278,7 +279,16 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 
 	// --- Assertion 2 (MAJOR-1): every cache object landed under
 	// <pool>/cache/sha256/, not <pool>/cache/. ---
-	wantDigests := []string{sha256Hex(tarballContent), sha256Hex(amd64Tarball), sha256Hex(arm64Tarball)}
+	// Fetch is scoped to the host's own runtime artifact (platform-scoped-
+	// fetch.md §Design 1); the other architecture's tarball is not fetched.
+	hostRuntime, otherRuntime := amd64Tarball, arm64Tarball
+	if runtime.GOARCH == "arm64" {
+		hostRuntime, otherRuntime = arm64Tarball, amd64Tarball
+	}
+	wantDigests := []string{sha256Hex(tarballContent), sha256Hex(hostRuntime)}
+	if p := filepath.Join(paths.Cache, sha256Hex(otherRuntime)); pathExists(p) {
+		t.Errorf("cache object %s present: the non-host runtime artifact must not be fetched", p)
+	}
 	for _, digest := range wantDigests {
 		p := filepath.Join(paths.Cache, digest)
 		if fi, err := os.Stat(p); err != nil || fi.Size() == 0 {
@@ -303,4 +313,9 @@ func TestIntegration_RealNPMSourceThroughRealOrchestrator(t *testing.T) {
 	if len(shasumsRequests) != 1 || shasumsRequests[0] != wantPath {
 		t.Errorf("SHASUMS256.txt requests = %v, want exactly [%s]", shasumsRequests, wantPath)
 	}
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

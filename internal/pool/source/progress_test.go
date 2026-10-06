@@ -79,7 +79,7 @@ func TestFetch_ReportsProgress(t *testing.T) {
 	n.SetProgress(&out)
 	cacheDir := t.TempDir()
 	lh := newLock()
-	if err := n.Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := n.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if want := "fetching @scope/pkg (33 B)\n"; out.String() != want {
@@ -87,7 +87,7 @@ func TestFetch_ReportsProgress(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := n.Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := n.Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("second Fetch: %v", err)
 	}
 	if out.Len() != 0 {
@@ -109,7 +109,7 @@ func TestArchiveFetch_ReportsProgress(t *testing.T) {
 	var out bytes.Buffer
 	a := NewArchive("")
 	a.SetProgress(&out)
-	if err := a.Fetch(context.Background(), lh, t.TempDir()); err != nil {
+	if err := a.Fetch(context.Background(), lh, t.TempDir(), allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if !strings.HasPrefix(out.String(), "fetching agy (") || !strings.HasSuffix(out.String(), ") (13 B)\n") {

@@ -86,7 +86,7 @@ func TestIntegration_ArchiveFullChain(t *testing.T) {
 
 	// --- Fetch ---
 	cacheDir := t.TempDir()
-	if err := a.Fetch(ctx, &lh, cacheDir); err != nil {
+	if err := a.Fetch(ctx, &lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	for key, artifact := range lh.Archive.Artifacts {
