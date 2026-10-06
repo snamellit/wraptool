@@ -128,16 +128,23 @@ func downSandbox(root string, remove bool) error {
 	name := sbxSandboxName(root)
 
 	out, errOut, err := sbxCapture([]string{"ls", "--quiet"})
-	if err != nil {
-		// Same predicate as the sbx preflight. With no state file wraptool never
-		// created a sandbox here, so a signed-out sbx must not make down fail
-		// for a developer who only uses dev containers.
-		if strings.Contains(strings.ToLower(out+errOut), "not authenticated") {
-			if _, statErr := os.Stat(sbxStatePath(name)); statErr != nil {
+	// The signed-out check comes before the error check, like the preflight's:
+	// an exit-0 not-signed-in listing has no names in it, and reading that as
+	// "no sandbox" would delete the state of a sandbox that still exists.
+	signedOut := sbxNotSignedIn(out, errOut)
+	if err != nil || signedOut {
+		// With no state file wraptool never created a sandbox here, so a failing
+		// sbx must not make down fail for a developer who only uses dev containers.
+		if _, statErr := os.Stat(sbxStatePath(name)); statErr != nil {
+			if signedOut {
 				fmt.Println("notice: sbx is not signed in; sandbox check skipped (run `sbx login` if this workspace uses the sbx runtime)")
-				return nil
+			} else {
+				fmt.Printf("notice: `sbx ls --quiet` failed (%v); sandbox check skipped (no wraptool sandbox state for this workspace)\n", err)
 			}
-			return fmt.Errorf("sbx is not signed in, so the sandbox for %s cannot be checked; run `sbx login`: %w", root, err)
+			return nil
+		}
+		if signedOut {
+			return fmt.Errorf("sbx is not signed in, so the sandbox for %s cannot be checked; run `sbx login`", root)
 		}
 		return fmt.Errorf("running `sbx ls --quiet`: %w: %s", err, strings.TrimSpace(errOut+out))
 	}

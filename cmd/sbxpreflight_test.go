@@ -190,8 +190,7 @@ func TestClassifySbxSecretsFixture(t *testing.T) {
 	if got := entryNames(allowed); len(got) != 1 || got[0] != "(global)/service/anthropic" {
 		t.Errorf("allowed = %v", got)
 	}
-	// github (non-model service) and the registry row refuse; the
-	// sandbox-scoped openai row is ignored.
+	// github (non-model service) and the registry row refuse.
 	if got := entryNames(offending); len(got) != 2 || got[0] != "(global)/service/github" || got[1] != "(global)/registry/ghcr.io" {
 		t.Errorf("offending = %v", got)
 	}
@@ -256,6 +255,37 @@ func TestClassifySbxSecretsShapes(t *testing.T) {
 			t.Errorf("%v %v", a, err)
 		}
 	})
+	t.Run("row field count differing from the header is a parse error", func(t *testing.T) {
+		const secret = "sk-MASKEDVALUE"
+		cases := map[string]string{
+			// blank NAME cell: the masked secret shifts into the name column
+			"fewer fields": hdr + "(global) service " + secret + "\n",
+			"more fields":  hdr + "(global) service openai " + secret + " extra\n",
+			"later row":    hdr + "(global) service openai x\n(global) service " + secret + "\n",
+			"wider header": "SCOPE TYPE NAME SECRET EXPIRES\n(global) service openai " + secret + "\n",
+		}
+		for label, in := range cases {
+			a, o, err := classifySbxSecrets(in)
+			if err == nil || len(a) != 0 || len(o) != 0 {
+				t.Errorf("%s: accepted: %v %v %v", label, a, o, err)
+				continue
+			}
+			for _, leak := range []string{secret, "openai", "service", "(global)"} {
+				if strings.Contains(err.Error(), leak) {
+					t.Errorf("%s: error echoes row text %q: %v", label, leak, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "line ") {
+				t.Errorf("%s: error names no line: %v", label, err)
+			}
+		}
+	})
+	t.Run("extra column on header and every row parses", func(t *testing.T) {
+		a, o, err := classifySbxSecrets("SCOPE TYPE NAME SECRET EXPIRES\n(global) service openai sk-x never\n(global) registry ghcr.io tok never\n")
+		if err != nil || len(a) != 1 || len(o) != 1 {
+			t.Errorf("%v %v %v", a, o, err)
+		}
+	})
 	t.Run("sandbox scoped row refuses", func(t *testing.T) {
 		if _, _, err := classifySbxSecrets(hdr + "my-box service github x\n"); err == nil {
 			t.Error("want parse error")
@@ -287,6 +317,26 @@ func TestClassifySbxSecretsShapes(t *testing.T) {
 
 func sbxTestCfg() *config.Config {
 	return &config.Config{MCP: config.MCPConfig{Transport: "sse", Listen: "127.0.0.1:8717"}}
+}
+
+func TestSbxNotSignedIn(t *testing.T) {
+	cases := []struct {
+		name, out, errOut string
+		want              bool
+	}{
+		{"stdout only", "Error: not authenticated", "", true},
+		{"stderr only", "", "not authenticated; run sbx login", true},
+		{"mixed case", "You are Not Authenticated to Docker", "", true},
+		{"mixed case stderr", "", "NOT AUTHENTICATED", true},
+		{"absent", "wt-a-1234\n", "some warning", false},
+		{"empty", "", "", false},
+		{"split across streams is not a match", "not", "authenticated", false},
+	}
+	for _, c := range cases {
+		if got := sbxNotSignedIn(c.out, c.errOut); got != c.want {
+			t.Errorf("%s: got %v", c.name, got)
+		}
+	}
 }
 
 func TestSbxPreflight(t *testing.T) {
@@ -388,13 +438,12 @@ func TestSbxPreflight(t *testing.T) {
 	})
 	t.Run("secret ls failure leaks no output", func(t *testing.T) {
 		h := healthySbxReply(t, "")
-		f := installFakeSbx(t, func(l string) (string, error) {
+		installFakeSbx(t, func(l string) (string, error) {
 			if l == "secret ls --global" {
 				return "STDOUT-MARKER", errors.New("exit 1")
 			}
 			return h(l)
 		})
-		_ = f
 		_, err := sbxPreflight(sbxTestCfg(), root, true)
 		if err == nil || strings.Contains(err.Error(), "MARKER") || strings.Contains(err.Error(), "stderr-of") {
 			t.Errorf("err = %v", err)

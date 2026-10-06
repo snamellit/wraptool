@@ -432,3 +432,180 @@ func TestProbeSbxLoopbackAllowedWarns(t *testing.T) {
 		t.Error("probe classification")
 	}
 }
+
+func TestBringUpSbxStalePinholeOnRecreate(t *testing.T) {
+	const oldRes = "localhost:9999"
+	var lastRunOut string // stdout of the most recent run()
+	run := func(t *testing.T, setup func(name string), failRm bool) (*fakeSbx, string, error) {
+		t.Helper()
+		in := bringUpFixture(t)
+		name := sbxSandboxName(in.Root)
+		setup(name)
+		base := healthySbxReply(t, "")
+		f := installFakeSbx(t, func(l string) (string, error) {
+			if failRm && strings.HasPrefix(l, "policy rm") {
+				return "", os.ErrInvalid
+			}
+			return base(l)
+		})
+		var err error
+		out := captureStdout(t, func() { err = bringUpSbxContainer(in) })
+		lastRunOut = out
+		return f, name, err
+	}
+	hasPrefix := func(f *fakeSbx, p string) bool {
+		for _, l := range f.lines() {
+			if strings.HasPrefix(l, p) {
+				return true
+			}
+		}
+		return false
+	}
+	writeState := func(t *testing.T, n, res string) {
+		t.Helper()
+		if err := writeSbxState(sbxState{Name: n, PinholeResource: res}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("different resource removes the old rule before create", func(t *testing.T) {
+		f, name, err := run(t, func(n string) { writeState(t, n, oldRes) }, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := f.lines()
+		want := "policy rm network --sandbox " + name + " --resource " + oldRes + " --force"
+		if len(lines) < 2 || lines[0] != want || !strings.HasPrefix(lines[1], "create --name") {
+			t.Fatalf("sequence = %v", lines)
+		}
+	})
+	t.Run("same resource issues no policy rm", func(t *testing.T) {
+		f, _, err := run(t, func(n string) { writeState(t, n, "localhost:8717") }, false)
+		if err != nil || hasPrefix(f, "policy rm") || !hasPrefix(f, "create --name") {
+			t.Fatalf("err = %v lines = %v", err, f.lines())
+		}
+	})
+	t.Run("no state issues no policy rm", func(t *testing.T) {
+		f, _, err := run(t, func(string) {}, false)
+		if err != nil || hasPrefix(f, "policy rm") || !hasPrefix(f, "create --name") {
+			t.Fatalf("err = %v lines = %v", err, f.lines())
+		}
+	})
+	t.Run("corrupt state still creates, with a notice", func(t *testing.T) {
+		f, _, err := run(t, func(n string) {
+			p := sbxStatePath(n)
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, false)
+		got := lastRunOut
+		if err != nil || hasPrefix(f, "policy rm") || !strings.HasPrefix(f.lines()[0], "create --name") {
+			t.Fatalf("err = %v lines = %v", err, f.lines())
+		}
+		if !strings.Contains(got, "previous network rule could not be identified") {
+			t.Errorf("notice missing: %q", got)
+		}
+	})
+	t.Run("policy rm failure does not fail up", func(t *testing.T) {
+		f, _, err := run(t, func(n string) { writeState(t, n, oldRes) }, true)
+		if err != nil || !hasPrefix(f, "policy rm") || !hasPrefix(f, "create --name") {
+			t.Fatalf("err = %v lines = %v", err, f.lines())
+		}
+	})
+}
+
+func TestBringUpSbxCreateFailureHintsPolicyInit(t *testing.T) {
+	in := bringUpFixture(t)
+	installFakeSbx(t, func(l string) (string, error) {
+		if strings.HasPrefix(l, "create") {
+			return "", os.ErrInvalid
+		}
+		return "", nil
+	})
+	err := bringUpSbxContainer(in)
+	if err == nil || !strings.Contains(err.Error(), "sbx policy init balanced") || !strings.Contains(err.Error(), "stderr-of-create") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSbxEntryConvertsSeparators(t *testing.T) {
+	// filepath.ToSlash is a no-op on Linux, so the conversion is injected: a
+	// Windows-shaped input proves every path reaches the entry converted.
+	toSlash := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
+	got := sbxEntry(`C:\work\proj`, `C:\pool\home`, []string{`C:\pool\runtime\bin`}, toSlash)
+	want := buildContainerEntry("C:/work/proj", "C:/pool/home", []string{"C:/pool/runtime/bin"})
+	if got != want {
+		t.Errorf("entry =\n%s\nwant\n%s", got, want)
+	}
+	if strings.Contains(got, `\`) {
+		t.Errorf("backslash in entry: %s", got)
+	}
+	// Slash-only input is byte-identical to the unwrapped builder.
+	if got, want := sbxEntry("/w/p", "/h", []string{"/r/bin"}, filepath.ToSlash), buildContainerEntry("/w/p", "/h", []string{"/r/bin"}); got != want {
+		t.Errorf("entry = %s, want %s", got, want)
+	}
+}
+
+func TestBringUpSbxRefusalsNameRemovalScope(t *testing.T) {
+	in := bringUpFixture(t)
+	name := sbxSandboxName(in.Root)
+	in.Exists = true
+	good := sbxState{
+		Name: name, Agent: sbxAgent, Skills: sbxSkillsMode, PinholeResource: "localhost:8717",
+		Mounts: []string{
+			filepath.ToSlash(in.Root), filepath.ToSlash(in.Plan.runtimeDir) + ":ro", filepath.ToSlash(pool.HomeDir()),
+		},
+		EnvNames: sbxCreateEnvNames,
+	}
+	write := func(t *testing.T, st sbxState) {
+		t.Helper()
+		if err := writeSbxState(st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := map[string]func(t *testing.T){
+		"no state": func(t *testing.T) {
+			if err := removeSbxState(name); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"unreadable state": func(t *testing.T) {
+			p := sbxStatePath(name)
+			if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("{bad"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"port change": func(t *testing.T) {
+			st := good
+			st.PinholeResource = "localhost:1"
+			write(t, st)
+		},
+		"drift": func(t *testing.T) {
+			st := good
+			st.Template = "other"
+			write(t, st)
+		},
+	}
+	for label, setup := range cases {
+		t.Run(label, func(t *testing.T) {
+			installFakeSbx(t, healthySbxReply(t, name))
+			setup(t)
+			err := bringUpSbxContainer(in)
+			if err == nil || !strings.Contains(err.Error(), "wraptool down --rm") {
+				t.Fatalf("err = %v", err)
+			}
+			if !strings.Contains(err.Error(), sbxDownRmScope) {
+				t.Errorf("refusal lacks the shared scope sentence: %v", err)
+			}
+			if label == "no state" && !strings.Contains(err.Error(), "failed part-way") {
+				t.Errorf("err = %v", err)
+			}
+		})
+	}
+}

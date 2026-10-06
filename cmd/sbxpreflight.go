@@ -153,7 +153,8 @@ func (e sbxSecretEntry) String() string { return e.Scope + "/" + e.Type + "/" + 
 // parser does not recognise is a parse error — callers treat it as a refusal:
 // empty or whitespace-only output (sbx may have written the table elsewhere),
 // no header, a row too short to name scope/type/name, and any row whose scope
-// is not exactly "(global)" (the command asked for --global, so such a row is
+// is not exactly "(global)", any row whose field count differs from the
+// header's (the command asked for --global, so such a row is
 // output we do not understand, including trailing prose). The error text never
 // quotes the input.
 func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err error) {
@@ -161,6 +162,7 @@ func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err er
 		return nil, nil, errors.New("`sbx secret ls --global` printed nothing (cannot tell whether secrets exist)")
 	}
 	var headerSeen bool
+	var headerLen int
 	for i, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
 		if len(f) == 0 {
@@ -169,12 +171,19 @@ func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err er
 		if !headerSeen {
 			if len(f) >= 3 && f[0] == "SCOPE" && f[1] == "TYPE" && f[2] == "NAME" {
 				headerSeen = true
+				headerLen = len(f)
 				continue
 			}
 			return nil, nil, errors.New("`sbx secret ls --global` output has no `SCOPE TYPE NAME` header (format not recognised)")
 		}
 		if len(f) < 3 {
 			return nil, nil, fmt.Errorf("`sbx secret ls --global` output line %d has fewer than three columns (format not recognised)", i+1)
+		}
+		// A blank cell (say NAME) shifts every later column left, which would
+		// put the masked secret value in the name slot; a differing field count
+		// is therefore a parse error, reported by line number only.
+		if len(f) != headerLen {
+			return nil, nil, fmt.Errorf("`sbx secret ls --global` output line %d has %d fields but the header has %d (format not recognised)", i+1, len(f), headerLen)
 		}
 		e := sbxSecretEntry{Scope: f[0], Type: f[1], Name: f[2]}
 		if e.Scope != "(global)" {
@@ -200,6 +209,12 @@ func sbxSecretsRefusal(offending []sbxSecretEntry) error {
 	b.WriteString("remove each with `sbx secret rm <name>`, or re-scope it to the sandboxes that should have it with `--sandbox`; " +
 		"or pass --allow-sbx-secrets to accept this")
 	return errors.New(b.String())
+}
+
+// sbxNotSignedIn is the one signed-out predicate (R2), shared by the preflight
+// and `down`; it deliberately ignores the exit status.
+func sbxNotSignedIn(stdout, stderr string) bool {
+	return strings.Contains(strings.ToLower(stdout+"\n"+stderr), "not authenticated")
 }
 
 // sbxPreflightResult is what the preflight learned that bringUp needs.
@@ -236,7 +251,7 @@ func sbxPreflight(cfg *config.Config, root string, allowSecrets bool) (sbxPrefli
 
 	res.Name = sbxSandboxName(root)
 	out, errOut, err = sbxCapture([]string{"ls", "--quiet"})
-	if strings.Contains(strings.ToLower(out+errOut), "not authenticated") {
+	if sbxNotSignedIn(out, errOut) {
 		return res, errors.New("sbx is not signed in; run `sbx login`")
 	}
 	if err != nil {

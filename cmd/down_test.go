@@ -44,6 +44,8 @@ type downEnv struct {
 	failOn   map[string]bool
 	// failOut is the stdout a failing sbx call returns alongside its error.
 	failOut string
+	// lsText, when set, is what a SUCCESSFUL `sbx ls --quiet` prints instead of sbxNames.
+	lsText string
 }
 
 // setupDown stubs hasSbx/hasDocker and both process seams and isolates the data dir.
@@ -59,6 +61,9 @@ func setupDown(t *testing.T, sbx, docker bool) *downEnv {
 			return e.failOut, errors.New("boom")
 		}
 		if line == "ls --quiet" {
+			if e.lsText != "" {
+				return e.lsText, nil
+			}
 			return e.sbxNames, nil
 		}
 		return "", nil
@@ -516,9 +521,38 @@ func TestDownSbxLsNotAuthenticated(t *testing.T) {
 func TestDownSbxLsFailureSurfacesAndDockerRuns(t *testing.T) {
 	e := setupDown(t, true, true)
 	e.failOn["ls --quiet"] = true
+	e.writeState(t, "") // state present: wraptool did create a sandbox here
 	err := runDown(e.root, false)
 	if err == nil || !strings.Contains(err.Error(), "sbx ls --quiet") || !strings.Contains(err.Error(), "stderr-of-ls") {
 		t.Fatalf("err = %v", err)
 	}
 	e.assertLog(t, "sbx ls --quiet", "docker ps", "docker stop abc def")
+}
+
+func TestDownSbxLsFailureNoStateIsNotice(t *testing.T) {
+	e := setupDown(t, true, true)
+	e.failOn["ls --quiet"] = true
+	var err error
+	got := captureStdout(t, func() { err = runDown(e.root, true) })
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(got, "`sbx ls --quiet` failed") || !strings.Contains(got, "sandbox check skipped") {
+		t.Errorf("notice missing: %q", got)
+	}
+	e.assertLog(t, "sbx ls --quiet", "docker ps", "docker rm -f abc def")
+}
+
+func TestDownSbxLsExitZeroNotSignedIn(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.lsText = "Error: Not Authenticated\n"
+	e.writeState(t, "localhost:8080")
+	err := runDown(e.root, true)
+	if err == nil || !strings.Contains(err.Error(), "sbx login") {
+		t.Fatalf("err = %v", err)
+	}
+	if !e.stateExists() {
+		t.Error("state of a possibly-existing sandbox must not be deleted")
+	}
+	e.assertLog(t, "sbx ls --quiet")
 }

@@ -33,6 +33,14 @@ const (
 	sbxNameBaseMax = 51
 )
 
+// sbxDownRmScope says what `wraptool down --rm` deletes; every refusal that
+// recommends it appends this so the wording cannot drift between messages.
+const sbxDownRmScope = "it removes the sandbox and its VM state, and this workspace's dev containers too if docker is present"
+
+// sbxPolicyInitHint is §15's prerequisite for any sandbox or custom rule on a
+// host that has never initialised sbx's network policy.
+const sbxPolicyInitHint = "if sbx has no network policy yet, run `sbx policy init balanced` and retry"
+
 // sbxCreateEnvNames are the only environment variables passed at creation, always
 // as NAME=value (never a bare name, which would copy the host's value).
 var sbxCreateEnvNames = []string{"WRAPTOOL_CONTAINER", "WRAPTOOL_CWD"}
@@ -309,16 +317,16 @@ func bringUpSbxContainer(in sbxBringUpInput) error {
 	if in.Exists {
 		have, found, err := readSbxState(name)
 		if err != nil {
-			return fmt.Errorf("sandbox %s exists but its state file is unreadable (%w); inspect it, or remove the sandbox with `wraptool down --rm`", name, err)
+			return fmt.Errorf("sandbox %s exists but its state file is unreadable (%w); inspect it, or remove the sandbox with `wraptool down --rm` (%s)", name, err, sbxDownRmScope)
 		}
 		if !found {
-			return fmt.Errorf("sandbox %s exists but has no wraptool state file (%s), so it was not created by this wraptool; refusing to reuse it — remove it with `wraptool down --rm`", name, sbxStatePath(name))
+			return fmt.Errorf("sandbox %s exists but has no wraptool state file (%s), so either it was not created by wraptool or an earlier `sbx create` failed part-way; refusing to reuse it — remove it with `wraptool down --rm` (%s)", name, sbxStatePath(name), sbxDownRmScope)
 		}
 		if have.PinholeResource != want.PinholeResource {
-			return fmt.Errorf("sandbox %s was created for %q but this run needs %q (the MCP port changed); its network rule still allows the old port and cannot be changed in place — recreate it with `wraptool down --rm` (this deletes the sandbox's VM state)", name, have.PinholeResource, want.PinholeResource)
+			return fmt.Errorf("sandbox %s was created for %q but this run needs %q (the MCP port changed); its network rule still allows the old port and cannot be changed in place — recreate it with `wraptool down --rm` (%s)", name, have.PinholeResource, want.PinholeResource, sbxDownRmScope)
 		}
 		if drift := sbxStateDrift(have, want); len(drift) > 0 {
-			return fmt.Errorf("sandbox %s was created with different %s than this run wants; its mounts and environment are fixed at creation — recreate it with `wraptool down --rm` (this deletes the sandbox's VM state)", name, strings.Join(drift, ", "))
+			return fmt.Errorf("sandbox %s was created with different %s than this run wants; its mounts and environment are fixed at creation — recreate it with `wraptool down --rm` (%s)", name, strings.Join(drift, ", "), sbxDownRmScope)
 		}
 	}
 
@@ -336,18 +344,24 @@ func bringUpSbxContainer(in sbxBringUpInput) error {
 	fmt.Printf("wrote %s (wraptool @ %s)\n", mcpPath, base)
 
 	if !in.Exists {
+		// The sandbox was removed outside wraptool: a rule recorded for a
+		// different port would otherwise outlive the state file overwritten below.
+		if stale, found, readErr := readSbxState(name); readErr != nil {
+			fmt.Printf("notice: a previous sandbox state file for %s is unreadable (%v); a previous network rule could not be identified\n", name, readErr)
+		} else if found && stale.PinholeResource != "" && stale.PinholeResource != want.PinholeResource {
+			removePinhole(name, stale.PinholeResource)
+		}
 		fmt.Printf("creating sandbox %s ...\n", name)
 		if _, errOut, err := sbxCapture(buildSbxCreateArgs(name, in.Template, in.Root, plan.runtimeDir, homeDir)); err != nil {
-			return fmt.Errorf("sbx create failed: %w: %s", err, strings.TrimSpace(errOut))
+			return fmt.Errorf("sbx create failed: %w: %s\n%s", err, strings.TrimSpace(errOut), sbxPolicyInitHint)
 		}
 		if err := writeSbxState(want); err != nil {
-			return fmt.Errorf("sandbox %s was created but its state file could not be written (%w); remove it with `wraptool down --rm` and retry", name, err)
+			return fmt.Errorf("sandbox %s was created but its state file could not be written (%w); remove it with `wraptool down --rm` (%s) and retry", name, err, sbxDownRmScope)
 		}
 	}
 
 	if _, errOut, err := sbxCapture(buildSbxPolicyArgs(name, port)); err != nil {
-		return fmt.Errorf("adding the loopback pinhole localhost:%s failed: %w: %s\n"+
-			"if sbx has no network policy yet, run `sbx policy init balanced` and retry", port, err, strings.TrimSpace(errOut))
+		return fmt.Errorf("adding the loopback pinhole localhost:%s failed: %w: %s\n%s", port, err, strings.TrimSpace(errOut), sbxPolicyInitHint)
 	}
 
 	probeSbxLoopback(name, in.AdminListen)
@@ -357,16 +371,19 @@ func bringUpSbxContainer(in sbxBringUpInput) error {
 		return nil
 	}
 	fmt.Printf("\nopening a shell in sandbox %s (re-enter with `wraptool up --runtime=sbx`)...\n", name)
-	entry := buildContainerEntry(in.Root, filepath.ToSlash(homeDir), toSlashAll(plan.pathDirs))
+	entry := sbxEntry(in.Root, homeDir, plan.pathDirs, filepath.ToSlash)
 	return sbxAttach(buildSbxExecArgs(name, sbxStdinIsTTY(), entry))
 }
 
-func toSlashAll(dirs []string) []string {
-	out := make([]string, len(dirs))
-	for i, d := range dirs {
-		out[i] = filepath.ToSlash(d)
+// sbxEntry builds the in-VM entry script from host paths; the VM is Linux, so
+// every path is converted with toSlash (filepath.ToSlash in production, a
+// parameter so tests can exercise a separator that Linux hosts never see).
+func sbxEntry(root, homeDir string, pathDirs []string, toSlash func(string) string) string {
+	dirs := make([]string, len(pathDirs))
+	for i, d := range pathDirs {
+		dirs[i] = toSlash(d)
 	}
-	return out
+	return buildContainerEntry(toSlash(root), toSlash(homeDir), dirs)
 }
 
 // probeSbxLoopback is R8: after the pinhole exists, ask sbx whether the
