@@ -1,6 +1,6 @@
 # Adding oh-my-pi (`omp`): a release-binary pool source
 
-Status: **proposed**
+Status: **implemented** (WP0-WP4; open questions and deviations in §9 and §12)
 
 Depends on `design/harness/platform-scoped-fetch.md` (see §5). Extends
 `design/harness/unified-harness-pool.md` §6.2 (phase matrix), §8 (lock), §11.3
@@ -306,22 +306,24 @@ can run in parallel once WP1 lands.
 
 ## 9. Open questions
 
-1. **Self-update on a read-only mount.** The binary contains a
+1. **Self-update on a read-only mount.** Still open. The binary contains a
    `checkForUpdates` path. Confirm omp does not try to replace its own binary,
    and that a failed check on the read-only `runtime/` mount neither blocks
    startup nor prints an error each session. Find the setting or environment
    variable that disables it, and set it in the dispatcher or document it.
-2. **Older versions.** Only `v18.6.1` was checked. Confirm that releases
-   reachable through `rollback --to` and `--constraint` carry
-   `SHA256SUMS.txt` and all four Linux assets, especially the musl builds.
-   Resolve tolerates missing platforms but not a missing checksum file.
-3. **Signatures.** Check whether upstream publishes GitHub artifact
-   attestations or another signature. Verifying one would make §7's trust
-   root strictly stronger than agy's.
-4. **Resumable downloads.** Is a 281 MB uncompressed object enough to pull
-   HTTP `Range` resume into scope, given the reset observed above?
-5. **Token-free configs.** Should all harnesses that support `${VAR}`
-   expansion move to environment-referenced tokens (§6.3)? Out of scope here.
+2. **Older versions.** Answered (verified 2026-10-06). `SHA256SUMS.txt` is
+   published from v17.2.10 onward. All four Linux assets were present on every
+   release checked: 17.2.10, 17.4.2, 18.0.0, 18.5.0, 18.6.0, 18.6.1. v17.2.9
+   and earlier have binaries but no checksum file (HTTP 404), so the release
+   source cannot lock them, and Resolve's error says so ("not published yet or
+   predates checksum publication"). The checksum file also lists darwin,
+   windows and `omp-browser-relay-extension.zip`, which the parser ignores.
+3. **Signatures.** Still open: unverified, because the GitHub API was
+   rate-limited during research.
+4. **Resumable downloads.** Still open. HTTP `Range` resume was not
+   implemented. The implementation has no stall detector either; an interrupted
+   download restarts from zero.
+5. **Token-free configs.** Still open, out of scope here.
 
 ## 10. Non-goals
 
@@ -364,3 +366,14 @@ Manual checks:
 - `wraptool harness install omp` on a host with no guix, docker or podman.
 - `wraptool up --harness omp` on both the guix and devcontainer runtimes.
 - `wraptool_info` is reachable from inside omp.
+
+## 12. Implementation notes and deviations
+
+- **WP0 scoped archive and runtime artifacts only.** npm package scoping is
+  still blocked on step 0 of `platform-scoped-fetch.md`; npm packages are all
+  fetched. `sync` persists backfilled cache addresses (`persistCacheAddresses`).
+- **The shared download helper was not extracted** (§8, WP2). The release
+  source has its own sha256 `downloadVerify`; `archive.go` is unchanged.
+- **`recipe_revision` hashes more than §3.5 lists.** `releaseRecipeRevision`
+  (format 1) also hashes the `VersionFeed` and the tag scheme (`v{version}`),
+  besides the repo, asset mapping and checksum name.

@@ -29,7 +29,7 @@ wraptool init --harness claude \
 For multiple clients:
 
 ```bash
-wraptool init --harness claude,opencode,pi \
+wraptool init --harness claude,opencode,pi,omp \
   --url http://127.0.0.1:8717/sse
 ```
 
@@ -48,10 +48,15 @@ not commit `.mcp.json`, `opencode.json`, or equivalent harness configuration.
 | Antigravity (`agy`) | `.agents/mcp_config.json` | `~/.gemini/antigravity-cli/mcp_config.json` |
 | Claude Code | `.mcp.json` | `~/.claude.json` |
 | OpenCode | `opencode.json` | `~/.config/opencode/config.json` |
+| Oh My Pi (`omp`) | `.omp/mcp.json` | `~/.omp/agent/mcp.json` |
 | Pi | `.pi/mcp.json` | `~/.pi/agent/mcp.json` |
 
-Antigravity uses Streamable HTTP, so generation changes the supplied endpoint
-path to `/mcp`. Pi integration uses the third-party `pi-mcp-adapter` because Pi
+Antigravity and Oh My Pi use Streamable HTTP, so generation changes the supplied
+endpoint path to `/mcp`. The `omp` entry has `"type": "http"` and the Bearer
+header. `omp` reads `.omp/mcp.json` before a project-root `.mcp.json`, and the
+first definition of a server name wins, so a project wired for both Claude Code
+and `omp` registers `wraptool` once. `omp` does not read the older
+`~/.omp/mcp.json`. Pi integration uses the third-party `pi-mcp-adapter` because Pi
 does not natively expose this MCP client configuration.
 
 ## Container clients
