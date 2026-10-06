@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -82,6 +84,10 @@ harnesses:
 `)
 	fs := &fakeSource{candidates: map[string][]Candidate{"agy": {{Version: "1.1.10"}}}}
 	src := &scopedArchiveSource{fakeSource: fs}
+	host, err := HostPlatformKey()
+	if err != nil {
+		t.Skip(err)
+	}
 	if _, err := RefreshHarnessLocked(ctxT(t), src, paths, SourceArchive, "agy", fixedNow); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
@@ -89,10 +95,6 @@ harnesses:
 		Harness: "agy", Package: "agy", Source: SourceArchive, BinName: "agy", Now: fixedNow,
 	}); err != nil {
 		t.Fatalf("update: %v", err)
-	}
-	host, err := HostPlatformKey()
-	if err != nil {
-		t.Skip(err)
 	}
 	if src.downloads != 1 {
 		t.Errorf("downloads = %d, want 1 (the host key only)", src.downloads)
@@ -106,8 +108,24 @@ harnesses:
 			t.Errorf("other key %s: sha256 = %q, want empty", key, a.SHA256)
 		}
 	}
+	if err := os.MkdirAll(paths.Cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hostObj := filepath.Join(paths.Cache, scopedAddr(host))
+	orphan := filepath.Join(paths.Cache, strings.Repeat("e", 64))
+	for _, p := range []string{hostObj, orphan} {
+		if err := os.WriteFile(p, []byte("obj"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := GCPoolLocked(paths, GCOptions{}); err != nil {
 		t.Fatalf("GCPoolLocked with empty addresses: %v", err)
+	}
+	if _, err := os.Stat(hostObj); err != nil {
+		t.Errorf("gc removed the host key's referenced object: %v", err)
+	}
+	if _, err := os.Stat(orphan); err == nil {
+		t.Errorf("gc kept the unreferenced orphan object")
 	}
 }
 
@@ -231,6 +249,9 @@ func TestPersistCacheAddresses(t *testing.T) {
 		setAddr(&lh, key, scopedAddr(key))
 		if err := persistCacheAddresses(paths, "agy", &lh); err == nil || !strings.Contains(err.Error(), "recipe_revision") {
 			t.Fatalf("err = %v, want recipe refusal", err)
+		}
+		if got := loadLockFromDisk(t, paths).Harnesses["agy"].Archive.Artifacts[key].SHA256; got != "" {
+			t.Errorf("address written despite refusal: %q", got)
 		}
 	})
 	t.Run("refuses overwriting a set address and never clears one", func(t *testing.T) {

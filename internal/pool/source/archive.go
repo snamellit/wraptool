@@ -441,6 +441,9 @@ func (a *Archive) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir strin
 	if h == nil {
 		return fmt.Errorf("fetch: nil LockHarness")
 	}
+	if len(targets) == 0 {
+		return fmt.Errorf("fetch: no target platforms given")
+	}
 	if h.Archive == nil {
 		return fmt.Errorf("fetch: %s: lock has no archive artifacts (this Source only fetches archive harnesses)", h.Package)
 	}

@@ -255,7 +255,8 @@ type Source interface {
 	// bundles no node runtime). recipeRevision is this package's own recipe
 	// hash (npmRecipeRevision, §8's recipe_revision).
 	Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (LockHarness, error)
-	// Fetch downloads the artifacts h describes that targets need into
+	// Fetch downloads the artifacts h describes that targets need (which
+	// must be non-empty; an implementation errors on none) into
 	// cacheDir, verifying integrity before admission (host, pure Go, locked
 	// URLs only — §6.2). An archive or runtime artifact is fetched only if
 	// its platform key is in targets; an npm package is still always fetched

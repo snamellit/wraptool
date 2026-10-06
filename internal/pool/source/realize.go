@@ -547,14 +547,14 @@ func platformArch(key pool.PlatformKey) (string, error) {
 // having been removed since).
 func verifyCacheObject(cacheDir, digest, label string) error {
 	if !validSHA256Hex(digest) {
-		return fmt.Errorf("%s: missing or malformed sha256 (fetch must run before realize)", label)
+		return fmt.Errorf("%s: missing or malformed sha256 (fetch must run before realize; `wraptool harness sync <harness> [--platform <key>]` re-fetches)", label)
 	}
 	fi, err := os.Stat(filepath.Join(cacheDir, digest))
 	if err != nil {
-		return fmt.Errorf("%s: cache object %s not found: %w", label, digest, err)
+		return fmt.Errorf("%s: cache object %s not found (`wraptool harness sync <harness> [--platform <key>]` re-fetches): %w", label, digest, err)
 	}
 	if fi.Size() == 0 {
-		return fmt.Errorf("%s: cache object %s is empty", label, digest)
+		return fmt.Errorf("%s: cache object %s is empty (`wraptool harness sync <harness> [--platform <key>]` re-fetches)", label, digest)
 	}
 	return nil
 }

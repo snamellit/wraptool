@@ -969,6 +969,10 @@ func (n *NPM) Fetch(ctx context.Context, h *pool.LockHarness, cacheDir string, t
 		return fmt.Errorf("fetch: nil LockHarness")
 	}
 
+	if len(targets) == 0 {
+		return fmt.Errorf("fetch: no target platforms given")
+	}
+
 	if h.NPMLock != nil {
 		for name, pkg := range h.NPMLock.Packages {
 			if pkg.Resolved == "" {

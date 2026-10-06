@@ -116,3 +116,16 @@ func TestNPMFetch_RuntimeScopedToTargetsPackagesStillAllFetched(t *testing.T) {
 		}
 	}
 }
+
+func TestFetch_RejectsEmptyTargets(t *testing.T) {
+	npmLH := &pool.LockHarness{NPMLock: &pool.NPMLock{}}
+	archLH := &pool.LockHarness{Package: "agy", Archive: &pool.LockArchive{}}
+	for _, targets := range [][]pool.PlatformKey{nil, {}} {
+		if err := NewNPM("").Fetch(context.Background(), npmLH, t.TempDir(), targets); err == nil {
+			t.Errorf("NPM.Fetch(targets=%v): want error", targets)
+		}
+		if err := NewArchive(unroutableManifestBaseURL).Fetch(context.Background(), archLH, t.TempDir(), targets); err == nil {
+			t.Errorf("Archive.Fetch(targets=%v): want error", targets)
+		}
+	}
+}
