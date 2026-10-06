@@ -418,7 +418,7 @@ func TestSbxPreflight(t *testing.T) {
 
 // runUpSbxHarness runs runUp with the server seam stubbed and all XDG dirs
 // isolated; returns the error and how often the server seam was hit.
-func runUpSbxHarness(t *testing.T, opts upOptions) (error, int) {
+func runUpSbxHarness(t *testing.T, opts upOptions) (int, error) {
 	t.Helper()
 	origIsInContainer, origServer := isInContainer, ensureServerFn
 	isInContainer = func() bool { return false }
@@ -431,19 +431,20 @@ func runUpSbxHarness(t *testing.T, opts upOptions) (error, int) {
 	opts.workspace = t.TempDir()
 	opts.configPath = filepath.Join(t.TempDir(), "config.yaml") // scaffolded valid starter config
 	opts.harness, opts.shell = "claude", "never"
-	return runUp(opts), served
+	err := runUp(opts)
+	return served, err
 }
 
 // A failing preflight, or a failing pool plan, returns before the server seam.
 func TestRunUpSbxFailuresBeforeServer(t *testing.T) {
 	f := installFakeSbx(t, nil)
 	hasSbx = func() bool { return false }
-	err, served := runUpSbxHarness(t, upOptions{runtime: "sbx"})
+	served, err := runUpSbxHarness(t, upOptions{runtime: "sbx"})
 	if err == nil || !strings.Contains(err.Error(), "`sbx` CLI") || served != 0 || len(f.calls) != 0 {
 		t.Fatalf("preflight: err=%v served=%d", err, served)
 	}
 	installFakeSbx(t, healthySbxReply(t, ""))
-	err, served = runUpSbxHarness(t, upOptions{runtime: "sbx"})
+	served, err = runUpSbxHarness(t, upOptions{runtime: "sbx"})
 	if err == nil || !strings.Contains(err.Error(), "wraptool harness install") || served != 0 {
 		t.Fatalf("pool plan: err=%v served=%d", err, served)
 	}
@@ -452,7 +453,7 @@ func TestRunUpSbxFailuresBeforeServer(t *testing.T) {
 // --no-container and the guix runtime make no sbx call at all.
 func TestRunUpSbxGating(t *testing.T) {
 	f := installFakeSbx(t, healthySbxReply(t, ""))
-	_, served := runUpSbxHarness(t, upOptions{runtime: "sbx", noContainer: true})
+	served, _ := runUpSbxHarness(t, upOptions{runtime: "sbx", noContainer: true})
 	if served != 1 || len(f.calls) != 0 {
 		t.Errorf("noContainer: served=%d sbx calls=%v", served, f.lines())
 	}

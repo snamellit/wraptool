@@ -248,7 +248,7 @@ func sbxPreflight(cfg *config.Config, root string, allowSecrets bool) (sbxPrefli
 		}
 	}
 
-	out, errOut, err = sbxCapture([]string{"secret", "ls", "--global"})
+	out, _, err = sbxCapture([]string{"secret", "ls", "--global"})
 	if err != nil {
 		// Deliberately no output in this error: this is the one command whose
 		// output can carry secret material.
