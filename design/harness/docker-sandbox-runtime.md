@@ -485,6 +485,7 @@ in §9 stays open.
 | `sbx policy allow network` | `sbx policy allow network [--sandbox SANDBOX] RESOURCES`; RESOURCES is comma-separated, with optional `:port`. |
 | `sbx policy check network` | `[--sandbox SANDBOX] TARGET`, `--json`. Documented text output: `Allowed: <target>` or `Denied: <target>` plus a `Reason:` line. Exit status on a denial is undocumented. |
 | `sbx policy rm network` | `[--sandbox SANDBOX] --resource <list> [-f]`. The resource is a flag here, not a positional. |
+| `sbx policy ls` | `sbx policy ls [SANDBOX]`; the sandbox is a positional here. `--json`, `--type`, `--decision`. |
 | `sbx policy init` | `sbx policy init <allow-all\|balanced\|deny-all>`; "must be run before adding custom allow/deny rules or starting a sandbox for the first time". |
 | `sbx mcp ls` | `--json`, `-q`. |
 
@@ -531,8 +532,12 @@ that confirms or replaces it.
   model-provider set (anthropic, openai, google, cursor — the other model
   services in §15 stay refused until the maintainer rules on question 6).
   Anything else, including a row or a table the parser does not recognise,
-  refuses. The parser fails closed. Error text names scope, type and name
-  only, never the secret column, and never echoes raw output.
+  refuses. The parser fails closed: a row whose scope is not exactly
+  `(global)` is not skipped but refused, because the command asked for
+  global entries only, and empty output is refused too, because the table
+  may have gone to another stream. Error text names scope, type and name
+  only, never the secret column, and never echoes raw output, including
+  when the command itself fails.
   `--allow-sbx-secrets` overrides both the refusal and the parse failure.
   (S5)
 - **R4. MCP gateway: refuse when `sbx mcp ls --quiet` prints any name.**
@@ -543,15 +548,19 @@ that confirms or replaces it.
 - **R6. Minimal environment** (D9): PATH, HOME, USER, LOGNAME, TMPDIR, TERM,
   COLORTERM, LANG, `LC_*`, `XDG_*`, `SBX_*`, `DOCKER_*`,
   DBUS_SESSION_BUS_ADDRESS. Nothing else, for every `sbx` process wraptool
-  spawns. `SBX_NO_TELEMETRY` is passed through when the developer set it and
+  spawns. The `DOCKER_*` family admits `DOCKER_AUTH_CONFIG` (inline registry
+  credentials) to the `sbx` client; whether the client carries it into a
+  sandbox is unverified. `SBX_NO_TELEMETRY` is passed through when the developer set it and
   is not set by wraptool (question 3 is open). (S4, S5)
 - **R7. The state file records the wraptool version but drift does not
   compare it.** A development build's version changes on every commit, and a
   version change alone does not alter what is mounted. Compared: agent,
   template, mounts with their modes, environment variable names, skills
-  mode. A sandbox with the right name and no state file was not created by
-  this code and is refused the same way as drift. The state file also
-  records the pinhole resource so `down --rm` can remove the rule. (S7, S8)
+  mode, pinhole resource. A sandbox with the right name and no state file
+  was not created by this code and is refused the same way as drift. The
+  pinhole resource is compared because a changed MCP port would otherwise
+  leave the old port allowed for the sandbox; it is recorded so `down --rm`
+  can remove the rule. (S7, S8)
 - **R8. The loopback probe reads the output, not the exit status**: a line
   starting `Allowed:` warns, `Denied:` is silent, anything else prints a
   notice that the probe was inconclusive. It never fails `up`. (S12)
