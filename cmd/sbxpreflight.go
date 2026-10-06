@@ -152,11 +152,10 @@ func (e sbxSecretEntry) String() string { return e.Scope + "/" + e.Type + "/" + 
 // offending entries. A header with no rows means no secrets. Anything else the
 // parser does not recognise is a parse error — callers treat it as a refusal:
 // empty or whitespace-only output (sbx may have written the table elsewhere),
-// no header, a row too short to name scope/type/name, and any row whose scope
-// is not exactly "(global)", any row whose field count differs from the
-// header's (the command asked for --global, so such a row is
-// output we do not understand, including trailing prose). The error text never
-// quotes the input.
+// no header, a row too short to name scope/type/name, a row whose field count
+// differs from the header's, and any row whose scope is not exactly "(global)"
+// (the command asked for --global, so such a row is output we do not
+// understand, including trailing prose). The error text never quotes the input.
 func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err error) {
 	if strings.TrimSpace(out) == "" {
 		return nil, nil, errors.New("`sbx secret ls --global` printed nothing (cannot tell whether secrets exist)")
