@@ -33,15 +33,19 @@ type upOptions struct {
 	noAdmin     bool
 	shell       string // "auto" | "always" | "never"
 	workspace   string
-	runtime     string // "auto" | "guix" | "devcontainer"
+	runtime     string // "auto" | "guix" | "devcontainer" | "sbx"
 	harness     string // which harness to wire in the container (guix runtime)
+
+	sandboxTemplate string // sbx runtime: OCI template ref; "" = the shell agent's own image (D5)
+	allowSbxSecrets bool   // sbx runtime: let non-model-provider global secrets through (D8)
 }
 
 func defaultUpOptions() upOptions {
 	return upOptions{
-		shell:   "auto",
-		runtime: "auto",
-		harness: "claude",
+		shell:           "auto",
+		runtime:         "auto",
+		harness:         "claude",
+		sandboxTemplate: os.Getenv("WRAPTOOL_SANDBOX_TEMPLATE"),
 	}
 }
 
@@ -72,7 +76,9 @@ own path via the server's per-connection cwd.`,
 	cmd.Flags().BoolVar(&opts.noAdmin, "no-admin", false, "do not auto-enable the operator review UI")
 	cmd.Flags().StringVar(&opts.shell, "shell", opts.shell, "open a shell in the container after bringup: auto (when attached to a terminal), always, never")
 	cmd.Flags().StringVar(&opts.workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
-	cmd.Flags().StringVar(&opts.runtime, "runtime", opts.runtime, "container runtime: auto (guix when available, else devcontainer), guix, or devcontainer")
+	cmd.Flags().StringVar(&opts.runtime, "runtime", opts.runtime, "container runtime: auto (guix when available, else devcontainer; never sbx), guix, devcontainer, or sbx (Docker Sandboxes microVM, explicit opt-in)")
+	cmd.Flags().StringVar(&opts.sandboxTemplate, "sandbox-template", opts.sandboxTemplate, "sbx runtime: OCI image reference used as the sandbox template (env WRAPTOOL_SANDBOX_TEMPLATE; default: the shell agent's own image)")
+	cmd.Flags().BoolVar(&opts.allowSbxSecrets, "allow-sbx-secrets", false, "sbx runtime: proceed although global sbx secrets that are not model-provider keys exist (the sandbox's proxy would inject them)")
 	cmd.Flags().StringVar(&opts.harness, "harness", opts.harness, "coding harness to wire in the container: "+strings.Join(harness.Names(), ", "))
 
 	return cmd
@@ -140,6 +146,22 @@ func runUp(opts upOptions) error {
 		}
 	}
 
+	// sbx preflight (design/harness/docker-sandbox-runtime.md §7): before
+	// anything touches the server, and never for the other runtimes.
+	var sbxPre sbxPreflightResult
+	var sbxPlan sbxPoolPlan
+	if sbxPreflightWanted(rt, opts.noContainer) {
+		sbxPre, err = sbxPreflight(cfg, root, opts.allowSbxSecrets)
+		if err != nil {
+			return err
+		}
+		// A missing generation is the likeliest first-run failure; find it
+		// before a server is spawned.
+		if sbxPlan, err = sbxPoolPlanForHarness(opts.harness); err != nil {
+			return err
+		}
+	}
+
 	// Provision even with --no-server: the already-running server requires
 	// the token (serve provisions its own on start), so the harness config
 	// written below must carry it — otherwise every MCP call 401s with no
@@ -155,7 +177,7 @@ func runUp(opts upOptions) error {
 		if !opts.noAdmin {
 			enableAdminDefault(cfg)
 		}
-		if err := ensureServer(cfg, configPath); err != nil {
+		if err := ensureServerFn(cfg, configPath); err != nil {
 			return err
 		}
 		if cfg.Admin.Listen != "" && cfg.Admin.AuthTokenFile != "" {
@@ -181,8 +203,23 @@ func runUp(opts upOptions) error {
 		return bringUpGuixContainer(root, token, cfg.MCP.Listen, opts.harness, shell)
 	case runtimeDevcontainer:
 		return bringUpContainer(root, token, opts.harness, shell)
+	case runtimeSbx:
+		return bringUpSbxContainer(sbxBringUpInput{
+			Root: root, Token: token, Listen: cfg.MCP.Listen, AdminListen: cfg.Admin.Listen,
+			Harness: opts.harness, Template: opts.sandboxTemplate, Shell: shell,
+			Exists: sbxPre.Exists, Plan: sbxPlan,
+		})
 	}
 	return fmt.Errorf("unhandled runtime %v", rt)
+}
+
+// ensureServerFn is a seam over ensureServer so tests can prove ordering.
+var ensureServerFn = ensureServer
+
+// sbxPreflightWanted gates the sbx preflight: the sbx runtime only, and never
+// under --no-container.
+func sbxPreflightWanted(rt containerRuntime, noContainer bool) bool {
+	return !noContainer && rt == runtimeSbx
 }
 
 // wantShell resolves the --shell mode. "auto" opens a shell only when stdin and
@@ -218,7 +255,9 @@ func configOrDefault(p string) string {
 // host's loopback — so a loopback bind is unreachable from inside it. A loopback
 // listen is rebound to 0.0.0.0 on the same port. The guix runtime shares the
 // host netns, so loopback already works there and the bind is left untouched
-// (no LAN exposure).
+// (no LAN exposure). The sbx runtime also leaves the bind untouched (D7): a
+// Docker Sandboxes VM reaches the host's loopback through a per-sandbox proxy
+// pinhole, so the server must stay loopback-only.
 //
 // Either way an sse listener gets a token file when the operator did not
 // configure one (created here via provisionDefaultMCPToken; readAuthToken
