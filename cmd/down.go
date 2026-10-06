@@ -129,6 +129,16 @@ func downSandbox(root string, remove bool) error {
 
 	out, errOut, err := sbxCapture([]string{"ls", "--quiet"})
 	if err != nil {
+		// Same predicate as the sbx preflight. With no state file wraptool never
+		// created a sandbox here, so a signed-out sbx must not make down fail
+		// for a developer who only uses dev containers.
+		if strings.Contains(strings.ToLower(out+errOut), "not authenticated") {
+			if _, statErr := os.Stat(sbxStatePath(name)); statErr != nil {
+				fmt.Println("notice: sbx is not signed in; sandbox check skipped (run `sbx login` if this workspace uses the sbx runtime)")
+				return nil
+			}
+			return fmt.Errorf("sbx is not signed in, so the sandbox for %s cannot be checked; run `sbx login`: %w", root, err)
+		}
 		return fmt.Errorf("running `sbx ls --quiet`: %w: %s", err, strings.TrimSpace(errOut+out))
 	}
 	found := false
@@ -143,6 +153,10 @@ func downSandbox(root string, remove bool) error {
 		// Deleted by path, not gated on a successful read: a corrupt file is
 		// exactly what `down --rm` is the advertised remedy for.
 		if _, statErr := os.Stat(sbxStatePath(name)); remove && statErr == nil {
+			// A readable file may still name a rule; a corrupt one cannot.
+			if st, ok, readErr := readSbxState(name); readErr == nil && ok {
+				removePinhole(name, st.PinholeResource)
+			}
 			if err := removeSbxState(name); err != nil {
 				return fmt.Errorf("removing stale sandbox state for %s: %w", name, err)
 			}
@@ -170,18 +184,27 @@ func downSandbox(root string, remove bool) error {
 	if err := sbxRunChecked([]string{"rm", "--force", name}); err != nil {
 		return err // state kept: the sandbox still exists
 	}
+	// Runs before the state-removal error can return, so a failed delete does
+	// not also leak the rule.
+	if haveState {
+		removePinhole(name, st.PinholeResource)
+	}
 	if err := removeSbxState(name); err != nil {
 		return fmt.Errorf("removing sandbox state for %s: %w", name, err)
 	}
-	// Whether `sbx rm` already drops sandbox-scoped policy rules is unconfirmed
-	// (spec S8), so removal is best-effort and never fails down.
-	if haveState && st.PinholeResource != "" {
-		argv := []string{"policy", "rm", "network", "--sandbox", name, "--resource", st.PinholeResource, "--force"}
-		if err := sbxRunChecked(argv); err != nil {
-			fmt.Printf("notice: could not remove the network rule for %s (it may already be gone): %v\n", st.PinholeResource, err)
-		}
-	}
 	return nil
+}
+
+// removePinhole drops the sandbox-scoped network rule. Whether `sbx rm` already
+// drops it is unconfirmed (spec S8), so this is best-effort and never fails down.
+func removePinhole(name, resource string) {
+	if resource == "" {
+		return
+	}
+	argv := []string{"policy", "rm", "network", "--sandbox", name, "--resource", resource, "--force"}
+	if err := sbxRunChecked(argv); err != nil {
+		fmt.Printf("notice: could not remove the network rule for %s (it may already be gone): %v\n", resource, err)
+	}
 }
 
 // sbxRunChecked runs one sbx command through the seam, echoing its output and

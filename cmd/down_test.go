@@ -42,6 +42,8 @@ type downEnv struct {
 	// sbxNames is what `sbx ls --quiet` prints; failOn maps an argv line to an error.
 	sbxNames string
 	failOn   map[string]bool
+	// failOut is the stdout a failing sbx call returns alongside its error.
+	failOut string
 }
 
 // setupDown stubs hasSbx/hasDocker and both process seams and isolates the data dir.
@@ -54,7 +56,7 @@ func setupDown(t *testing.T, sbx, docker bool) *downEnv {
 	e.sbx = &fakeSbx{reply: func(line string) (string, error) {
 		*e.log = append(*e.log, "sbx "+line)
 		if e.failOn[line] {
-			return "", errors.New("boom")
+			return e.failOut, errors.New("boom")
 		}
 		if line == "ls --quiet" {
 			return e.sbxNames, nil
@@ -227,7 +229,9 @@ func TestDownSandboxAbsent(t *testing.T) {
 	if err := runDown(e.root, true); err != nil {
 		t.Fatal(err)
 	}
-	e.assertLog(t, "sbx ls --quiet", "sbx ls --quiet")
+	// The readable stale state names a rule, so --rm now also drops it.
+	e.assertLog(t, "sbx ls --quiet", "sbx ls --quiet",
+		"sbx policy rm network --sandbox "+e.name+" --resource localhost:8717 --force")
 	if e.stateExists() {
 		t.Error("stale state must be removed with --rm")
 	}
@@ -320,6 +324,193 @@ func TestDownCorruptStateSbxRmFailureKeepsState(t *testing.T) {
 	if !e.stateExists() {
 		t.Error("state must stay when sbx rm fails")
 	}
+}
+
+func TestDownOutputLines(t *testing.T) {
+	// Dev-container literals are those of impl/sbx-runtime-core:cmd/down.go.
+	e := setupDown(t, false, true)
+	e.docker.ids = nil
+	got := captureStdout(t, func() { _ = runDown(e.root, false) })
+	if want := "no dev container found for " + e.root + "\n"; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+
+	e.docker.ids = []string{"abc", "def"}
+	got = captureStdout(t, func() { _ = runDown(e.root, false) })
+	if want := "stopping dev container(s) for " + e.root + ": abc def\n"; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+	got = captureStdout(t, func() { _ = runDown(e.root, true) })
+	if want := "removing dev container(s) for " + e.root + ": abc def\n"; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+func TestDownOutputSandboxLines(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.sbxNames = ""
+	got := captureStdout(t, func() { _ = runDown(e.root, false) })
+	if want := "no sandbox found for " + e.root + "\n"; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+	e.writeState(t, "")
+	got = captureStdout(t, func() { _ = runDown(e.root, true) })
+	if want := "no sandbox found for " + e.root + "; removed stale state for " + e.name + "\n"; got != want {
+		t.Errorf("got %q want %q", got, want)
+	}
+}
+
+func TestDownCorruptNoticeText(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.writeCorruptState(t)
+	got := captureStdout(t, func() { _ = runDown(e.root, true) })
+	if !strings.Contains(got, "notice: sandbox state file for "+e.name+" is unreadable") ||
+		!strings.Contains(got, "sbx policy ls "+e.name) {
+		t.Errorf("notice missing: %q", got)
+	}
+}
+
+func TestDownRmListedNoState(t *testing.T) {
+	e := setupDown(t, true, false)
+	if err := runDown(e.root, true); err != nil {
+		t.Fatal(err)
+	}
+	e.assertLog(t, "sbx ls --quiet", "sbx rm --force "+e.name)
+}
+
+func TestDownDockerPSFailure(t *testing.T) {
+	e := setupDown(t, true, true)
+	e.docker.psErr = errors.New("ps broke")
+	err := runDown(e.root, false)
+	if err == nil || !strings.Contains(err.Error(), "ps broke") {
+		t.Fatalf("err = %v", err)
+	}
+	e.assertLog(t, "sbx ls --quiet", "sbx stop "+e.name, "docker ps")
+}
+
+func TestDownCorruptStateAbsentPlainKeepsFile(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.sbxNames = ""
+	e.writeCorruptState(t)
+	if err := runDown(e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	if !e.stateExists() {
+		t.Error("plain down must keep the file")
+	}
+}
+
+func TestDownPolicyRmRunsWhenStateRemovalFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	e := setupDown(t, true, false)
+	e.writeState(t, "localhost:8717")
+	dir := filepath.Dir(sbxStatePath(e.name))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	err := runDown(e.root, true)
+	if err == nil || !strings.Contains(err.Error(), "removing sandbox state") {
+		t.Fatalf("err = %v", err)
+	}
+	e.assertLog(t, "sbx ls --quiet", "sbx rm --force "+e.name,
+		"sbx policy rm network --sandbox "+e.name+" --resource localhost:8717 --force")
+}
+
+func TestDownStaleReadableStatePolicyRm(t *testing.T) {
+	policy := func(e *downEnv) string {
+		return "sbx policy rm network --sandbox " + e.name + " --resource localhost:8717 --force"
+	}
+	t.Run("with resource", func(t *testing.T) {
+		e := setupDown(t, true, false)
+		e.sbxNames = ""
+		e.writeState(t, "localhost:8717")
+		if err := runDown(e.root, true); err != nil {
+			t.Fatal(err)
+		}
+		e.assertLog(t, "sbx ls --quiet", policy(e))
+		if e.stateExists() {
+			t.Error("stale state must be removed")
+		}
+	})
+	t.Run("policy failure is a notice", func(t *testing.T) {
+		e := setupDown(t, true, false)
+		e.sbxNames = ""
+		e.writeState(t, "localhost:8717")
+		e.failOn["policy rm network --sandbox "+e.name+" --resource localhost:8717 --force"] = true
+		if err := runDown(e.root, true); err != nil {
+			t.Fatal(err)
+		}
+		if e.stateExists() {
+			t.Error("stale state must be removed")
+		}
+	})
+	t.Run("without resource", func(t *testing.T) {
+		e := setupDown(t, true, false)
+		e.sbxNames = ""
+		e.writeState(t, "")
+		if err := runDown(e.root, true); err != nil {
+			t.Fatal(err)
+		}
+		e.assertLog(t, "sbx ls --quiet")
+		if e.stateExists() {
+			t.Error("stale state must be removed")
+		}
+	})
+	t.Run("corrupt", func(t *testing.T) {
+		e := setupDown(t, true, false)
+		e.sbxNames = ""
+		e.writeCorruptState(t)
+		if err := runDown(e.root, true); err != nil {
+			t.Fatal(err)
+		}
+		e.assertLog(t, "sbx ls --quiet")
+		if e.stateExists() {
+			t.Error("stale state must be removed")
+		}
+	})
+}
+
+func TestDownSbxLsNotAuthenticated(t *testing.T) {
+	t.Run("no state is a notice", func(t *testing.T) {
+		e := setupDown(t, true, true)
+		e.failOn["ls --quiet"] = true
+		e.failOut = "Error: Not Authenticated"
+		var err error
+		got := captureStdout(t, func() { err = runDown(e.root, false) })
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if !strings.Contains(got, "sbx is not signed in; sandbox check skipped") || !strings.Contains(got, "sbx login") {
+			t.Errorf("notice missing: %q", got)
+		}
+		e.assertLog(t, "sbx ls --quiet", "docker ps", "docker stop abc def")
+	})
+	t.Run("state present is an error", func(t *testing.T) {
+		e := setupDown(t, true, true)
+		e.failOn["ls --quiet"] = true
+		e.failOut = "not authenticated"
+		e.writeState(t, "")
+		err := runDown(e.root, true)
+		if err == nil || !strings.Contains(err.Error(), "sbx login") {
+			t.Fatalf("err = %v", err)
+		}
+		if !e.stateExists() {
+			t.Error("state must stay")
+		}
+		e.assertLog(t, "sbx ls --quiet", "docker ps", "docker rm -f abc def")
+	})
+	t.Run("corrupt state counts as present", func(t *testing.T) {
+		e := setupDown(t, true, false)
+		e.failOn["ls --quiet"] = true
+		e.failOut = "not authenticated"
+		e.writeCorruptState(t)
+		if err := runDown(e.root, false); err == nil {
+			t.Fatal("expected error")
+		}
+	})
 }
 
 func TestDownSbxLsFailureSurfacesAndDockerRuns(t *testing.T) {
