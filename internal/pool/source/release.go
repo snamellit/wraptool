@@ -2,20 +2,23 @@ package source
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Masterminds/semver/v3"
 
 	"github.com/pti/wraptool/internal/pool"
 	"github.com/pti/wraptool/internal/pool/backend"
@@ -29,6 +32,33 @@ const DefaultGitHubBaseURL = "https://github.com"
 // handful of lines in practice, so a larger body is a wrong or hostile
 // endpoint, not a release.
 const maxChecksumFileBytes = 1 << 20
+
+// downloadStallTimeout is how long an artifact download may go without
+// receiving a single body byte (or response headers) before it is cancelled.
+// It replaces a whole-body wall-clock Client.Timeout, which would fail a
+// legitimate 281 MB download on a slow link (npm.go's downloadTimeout comment
+// prescribes exactly this stall detector). A package var so tests can shrink
+// it. NPM and Archive still use the wall-clock budget and should adopt the
+// same helper.
+var downloadStallTimeout = 60 * time.Second
+
+// errDownloadStalled is the cancellation cause of a stalled download.
+var errDownloadStalled = errors.New("download stalled")
+
+// stallReader resets a stall timer on every read that returns data.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+	d     time.Duration
+}
+
+func (s *stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(s.d)
+	}
+	return n, err
+}
 
 // ReleaseConfig is the descriptor-derived configuration of one release-binary
 // source (design/harness/omp-release-source.md §4, §6.1).
@@ -77,8 +107,8 @@ func (r *Release) SetProgress(w io.Writer) {
 // a test seam. cfg is validated: every field non-empty, at least one asset,
 // every platform key a member of the closed enum.
 func NewRelease(cfg ReleaseConfig, githubBaseURL, registryBaseURL string) (*Release, error) {
-	if parts := strings.Split(cfg.Repo, "/"); len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, fmt.Errorf("release config: repo %q must be of the form owner/name", cfg.Repo)
+	if parts := strings.Split(cfg.Repo, "/"); len(parts) != 2 || !bareSegment(parts[0]) || !bareSegment(parts[1]) {
+		return nil, fmt.Errorf("release config: repo %q must be of the form owner/name (two non-empty segments, no . or ..)", cfg.Repo)
 	}
 	if cfg.VersionFeed == "" {
 		return nil, fmt.Errorf("release config %q: version feed must not be empty", cfg.Repo)
@@ -94,8 +124,8 @@ func NewRelease(cfg ReleaseConfig, githubBaseURL, registryBaseURL string) (*Rele
 		if _, err := pool.ParsePlatformKey(string(key)); err != nil {
 			return nil, fmt.Errorf("release config %q: %w", cfg.Repo, err)
 		}
-		if name == "" {
-			return nil, fmt.Errorf("release config %q: platform %s has an empty asset name", cfg.Repo, key)
+		if !bareSegment(name) {
+			return nil, fmt.Errorf("release config %q: platform %s asset name %q must be a bare file name", cfg.Repo, key, name)
 		}
 		assets[key] = name
 	}
@@ -108,8 +138,23 @@ func NewRelease(cfg ReleaseConfig, githubBaseURL, registryBaseURL string) (*Rele
 		githubBase:     strings.TrimRight(githubBaseURL, "/"),
 		feed:           NewNPM(registryBaseURL),
 		metadataClient: &http.Client{Timeout: metadataTimeout},
-		downloadClient: &http.Client{Timeout: downloadTimeout},
+		// No whole-body Timeout: downloadVerify enforces a stall window.
+		downloadClient: &http.Client{Transport: releaseTransport()},
 	}, nil
+}
+
+// releaseTransport is the default transport with a response-header timeout,
+// so a server that accepts the connection but never answers fails fast.
+func releaseTransport() http.RoundTripper {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = metadataTimeout
+	return t
+}
+
+// bareSegment reports whether s is a single, non-empty path segment: no
+// separators, and not "." or "..".
+func bareSegment(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, "/\\")
 }
 
 // Refresh lists the versions of the descriptor's npm VersionFeed as
@@ -159,9 +204,13 @@ func parseChecksumFile(r io.Reader) (map[string]string, error) {
 
 // Resolve locks version from the release's checksum file (§4.2): the file's
 // digests are both the upstream integrity values and the pool's cache
-// addresses. b, workDir and nodeVersion are ignored. PublishedAt is left zero
-// — the orchestrator fills it from the candidate's first-seen time, exactly
-// as for Archive.Resolve.
+// addresses. b, workDir and nodeVersion are ignored.
+//
+// PublishedAt is the feed packument's own time entry for version, fetched
+// here rather than trusted from a caller (as NPM.Resolve does). If the
+// packument has no usable time entry for the version, PublishedAt is left
+// zero and the orchestrator synthesizes it from first-seen. A failure to
+// fetch the packument at all is an error.
 //
 // A platform whose asset is absent from the file is omitted, not an error;
 // zero mapped platforms, or a 404 on the file itself, fails with a message
@@ -170,6 +219,9 @@ func parseChecksumFile(r io.Reader) (map[string]string, error) {
 func (r *Release) Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (pool.LockHarness, error) {
 	if pkg != r.cfg.Repo {
 		return pool.LockHarness{}, fmt.Errorf("release resolve: package %q does not match configured repo %q", pkg, r.cfg.Repo)
+	}
+	if _, err := semver.NewVersion(version); err != nil {
+		return pool.LockHarness{}, fmt.Errorf("release resolve %s: version %q is not a valid version: %w", pkg, version, err)
 	}
 	tag := pool.ReleaseTagPrefix + version
 	sumsURL := r.releaseBaseURL(tag) + "/" + r.cfg.Checksums
@@ -193,7 +245,14 @@ func (r *Release) Resolve(ctx context.Context, b backend.Backend, pkg, version, 
 	default:
 		return pool.LockHarness{}, fmt.Errorf("release resolve %s@%s: fetching %s: unexpected status %s", pkg, version, sumsURL, resp.Status)
 	}
-	sums, err := parseChecksumFile(io.LimitReader(resp.Body, maxChecksumFileBytes))
+	sumsBody, err := io.ReadAll(io.LimitReader(resp.Body, maxChecksumFileBytes+1))
+	if err != nil {
+		return pool.LockHarness{}, fmt.Errorf("release resolve %s@%s: reading %s: %w", pkg, version, sumsURL, err)
+	}
+	if len(sumsBody) > maxChecksumFileBytes {
+		return pool.LockHarness{}, fmt.Errorf("release resolve %s@%s: %s exceeds %d bytes", pkg, version, sumsURL, maxChecksumFileBytes)
+	}
+	sums, err := parseChecksumFile(bytes.NewReader(sumsBody))
 	if err != nil {
 		return pool.LockHarness{}, fmt.Errorf("release resolve %s@%s: %s: %w", pkg, version, sumsURL, err)
 	}
@@ -213,11 +272,20 @@ func (r *Release) Resolve(ctx context.Context, b backend.Backend, pkg, version, 
 			pkg, version, sumsURL)
 	}
 
+	var publishedAt time.Time
+	doc, err := r.feed.fetchPackument(ctx, r.cfg.VersionFeed)
+	if err != nil {
+		return pool.LockHarness{}, fmt.Errorf("release resolve %s@%s: %w", pkg, version, err)
+	}
+	if t, err := r.feed.versionPublishedAt(ctx, map[string]*npmPackument{r.cfg.VersionFeed: doc}, r.cfg.VersionFeed, version); err == nil {
+		publishedAt = t
+	}
+
 	return pool.LockHarness{
 		Source:         "release",
 		Package:        pkg,
 		Version:        version,
-		PublishedAt:    pool.FormatTimestamp(time.Time{}),
+		PublishedAt:    pool.FormatTimestamp(publishedAt),
 		FirstSeenAt:    pool.FormatTimestamp(time.Time{}),
 		RecipeRevision: recipeRevision,
 		Release:        &pool.LockRelease{Repo: r.cfg.Repo, Tag: tag, Artifacts: artifacts},
@@ -277,18 +345,33 @@ func (r *Release) downloadVerify(ctx context.Context, label, url, wantSHA256, ca
 		}
 	}
 
+	// Stall detector: cancel when no response/body byte arrives for
+	// downloadStallTimeout; the overall transfer time is unbounded.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	stall := downloadStallTimeout
+	timer := time.AfterFunc(stall, func() { cancel(errDownloadStalled) })
+	defer timer.Stop()
+	stalled := func(err error) error {
+		if errors.Is(context.Cause(ctx), errDownloadStalled) {
+			return fmt.Errorf("%w: no data from %s for %s", errDownloadStalled, url, stall)
+		}
+		return err
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("building request for %s: %w", url, err)
 	}
 	resp, err := r.downloadClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetching %s: %w", url, err)
+		return stalled(fmt.Errorf("fetching %s: %w", url, err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("fetching %s: unexpected status %s", url, resp.Status)
 	}
+	timer.Reset(stall)
 
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return fmt.Errorf("creating cache dir %s: %w", cacheDir, err)
@@ -304,9 +387,9 @@ func (r *Release) downloadVerify(ctx context.Context, label, url, wantSHA256, ca
 	}
 
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, h, newDownloadProgress(r.progress, label, resp.ContentLength)), resp.Body); err != nil {
+	if _, err := io.Copy(io.MultiWriter(tmp, h, newDownloadProgress(r.progress, label, resp.ContentLength)), &stallReader{r: resp.Body, timer: timer, d: stall}); err != nil {
 		cleanup()
-		return fmt.Errorf("downloading %s: %w", url, err)
+		return stalled(fmt.Errorf("downloading %s: %w", url, err))
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != wantSHA256 {
 		cleanup()
@@ -352,7 +435,7 @@ func (r *Release) Realize(ctx context.Context, b backend.Backend, harnessName, b
 	if harnessName == "" || binName == "" {
 		return nil, fmt.Errorf("realize: harnessName and binName must both be non-empty")
 	}
-	if binName != path.Base(binName) || binName == "." || binName == ".." {
+	if !bareSegment(binName) || binName != filepath.Base(binName) {
 		return nil, fmt.Errorf("realize: %s: binName %q must be a bare file name", harnessName, binName)
 	}
 	if h.Release == nil {
