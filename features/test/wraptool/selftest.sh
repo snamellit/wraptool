@@ -131,7 +131,7 @@ install_run() {
 }
 
 echo "1. install.sh: HOME prepped, connect staged, no binary installed (every harness)"
-for h in claude opencode pi agy; do
+for h in claude opencode pi agy omp; do
   R=$(install_run "$h") || fail "$h install exited non-zero"
   [ -d "$R/pool-home" ] || fail "$h: pool HOME not created"
   have "WT_HARNESS='$h'" "$R/share/options.env"
