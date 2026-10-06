@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/pti/wraptool/internal/pool"
 	"github.com/pti/wraptool/internal/pool/backend"
@@ -62,6 +63,15 @@ func (c *requestCounter) count() int {
 // certificate) and whose registry is registryURL.
 func newReleaseUnderTest(t *testing.T, gh *httptest.Server, registryURL string) *Release {
 	t.Helper()
+	if registryURL == "" {
+		reg := newPackumentServer(t, map[string]string{
+			"created": "2026-01-01T00:00:00.000Z",
+			"1.0.0":   "2026-02-03T04:05:06.000Z",
+			"17.2.10": "2026-03-04T05:06:07.000Z",
+		}, []string{"1.0.0", "17.2.10"})
+		t.Cleanup(reg.Close)
+		registryURL = reg.URL
+	}
 	r, err := NewRelease(testReleaseConfig(), gh.URL, registryURL)
 	if err != nil {
 		t.Fatalf("NewRelease: %v", err)
@@ -69,7 +79,6 @@ func newReleaseUnderTest(t *testing.T, gh *httptest.Server, registryURL string) 
 	r.metadataClient = gh.Client()
 	r.metadataClient.Timeout = metadataTimeout
 	r.downloadClient = gh.Client()
-	r.downloadClient.Timeout = downloadTimeout
 	return r
 }
 
@@ -115,6 +124,10 @@ func TestNewRelease_Validation(t *testing.T) {
 		"bad platform key":    func(c *ReleaseConfig) { c.Assets = map[pool.PlatformKey]string{"darwin-arm64": "x"} },
 		"empty asset name":    func(c *ReleaseConfig) { c.Assets = map[pool.PlatformKey]string{pool.PlatformLinuxAMD64Glibc: ""} },
 		"repo with extra dir": func(c *ReleaseConfig) { c.Repo = "a/b/c" },
+		"repo dotdot":         func(c *ReleaseConfig) { c.Repo = "../x" },
+		"repo dot":            func(c *ReleaseConfig) { c.Repo = "a/." },
+		"asset with slash":    func(c *ReleaseConfig) { c.Assets = map[pool.PlatformKey]string{pool.PlatformLinuxAMD64Glibc: "a/b"} },
+		"asset dotdot":        func(c *ReleaseConfig) { c.Assets = map[pool.PlatformKey]string{pool.PlatformLinuxAMD64Glibc: ".."} },
 	}
 	for name, mutate := range bad {
 		t.Run(name, func(t *testing.T) {
@@ -215,6 +228,8 @@ func TestRelease_Resolve_ChecksumParsing(t *testing.T) {
 		"binary-mode star separator": {d1 + " *omp-linux-x64\n", "malformed"},
 		"missing name":               {d1 + "  \n", "malformed"},
 		"garbage line":               {"hello\n", "malformed"},
+		"trailing-space name":        {d1 + "  omp-linux-x64 \n", "malformed"},
+		"crlf lines ok":              {d1 + "  omp-linux-x64\r\n" + d2 + "  omp-linux-arm64\r\n", ""},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -439,9 +454,122 @@ func TestRelease_Realize(t *testing.T) {
 	})
 
 	t.Run("binName must be a bare name", func(t *testing.T) {
-		_, err := r.Realize(context.Background(), nil, "omp", "../omp", h, pool.PlatformLinuxAMD64Glibc, t.TempDir(), t.TempDir())
-		if err == nil {
-			t.Error("path-ish binName accepted")
+		cache := t.TempDir()
+		if err := os.WriteFile(filepath.Join(cache, digest), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := r.Realize(context.Background(), nil, "omp", "../omp", h, pool.PlatformLinuxAMD64Glibc, cache, t.TempDir())
+		if err == nil || !strings.Contains(err.Error(), "binName") {
+			t.Errorf("err = %v, want an error naming binName", err)
+		}
+	})
+}
+
+func TestRelease_Resolve_PublishedAtFromPackument(t *testing.T) {
+	d := strings.Repeat("1", 64)
+	gh := newSumsServer(t, "1.0.0", d+"  omp-linux-x64\n", nil, nil)
+	r := newReleaseUnderTest(t, gh, "")
+	lh, err := r.Resolve(context.Background(), nil, testReleaseRepo, "1.0.0", "", "", "rr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := pool.ParseTimestamp("2026-02-03T04:05:06.000Z")
+	if got, _ := pool.ParseTimestamp(lh.PublishedAt); !got.Equal(want) {
+		t.Errorf("PublishedAt = %s, want packument time", lh.PublishedAt)
+	}
+
+	// No time entry for the version: zero, left for orchestrator synthesis.
+	reg := newPackumentServer(t, map[string]string{"created": "2026-01-01T00:00:00.000Z"}, []string{"1.0.0"})
+	defer reg.Close()
+	r = newReleaseUnderTest(t, gh, reg.URL)
+	lh, err = r.Resolve(context.Background(), nil, testReleaseRepo, "1.0.0", "", "", "rr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := pool.ParseTimestamp(lh.PublishedAt); !got.IsZero() {
+		t.Errorf("PublishedAt = %s, want zero when the packument lacks the version", lh.PublishedAt)
+	}
+}
+
+func TestRelease_Resolve_RejectsBadVersionAndOversizeSums(t *testing.T) {
+	gh := newSumsServer(t, "1.0.0", "", nil, nil)
+	r := newReleaseUnderTest(t, gh, "")
+	for _, v := range []string{"../../x", "1.0.0/../../y", "latest", ""} {
+		if _, err := r.Resolve(context.Background(), nil, testReleaseRepo, v, "", "", "rr"); err == nil || !strings.Contains(err.Error(), "not a valid version") {
+			t.Errorf("version %q: err = %v, want invalid-version error", v, err)
+		}
+	}
+
+	big := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(strings.Repeat("\n", maxChecksumFileBytes+10)))
+	}))
+	defer big.Close()
+	r = newReleaseUnderTest(t, big, "")
+	if _, err := r.Resolve(context.Background(), nil, testReleaseRepo, "1.0.0", "", "", "rr"); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("oversize checksum file: err = %v, want exceeds error", err)
+	}
+}
+
+func TestRelease_Fetch_ErrorPaths(t *testing.T) {
+	digest := sha256HexOf([]byte("x"))
+	gh := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
+	defer gh.Close()
+	r := newReleaseUnderTest(t, gh, "")
+	targets := []pool.PlatformKey{pool.PlatformLinuxAMD64Glibc}
+
+	err := r.Fetch(context.Background(), releaseLock(gh.URL+"/omp", pool.PlatformLinuxAMD64Glibc, digest), t.TempDir(), targets)
+	if err == nil || !strings.Contains(err.Error(), "unexpected status") {
+		t.Errorf("non-200: err = %v", err)
+	}
+	err = r.Fetch(context.Background(), releaseLock(gh.URL+"/omp", pool.PlatformLinuxAMD64Glibc, "../../etc/passwd"), t.TempDir(), targets)
+	if err == nil || !strings.Contains(err.Error(), "malformed sha256") {
+		t.Errorf("malformed digest: err = %v", err)
+	}
+}
+
+func TestRelease_Fetch_StallDetector(t *testing.T) {
+	old := downloadStallTimeout
+	downloadStallTimeout = 300 * time.Millisecond
+	defer func() { downloadStallTimeout = old }()
+
+	body := []byte(strings.Repeat("0123456789", 10)) // 100 bytes in 10 chunks
+	digest := sha256HexOf(body)
+	targets := []pool.PlatformKey{pool.PlatformLinuxAMD64Glibc}
+
+	t.Run("slow but steady succeeds past the stall window overall", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for i := 0; i < 10; i++ {
+				w.Write(body[i*10 : (i+1)*10])
+				w.(http.Flusher).Flush()
+				time.Sleep(100 * time.Millisecond)
+			}
+		}))
+		defer srv.Close()
+		r := newReleaseUnderTest(t, srv, "")
+		start := time.Now()
+		if err := r.Fetch(context.Background(), releaseLock(srv.URL+"/omp", pool.PlatformLinuxAMD64Glibc, digest), t.TempDir(), targets); err != nil {
+			t.Fatalf("Fetch: %v", err)
+		}
+		if time.Since(start) < downloadStallTimeout {
+			t.Fatalf("download finished faster than the stall window; the test proves nothing")
+		}
+	})
+
+	t.Run("no bytes for the stall window fails naming the stall", func(t *testing.T) {
+		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(body[:10])
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}))
+		defer srv.Close()
+		r := newReleaseUnderTest(t, srv, "")
+		cache := t.TempDir()
+		err := r.Fetch(context.Background(), releaseLock(srv.URL+"/omp", pool.PlatformLinuxAMD64Glibc, digest), cache, targets)
+		if err == nil || !strings.Contains(err.Error(), "stalled") {
+			t.Fatalf("err = %v, want a stall error", err)
+		}
+		if entries, _ := os.ReadDir(cache); len(entries) != 0 {
+			t.Errorf("cache not empty after stalled download: %v", entries)
 		}
 	})
 }

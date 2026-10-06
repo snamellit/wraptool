@@ -103,6 +103,10 @@ func TestIntegration_RealReleaseSourceThroughRealOrchestrator(t *testing.T) {
 		t.Fatalf("lock failed to validate: %v", err)
 	}
 	lh := lockDoc.Harnesses[harnessName]
+	wantPub, _ := pool.ParseTimestamp("2026-02-01T00:00:00.000Z")
+	if gotPub, _ := pool.ParseTimestamp(lh.PublishedAt); !gotPub.Equal(wantPub) {
+		t.Errorf("locked published_at = %s, want the packument time", lh.PublishedAt)
+	}
 	if lh.Source != "release" || lh.Release == nil || lh.Release.Tag != "v"+version {
 		t.Fatalf("lock entry = %+v", lh)
 	}
