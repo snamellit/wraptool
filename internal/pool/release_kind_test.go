@@ -13,6 +13,7 @@ import (
 // (design/harness/omp-release-source.md §3, §11).
 
 const releaseTestRepo = "can1357/oh-my-pi"
+const releaseTestFeed = "@oh-my-pi/pi-coding-agent"
 
 func sampleReleaseAssets() map[PlatformKey]string {
 	return map[PlatformKey]string{
@@ -228,10 +229,10 @@ func TestGCReleaseArtifactCacheDigestIsRetained(t *testing.T) {
 // goldenReleaseRecipeRevision pins releaseRecipeRevision for the sample
 // inputs. If this fails, the recipe formula changed: bump
 // releaseRecipeFormatVersion deliberately and re-pin.
-const goldenReleaseRecipeRevision = "sha256:260676ac20ff14784b735234ff1ab9aac097efac92ecda83c1846f9340f25945"
+const goldenReleaseRecipeRevision = "sha256:a43801a672dec07b5e0ffa92e2e1c1e09ddd1d070d2e08ed2737df6e0fd3660c"
 
 func TestReleaseRecipeRevisionGoldenAndProperties(t *testing.T) {
-	got, err := releaseRecipeRevision(releaseTestRepo, sampleReleaseAssets(), "SHA256SUMS.txt")
+	got, err := releaseRecipeRevision(releaseTestRepo, releaseTestFeed, sampleReleaseAssets(), "SHA256SUMS.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +240,7 @@ func TestReleaseRecipeRevisionGoldenAndProperties(t *testing.T) {
 		t.Errorf("releaseRecipeRevision = %q, want golden %q", got, goldenReleaseRecipeRevision)
 	}
 	for range 20 {
-		again, _ := releaseRecipeRevision(releaseTestRepo, sampleReleaseAssets(), "SHA256SUMS.txt")
+		again, _ := releaseRecipeRevision(releaseTestRepo, releaseTestFeed, sampleReleaseAssets(), "SHA256SUMS.txt")
 		if again != got {
 			t.Fatalf("not stable across map iteration order: %s vs %s", again, got)
 		}
@@ -248,10 +249,17 @@ func TestReleaseRecipeRevisionGoldenAndProperties(t *testing.T) {
 	changedAssets := sampleReleaseAssets()
 	changedAssets[PlatformLinuxAMD64Glibc] = "omp-linux-x64-v2"
 	variants := map[string]func() (string, error){
-		"repo":   func() (string, error) { return releaseRecipeRevision("a/b", sampleReleaseAssets(), "SHA256SUMS.txt") },
-		"assets": func() (string, error) { return releaseRecipeRevision(releaseTestRepo, changedAssets, "SHA256SUMS.txt") },
+		"repo": func() (string, error) {
+			return releaseRecipeRevision("a/b", releaseTestFeed, sampleReleaseAssets(), "SHA256SUMS.txt")
+		},
+		"feed": func() (string, error) {
+			return releaseRecipeRevision(releaseTestRepo, "other-feed", sampleReleaseAssets(), "SHA256SUMS.txt")
+		},
+		"assets": func() (string, error) {
+			return releaseRecipeRevision(releaseTestRepo, releaseTestFeed, changedAssets, "SHA256SUMS.txt")
+		},
 		"checksum": func() (string, error) {
-			return releaseRecipeRevision(releaseTestRepo, sampleReleaseAssets(), "sums.txt")
+			return releaseRecipeRevision(releaseTestRepo, releaseTestFeed, sampleReleaseAssets(), "sums.txt")
 		},
 	}
 	for name, f := range variants {
@@ -278,11 +286,11 @@ func TestReleaseRecipeRevisionGoldenAndProperties(t *testing.T) {
 }
 
 func TestRecipeRevisionForSource_Release(t *testing.T) {
-	want, err := releaseRecipeRevision(releaseTestRepo, sampleReleaseAssets(), "SHA256SUMS.txt")
+	want, err := releaseRecipeRevision(releaseTestRepo, releaseTestFeed, sampleReleaseAssets(), "SHA256SUMS.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rr := &ReleaseRecipe{Assets: sampleReleaseAssets(), Checksums: "SHA256SUMS.txt"}
+	rr := &ReleaseRecipe{VersionFeed: releaseTestFeed, Assets: sampleReleaseAssets(), Checksums: "SHA256SUMS.txt"}
 	got, err := recipeRevisionForSource(SourceRelease, releaseTestRepo, "img", "22.1.0", rr)
 	if err != nil || got != want {
 		t.Errorf("recipeRevisionForSource(SourceRelease) = %q, %v, want %q", got, err, want)

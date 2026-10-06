@@ -554,8 +554,8 @@ func retainedGenerationIDs(paths PoolPaths) (map[string]bool, error) {
 // retainedCacheDigests computes the set of cache/sha256/<digest> file names
 // (bare hex, matching ReceiptFile.SHA256/NPMLockPackage.SHA256's own
 // unprefixed form) that the current lock still references, across every
-// harness's npm package cache addresses, runtime artifact digests, and
-// release artifact digests (LockHarness.Release, omp-release-source.md §3.4), and
+// harness's npm package cache addresses, runtime artifact digests, release
+// artifact digests (LockHarness.Release, omp-release-source.md §3.4), and
 // archive artifact digests (lock.go's LockHarness.Archive — wave2-
 // integration-fixes item 2: this walk originally covered only
 // NPMLock.Packages and Runtime.Artifacts, so GC deleted a still-locked

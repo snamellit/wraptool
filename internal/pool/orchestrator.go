@@ -36,10 +36,10 @@ const archiveSourceName = "archive"
 const releaseSourceName = "release"
 
 // SourceKind names which pool.Source acquisition style an orchestrator call
-// is driving — SourceNPM, SourceArchive or SourceRelease (§8.1's Lock.Source values). It
-// selects the Observations/Lock namespace prefix ("<kind>/<pkg>/<version>",
+// is driving — SourceNPM, SourceArchive or SourceRelease (§8.1's Lock.Source
+// values). It selects the Observations/Lock namespace prefix ("<kind>/<pkg>/<version>",
 // §8.1) and the recipe_revision formula (npmRecipeRevision vs
-// archiveRecipeRevision). This package's Source interface is structural,
+// archiveRecipeRevision vs releaseRecipeRevision). This package's Source interface is structural,
 // deliberately not internal/pool/source's concrete types (see that
 // interface's own doc comment below), so it cannot infer a caller's source
 // style at runtime by inspecting the Source value itself; the caller
@@ -62,7 +62,7 @@ const (
 // parameters elsewhere in this package (RefreshHarnessLocked/RefreshHarness/
 // StatusHarness's own kind argument) are NOT defaulted this way — a
 // required parameter has no "unset" state to default from, so those callers
-// must always pass an explicit SourceNPM/SourceArchive.
+// must always pass an explicit SourceNPM/SourceArchive/SourceRelease.
 func (k SourceKind) effective() SourceKind {
 	if k == "" {
 		return SourceNPM
@@ -220,12 +220,24 @@ func archiveRecipeRevision(pkg string) (string, error) {
 // invalidates another's realized generations.
 const releaseRecipeFormatVersion = 1
 
+// ReleaseTagPrefix is the fixed prefix of a release-sourced harness's git
+// tag: the tag for version V is ReleaseTagPrefix+V ("v18.6.1"). The release
+// source builds tags from this constant and releaseRecipeRevision hashes the
+// scheme string derived from it, so the two cannot drift apart.
+const ReleaseTagPrefix = "v"
+
+// releaseTagScheme is the tag-scheme string folded into the recipe hash.
+const releaseTagScheme = ReleaseTagPrefix + "{version}"
+
 // ReleaseRecipe carries the descriptor-derived inputs of a release-sourced
 // harness's recipe_revision (omp-release-source.md §3.5): the platform to
 // release-asset-name mapping and the checksum asset's name. Neither is
 // recoverable from the package identity (the repo) alone, and a change to
 // either must self-heal through the ordinary recipe-mismatch path.
 type ReleaseRecipe struct {
+	// VersionFeed is the npm package whose packument supplies the harness's
+	// versions and publish times (omp-release-source.md §4.1).
+	VersionFeed string
 	// Assets maps each supported platform to its release asset name.
 	Assets map[PlatformKey]string
 	// Checksums is the release's checksum asset name (e.g. "SHA256SUMS.txt").
@@ -235,10 +247,22 @@ type ReleaseRecipe struct {
 // releaseRecipeRevision computes recipe_revision (§8) for one release-binary
 // harness — the release counterpart of archiveRecipeRevision. Like the
 // archive source it invokes no backend, so there is no provisioning image to
-// fold in: repo identity + the platform-to-asset mapping + the checksum
-// asset name + releaseRecipeFormatVersion. The mapping is serialized as a
+// fold in: repo identity + the version-feed package + the fixed tag scheme +
+// the platform-to-asset mapping + the checksum asset name + releaseRecipeFormatVersion. The mapping is serialized as a
 // slice sorted by platform key so the hash never depends on map order.
-func releaseRecipeRevision(repo string, assets map[PlatformKey]string, checksums string) (string, error) {
+func releaseRecipeRevision(repo, versionFeed string, assets map[PlatformKey]string, checksums string) (string, error) {
+	if repo == "" {
+		return "", fmt.Errorf("release recipe: repo must not be empty")
+	}
+	if versionFeed == "" {
+		return "", fmt.Errorf("release recipe %q: version feed must not be empty", repo)
+	}
+	if len(assets) == 0 {
+		return "", fmt.Errorf("release recipe %q: asset mapping must not be empty", repo)
+	}
+	if checksums == "" {
+		return "", fmt.Errorf("release recipe %q: checksum asset name must not be empty", repo)
+	}
 	type assetEntry struct {
 		Platform string `json:"platform"`
 		Asset    string `json:"asset"`
@@ -250,10 +274,12 @@ func releaseRecipeRevision(repo string, assets map[PlatformKey]string, checksums
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Platform < entries[j].Platform })
 	data, err := json.Marshal(struct {
 		Repo      string       `json:"repo"`
+		Feed      string       `json:"version_feed"`
+		TagScheme string       `json:"tag_scheme"`
 		Assets    []assetEntry `json:"assets"`
 		Checksums string       `json:"checksums"`
 		Format    int          `json:"release_recipe_format_version"`
-	}{Repo: repo, Assets: entries, Checksums: checksums, Format: releaseRecipeFormatVersion})
+	}{Repo: repo, Feed: versionFeed, TagScheme: releaseTagScheme, Assets: entries, Checksums: checksums, Format: releaseRecipeFormatVersion})
 	if err != nil {
 		return "", fmt.Errorf("marshaling release recipe for hashing: %w", err)
 	}
@@ -285,7 +311,7 @@ func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage, nodeVersio
 		if release == nil {
 			return "", fmt.Errorf("release source %q: recipe_revision needs release recipe inputs (UpdateOptions.Release)", pkg)
 		}
-		return releaseRecipeRevision(pkg, release.Assets, release.Checksums)
+		return releaseRecipeRevision(pkg, release.VersionFeed, release.Assets, release.Checksums)
 	default:
 		return "", fmt.Errorf("internal error: unknown pool source kind %q", kind)
 	}
@@ -417,10 +443,13 @@ type UpdateOptions struct {
 	Harness string
 	// Package is the source package identity, e.g. "@anthropic-ai/claude-code"
 	// for an npm-sourced harness, or the harness's own name for an
-	// archive-sourced one (internal/harness.Descriptor.PoolPackageID()).
+	// archive-sourced one (internal/harness.Descriptor.PoolPackageID()). For
+	// SourceRelease, Package is the GitHub repo ("owner/name", e.g.
+	// "can1357/oh-my-pi"), which is also the recipe's repo input and the
+	// observation namespace.
 	Package string
 	// Source selects which pool.Source acquisition style this call is
-	// driving — SourceNPM or SourceArchive (§8.1) — determining the
+	// driving — SourceNPM, SourceArchive or SourceRelease (§8.1) — determining the
 	// Observations/Lock namespace prefix and the recipe_revision formula
 	// (see SourceKind's own doc comment). The zero value is SourceNPM (see
 	// SourceKind.effective's doc comment): every UpdateOptions literal
@@ -1496,7 +1525,7 @@ type HarnessStatus struct {
 // (§6.5: "list takes no lock"). A missing manifest or lock file is treated
 // as empty (nothing installed yet), not an error, so `list` works before any
 // `install` has ever run. kind selects the Observations namespace this
-// harness's candidates were recorded under (SourceNPM/SourceArchive, §8.1) —
+// harness's candidates were recorded under (SourceNPM/SourceArchive/SourceRelease, §8.1) —
 // the caller (cmd/harness.go) knows the harness's Descriptor and states it
 // explicitly; this package cannot infer it from pkg alone.
 func StatusHarness(paths PoolPaths, harnessName string, kind SourceKind, pkg string, now time.Time) (HarnessStatus, error) {
