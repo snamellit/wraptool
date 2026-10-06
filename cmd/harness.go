@@ -143,12 +143,16 @@ func defaultHarnessDeps() harnessDeps {
 		// newSource constructs the harness pool's artifact-acquisition Source
 		// for d (design/harness/unified-harness-pool.md §11.3, pool.Source):
 		// the archive Source for an archive-sourced descriptor (agy), the
-		// npm Source for everything else. Both concrete types live in
+		// release Source for a release-sourced one (omp), the npm Source for
+		// everything else. Both concrete types live in
 		// internal/pool/source; Go's structural typing binds each to
 		// pool.Source, including Realize (§11.4).
 		newSource: func(d harness.Descriptor) (pool.Source, error) {
 			if d.PoolArchive {
 				return source.NewArchive(""), nil // "" = the production Antigravity CLI release channel
+			}
+			if d.PoolRelease != nil {
+				return newReleaseSource(d, "", "") // "" = github.com / the default npm registry
 			}
 			return source.NewNPM(""), nil // "" = the default npm registry
 		},
@@ -212,7 +216,7 @@ func hostPlatformTarget() (pool.PlatformKey, error) { return pool.HostPlatformKe
 // ever pass it through to Source.Resolve/Source.Realize, and Archive's
 // implementations of both never dereference it.
 func harnessBackend(deps harnessDeps, d harness.Descriptor, target platformTarget) (backend.Backend, error) {
-	if d.PoolArchive {
+	if needsNoBackend(d) {
 		return nil, nil
 	}
 	key, err := target()
@@ -251,7 +255,7 @@ type backendCache struct {
 // source-gating rule (archive needs no backend at all) lives in exactly
 // one place.
 func (c *backendCache) get(deps harnessDeps, d harness.Descriptor, target platformTarget) (backend.Backend, error) {
-	if d.PoolArchive {
+	if needsNoBackend(d) {
 		return harnessBackend(deps, d, target)
 	}
 	key, err := target()
@@ -278,7 +282,80 @@ func poolSourceKind(d harness.Descriptor) pool.SourceKind {
 	if d.PoolArchive {
 		return pool.SourceArchive
 	}
+	if d.PoolRelease != nil {
+		return pool.SourceRelease
+	}
 	return pool.SourceNPM
+}
+
+// needsNoBackend reports whether d's Source resolves and realizes in pure Go
+// (archive and release sources, §6.2 / omp-release-source.md §4), so no
+// container backend is ever probed or passed for it.
+func needsNoBackend(d harness.Descriptor) bool {
+	return d.PoolArchive || d.PoolRelease != nil
+}
+
+// poolOnly reports whether d is a pool-only harness: pool-lockable with no
+// legacy Install recipe (omp-release-source.md §6.2). Its generation is the
+// only install there is, so the legacy host-side step does not exist for it.
+func poolOnly(d harness.Descriptor) bool {
+	return d.PoolLockable() && len(d.Install) == 0
+}
+
+// releaseRecipeFor converts d's PoolRelease spec into the pool's recipe
+// inputs (nil for a non-release descriptor). It is the ONE converter shared
+// by newReleaseSource and every UpdateOptions builder, so the Source and the
+// recipe_revision inputs cannot drift. An Assets key that is not a valid
+// PlatformKey is an error, never silently dropped.
+func releaseRecipeFor(d harness.Descriptor) (*pool.ReleaseRecipe, error) {
+	spec := d.PoolRelease
+	if spec == nil {
+		return nil, nil
+	}
+	assets := make(map[pool.PlatformKey]string, len(spec.Assets))
+	for k, name := range spec.Assets {
+		key, err := pool.ParsePlatformKey(k)
+		if err != nil {
+			return nil, fmt.Errorf("harness %q release assets: %w", d.Name, err)
+		}
+		assets[key] = name
+	}
+	return &pool.ReleaseRecipe{VersionFeed: spec.VersionFeed, Assets: assets, Checksums: spec.Checksums}, nil
+}
+
+// newReleaseSource builds the release Source for d from the same converted
+// recipe the orchestrator hashes. Empty base URLs select the production
+// defaults.
+func newReleaseSource(d harness.Descriptor, githubBaseURL, registryBaseURL string) (pool.Source, error) {
+	recipe, err := releaseRecipeFor(d)
+	if err != nil {
+		return nil, err
+	}
+	if recipe == nil {
+		return nil, fmt.Errorf("harness %q has no release spec", d.Name)
+	}
+	return source.NewRelease(source.ReleaseConfig{
+		Repo: d.PoolRelease.Repo, VersionFeed: recipe.VersionFeed,
+		Checksums: recipe.Checksums, Assets: recipe.Assets,
+	}, githubBaseURL, registryBaseURL)
+}
+
+// requirePoolOnlyActive is the whole "install" outcome of a pool-only
+// harness (omp-release-source.md §6.2): there is no legacy fallback, so a
+// realize failure — or no live active generation for this host — fails the
+// command, and a realized+activated generation completes it silently.
+func requirePoolOnlyActive(deps harnessDeps, name string, realizeErr error) error {
+	if realizeErr != nil {
+		return fmt.Errorf("%s: generation realization failed (this harness has no legacy installer to fall back to): %w", name, realizeErr)
+	}
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		return fmt.Errorf("%s: %w", name, err)
+	}
+	if _, ok := pool.ActiveGeneration(deps.poolPaths(), name, hostKey); !ok {
+		return fmt.Errorf("%s: no active generation for %s after install (this harness has no legacy installer to fall back to)", name, hostKey)
+	}
+	return nil
 }
 
 // refreshNodeLineIfNPM calls pool.RefreshNodeLine for d's pinned Node major
@@ -923,8 +1000,13 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 		return fmt.Errorf("refreshing %s: %w", name, err)
 	}
 
+	relRecipe, err := releaseRecipeFor(d)
+	if err != nil {
+		return err
+	}
 	result, err := pool.UpdateHarnessLocked(ctx, src, b, paths, pool.UpdateOptions{
 		Harness: name, Package: pkg, Source: kind, BinName: d.Bin, NodeLine: d.NodeLine, Now: now,
+		Release:    relRecipe,
 		AllowYoung: allowYoung, Reason: reason,
 		// install never advances a floating constraint (§10) — it's
 		// idempotent once manifest/lock/recipe agree, even if a newer
@@ -948,7 +1030,7 @@ func runHarnessInstall(ctx context.Context, cmd *cobra.Command, deps harnessDeps
 		return fmt.Errorf("updating %s: %w", name, err)
 	}
 	printUpdateResult(cmd, name, result)
-	printRealizeWarning(cmd, name, result, b)
+	printRealizeWarning(cmd, name, d, result, b)
 	if allowYoung && !result.AllowYoungApplied && !result.Changed {
 		// install's no-advance short-circuit fires before the bypass is
 		// consulted, so the flag can no-op invisibly on an existing lock.
@@ -1013,8 +1095,13 @@ func printUpdateResult(cmd *cobra.Command, name string, result *pool.UpdateResul
 // printUpdateResult. A no-op when RealizeErr is nil. b is the backend the
 // failed realize actually ran against (nil for an archive-sourced harness,
 // which uses none) — see realizeErrorHint for why it matters to the message.
-func printRealizeWarning(cmd *cobra.Command, name string, result *pool.UpdateResult, b backend.Backend) {
+func printRealizeWarning(cmd *cobra.Command, name string, d harness.Descriptor, result *pool.UpdateResult, b backend.Backend) {
 	if result.RealizeErr == nil {
+		return
+	}
+	if poolOnly(d) {
+		// No legacy install continues for a pool-only harness; the failure
+		// is returned as the command error by maybeInstallLocked instead.
 		return
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s: generation realization failed (legacy install continues): %v%s\n",
@@ -1091,6 +1178,9 @@ func realizeErrorHint(b backend.Backend) string {
 // failure, a non-guix-absent npm legacy-install failure, or a non-lockable
 // harness).
 func maybeInstallLocked(cmd *cobra.Command, deps harnessDeps, name string, d harness.Descriptor, result *pool.UpdateResult) error {
+	if poolOnly(d) {
+		return requirePoolOnlyActive(deps, name, result.RealizeErr)
+	}
 	_, poolBin, err := deps.poolBinDir()
 	if err != nil {
 		return err
@@ -1489,8 +1579,13 @@ listed in the pool manifest.`,
 				if err != nil {
 					return err
 				}
+				relRecipe, err := releaseRecipeFor(d)
+				if err != nil {
+					return err
+				}
 				result, err := pool.UpdateHarnessLocked(context.Background(), src, b, paths, pool.UpdateOptions{
 					Harness: name, Package: d.PoolPackageID(), Source: poolSourceKind(d), BinName: d.Bin, NodeLine: d.NodeLine, Now: now,
+					Release:    relRecipe,
 					AllowYoung: allowYoung, Reason: reason,
 					// update is the only normal command that advances a
 					// floating constraint (§10): always scan for a newer
@@ -1506,7 +1601,7 @@ listed in the pool manifest.`,
 					return err
 				}
 				printUpdateResult(cmd, name, result)
-				printRealizeWarning(cmd, name, result, b)
+				printRealizeWarning(cmd, name, d, result, b)
 				return maybeInstallLocked(cmd, deps, name, d, result)
 			})
 		},
@@ -1609,6 +1704,13 @@ the host's own legacy bin/ is out of scope for it.`,
 					fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s "+
 						"(not this host's own platform — skipping host-side legacy install)\n", name, lh.Version, key)
 					return nil
+				}
+				if poolOnly(d) {
+					// Pool-only: the realized+activated generation IS the
+					// install (SyncHarnessLocked returning nil guarantees
+					// it) — no legacy step to run or to skip noisily.
+					fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s\n", name, lh.Version, key)
+					return requirePoolOnlyActive(deps, name, nil)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s; installing ...\n", name, lh.Version, key)
 				installErr := legacyInstallVersionLocked(cmd, deps, name, d, lh.Version)
