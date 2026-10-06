@@ -143,6 +143,7 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		poolPlanInput: poolPlanInput{
 			Harness:               hname,
 			PoolLockable:          desc.PoolLockable(),
+			PoolOnly:              poolOnly(desc),
 			PointerPath:           pointerPath,
 			RuntimeDir:            pool.RuntimeDir(),
 			RuntimeBinDir:         pool.RuntimeBinDir(),
@@ -400,6 +401,10 @@ type poolPlanInput struct {
 	// a notice promising a fix command that can't exist for them would be
 	// noise (§16).
 	PoolLockable bool
+	// PoolOnly is true for a pool-lockable harness with no legacy Install
+	// recipe (omp): no legacy bin/ copy of it can ever exist, so "no active
+	// generation" can never be papered over by a legacy fallback.
+	PoolOnly bool
 	// PointerPath is pool.PointerFile(<target platform key>, Harness), or ""
 	// when the platform key itself could not be resolved — treated
 	// identically to "no active pointer" (§12.1 point 3).
@@ -538,6 +543,12 @@ func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
 //     (review round 2 finding: naming only the missing one leaves the
 //     developer guessing what the OTHER expected path even is).
 func legacyOrErrorGuixPoolPlan(in guixPoolPlanInput, legacyState legacyPoolState, notice string) guixPoolPlan {
+	if in.PoolOnly {
+		return guixPoolPlan{err: fmt.Errorf(
+			"%q has no active generation for this host and no legacy installer, so the container could not run it; "+
+				"run `wraptool harness install %s` (or `wraptool harness sync %s` if already installed) before entering a guix container",
+			in.Harness, in.Harness, in.Harness)}
+	}
 	switch legacyState {
 	case legacyBothPresent:
 		return legacyGuixPoolPlan(in, notice)
