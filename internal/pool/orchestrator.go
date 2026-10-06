@@ -29,8 +29,14 @@ const npmSourceName = "npm"
 // implementation. Same visibility reasoning as npmSourceName.
 const archiveSourceName = "archive"
 
+// releaseSourceName is the counterpart for a release-binary harness
+// (design/harness/omp-release-source.md §3.1) — a prebuilt binary
+// published as a GitHub release asset, locked via the release's checksum
+// file. Same visibility reasoning as npmSourceName.
+const releaseSourceName = "release"
+
 // SourceKind names which pool.Source acquisition style an orchestrator call
-// is driving — SourceNPM or SourceArchive (§8.1's Lock.Source values). It
+// is driving — SourceNPM, SourceArchive or SourceRelease (§8.1's Lock.Source values). It
 // selects the Observations/Lock namespace prefix ("<kind>/<pkg>/<version>",
 // §8.1) and the recipe_revision formula (npmRecipeRevision vs
 // archiveRecipeRevision). This package's Source interface is structural,
@@ -45,6 +51,7 @@ type SourceKind string
 const (
 	SourceNPM     SourceKind = SourceKind(npmSourceName)
 	SourceArchive SourceKind = SourceKind(archiveSourceName)
+	SourceRelease SourceKind = SourceKind(releaseSourceName)
 )
 
 // effective normalizes a SourceKind, treating the zero value ("") as
@@ -207,8 +214,56 @@ func archiveRecipeRevision(pkg string) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// releaseRecipeFormatVersion is archiveRecipeFormatVersion's counterpart for
+// a release-binary harness (omp-release-source.md §3.5): its own constant,
+// independent of npm's and archive's, so bumping one source's recipe never
+// invalidates another's realized generations.
+const releaseRecipeFormatVersion = 1
+
+// ReleaseRecipe carries the descriptor-derived inputs of a release-sourced
+// harness's recipe_revision (omp-release-source.md §3.5): the platform to
+// release-asset-name mapping and the checksum asset's name. Neither is
+// recoverable from the package identity (the repo) alone, and a change to
+// either must self-heal through the ordinary recipe-mismatch path.
+type ReleaseRecipe struct {
+	// Assets maps each supported platform to its release asset name.
+	Assets map[PlatformKey]string
+	// Checksums is the release's checksum asset name (e.g. "SHA256SUMS.txt").
+	Checksums string
+}
+
+// releaseRecipeRevision computes recipe_revision (§8) for one release-binary
+// harness — the release counterpart of archiveRecipeRevision. Like the
+// archive source it invokes no backend, so there is no provisioning image to
+// fold in: repo identity + the platform-to-asset mapping + the checksum
+// asset name + releaseRecipeFormatVersion. The mapping is serialized as a
+// slice sorted by platform key so the hash never depends on map order.
+func releaseRecipeRevision(repo string, assets map[PlatformKey]string, checksums string) (string, error) {
+	type assetEntry struct {
+		Platform string `json:"platform"`
+		Asset    string `json:"asset"`
+	}
+	entries := make([]assetEntry, 0, len(assets))
+	for key, name := range assets {
+		entries = append(entries, assetEntry{Platform: string(key), Asset: name})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Platform < entries[j].Platform })
+	data, err := json.Marshal(struct {
+		Repo      string       `json:"repo"`
+		Assets    []assetEntry `json:"assets"`
+		Checksums string       `json:"checksums"`
+		Format    int          `json:"release_recipe_format_version"`
+	}{Repo: repo, Assets: entries, Checksums: checksums, Format: releaseRecipeFormatVersion})
+	if err != nil {
+		return "", fmt.Errorf("marshaling release recipe for hashing: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 // recipeRevisionForSource computes recipe_revision (§8) for pkg under kind,
-// dispatching to npmRecipeRevision or archiveRecipeRevision. provisioningImage
+// dispatching to npmRecipeRevision, archiveRecipeRevision or
+// releaseRecipeRevision. provisioningImage
 // and nodeVersion are passed through to npmRecipeRevision only —
 // archiveRecipeRevision ignores both (archive resolve/realize invoke no
 // backend and bundle no node runtime, §6.2/node-runtime-tracking.md
@@ -216,12 +271,21 @@ func archiveRecipeRevision(pkg string) (string, error) {
 // .golangci.yml): a future SourceKind added without wiring its own recipe
 // formula fails loudly here instead of silently reusing another source's
 // revision.
-func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage, nodeVersion string) (string, error) {
+//
+// release is consulted only for SourceRelease (pkg is then the release repo,
+// e.g. "can1357/oh-my-pi"); a SourceRelease call with a nil release is an
+// error, since the asset mapping cannot be inferred.
+func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage, nodeVersion string, release *ReleaseRecipe) (string, error) {
 	switch kind {
 	case SourceNPM:
 		return npmRecipeRevision(pkg, provisioningImage, nodeVersion)
 	case SourceArchive:
 		return archiveRecipeRevision(pkg)
+	case SourceRelease:
+		if release == nil {
+			return "", fmt.Errorf("release source %q: recipe_revision needs release recipe inputs (UpdateOptions.Release)", pkg)
+		}
+		return releaseRecipeRevision(pkg, release.Assets, release.Checksums)
 	default:
 		return "", fmt.Errorf("internal error: unknown pool source kind %q", kind)
 	}
@@ -412,6 +476,11 @@ type UpdateOptions struct {
 	// cmd/harness.go always passes its provisioningImage constant here, even
 	// on a call that resolves to use the guix backend.
 	ProvisioningImage string
+	// Release carries the release-binary recipe inputs (descriptor asset
+	// mapping + checksum asset name, omp-release-source.md §3.5), folded into
+	// releaseRecipeRevision. Required for a SourceRelease call (nil is an
+	// error) and ignored for SourceNPM/SourceArchive.
+	Release *ReleaseRecipe
 	// NodeLine is the npm-sourced harness's pinned Node major line
 	// (internal/harness.Descriptor.NodeLine); empty means defaultNodeLine,
 	// the pool-wide default. Only meaningful for SourceNPM — ignored for a
@@ -784,7 +853,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		nodeVersionForRecipe = existing.Runtime.Version
 	}
 
-	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage, nodeVersionForRecipe)
+	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage, nodeVersionForRecipe, opts.Release)
 	if err != nil {
 		return nil, err
 	}
