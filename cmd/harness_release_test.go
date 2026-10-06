@@ -211,6 +211,11 @@ func TestHarnessInstallOmpRealizeFailureFails(t *testing.T) {
 	if strings.Contains(err.Error()+out, "no automated installer") {
 		t.Errorf("must not mention a missing automated installer:\n%v\n%s", err, out)
 	}
+	for _, bad := range []string{"legacy install continues", "warning"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output mentions %q for a pool-only realize failure:\n%s", bad, out)
+		}
+	}
 }
 
 func TestHarnessSyncAndUpdateOmpSkipLegacySilently(t *testing.T) {
@@ -315,5 +320,31 @@ func TestUpOmpWithoutActiveGenerationNamesInstall(t *testing.T) {
 	}
 	if dplan := resolveDevcontainerPoolPlan(devcontainerPoolPlanInput{poolPlanInput: in.poolPlanInput}); !dplan.mountRuntime {
 		t.Errorf("devcontainer active plan = %+v, want mountRuntime", dplan)
+	}
+}
+
+// TestHarnessSyncOmpForeignPlatformDoesNotMentionLegacy: a pool-only
+// harness has no legacy step, so a cross-platform sync must not announce one
+// being skipped.
+func TestHarnessSyncOmpForeignPlatformDoesNotMentionLegacy(t *testing.T) {
+	paths := testHarnessPaths(t)
+	deps := ompDeps(t, paths, &fakeReleaseSource{})
+	if out, err := runHarnessCmdWithDeps(t, deps, "install", "omp"); err != nil {
+		t.Fatalf("install omp: %v\n%s", err, out)
+	}
+	hostKey, err := pool.HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := pool.PlatformLinuxARM64Glibc
+	if hostKey == foreign {
+		foreign = pool.PlatformLinuxAMD64Glibc
+	}
+	out, err := runHarnessCmdWithDeps(t, deps, "sync", "omp", "--platform", string(foreign))
+	if err != nil {
+		t.Fatalf("sync omp --platform %s: %v\n%s", foreign, err, out)
+	}
+	if strings.Contains(out, "legacy") || !strings.Contains(out, "realized for "+string(foreign)) {
+		t.Errorf("unexpected sync output:\n%s", out)
 	}
 }

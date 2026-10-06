@@ -2524,6 +2524,55 @@ func TestUpdateHarnessSecondCallWithUnchangedInputsIsIdempotent(t *testing.T) {
 	}
 }
 
+// TestUpdateHarnessKeepExistingRepairsMissingActivation: the same repair as
+// the up-to-date path, for a lock kept because nothing newer is eligible
+// (DecisionKeepExisting) whose generation is realized but never activated.
+// Activation makes no Source calls.
+func TestUpdateHarnessKeepExistingRepairsMissingActivation(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+	key, err := HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	genID, digest := seedExistingGeneration(t, paths, "claude", "2.1.220", key, "#!/bin/sh\nexec true\n")
+	rr, err := npmRecipeRevision(pkg, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := baseRealizeLockHarness()
+	h.Package = pkg
+	h.Version = "2.1.220"
+	h.RecipeRevision = rr
+	h.Generations = map[PlatformKey]string{key: digest}
+	seedRealizeLock(t, paths, h)
+	// Only a quarantined newer candidate: nothing eligible -> keep existing.
+	seedObservations(t, paths, pkg, []Candidate{
+		{Version: "2.1.221", PublishedAt: fixedNow.Add(-time.Hour), FirstSeenAt: fixedNow.Add(-time.Hour)},
+	})
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if res.RealizeErr != nil {
+		t.Fatalf("RealizeErr = %v", res.RealizeErr)
+	}
+	if res.Changed || !strings.Contains(res.Note, "activated "+genID) {
+		t.Errorf("Changed=%v Note=%q, want kept lock noting activation of %s", res.Changed, res.Note, genID)
+	}
+	if src.resolveCalls != 0 || src.realizeCalls != 0 {
+		t.Errorf("source calls = resolve:%d realize:%d, want 0/0", src.resolveCalls, src.realizeCalls)
+	}
+	if active, ok := ActiveGeneration(paths, "claude", key); !ok || active != genID {
+		t.Errorf("ActiveGeneration = %q ok=%v, want %q", active, ok, genID)
+	}
+}
+
 // TestUpdateHarnessUpToDateRepairsMissingActivation reproduces the
 // wave-1-to-wave-2 upgrade pool found on a real developer machine: the
 // generation exists on disk and the lock records its digest (wave 1 realized

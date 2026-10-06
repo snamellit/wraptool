@@ -346,14 +346,14 @@ func newReleaseSource(d harness.Descriptor, githubBaseURL, registryBaseURL strin
 // command, and a realized+activated generation completes it silently.
 func requirePoolOnlyActive(deps harnessDeps, name string, realizeErr error) error {
 	if realizeErr != nil {
-		return fmt.Errorf("%s: generation realization failed (this harness has no legacy installer to fall back to): %w", name, realizeErr)
+		return fmt.Errorf("%s: pool generation not available (this harness has no legacy installer to fall back to): %w", name, realizeErr)
 	}
 	hostKey, err := pool.HostPlatformKey()
 	if err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	if _, ok := pool.ActiveGeneration(deps.poolPaths(), name, hostKey); !ok {
-		return fmt.Errorf("%s: no active generation for %s after install (this harness has no legacy installer to fall back to)", name, hostKey)
+		return fmt.Errorf("%s: no active generation for %s (this harness has no legacy installer to fall back to); run `wraptool harness sync %s`", name, hostKey, name)
 	}
 	return nil
 }
@@ -1701,6 +1701,12 @@ the host's own legacy bin/ is out of scope for it.`,
 					// runs, so a host-side legacy install here would produce
 					// a broken (wrong-platform) binary at best — skip it
 					// entirely, not attempt-and-warn.
+					if poolOnly(d) {
+						// No legacy step exists for a pool-only harness,
+						// so there is nothing to announce as skipped.
+						fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s\n", name, lh.Version, key)
+						return nil
+					}
 					fmt.Fprintf(cmd.OutOrStdout(), "%s: fetched cache objects for locked %s; realized for %s "+
 						"(not this host's own platform — skipping host-side legacy install)\n", name, lh.Version, key)
 					return nil

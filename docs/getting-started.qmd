@@ -338,7 +338,9 @@ incidentally.
 
 `omp` is a pool-only harness: it has no installer of its own. Run
 `wraptool harness install omp` once before `wraptool up --harness omp`. The
-download is a single binary of about 280 MB.
+download is a single binary of about 280 MB. With no active `omp` generation,
+the Guix runtime refuses to start the container. The dev container runtime
+prints a notice and continues, so the container starts without `omp`.
 
 The shell opens automatically when you run `up` from a terminal. Control it with
 `--shell`:

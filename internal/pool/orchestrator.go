@@ -970,20 +970,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		// when the pointer already names this generation, and a failure is
 		// non-fatal (RealizeErr) like every other realize-phase failure on
 		// the install/update path.
-		if generationRealized(digestRecorded != "", dirPresent) {
-			genID, genErr := GenerationID(opts.Harness, out.Version, platformKey, digestRecorded)
-			if genErr != nil {
-				result.RealizeErr = genErr
-				return result, nil
-			}
-			if active, ok := ActiveGeneration(paths, opts.Harness, platformKey); !ok || active != genID {
-				if aerr := activateIfNeeded(paths, opts.Harness, platformKey, genID); aerr != nil {
-					result.RealizeErr = aerr
-				} else {
-					result.Note = "activated " + genID
-				}
-			}
-		}
+		repairActivation(paths, opts.Harness, platformKey, &out, digestRecorded, generationRealized(digestRecorded != "", dirPresent), result)
 		return result, nil
 	case DecisionRealize:
 		out := existing
@@ -1025,6 +1012,11 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 				return nil, err
 			}
 			result.RealizedGenerationID = genID
+		} else {
+			// Realized but possibly never activated (e.g. a kept version
+			// whose generation predates activation): same repair as the
+			// up-to-date path.
+			repairActivation(paths, opts.Harness, platformKey, &out, digestRecorded, true, result)
 		}
 		return result, nil
 	case DecisionFail:
@@ -1804,4 +1796,31 @@ func loadLockOrEmpty(path string) (*Lock, error) {
 		return nil, fmt.Errorf("reading lock: %w", err)
 	}
 	return UnmarshalLock(data)
+}
+
+// repairActivation activates an existing, realized generation whose pointer is
+// missing or stale (§10: the ACTIVE receipt is part of idempotence). It makes
+// no Source calls. Failures are non-fatal, recorded in result.RealizeErr; a
+// successful repair sets result.Note only when none is already set.
+func repairActivation(paths PoolPaths, harnessName string, platformKey PlatformKey, lh *LockHarness, digestRecorded string, realized bool, result *UpdateResult) {
+	if !realized {
+		return
+	}
+	genID, err := GenerationID(harnessName, lh.Version, platformKey, digestRecorded)
+	if err != nil {
+		result.RealizeErr = err
+		return
+	}
+	if active, ok := ActiveGeneration(paths, harnessName, platformKey); ok && active == genID {
+		return
+	}
+	if err := activateIfNeeded(paths, harnessName, platformKey, genID); err != nil {
+		result.RealizeErr = err
+		return
+	}
+	if result.Note == "" {
+		result.Note = "activated " + genID
+	} else {
+		result.Note += "; activated " + genID
+	}
 }
