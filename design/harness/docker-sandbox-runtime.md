@@ -462,3 +462,112 @@ Docker documentation, read 2026-10-06:
 ## 14. Spike evidence
 
 Empty until Phase 0 runs.
+
+## 15. CLI surface as read from the reference data (not run)
+
+Added after §2 was written. The cobra reference YAML that the rendered pages
+are generated from is readable in the documentation repository:
+`https://raw.githubusercontent.com/docker/docs/main/data/sbx_cli/<command>.yaml`
+(vendored for `sbx` v0.47.0, read 2026-10-06). This settles flag spellings.
+It does not settle behaviour: nothing below was executed, and every S-question
+in §9 stays open.
+
+| Command | Usage line and flags that matter here |
+|---|---|
+| `sbx create` | `sbx create [flags] AGENT\|SANDBOX_KIT [PATH...]`. `--name` (no short form; ≥ 2 characters, starts with a letter or digit, only letters, digits, hyphens, periods; `default` is reserved), `-t/--template`, `-e/--env` (repeatable; `KEY=VALUE`, or a bare `KEY` copied from the caller's environment), `--env-file`, `--kit`, `--static-mcp` (repeatable; omitted means *dynamic* gateway mode), `--skills off\|readonly\|readwrite` (default `readonly`), `--deny-network`, `--clone`. First PATH is the primary workspace; an extra PATH takes a `:ro` suffix. The sandbox stops by itself once created. |
+| `sbx exec` | `sbx exec [flags] SANDBOX COMMAND [ARG...]`. `-i`, `-t`, `-e`, `-w/--workdir`, `-u/--user`. "If the sandbox is stopped, it is started first." No shell is started unless the command is one. |
+| `sbx ls` | `--json` (schema undocumented), `-q/--quiet` ("Only display sandbox names"). |
+| `sbx stop` | `sbx stop SANDBOX [SANDBOX...]`, no flags. |
+| `sbx rm` | `sbx rm [SANDBOX...]`, `-f/--force`. Also "deletes secrets scoped to each removed sandbox". |
+| `sbx version` | `--json` only (schema undocumented). Text output is not documented and has changed shape between releases; issue reports show `sbx version: v0.45.0 <commit>`. |
+| `sbx secret ls` | `-g/--global`, `--sandbox`, `--service`, `--json` (schema undocumented), `-q`. Documented table: `SCOPE  TYPE  NAME  SECRET`, with a row `(global)   service   github    gho_GCaw4o****...****43qy`. |
+| `sbx secret set` / `rm` | `set` is **global by default**; `--sandbox` scopes it. `rm [SERVICE] --sandbox … -f`. Built-in services: anthropic, copilot, cursor, devin, droid, github, google, groq, mistral, nebius, openai, openrouter, xai. |
+| `sbx policy allow network` | `sbx policy allow network [--sandbox SANDBOX] RESOURCES`; RESOURCES is comma-separated, with optional `:port`. |
+| `sbx policy check network` | `[--sandbox SANDBOX] TARGET`, `--json`. Documented text output: `Allowed: <target>` or `Denied: <target>` plus a `Reason:` line. Exit status on a denial is undocumented. |
+| `sbx policy rm network` | `[--sandbox SANDBOX] --resource <list> [-f]`. The resource is a flag here, not a positional. |
+| `sbx policy init` | `sbx policy init <allow-all\|balanced\|deny-all>`; "must be run before adding custom allow/deny rules or starting a sandbox for the first time". |
+| `sbx mcp ls` | `--json`, `-q`. |
+
+Facts that change §3–§7:
+
+- **No command reports sign-in state.** There is no `whoami` and no
+  `login --status`; only `sbx diagnose` includes it, in an undocumented
+  format. The documented failure text is `You are not authenticated to
+  Docker`.
+- **Every sandbox starts an MCP gateway.** Only vendor agent integrations
+  register it with their agent, and `shell` is not one of them, but there is
+  no documented per-sandbox off switch. Whether `--static-mcp` accepts an
+  empty set is undocumented.
+- **The skills store has an off switch**: `--skills off`.
+- **SSH agent forwarding** uses "the value from the client that creates,
+  starts, or joins each sandbox", which supports D9. Two host-wide settings
+  matter and wraptool controls neither: `ssh.agentForwardingEnabled` (the
+  real off switch, needs `sbx daemon restart`) and `ssh.agentSocketPath`
+  (a fixed socket path, which would defeat D9).
+- **State and secrets on Linux** follow XDG (`~/.local/state/sandboxes`,
+  `~/.config/sandboxes`), with secrets in the Secret Service when one is
+  available. The minimal environment therefore needs the session bus
+  address, or `sbx` cannot read its own login.
+- **The `Host` header and streaming through the proxy** (S2, S3) are not
+  documented anywhere.
+
+## 16. Rulings for the test implementation
+
+Phase 1 is being built before Phase 0 has run, as a test implementation: the
+first run on a real host is the spike. These rulings stand in for the facts
+Phase 0 was meant to supply. Each is provisional and names the S-question
+that confirms or replaces it.
+
+- **R1. Version floor 0.47.0**, the release the flag surface was read from.
+  The version is taken from the first `\d+\.\d+\.\d+` in `sbx version`
+  output. Unparseable output fails the preflight; a newer version is a
+  notice. (S11)
+- **R2. Sign-in is detected from the first real call.** The preflight runs
+  `sbx ls --quiet`, which `up` needs anyway to learn whether the sandbox
+  exists. Output containing `not authenticated` becomes "run `sbx login`";
+  any other failure is reported verbatim.
+- **R3. Secrets are read with `sbx secret ls --global`** and parsed from the
+  documented table. Allowed: type `service` with a name in D8's
+  model-provider set (anthropic, openai, google, cursor — the other model
+  services in §15 stay refused until the maintainer rules on question 6).
+  Anything else, including a row or a table the parser does not recognise,
+  refuses. The parser fails closed. Error text names scope, type and name
+  only, never the secret column, and never echoes raw output.
+  `--allow-sbx-secrets` overrides both the refusal and the parse failure.
+  (S5)
+- **R4. MCP gateway: refuse when `sbx mcp ls --quiet` prints any name.**
+  With nothing registered on the host, the dynamic gateway has nothing to
+  offer. The remedy names `sbx mcp rm <name>`. `--static-mcp` is not passed.
+  There is no override flag for this refusal. (S10)
+- **R5. `--skills off` is always passed** at creation.
+- **R6. Minimal environment** (D9): PATH, HOME, USER, LOGNAME, TMPDIR, TERM,
+  COLORTERM, LANG, `LC_*`, `XDG_*`, `SBX_*`, `DOCKER_*`,
+  DBUS_SESSION_BUS_ADDRESS. Nothing else, for every `sbx` process wraptool
+  spawns. `SBX_NO_TELEMETRY` is passed through when the developer set it and
+  is not set by wraptool (question 3 is open). (S4, S5)
+- **R7. The state file records the wraptool version but drift does not
+  compare it.** A development build's version changes on every commit, and a
+  version change alone does not alter what is mounted. Compared: agent,
+  template, mounts with their modes, environment variable names, skills
+  mode. A sandbox with the right name and no state file was not created by
+  this code and is refused the same way as drift. The state file also
+  records the pinhole resource so `down --rm` can remove the rule. (S7, S8)
+- **R8. The loopback probe reads the output, not the exit status**: a line
+  starting `Allowed:` warns, `Denied:` is silent, anything else prints a
+  notice that the probe was inconclusive. It never fails `up`. (S12)
+- **R9. The runtime needs the `sse` transport.** A `unix` listener cannot
+  cross the VM boundary; `up --runtime=sbx` says so instead of creating a
+  sandbox that cannot connect.
+- **R10. `sbx-host-allowlist` is not built.** S3 is unknown. If the proxy
+  preserves `Host`, every MCP call from the sandbox gets `403` and the
+  server log shows `rejected … Host "host.docker.internal:<port>"`. That log
+  line is the S3 answer.
+- **R11. Fixtures in `testdata/sbx/` are transcribed from documentation**,
+  not captured, and a README in that directory says so. Phase 0 replaces
+  them.
+
+Open question added to §12:
+
+6. Which of the non-GitHub built-in services count as model providers for
+   D8? `copilot` authenticates with a GitHub token, so it is not obviously
+   one.
