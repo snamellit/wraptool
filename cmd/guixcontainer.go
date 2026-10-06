@@ -18,6 +18,7 @@ type containerRuntime int
 const (
 	runtimeGuix containerRuntime = iota
 	runtimeDevcontainer
+	runtimeSbx
 )
 
 func (r containerRuntime) String() string {
@@ -26,6 +27,8 @@ func (r containerRuntime) String() string {
 		return "guix"
 	case runtimeDevcontainer:
 		return "devcontainer"
+	case runtimeSbx:
+		return "sbx"
 	default:
 		return fmt.Sprintf("containerRuntime(%d)", int(r))
 	}
@@ -34,20 +37,23 @@ func (r containerRuntime) String() string {
 // selectRuntime resolves the --runtime flag. Guix first: `auto` picks the Guix
 // backend when the guix CLI is present AND the worktree has a manifest.scm to
 // build the environment from; otherwise it falls back to devcontainer. An
-// explicit "guix"/"devcontainer" overrides the probe.
+// explicit "guix"/"devcontainer" overrides the probe. "sbx" (Docker Sandboxes)
+// is explicit-only: auto never selects it (design/harness/docker-sandbox-runtime.md D2).
 func selectRuntime(mode, root string) (containerRuntime, error) {
 	switch mode {
 	case "guix":
 		return runtimeGuix, nil
 	case "devcontainer":
 		return runtimeDevcontainer, nil
+	case "sbx":
+		return runtimeSbx, nil
 	case "", "auto":
 		if hasGuix() && fileExists(filepath.Join(root, "manifest.scm")) {
 			return runtimeGuix, nil
 		}
 		return runtimeDevcontainer, nil
 	default:
-		return 0, fmt.Errorf("unknown --runtime %q (want auto, guix, or devcontainer)", mode)
+		return 0, fmt.Errorf("unknown --runtime %q (want auto, guix, devcontainer, or sbx)", mode)
 	}
 }
 
