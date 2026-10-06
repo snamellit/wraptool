@@ -51,6 +51,23 @@ const (
 	AuthNone
 )
 
+// ReleaseSpec describes a harness distributed as GitHub release assets
+// (design/harness/omp-release-source.md §6.1). Assets is keyed by the string
+// form of pool.PlatformKey so this package keeps no dependency on
+// internal/pool; the release Source validates each key with
+// pool.ParsePlatformKey, and a registry test asserts every key parses.
+type ReleaseSpec struct {
+	// Repo is the "owner/name" GitHub repository publishing the releases.
+	Repo string
+	// VersionFeed is the npm package whose versions track the release tags.
+	VersionFeed string
+	// Checksums is the release asset name carrying the SHA-256 sums.
+	Checksums string
+	// Assets maps a platform key (e.g. "linux-amd64-glibc") to the release
+	// asset name of that platform's binary.
+	Assets map[string]string
+}
+
 // Descriptor is one harness's knowledge: its name, how it authenticates, how to
 // render its MCP config, and — for CLI harnesses that run inside the container —
 // its pool binary name and optional install recipe.
@@ -75,6 +92,14 @@ type Descriptor struct {
 	// single per-platform .tar.gz with no npm package at all. Mutually
 	// exclusive with PoolPackage; see PoolLockable/PoolPackageID.
 	PoolArchive bool
+	// PoolRelease marks a harness whose pool Source is the GitHub-release
+	// adapter (design/harness/omp-release-source.md): per-platform raw
+	// binaries published on a repository's releases, versioned by an npm
+	// feed and verified against a checksums asset. Mutually exclusive with
+	// PoolPackage and PoolArchive; see PoolLockable/PoolPackageID. A
+	// PoolRelease harness may have no Install recipe at all (a pool-only
+	// harness: omp).
+	PoolRelease *ReleaseSpec
 	// NodeLine pins the Node major line (e.g. "22") this npm-sourced
 	// harness's pool generation bundles (design/harness/node-runtime-
 	// tracking.md: "pin the line, not the patch") — passed through as
@@ -96,12 +121,16 @@ type Descriptor struct {
 // list` reports it as such and `install` falls back to today's unpinned
 // behavior with a warning (host-side IDEs have no installable package at
 // all).
-func (d Descriptor) PoolLockable() bool { return d.PoolPackage != "" || d.PoolArchive }
+func (d Descriptor) PoolLockable() bool {
+	return d.PoolPackage != "" || d.PoolArchive || d.PoolRelease != nil
+}
 
 // PoolPackageID returns the identity a pool-lockable harness is
 // refreshed/resolved/observed under — the orchestrator's "pkg" parameter
 // (design/harness/unified-harness-pool.md §8.1): PoolPackage for an
-// npm-sourced harness, or the harness's own Name for an archive-sourced one.
+// npm-sourced harness, the harness's own Name for an archive-sourced one, or
+// the release repository (ReleaseSpec.Repo) for a release-sourced one, so a
+// repository move is a new identity and forces a fresh resolve.
 // An archive Source's Refresh/Resolve "pkg" parameter has no separate
 // package identity on that channel (every platform's manifest describes the
 // same release, internal/pool/source/archive.go's own doc comment); it only
@@ -113,13 +142,15 @@ func (d Descriptor) PoolPackageID() string {
 		return d.PoolPackage
 	case d.PoolArchive:
 		return d.Name
+	case d.PoolRelease != nil:
+		return d.PoolRelease.Repo
 	default:
 		return ""
 	}
 }
 
 // order is the stable listing order (used for `all`, help, and error messages).
-var order = []string{"agy", "claude", "opencode", "pi"}
+var order = []string{"agy", "claude", "omp", "opencode", "pi"}
 
 // Registry maps a harness name to its descriptor.
 // Auth defaults to AuthUnverified (the zero value) for every harness except the
@@ -165,6 +196,21 @@ var Registry = map[string]Descriptor{
 		PoolArchive: true},
 	"claude": {Name: "claude", Auth: AuthHeader, Bin: "claude", Render: renderClaude,
 		Install: npmInstall("@anthropic-ai/claude-code"), PoolPackage: "@anthropic-ai/claude-code"},
+	// omp (oh-my-pi) is the first pool-only harness: no Install recipe, its
+	// binary arrives solely through the pool's release Source
+	// (design/harness/omp-release-source.md §6.1).
+	"omp": {Name: "omp", Auth: AuthHeader, Bin: "omp", Render: renderOMP,
+		PoolRelease: &ReleaseSpec{
+			Repo:        "can1357/oh-my-pi",
+			VersionFeed: "@oh-my-pi/pi-coding-agent",
+			Checksums:   "SHA256SUMS.txt",
+			Assets: map[string]string{
+				"linux-amd64-glibc": "omp-linux-x64",
+				"linux-arm64-glibc": "omp-linux-arm64",
+				"linux-amd64-musl":  "omp-linux-musl-x64",
+				"linux-arm64-musl":  "omp-linux-musl-arm64",
+			},
+		}},
 	"opencode": {Name: "opencode", Auth: AuthHeader, Bin: "opencode", Render: renderOpenCode, Install: npmInstall("opencode-ai"), PoolPackage: "opencode-ai"},
 	"pi": {Name: "pi", Auth: AuthHeader, Bin: "pi", Render: renderPi, Install: npmInstall("@earendil-works/pi-coding-agent"),
 		PoolPackage: "@earendil-works/pi-coding-agent"},
@@ -347,6 +393,23 @@ func renderPi(p Params) (string, []byte, error) {
 	}
 	server := stdioOr(p, func(s map[string]any) {
 		s["url"] = appendCWD(effectiveURL(p), p)
+		bearer(s, p)
+	})
+	return path, mcpServers(server), nil
+}
+
+// renderOMP targets omp (oh-my-pi), which recommends Streamable HTTP for
+// remote servers, so it points at /mcp like agy. Project file .omp/mcp.json;
+// global ~/.omp/agent/mcp.json (omp no longer reads the older ~/.omp/mcp.json).
+func renderOMP(p Params) (string, []byte, error) {
+	path := filepath.Join(".omp", "mcp.json")
+	if p.Global {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".omp", "agent", "mcp.json")
+	}
+	server := stdioOr(p, func(s map[string]any) {
+		s["type"] = "http"
+		s["url"] = appendCWD(streamableURL(p), p)
 		bearer(s, p)
 	})
 	return path, mcpServers(server), nil

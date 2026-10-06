@@ -1,13 +1,13 @@
 {
   "id": "wraptool",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "name": "wraptool",
   "description": "Wire a dev container's AI coding harness to a host-side wraptool MCP server. Wiring-only major (see design/harness/unified-harness-pool.md §12): this feature no longer installs the harness binary. The binary comes from the host's shared harness pool `runtime/` tree (built by `wraptool harness install <name>`), which must be DECLARED as a read-only mount in devcontainer.json — the devcontainer CLI's `--mount` flag has no read-only field at all, so `wraptool up` cannot inject this mount itself; it only VERIFIES the declaration and prints the exact entry to add when it's missing. `wraptool init devcontainer` scaffolds the declaration for new projects. Existing configs (including anything scaffolded against the old `:0` provisioning major) must add BOTH pool mounts to declare it themselves, e.g.: { \"mounts\": [ \"source=${localEnv:HOME}/.local/share/wraptool/harness-pool/home,target=/home/wraptool-harness,type=bind\", \"source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly\" ] } — rewrite the source for your OS per §12.3: on macOS the two sources are '${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/home' and '${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/runtime'; on Windows they are '${localEnv:HOME}/AppData/Local/wraptool/harness-pool/home' and '.../runtime' — the `${localEnv:HOME}` rewrite works there too (per internal/paths, %LOCALAPPDATA% is itself %USERPROFILE%\\AppData\\Local, just a different relative path than the Linux/macOS defaults); the Windows-specific step is setting HOME at all, since only %USERPROFILE% is set by default there (`setx HOME %USERPROFILE%`, see docs/platform-windows.qmd). This applies whether or not you use `wraptool up`: without the declaration there is no binary on PATH regardless of how the container was started. The `harness` option now only selects which MCP config shape `connect` writes. The old provisioning major (`:0`) remains published for existing configs that still set `provision`/`version`, but is deprecated — new setups should pin this major explicitly (`:1`, wiring-only) rather than `:latest`, which now resolves here; `:0` stays the address for the legacy per-image provisioning behavior.",
   "documentationURL": "https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool",
   "options": {
     "harness": {
       "type": "string",
-      "enum": ["claude", "opencode", "pi", "agy"],
+      "enum": ["claude", "opencode", "pi", "agy", "omp"],
       "default": "claude",
       "description": "Which harness this feature wires — the MCP config shape connect writes. No longer selects an installer: the binary is not provisioned by this feature (see the top-level description)."
     },
