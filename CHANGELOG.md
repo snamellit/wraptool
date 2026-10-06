@@ -14,6 +14,18 @@ changed and anything an upgrade should know.
   failed with `ENODATA: Cache input stream was empty`. **Upgrade note:** a
   pool already hit by this keeps failing until the file is downloaded
   again — run `wraptool harness sync <harness>` once after upgrading.
+- **A pool-locked `claude` no longer updates itself in a container.** Claude
+  Code's self-updater ran `npm install -g`, which put a newer, unlocked and
+  unquarantined copy in any writable npm prefix in the image (the node
+  feature's, for example). That copy came first on `PATH`, ahead of the pool
+  binary. The `wraptool` Dev Container feature and the Guix runtime now set
+  `DISABLE_AUTOUPDATER=1`. **Upgrade note:** in an existing container,
+  remove the stray copy (`npm uninstall -g @anthropic-ai/claude-code`) and
+  rebuild the container with feature 1.2.0.
+- **The feature's MCP config is owner-only.** `connect.sh` wrote
+  `.mcp.json` (and the other harnesses' config files), which carry the bearer
+  token, world-readable. It now writes them `0600`, as `wraptool init` does,
+  and tightens an existing file on the next run.
 
 ### Added
 

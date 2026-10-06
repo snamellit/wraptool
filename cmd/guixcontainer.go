@@ -598,7 +598,9 @@ func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
 }
 
 // buildContainerEntry builds the interactive shell entrypoint run inside the
-// guix container: normalizes TERM (guix defaults to TERM=dumb with no
+// guix container: turns off Claude Code's self-updater (DISABLE_AUTOUPDATER —
+// a pool harness is version-locked, and a self-update would install an
+// unlocked, unquarantined copy wherever npm can write), normalizes TERM (guix defaults to TERM=dumb with no
 // terminfo DB in the container), appends (never prepends) every pathDirs
 // entry to PATH, in order, so a pool tool can never shadow a project
 // toolchain binary (git/go/bash) — otherwise a poisoned pool could hijack
@@ -615,6 +617,7 @@ func buildContainerEntry(root, poolHome string, pathDirs []string) string {
 		pathAppend = ":" + strings.Join(quoted, ":")
 	}
 	return "export WRAPTOOL_CONTAINER=1" +
+		"; export DISABLE_AUTOUPDATER=1" +
 		"; export TERM=xterm-256color" +
 		"; export PATH=$PATH" + pathAppend +
 		"; export HOME=" + shellQuote(poolHome) +

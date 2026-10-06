@@ -794,6 +794,7 @@ func TestBuildGuixShellArgsLegacyPoolPlan(t *testing.T) {
 		t.Fatalf("legacy guix shell args =\n%#v\nwant\n%#v", got, want)
 	}
 	wantEntry := "export WRAPTOOL_CONTAINER=1" +
+		"; export DISABLE_AUTOUPDATER=1" +
 		"; export TERM=xterm-256color" +
 		"; export PATH=$PATH:" + shellQuote(poolBin) +
 		"; export HOME=" + shellQuote(poolHome) +

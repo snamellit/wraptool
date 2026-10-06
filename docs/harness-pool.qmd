@@ -107,8 +107,9 @@ it by the release's `SHA256SUMS.txt`. No guix, docker, or podman is involved.
 - **The lock** is the checksum file. A platform missing from it is left out of
   the lock. A release with no checksum file, or no Linux asset, cannot be
   locked: the error says the assets may not be published yet, or that the
-  release predates checksum publication. Releases before 17.2.10 have binaries but no checksum file, so
-  `--constraint` and `rollback --to` cannot reach them.
+  release predates checksum publication. Releases before 17.2.10 have
+  binaries but no checksum file, so `--constraint` and `rollback --to` cannot
+  reach them.
 - **Downloads** cover only the platform being realized, and each is checked
   against its SHA-256 before it enters the cache. A download aborts after 60
   seconds without receiving data, but has no overall time limit, so a slow
@@ -118,6 +119,26 @@ it by the release's `SHA256SUMS.txt`. No guix, docker, or podman is involved.
 The checksum file and the binary share an origin, so the lock proves the
 download matches the release, not that the release is genuine. Quarantine
 mitigates a bad release. It does not prevent one.
+
+## A pool harness must not update itself
+
+Quarantine and the lock only hold while the harness runs the binary the pool
+built. A harness with its own self-updater can step around both. It fetches
+whatever upstream calls latest, with no quarantine, and puts it wherever it
+can write.
+
+This happened with `claude` in a Dev Container. The pool's `runtime/` mount
+is read-only, so the updater could not replace the pool binary. Instead it ran
+`npm install -g` and the copy landed in the node feature's writable npm
+prefix. That directory comes before the pool's `runtime/bin` on `PATH`, which
+is appended so the pool never shadows a project tool. So the next `claude`
+started the unlocked copy.
+
+The `wraptool` Dev Container feature and the Guix runtime set
+`DISABLE_AUTOUPDATER=1`, which turns off `claude`'s updater. Another harness
+needs its own switch. Whether `omp` updates itself is still open (see
+`design/harness/omp-release-source.md` §9). To check which binary a container
+runs, compare `command -v claude` with `/opt/wraptool-harness/runtime/bin`.
 
 ## Scheduling it
 

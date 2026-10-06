@@ -311,6 +311,11 @@ can run in parallel once WP1 lands.
    and that a failed check on the read-only `runtime/` mount neither blocks
    startup nor prints an error each session. Find the setting or environment
    variable that disables it, and set it in the dispatcher or document it.
+   The same risk was confirmed for `claude` on 2026-10-06. Its self-updater
+   ran `npm install -g` into the node feature's writable prefix, and the new
+   copy shadowed the pool binary on `PATH`. Both runtimes now set
+   `DISABLE_AUTOUPDATER=1`, which covers `claude` only. omp needs its own
+   switch, set the same way.
 2. **Older versions.** Answered (verified 2026-10-06). `SHA256SUMS.txt` is
    published from v17.2.10 onward. All four Linux assets were present on every
    release checked: 17.2.10, 17.4.2, 18.0.0, 18.5.0, 18.6.0, 18.6.1. v17.2.9
