@@ -139,14 +139,10 @@ func downSandbox(root string, remove bool) error {
 		}
 	}
 
-	// Read before any removal: the pinhole resource lives only in this file.
-	st, haveState, err := readSbxState(name)
-	if err != nil {
-		return fmt.Errorf("reading sandbox state for %s: %w", name, err)
-	}
-
 	if !found {
-		if haveState && remove {
+		// Deleted by path, not gated on a successful read: a corrupt file is
+		// exactly what `down --rm` is the advertised remedy for.
+		if _, statErr := os.Stat(sbxStatePath(name)); remove && statErr == nil {
 			if err := removeSbxState(name); err != nil {
 				return fmt.Errorf("removing stale sandbox state for %s: %w", name, err)
 			}
@@ -160,6 +156,14 @@ func downSandbox(root string, remove bool) error {
 	if !remove {
 		fmt.Printf("stopping sandbox %s for %s\n", name, root)
 		return sbxRunChecked([]string{"stop", name})
+	}
+
+	// Read before removing the file: the pinhole resource lives only there. An
+	// unreadable file must not block removal (up tells the developer to run
+	// `down --rm` for exactly that case); it only costs the policy cleanup.
+	st, haveState, readErr := readSbxState(name)
+	if readErr != nil {
+		fmt.Printf("notice: sandbox state file for %s is unreadable (%v); the network rule for the MCP port could not be identified and may need removing by hand: `sbx policy ls %s`, then `sbx policy rm network --sandbox %s --resource localhost:<port>`\n", name, readErr, name, name)
 	}
 
 	fmt.Printf("removing sandbox %s for %s\n", name, root)

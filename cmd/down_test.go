@@ -262,6 +262,66 @@ func TestDownDockerFailsSandboxStillRuns(t *testing.T) {
 	e.assertLog(t, "sbx ls --quiet", "sbx stop "+e.name, "docker ps", "docker stop abc def")
 }
 
+func (e *downEnv) writeCorruptState(t *testing.T) {
+	t.Helper()
+	p := sbxStatePath(e.name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDownCorruptStateRmListed(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.writeCorruptState(t)
+	if err := runDown(e.root, true); err != nil {
+		t.Fatal(err)
+	}
+	e.assertLog(t, "sbx ls --quiet", "sbx rm --force "+e.name)
+	if e.stateExists() {
+		t.Error("corrupt state must be removed")
+	}
+}
+
+func TestDownCorruptStatePlainStop(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.writeCorruptState(t)
+	if err := runDown(e.root, false); err != nil {
+		t.Fatal(err)
+	}
+	e.assertLog(t, "sbx ls --quiet", "sbx stop "+e.name)
+	if !e.stateExists() {
+		t.Error("plain down must not touch state")
+	}
+}
+
+func TestDownCorruptStateAbsentRm(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.sbxNames = ""
+	e.writeCorruptState(t)
+	if err := runDown(e.root, true); err != nil {
+		t.Fatal(err)
+	}
+	e.assertLog(t, "sbx ls --quiet")
+	if e.stateExists() {
+		t.Error("corrupt stale state must be removed")
+	}
+}
+
+func TestDownCorruptStateSbxRmFailureKeepsState(t *testing.T) {
+	e := setupDown(t, true, false)
+	e.writeCorruptState(t)
+	e.failOn["rm --force "+e.name] = true
+	if err := runDown(e.root, true); err == nil {
+		t.Fatal("expected error")
+	}
+	if !e.stateExists() {
+		t.Error("state must stay when sbx rm fails")
+	}
+}
+
 func TestDownSbxLsFailureSurfacesAndDockerRuns(t *testing.T) {
 	e := setupDown(t, true, true)
 	e.failOn["ls --quiet"] = true
