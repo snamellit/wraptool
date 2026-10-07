@@ -547,7 +547,8 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
   rerun showed the `-it` argv; the same command with `-i` succeeds. `isTTY`
   now asks the terminal for its window size (`TIOCGWINSZ`; `GetConsoleMode`
   on Windows), which also fixes `--shell=auto` treating `/dev/null` as a
-  terminal on every runtime. B3 and B5 not run yet.
+  terminal on every runtime. With the fix, B4 passes on the same host
+  (`-i`, exit 0). B3 and B5 not run yet.
 - Open from this run: S7, S8, S11.
 
 ## 15. CLI surface as read from the reference data (not run)
