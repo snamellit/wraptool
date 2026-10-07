@@ -539,7 +539,15 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
   `tty` and `stty size` outputs run together (`/dev/pts/030 100`), the
   line break between them lost somewhere on the way; harmless, but the
   script matches positions loosely for it. Manually: `less` redraws on
-  resize. S6 passes. Part B (through `wraptool up`) has not been run.
+  resize. S6 passes. Part B (through `wraptool up`): B1 passes; B2
+  returns 1 for `exit 3`, the known non-propagation all runtimes share.
+  B4 failed with sbx's `error: inspect exec: context deadline exceeded`:
+  with stdin on `/dev/null`, `up` passed `sbx exec -it`, because its
+  `isTTY` accepted any character device and `/dev/null` is one. A traced
+  rerun showed the `-it` argv; the same command with `-i` succeeds. `isTTY`
+  now asks the terminal for its window size (`TIOCGWINSZ`; `GetConsoleMode`
+  on Windows), which also fixes `--shell=auto` treating `/dev/null` as a
+  terminal on every runtime. B3 and B5 not run yet.
 - Open from this run: S7, S8, S11.
 
 ## 15. CLI surface as read from the reference data (not run)

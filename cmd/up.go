@@ -236,11 +236,6 @@ func wantShell(mode string) bool {
 	}
 }
 
-func isTTY(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
-}
-
 func configOrDefault(p string) string {
 	if p != "" {
 		return p

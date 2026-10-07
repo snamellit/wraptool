@@ -54,3 +54,10 @@ func terminationSignals() []os.Signal {
 
 // Windows has no SIGHUP; file watching still provides hot reload.
 func handleSIGHUP(_ string, _ *registrar) {}
+
+// isTTY reports whether f is a console; the NUL device, files and pipes are
+// not.
+func isTTY(f *os.File) bool {
+	var mode uint32
+	return windows.GetConsoleMode(windows.Handle(f.Fd()), &mode) == nil
+}

@@ -58,6 +58,19 @@ func TestWantShell(t *testing.T) {
 	}
 }
 
+func TestIsTTYRejectsNullDevice(t *testing.T) {
+	// The null device is a character device, which is what the old check
+	// mistook for a terminal.
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if isTTY(f) {
+		t.Errorf("isTTY(%s) = true, want false", os.DevNull)
+	}
+}
+
 func TestHasDevcontainer(t *testing.T) {
 	dir := t.TempDir()
 	if hasDevcontainer(dir) {

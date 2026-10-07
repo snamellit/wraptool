@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 func configureDetached(cmd *exec.Cmd) {
@@ -39,4 +41,13 @@ func handleSIGHUP(configPath string, reg *registrar) {
 	for range sighup {
 		reloadConfig(configPath, reg, "SIGHUP")
 	}
+}
+
+// isTTY reports whether f is a terminal. A character-device check is not
+// enough: /dev/null is one too, and treating it as a terminal made `up`
+// pass `sbx exec -it` with no terminal behind it. TIOCGWINSZ succeeds only
+// on a terminal and has the same name on Linux and the BSDs.
+func isTTY(f *os.File) bool {
+	_, err := unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ)
+	return err == nil
 }
