@@ -63,7 +63,12 @@ case "$PATH_VAL" in
   *) fail "containerEnv.PATH '$PATH_VAL' does not end with :/opt/wraptool-harness/runtime/bin (append)" ;;
 esac
 absent '${containerEnv:' "$FEATURE_JSON"
-[ "$FAIL" -eq 0 ] && pass "options are exactly connect/harness/port/url; PATH appended; no \${containerEnv:...} form"
+AU_VAL=$(node -e '
+    var f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(String(f.containerEnv.DISABLE_AUTOUPDATER));
+  ' "$FEATURE_JSON" 2>/dev/null || echo "<node error>")
+[ "$AU_VAL" = "1" ] || fail "containerEnv.DISABLE_AUTOUPDATER is '$AU_VAL', want 1 (a pool harness must not self-update)"
+[ "$FAIL" -eq 0 ] && pass "options are exactly connect/harness/port/url; PATH appended; self-update off; no \${containerEnv:...} form"
 
 # Fake bin dir: npm/curl stubs that record args instead of acting — install.sh
 # must never invoke them (no binary provisioning in the wiring-only major).
@@ -131,7 +136,7 @@ install_run() {
 }
 
 echo "1. install.sh: HOME prepped, connect staged, no binary installed (every harness)"
-for h in claude opencode pi agy; do
+for h in claude opencode pi agy omp; do
   R=$(install_run "$h") || fail "$h install exited non-zero"
   [ -d "$R/pool-home" ] || fail "$h: pool HOME not created"
   have "WT_HARNESS='$h'" "$R/share/options.env"
@@ -196,7 +201,26 @@ env -i WT_ROUTE_FILE="$ROUTE" WT_SHARE_DIR="$WORK/none6" WT_CONNECT=true WT_HARN
   PATH="$PRESENTPATH" HOME="$WORK" PWD="$WORK" sh "$CONNECT" >/dev/null 2>&1
 have 'http://172.18.0.1:8717/sse?cwd=/home/x' "$OUT6"
 have 'Bearer tok' "$OUT6"
-pass "connect wiring rendered"
+# The config carries the token: owner-only, fresh write and re-run alike.
+mode_of() { ls -l "$1" | cut -c1-10; }
+[ "$(mode_of "$OUT6")" = "-rw-------" ] || fail "fresh config mode is $(mode_of "$OUT6"), want -rw------- (0600)"
+# Re-run over a pre-existing 0644 file on BOTH write paths: with jq (merge via
+# mktemp+mv) and without (truncating write, which keeps the old mode unless
+# connect.sh chmods it). NOJQBIN is a curated PATH, like ABSENTBIN, plus the
+# claude stub, so jq is provably absent there.
+NOJQBIN="$WORK/nojqbin"
+mkdir -p "$NOJQBIN"
+for c in sh cut sed mkdir dirname cp chmod; do
+  ln -s "$(command -v "$c")" "$NOJQBIN/$c"
+done
+for p in "$PRESENTPATH" "$HSTUB:$NOJQBIN"; do
+  chmod 644 "$OUT6"
+  env -i WT_ROUTE_FILE="$ROUTE" WT_SHARE_DIR="$WORK/none6" WT_CONNECT=true WT_HARNESS=claude \
+    WT_CONFIG_OUT="$OUT6" WRAPTOOL_TOKEN=tok WRAPTOOL_CWD=/home/x \
+    PATH="$p" HOME="$WORK" PWD="$WORK" sh "$CONNECT" >/dev/null 2>&1 || fail "re-run with PATH=$p exited non-zero"
+  [ "$(mode_of "$OUT6")" = "-rw-------" ] || fail "re-run (PATH=$p) left a pre-existing 0644 config at $(mode_of "$OUT6"), want -rw-------"
+done
+[ "$FAIL" -eq 0 ] && pass "connect wiring rendered, config is 0600"
 
 if [ "$FAIL" -ne 0 ]; then
   echo "wraptool selftest: $FAIL failure(s)" >&2

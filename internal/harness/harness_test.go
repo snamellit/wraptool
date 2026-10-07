@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pti/wraptool/internal/pool"
 )
 
 // serverEntry renders a descriptor and returns the wraptool server map under the
@@ -165,7 +167,7 @@ func TestWriteMergesPreservingOtherServers(t *testing.T) {
 // Authorization: Bearer header when a token is set, and none when it isn't.
 func TestAuthHeaderHarnesses(t *testing.T) {
 	topKey := map[string]string{
-		"claude": "mcpServers", "agy": "mcpServers", "opencode": "mcp", "pi": "mcpServers",
+		"claude": "mcpServers", "agy": "mcpServers", "opencode": "mcp", "pi": "mcpServers", "omp": "mcpServers",
 	}
 	for name, d := range Registry {
 		if d.Auth != AuthHeader {
@@ -258,6 +260,7 @@ func TestHarnessParityWithConnectSh(t *testing.T) {
 		{"agy", "mcpServers", "serverUrl", "", "/mcp", ".agents/mcp_config.json"},
 		{"opencode", "mcp", "url", "remote", "/sse", "opencode.json"},
 		{"pi", "mcpServers", "url", "", "/sse", ".pi/mcp.json"},
+		{"omp", "mcpServers", "url", "http", "/mcp", ".omp/mcp.json"},
 	}
 
 	for _, h := range harnesses {
@@ -404,17 +407,105 @@ func TestPoolLockable(t *testing.T) {
 	}
 }
 
-// TestRegistryNeverSetsBothPoolPackageAndPoolArchive is a registry-wide
+// TestRegistrySetsAtMostOnePoolSource is a registry-wide
 // invariant check: PoolPackage and PoolArchive are documented as mutually
 // exclusive (each Descriptor field's own doc comment) — a descriptor
 // setting both would make PoolPackageID's dispatch order silently pick one
 // over the other. Guards against a future harness's descriptor entry
 // accidentally setting both.
-func TestRegistryNeverSetsBothPoolPackageAndPoolArchive(t *testing.T) {
+func TestRegistrySetsAtMostOnePoolSource(t *testing.T) {
 	for name, d := range Registry {
-		if d.PoolPackage != "" && d.PoolArchive {
-			t.Errorf("Registry[%q] sets both PoolPackage (%q) and PoolArchive (true); they are mutually exclusive", name, d.PoolPackage)
+		n := 0
+		if d.PoolPackage != "" {
+			n++
 		}
+		if d.PoolArchive {
+			n++
+		}
+		if d.PoolRelease != nil {
+			n++
+		}
+		if n > 1 {
+			t.Errorf("Registry[%q] sets %d of PoolPackage/PoolArchive/PoolRelease; at most one of the three is allowed", name, n)
+		}
+	}
+}
+
+// TestPoolReleaseAssets: every release descriptor has a complete spec and
+// every Assets key parses as a pool.PlatformKey.
+func TestPoolReleaseAssets(t *testing.T) {
+	for name, d := range Registry {
+		if d.PoolRelease == nil {
+			continue
+		}
+		r := d.PoolRelease
+		if r.Repo == "" || r.VersionFeed == "" || r.Checksums == "" {
+			t.Errorf("Registry[%q]: incomplete ReleaseSpec %+v", name, r)
+		}
+		if len(r.Assets) == 0 {
+			t.Errorf("Registry[%q]: empty Assets", name)
+		}
+		for key, asset := range r.Assets {
+			if _, err := pool.ParsePlatformKey(key); err != nil {
+				t.Errorf("Registry[%q]: Assets key %q: %v", name, key, err)
+			}
+			if asset == "" {
+				t.Errorf("Registry[%q]: Assets[%q] is empty", name, key)
+			}
+		}
+		if got := d.PoolPackageID(); got != r.Repo {
+			t.Errorf("Registry[%q].PoolPackageID() = %q, want %q", name, got, r.Repo)
+		}
+	}
+}
+
+func TestRenderOMP(t *testing.T) {
+	base := Params{Transport: "sse", URL: "http://127.0.0.1:8717/sse", Token: "s3cr3t", CWD: "/w/p"}
+	path, srv := serverEntry(t, "omp", "mcpServers", base)
+	if path != filepath.Join(".omp", "mcp.json") {
+		t.Errorf("path = %q", path)
+	}
+	if srv["type"] != "http" {
+		t.Errorf("type = %v", srv["type"])
+	}
+	if u, _ := srv["url"].(string); u != "http://127.0.0.1:8717/mcp?cwd=%2Fw%2Fp" {
+		t.Errorf("url = %q", u)
+	}
+	if h, _ := srv["headers"].(map[string]any); h["Authorization"] != "Bearer s3cr3t" {
+		t.Errorf("headers = %v", srv["headers"])
+	}
+
+	g := base
+	g.Global = true
+	gp, gsrv := serverEntry(t, "omp", "mcpServers", g)
+	home, _ := os.UserHomeDir()
+	if want := filepath.Join(home, ".omp", "agent", "mcp.json"); gp != want {
+		t.Errorf("global path = %q, want %q", gp, want)
+	}
+	if u, _ := gsrv["url"].(string); u != "http://127.0.0.1:8717/mcp" {
+		t.Errorf("global url = %q", u)
+	}
+
+	// Merge into an existing file preserves other servers.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".omp"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".omp", "mcp.json"), []byte(`{"mcpServers":{"other":{"url":"x"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := base
+	b.Dir = dir
+	if _, err := Write("omp", b); err != nil {
+		t.Fatal(err)
+	}
+	if got := readServer(t, filepath.Join(dir, ".omp", "mcp.json"), "mcpServers"); got["type"] != "http" {
+		t.Errorf("merged wraptool entry = %v", got)
+	}
+	var doc map[string]map[string]any
+	raw, _ := os.ReadFile(filepath.Join(dir, ".omp", "mcp.json"))
+	if err := json.Unmarshal(raw, &doc); err != nil || doc["mcpServers"]["other"] == nil {
+		t.Errorf("merge dropped other server: %s", raw)
 	}
 }
 

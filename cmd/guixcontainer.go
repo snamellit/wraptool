@@ -143,6 +143,7 @@ func bringUpGuixContainer(root, token, listen, hname string, shell bool) error {
 		poolPlanInput: poolPlanInput{
 			Harness:               hname,
 			PoolLockable:          desc.PoolLockable(),
+			PoolOnly:              poolOnly(desc),
 			PointerPath:           pointerPath,
 			RuntimeDir:            pool.RuntimeDir(),
 			RuntimeBinDir:         pool.RuntimeBinDir(),
@@ -400,6 +401,10 @@ type poolPlanInput struct {
 	// a notice promising a fix command that can't exist for them would be
 	// noise (§16).
 	PoolLockable bool
+	// PoolOnly is true for a pool-lockable harness with no legacy Install
+	// recipe (omp): no legacy bin/ copy of it can ever exist, so "no active
+	// generation" can never be papered over by a legacy fallback.
+	PoolOnly bool
 	// PointerPath is pool.PointerFile(<target platform key>, Harness), or ""
 	// when the platform key itself could not be resolved — treated
 	// identically to "no active pointer" (§12.1 point 3).
@@ -538,6 +543,12 @@ func resolveGuixPoolPlan(in guixPoolPlanInput) guixPoolPlan {
 //     (review round 2 finding: naming only the missing one leaves the
 //     developer guessing what the OTHER expected path even is).
 func legacyOrErrorGuixPoolPlan(in guixPoolPlanInput, legacyState legacyPoolState, notice string) guixPoolPlan {
+	if in.PoolOnly {
+		return guixPoolPlan{err: fmt.Errorf(
+			"%q has no active generation for this host and no legacy installer, so the container could not run it; "+
+				"run `wraptool harness install %s` (or `wraptool harness sync %s` if already installed) before entering a guix container",
+			in.Harness, in.Harness, in.Harness)}
+	}
 	switch legacyState {
 	case legacyBothPresent:
 		return legacyGuixPoolPlan(in, notice)
@@ -587,7 +598,9 @@ func legacyGuixPoolPlan(in guixPoolPlanInput, notice string) guixPoolPlan {
 }
 
 // buildContainerEntry builds the interactive shell entrypoint run inside the
-// guix container: normalizes TERM (guix defaults to TERM=dumb with no
+// guix container: turns off Claude Code's self-updater (DISABLE_AUTOUPDATER —
+// a pool harness is version-locked, and a self-update would install an
+// unlocked, unquarantined copy wherever npm can write), normalizes TERM (guix defaults to TERM=dumb with no
 // terminfo DB in the container), appends (never prepends) every pathDirs
 // entry to PATH, in order, so a pool tool can never shadow a project
 // toolchain binary (git/go/bash) — otherwise a poisoned pool could hijack
@@ -604,6 +617,7 @@ func buildContainerEntry(root, poolHome string, pathDirs []string) string {
 		pathAppend = ":" + strings.Join(quoted, ":")
 	}
 	return "export WRAPTOOL_CONTAINER=1" +
+		"; export DISABLE_AUTOUPDATER=1" +
 		"; export TERM=xterm-256color" +
 		"; export PATH=$PATH" + pathAppend +
 		"; export HOME=" + shellQuote(poolHome) +

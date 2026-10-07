@@ -29,11 +29,17 @@ const npmSourceName = "npm"
 // implementation. Same visibility reasoning as npmSourceName.
 const archiveSourceName = "archive"
 
+// releaseSourceName is the counterpart for a release-binary harness
+// (design/harness/omp-release-source.md §3.1) — a prebuilt binary
+// published as a GitHub release asset, locked via the release's checksum
+// file. Same visibility reasoning as npmSourceName.
+const releaseSourceName = "release"
+
 // SourceKind names which pool.Source acquisition style an orchestrator call
-// is driving — SourceNPM or SourceArchive (§8.1's Lock.Source values). It
-// selects the Observations/Lock namespace prefix ("<kind>/<pkg>/<version>",
+// is driving — SourceNPM, SourceArchive or SourceRelease (§8.1's Lock.Source
+// values). It selects the Observations/Lock namespace prefix ("<kind>/<pkg>/<version>",
 // §8.1) and the recipe_revision formula (npmRecipeRevision vs
-// archiveRecipeRevision). This package's Source interface is structural,
+// archiveRecipeRevision vs releaseRecipeRevision). This package's Source interface is structural,
 // deliberately not internal/pool/source's concrete types (see that
 // interface's own doc comment below), so it cannot infer a caller's source
 // style at runtime by inspecting the Source value itself; the caller
@@ -45,6 +51,7 @@ type SourceKind string
 const (
 	SourceNPM     SourceKind = SourceKind(npmSourceName)
 	SourceArchive SourceKind = SourceKind(archiveSourceName)
+	SourceRelease SourceKind = SourceKind(releaseSourceName)
 )
 
 // effective normalizes a SourceKind, treating the zero value ("") as
@@ -55,7 +62,7 @@ const (
 // parameters elsewhere in this package (RefreshHarnessLocked/RefreshHarness/
 // StatusHarness's own kind argument) are NOT defaulted this way — a
 // required parameter has no "unset" state to default from, so those callers
-// must always pass an explicit SourceNPM/SourceArchive.
+// must always pass an explicit SourceNPM/SourceArchive/SourceRelease.
 func (k SourceKind) effective() SourceKind {
 	if k == "" {
 		return SourceNPM
@@ -207,8 +214,82 @@ func archiveRecipeRevision(pkg string) (string, error) {
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
+// releaseRecipeFormatVersion is archiveRecipeFormatVersion's counterpart for
+// a release-binary harness (omp-release-source.md §3.5): its own constant,
+// independent of npm's and archive's, so bumping one source's recipe never
+// invalidates another's realized generations.
+const releaseRecipeFormatVersion = 1
+
+// ReleaseTagPrefix is the fixed prefix of a release-sourced harness's git
+// tag: the tag for version V is ReleaseTagPrefix+V ("v18.6.1"). The release
+// source builds tags from this constant and releaseRecipeRevision hashes the
+// scheme string derived from it, so the two cannot drift apart.
+const ReleaseTagPrefix = "v"
+
+// releaseTagScheme is the tag-scheme string folded into the recipe hash.
+const releaseTagScheme = ReleaseTagPrefix + "{version}"
+
+// ReleaseRecipe carries the descriptor-derived inputs of a release-sourced
+// harness's recipe_revision (omp-release-source.md §3.5): the platform to
+// release-asset-name mapping and the checksum asset's name. Neither is
+// recoverable from the package identity (the repo) alone, and a change to
+// either must self-heal through the ordinary recipe-mismatch path.
+type ReleaseRecipe struct {
+	// VersionFeed is the npm package whose packument supplies the harness's
+	// versions and publish times (omp-release-source.md §4.1).
+	VersionFeed string
+	// Assets maps each supported platform to its release asset name.
+	Assets map[PlatformKey]string
+	// Checksums is the release's checksum asset name (e.g. "SHA256SUMS.txt").
+	Checksums string
+}
+
+// releaseRecipeRevision computes recipe_revision (§8) for one release-binary
+// harness — the release counterpart of archiveRecipeRevision. Like the
+// archive source it invokes no backend, so there is no provisioning image to
+// fold in: repo identity + the version-feed package + the fixed tag scheme +
+// the platform-to-asset mapping + the checksum asset name + releaseRecipeFormatVersion. The mapping is serialized as a
+// slice sorted by platform key so the hash never depends on map order.
+func releaseRecipeRevision(repo, versionFeed string, assets map[PlatformKey]string, checksums string) (string, error) {
+	if repo == "" {
+		return "", fmt.Errorf("release recipe: repo must not be empty")
+	}
+	if versionFeed == "" {
+		return "", fmt.Errorf("release recipe %q: version feed must not be empty", repo)
+	}
+	if len(assets) == 0 {
+		return "", fmt.Errorf("release recipe %q: asset mapping must not be empty", repo)
+	}
+	if checksums == "" {
+		return "", fmt.Errorf("release recipe %q: checksum asset name must not be empty", repo)
+	}
+	type assetEntry struct {
+		Platform string `json:"platform"`
+		Asset    string `json:"asset"`
+	}
+	entries := make([]assetEntry, 0, len(assets))
+	for key, name := range assets {
+		entries = append(entries, assetEntry{Platform: string(key), Asset: name})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Platform < entries[j].Platform })
+	data, err := json.Marshal(struct {
+		Repo      string       `json:"repo"`
+		Feed      string       `json:"version_feed"`
+		TagScheme string       `json:"tag_scheme"`
+		Assets    []assetEntry `json:"assets"`
+		Checksums string       `json:"checksums"`
+		Format    int          `json:"release_recipe_format_version"`
+	}{Repo: repo, Feed: versionFeed, TagScheme: releaseTagScheme, Assets: entries, Checksums: checksums, Format: releaseRecipeFormatVersion})
+	if err != nil {
+		return "", fmt.Errorf("marshaling release recipe for hashing: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 // recipeRevisionForSource computes recipe_revision (§8) for pkg under kind,
-// dispatching to npmRecipeRevision or archiveRecipeRevision. provisioningImage
+// dispatching to npmRecipeRevision, archiveRecipeRevision or
+// releaseRecipeRevision. provisioningImage
 // and nodeVersion are passed through to npmRecipeRevision only —
 // archiveRecipeRevision ignores both (archive resolve/realize invoke no
 // backend and bundle no node runtime, §6.2/node-runtime-tracking.md
@@ -216,12 +297,21 @@ func archiveRecipeRevision(pkg string) (string, error) {
 // .golangci.yml): a future SourceKind added without wiring its own recipe
 // formula fails loudly here instead of silently reusing another source's
 // revision.
-func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage, nodeVersion string) (string, error) {
+//
+// release is consulted only for SourceRelease (pkg is then the release repo,
+// e.g. "can1357/oh-my-pi"); a SourceRelease call with a nil release is an
+// error, since the asset mapping cannot be inferred.
+func recipeRevisionForSource(kind SourceKind, pkg, provisioningImage, nodeVersion string, release *ReleaseRecipe) (string, error) {
 	switch kind {
 	case SourceNPM:
 		return npmRecipeRevision(pkg, provisioningImage, nodeVersion)
 	case SourceArchive:
 		return archiveRecipeRevision(pkg)
+	case SourceRelease:
+		if release == nil {
+			return "", fmt.Errorf("release source %q: recipe_revision needs release recipe inputs (UpdateOptions.Release)", pkg)
+		}
+		return releaseRecipeRevision(pkg, release.VersionFeed, release.Assets, release.Checksums)
 	default:
 		return "", fmt.Errorf("internal error: unknown pool source kind %q", kind)
 	}
@@ -255,13 +345,19 @@ type Source interface {
 	// bundles no node runtime). recipeRevision is this package's own recipe
 	// hash (npmRecipeRevision, §8's recipe_revision).
 	Resolve(ctx context.Context, b backend.Backend, pkg, version, workDir, nodeVersion, recipeRevision string) (LockHarness, error)
-	// Fetch downloads every artifact h describes into cacheDir, verifying
-	// integrity before admission (host, pure Go, locked URLs only — §6.2).
-	// It MUTATES h in place: each npm package entry's pool-local SHA256
-	// cache-address field is filled (existing ones re-verified) as objects
-	// are admitted to cache, so UpdateHarness calls Fetch before persisting
-	// h into harness-lock.json, never after.
-	Fetch(ctx context.Context, h *LockHarness, cacheDir string) error
+	// Fetch downloads the artifacts h describes that targets need (which
+	// must be non-empty; an implementation errors on none) into
+	// cacheDir, verifying integrity before admission (host, pure Go, locked
+	// URLs only — §6.2). An archive or runtime artifact is fetched only if
+	// its platform key is in targets; an npm package is still always fetched
+	// (platform-scoped-fetch.md §Design 1 — package scoping is not
+	// implemented yet). It MUTATES h in place: each fetched artifact's
+	// pool-local SHA256 cache-address field is filled (existing ones
+	// re-verified) as objects are admitted to cache, so UpdateHarness calls
+	// Fetch before persisting h into harness-lock.json, never after. An
+	// artifact outside targets keeps its (possibly empty) SHA256: empty means
+	// "not fetched on this pool" (platform-scoped-fetch.md §Design 2).
+	Fetch(ctx context.Context, h *LockHarness, cacheDir string, targets []PlatformKey) error
 	// Realize builds one platform generation for harnessName (executable
 	// binName) from h's locked artifacts, inside b with no network access
 	// (§6.2 Realize phase, §11.4), unpacking into stagingGenDir (a fresh,
@@ -353,10 +449,13 @@ type UpdateOptions struct {
 	Harness string
 	// Package is the source package identity, e.g. "@anthropic-ai/claude-code"
 	// for an npm-sourced harness, or the harness's own name for an
-	// archive-sourced one (internal/harness.Descriptor.PoolPackageID()).
+	// archive-sourced one (internal/harness.Descriptor.PoolPackageID()). For
+	// SourceRelease, Package is the GitHub repo ("owner/name", e.g.
+	// "can1357/oh-my-pi"), which is also the recipe's repo input and the
+	// observation namespace.
 	Package string
 	// Source selects which pool.Source acquisition style this call is
-	// driving — SourceNPM or SourceArchive (§8.1) — determining the
+	// driving — SourceNPM, SourceArchive or SourceRelease (§8.1) — determining the
 	// Observations/Lock namespace prefix and the recipe_revision formula
 	// (see SourceKind's own doc comment). The zero value is SourceNPM (see
 	// SourceKind.effective's doc comment): every UpdateOptions literal
@@ -412,6 +511,11 @@ type UpdateOptions struct {
 	// cmd/harness.go always passes its provisioningImage constant here, even
 	// on a call that resolves to use the guix backend.
 	ProvisioningImage string
+	// Release carries the release-binary recipe inputs (descriptor asset
+	// mapping + checksum asset name, omp-release-source.md §3.5), folded into
+	// releaseRecipeRevision. Required for a SourceRelease call (nil is an
+	// error) and ignored for SourceNPM/SourceArchive.
+	Release *ReleaseRecipe
 	// NodeLine is the npm-sourced harness's pinned Node major line
 	// (internal/harness.Descriptor.NodeLine); empty means defaultNodeLine,
 	// the pool-wide default. Only meaningful for SourceNPM — ignored for a
@@ -784,7 +888,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		nodeVersionForRecipe = existing.Runtime.Version
 	}
 
-	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage, nodeVersionForRecipe)
+	recipeRevision, err := recipeRevisionForSource(kind, opts.Package, opts.ProvisioningImage, nodeVersionForRecipe, opts.Release)
 	if err != nil {
 		return nil, err
 	}
@@ -866,20 +970,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 		// when the pointer already names this generation, and a failure is
 		// non-fatal (RealizeErr) like every other realize-phase failure on
 		// the install/update path.
-		if generationRealized(digestRecorded != "", dirPresent) {
-			genID, genErr := GenerationID(opts.Harness, out.Version, platformKey, digestRecorded)
-			if genErr != nil {
-				result.RealizeErr = genErr
-				return result, nil
-			}
-			if active, ok := ActiveGeneration(paths, opts.Harness, platformKey); !ok || active != genID {
-				if aerr := activateIfNeeded(paths, opts.Harness, platformKey, genID); aerr != nil {
-					result.RealizeErr = aerr
-				} else {
-					result.Note = "activated " + genID
-				}
-			}
-		}
+		repairActivation(paths, opts.Harness, platformKey, &out, digestRecorded, generationRealized(digestRecorded != "", dirPresent), result)
 		return result, nil
 	case DecisionRealize:
 		out := existing
@@ -921,6 +1012,11 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 				return nil, err
 			}
 			result.RealizedGenerationID = genID
+		} else {
+			// Realized but possibly never activated (e.g. a kept version
+			// whose generation predates activation): same repair as the
+			// up-to-date path.
+			repairActivation(paths, opts.Harness, platformKey, &out, digestRecorded, true, result)
 		}
 		return result, nil
 	case DecisionFail:
@@ -1011,7 +1107,7 @@ func UpdateHarnessLocked(ctx context.Context, src Source, b backend.Backend, pat
 	// leave the pool exactly as it was: since the previous lock file has not
 	// been touched yet at this point, returning here does that for free —
 	// no half-fetched resolution is ever persisted.
-	if err := src.Fetch(ctx, &resolved, paths.Cache); err != nil {
+	if err := src.Fetch(ctx, &resolved, paths.Cache, []PlatformKey{platformKey}); err != nil {
 		return nil, fmt.Errorf("fetching %s@%s: %w", opts.Package, selected.Version, err)
 	}
 
@@ -1155,13 +1251,109 @@ func SyncHarnessLocked(ctx context.Context, src Source, b backend.Backend, paths
 	if !ok {
 		return nil, fmt.Errorf("no lock entry for harness %q; run `wraptool harness install %s` first", harnessName, harnessName)
 	}
-	if err := src.Fetch(ctx, &lh, paths.Cache); err != nil {
+	if err := src.Fetch(ctx, &lh, paths.Cache, []PlatformKey{key}); err != nil {
 		return nil, fmt.Errorf("fetching %s: %w", harnessName, err)
+	}
+	// Record any cache address Fetch just filled in (platform-scoped-fetch.md
+	// §Design 3) before realizing, so a later sync for the same key finds the
+	// object by address instead of re-verifying it through the integrity index.
+	if err := persistCacheAddresses(paths, harnessName, &lh); err != nil {
+		return nil, err
 	}
 	if _, err := RealizeGeneration(ctx, src, b, paths, harnessName, binName, &lh, key); err != nil {
 		return nil, err
 	}
 	return &lh, nil
+}
+
+// persistCacheAddresses copies the non-empty sha256 cache addresses of lh's
+// archive artifacts, runtime artifacts, and npm packages into the matching
+// on-disk harness-lock.json entry's still-empty ones, leaving every other
+// field untouched (platform-scoped-fetch.md §Design 3). It re-reads the lock
+// under the caller's held pool lock, like persistGeneration. It refuses (an
+// error, nothing written) when the on-disk entry is not the same version and
+// recipe_revision as lh: lh was then not derived from that entry, so its
+// addresses must not be merged into it. An address is never cleared and never
+// overwritten: a differing non-empty value is a hard error, since two
+// different objects would have passed the same upstream integrity check.
+// A no-op (no write) when nothing needs filling.
+func persistCacheAddresses(paths PoolPaths, harnessName string, lh *LockHarness) error {
+	lockDoc, err := loadLockOrEmpty(paths.Lock)
+	if err != nil {
+		return err
+	}
+	disk, ok := lockDoc.Harnesses[harnessName]
+	if !ok {
+		return fmt.Errorf("no lock entry for harness %q to record cache addresses", harnessName)
+	}
+	if disk.Version != lh.Version {
+		return fmt.Errorf("harness %q: refusing to record cache addresses: lock version is %q, fetched %q", harnessName, disk.Version, lh.Version)
+	}
+	if disk.RecipeRevision != lh.RecipeRevision {
+		return fmt.Errorf("harness %q: refusing to record cache addresses: lock recipe_revision is %q, fetched %q", harnessName, disk.RecipeRevision, lh.RecipeRevision)
+	}
+
+	changed := false
+	merge := func(what string, have *string, want string) error {
+		switch {
+		case want == "" || *have == want:
+			return nil
+		case *have != "":
+			return fmt.Errorf("harness %q: %s: cache address mismatch: lock has %s, fetched %s", harnessName, what, *have, want)
+		}
+		*have = want
+		changed = true
+		return nil
+	}
+	if lh.Archive != nil && disk.Archive != nil {
+		for key, a := range lh.Archive.Artifacts {
+			d, ok := disk.Archive.Artifacts[key]
+			if !ok {
+				continue
+			}
+			if err := merge("archive artifact "+string(key), &d.SHA256, a.SHA256); err != nil {
+				return err
+			}
+			disk.Archive.Artifacts[key] = d
+		}
+	}
+	if lh.Runtime != nil && disk.Runtime != nil {
+		for key, a := range lh.Runtime.Artifacts {
+			d, ok := disk.Runtime.Artifacts[key]
+			if !ok {
+				continue
+			}
+			if err := merge("runtime artifact "+string(key), &d.SHA256, a.SHA256); err != nil {
+				return err
+			}
+			disk.Runtime.Artifacts[key] = d
+		}
+	}
+	if lh.NPMLock != nil && disk.NPMLock != nil {
+		for name, p := range lh.NPMLock.Packages {
+			d, ok := disk.NPMLock.Packages[name]
+			if !ok {
+				continue
+			}
+			if err := merge("npm package "+name, &d.SHA256, p.SHA256); err != nil {
+				return err
+			}
+			disk.NPMLock.Packages[name] = d
+		}
+	}
+	if !changed {
+		return nil
+	}
+
+	lockDoc.Harnesses[harnessName] = disk
+	if err := lockDoc.Validate(); err != nil {
+		return fmt.Errorf("validating lock after recording cache addresses: %w", err)
+	}
+	data, err := lockDoc.Marshal()
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(paths.Lock, data, 0o644)
 }
 
 // rollbackCandidate is one realized generation this package's rollback scan
@@ -1427,7 +1619,7 @@ type HarnessStatus struct {
 // (§6.5: "list takes no lock"). A missing manifest or lock file is treated
 // as empty (nothing installed yet), not an error, so `list` works before any
 // `install` has ever run. kind selects the Observations namespace this
-// harness's candidates were recorded under (SourceNPM/SourceArchive, §8.1) —
+// harness's candidates were recorded under (SourceNPM/SourceArchive/SourceRelease, §8.1) —
 // the caller (cmd/harness.go) knows the harness's Descriptor and states it
 // explicitly; this package cannot infer it from pkg alone.
 func StatusHarness(paths PoolPaths, harnessName string, kind SourceKind, pkg string, now time.Time) (HarnessStatus, error) {
@@ -1604,4 +1796,31 @@ func loadLockOrEmpty(path string) (*Lock, error) {
 		return nil, fmt.Errorf("reading lock: %w", err)
 	}
 	return UnmarshalLock(data)
+}
+
+// repairActivation activates an existing, realized generation whose pointer is
+// missing or stale (§10: the ACTIVE receipt is part of idempotence). It makes
+// no Source calls. Failures are non-fatal, recorded in result.RealizeErr; a
+// successful repair sets result.Note only when none is already set.
+func repairActivation(paths PoolPaths, harnessName string, platformKey PlatformKey, lh *LockHarness, digestRecorded string, realized bool, result *UpdateResult) {
+	if !realized {
+		return
+	}
+	genID, err := GenerationID(harnessName, lh.Version, platformKey, digestRecorded)
+	if err != nil {
+		result.RealizeErr = err
+		return
+	}
+	if active, ok := ActiveGeneration(paths, harnessName, platformKey); ok && active == genID {
+		return
+	}
+	if err := activateIfNeeded(paths, harnessName, platformKey, genID); err != nil {
+		result.RealizeErr = err
+		return
+	}
+	if result.Note == "" {
+		result.Note = "activated " + genID
+	} else {
+		result.Note += "; activated " + genID
+	}
 }

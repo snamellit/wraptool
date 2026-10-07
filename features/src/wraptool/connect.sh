@@ -99,7 +99,7 @@ else
 fi
 
 # Per-harness config shape, mirroring the Go renderers in internal/harness.
-#   EP      endpoint path — legacy SSE (/sse) or Streamable HTTP (/mcp, agy)
+#   EP      endpoint path — legacy SSE (/sse) or Streamable HTTP (/mcp, agy, omp)
 #   TOP     top-level object key ("mcpServers", or opencode's "mcp")
 #   URL_KEY the server entry's URL field (url / serverUrl / httpUrl)
 #   TYPE    a leading "type":"…", fragment, or empty
@@ -109,8 +109,9 @@ case "$WT_HARNESS" in
   claude)   EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"sse",';    EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.mcp.json}" ;;
   agy)      EP="/mcp"; TOP="mcpServers"; URL_KEY="serverUrl"; TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.agents/mcp_config.json}" ;;
   opencode) EP="/sse"; TOP="mcp";        URL_KEY="url";       TYPE='"type":"remote",'; EXTRA=',"enabled":true'; TARGET="${WT_CONFIG_OUT:-$PWD/opencode.json}" ;;
+  omp)      EP="/mcp"; TOP="mcpServers"; URL_KEY="url";       TYPE='"type":"http",';   EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.omp/mcp.json}" ;;
   pi)       EP="/sse"; TOP="mcpServers"; URL_KEY="url";       TYPE='';                 EXTRA='';                TARGET="${WT_CONFIG_OUT:-$PWD/.pi/mcp.json}" ;;
-  *) echo "wraptool: ERROR unsupported harness '$WT_HARNESS' (container CLIs: claude agy opencode pi)" >&2; exit 1 ;;
+  *) echo "wraptool: ERROR unsupported harness '$WT_HARNESS' (container CLIs: claude agy omp opencode pi)" >&2; exit 1 ;;
 esac
 
 URL="${BASE}${EP}"
@@ -129,6 +130,11 @@ SERVER=$(printf '{%s"%s":"%s"%s%s}' "$TYPE" "$URL_KEY" "$URL" "$HDR" "$EXTRA")
 # Ensure the config's parent dir exists (agy/pi write under a subdir).
 mkdir -p "$(dirname "$TARGET")"
 
+# The config carries the bearer token: create it owner-only (0600), matching
+# `wraptool init`. umask covers the fresh write and the backup; the chmod
+# below also tightens a pre-existing file and the jq merge's mktemp output.
+umask 077
+
 # Merge into an existing config with jq when available (preserves other MCP
 # servers under the same top-level key); otherwise write fresh, backing up any
 # existing file once.
@@ -143,6 +149,7 @@ else
   fi
   printf '{\n  "%s": {\n    "wraptool": %s\n  }\n}\n' "$TOP" "$SERVER" > "$TARGET"
 fi
+chmod 600 "$TARGET"
 
 echo "wraptool: wrote $TARGET (wraptool @ ${BASE})"
 [ -z "${WRAPTOOL_TOKEN:-}" ] && echo "wraptool: WARNING WRAPTOOL_TOKEN empty — set it on the host if wraptool uses auth_token_file." >&2

@@ -1,6 +1,10 @@
 # Design: Platform-scoped fetch for the harness pool
 
-Status: proposed
+Status: partly implemented. Landed: the `Fetch(..., targets)` interface,
+archive and runtime artifact scoping, the empty-`sha256` semantics for them,
+and `persistCacheAddresses` in `sync`. Not landed: npm package scoping
+(`MatchesNPMPlatform`), the Realize skip, and the step 0 prototype check.
+Fetch fetches every npm package until step 0 is done.
 
 Amends `design/harness/unified-harness-pool.md` §6.2 (Fetch), §8 (lock), §10
 (`sync`), and §11.4 (realization). Nothing here changes the trust model: the

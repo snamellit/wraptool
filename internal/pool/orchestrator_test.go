@@ -108,7 +108,7 @@ func (f *fakeSource) Resolve(_ context.Context, _ backend.Backend, pkg, version,
 	return lh, nil
 }
 
-func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string) error {
+func (f *fakeSource) Fetch(_ context.Context, h *LockHarness, _ string, _ []PlatformKey) error {
 	f.fetchCalls++
 	f.fetchedVersions = append(f.fetchedVersions, h.Version)
 	if f.fetchErr != nil {
@@ -716,13 +716,13 @@ func TestArchiveRecipeRevisionDistinctFromNPMAndStable(t *testing.T) {
 	}
 
 	// recipeRevisionForSource must dispatch to exactly the same functions.
-	if got, err := recipeRevisionForSource(SourceNPM, pkg, "", ""); err != nil || got != npmRev {
+	if got, err := recipeRevisionForSource(SourceNPM, pkg, "", "", nil); err != nil || got != npmRev {
 		t.Errorf("recipeRevisionForSource(SourceNPM, %q) = %q, %v, want %q, nil", pkg, got, err, npmRev)
 	}
-	if got, err := recipeRevisionForSource(SourceArchive, pkg, "", ""); err != nil || got != archRev1 {
+	if got, err := recipeRevisionForSource(SourceArchive, pkg, "", "", nil); err != nil || got != archRev1 {
 		t.Errorf("recipeRevisionForSource(SourceArchive, %q) = %q, %v, want %q, nil", pkg, got, err, archRev1)
 	}
-	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg, "", ""); err == nil {
+	if _, err := recipeRevisionForSource(SourceKind("bogus"), pkg, "", "", nil); err == nil {
 		t.Error("recipeRevisionForSource with an unknown SourceKind should fail closed, got nil error")
 	}
 }
@@ -2521,6 +2521,55 @@ func TestUpdateHarnessSecondCallWithUnchangedInputsIsIdempotent(t *testing.T) {
 	}
 	if src.resolveCalls != 1 {
 		t.Errorf("resolveCalls after second (idempotent) update = %d, want still 1", src.resolveCalls)
+	}
+}
+
+// TestUpdateHarnessKeepExistingRepairsMissingActivation: the same repair as
+// the up-to-date path, for a lock kept because nothing newer is eligible
+// (DecisionKeepExisting) whose generation is realized but never activated.
+// Activation makes no Source calls.
+func TestUpdateHarnessKeepExistingRepairsMissingActivation(t *testing.T) {
+	paths := testPaths(t)
+	writeManifest(t, paths, claudeManifest)
+	pkg := "@anthropic-ai/claude-code"
+	key, err := HostPlatformKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	genID, digest := seedExistingGeneration(t, paths, "claude", "2.1.220", key, "#!/bin/sh\nexec true\n")
+	rr, err := npmRecipeRevision(pkg, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := baseRealizeLockHarness()
+	h.Package = pkg
+	h.Version = "2.1.220"
+	h.RecipeRevision = rr
+	h.Generations = map[PlatformKey]string{key: digest}
+	seedRealizeLock(t, paths, h)
+	// Only a quarantined newer candidate: nothing eligible -> keep existing.
+	seedObservations(t, paths, pkg, []Candidate{
+		{Version: "2.1.221", PublishedAt: fixedNow.Add(-time.Hour), FirstSeenAt: fixedNow.Add(-time.Hour)},
+	})
+
+	src := &fakeSource{}
+	res, err := UpdateHarness(ctxT(t), src, fakeBackend{}, paths, UpdateOptions{
+		Harness: "claude", BinName: "claude", Package: pkg, Now: fixedNow, Advance: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateHarness: %v", err)
+	}
+	if res.RealizeErr != nil {
+		t.Fatalf("RealizeErr = %v", res.RealizeErr)
+	}
+	if res.Changed || !strings.Contains(res.Note, "activated "+genID) {
+		t.Errorf("Changed=%v Note=%q, want kept lock noting activation of %s", res.Changed, res.Note, genID)
+	}
+	if src.resolveCalls != 0 || src.realizeCalls != 0 {
+		t.Errorf("source calls = resolve:%d realize:%d, want 0/0", src.resolveCalls, src.realizeCalls)
+	}
+	if active, ok := ActiveGeneration(paths, "claude", key); !ok || active != genID {
+		t.Errorf("ActiveGeneration = %q ok=%v, want %q", active, ok, genID)
 	}
 }
 

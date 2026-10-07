@@ -183,7 +183,7 @@ func TestIntegration_RealizeOrchestrationThroughRealNPMRealize(t *testing.T) {
 	// Fetch admits the synthetic tarball AND the node runtime artifact into
 	// cache/sha256/ — Realize refuses to run without both already verified
 	// there.
-	if err := n.Fetch(context.Background(), h, paths.Cache); err != nil {
+	if err := n.Fetch(context.Background(), h, paths.Cache, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	// RealizeGeneration's persistGeneration re-reads harness-lock.json and
@@ -268,7 +268,7 @@ func TestIntegration_RealizeOrchestrationThroughRealNPMRealize(t *testing.T) {
 	// ManifestDigest. ---
 	paths2 := newOrchestrationTestPaths(t)
 	h2 := buildLockHarness(t)
-	if err := n.Fetch(context.Background(), h2, paths2.Cache); err != nil {
+	if err := n.Fetch(context.Background(), h2, paths2.Cache, allTargets); err != nil {
 		t.Fatalf("Fetch into the second pool: %v", err)
 	}
 	seedLockFile(t, paths2.Lock, harnessName, h2)

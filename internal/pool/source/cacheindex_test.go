@@ -42,11 +42,11 @@ func TestFetch_IndexFindsObjectWithoutRecordedSHA256(t *testing.T) {
 	srv, requests := countingServer(t, content)
 	cacheDir := t.TempDir()
 
-	if err := NewNPM("").Fetch(context.Background(), freshNPMLock(srv.URL+"/pkg.tgz", content), cacheDir); err != nil {
+	if err := NewNPM("").Fetch(context.Background(), freshNPMLock(srv.URL+"/pkg.tgz", content), cacheDir, allTargets); err != nil {
 		t.Fatalf("first Fetch: %v", err)
 	}
 	lh := freshNPMLock(srv.URL+"/pkg.tgz", content)
-	if err := NewNPM("").Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := NewNPM("").Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("second Fetch: %v", err)
 	}
 	if got := atomic.LoadInt32(requests); got != 1 {
@@ -67,7 +67,7 @@ func TestFetch_IndexBackfillsPreexistingObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := NewNPM("").Fetch(context.Background(), freshNPMLock(srv.URL+"/pkg.tgz", content), cacheDir); err != nil {
+	if err := NewNPM("").Fetch(context.Background(), freshNPMLock(srv.URL+"/pkg.tgz", content), cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if got := atomic.LoadInt32(requests); got != 0 {
@@ -97,7 +97,7 @@ func TestFetch_IndexEntryIsReverified(t *testing.T) {
 	}
 
 	lh := freshNPMLock(srv.URL+"/pkg.tgz", content)
-	if err := NewNPM("").Fetch(context.Background(), lh, cacheDir); err != nil {
+	if err := NewNPM("").Fetch(context.Background(), lh, cacheDir, allTargets); err != nil {
 		t.Fatalf("Fetch: %v", err)
 	}
 	if got := atomic.LoadInt32(requests); got != 1 {
@@ -123,7 +123,7 @@ func TestArchiveFetch_IndexFindsObjectWithoutRecordedSHA256(t *testing.T) {
 	}
 
 	for i := range 2 {
-		if err := NewArchive("").Fetch(context.Background(), newLock(), cacheDir); err != nil {
+		if err := NewArchive("").Fetch(context.Background(), newLock(), cacheDir, allTargets); err != nil {
 			t.Fatalf("Fetch %d: %v", i, err)
 		}
 	}

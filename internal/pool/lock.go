@@ -46,6 +46,11 @@ type LockHarness struct {
 	// "archive" for a given harness), but nothing here enforces that — the
 	// two fields simply describe different sources' additive lock shapes.
 	Archive *LockArchive `json:"archive,omitempty"`
+	// Release pins a release-binary ("release") source's checksum-locked
+	// per-platform artifacts (design/harness/omp-release-source.md §3.2).
+	// Additive and omitempty, so existing locks are unaffected; covered by
+	// Hash like every other field since Hash marshals the whole entry.
+	Release *LockRelease `json:"release,omitempty"`
 	// Generations maps a platform key to its receipt digest ("sha256:<hex>"),
 	// present once that platform has been realized (§11.5). Keyed by the
 	// closed PlatformKey enum (not a bare string) so a lock read back from
@@ -90,6 +95,24 @@ type LockArchiveArtifact struct {
 	URL    string `json:"url"`
 	SHA512 string `json:"sha512"`
 	SHA256 string `json:"sha256,omitempty"`
+}
+
+// LockRelease is a release-binary source's locked artifacts (omp-release-
+// source.md §3.2): the GitHub repo and release tag, plus one downloadable
+// asset per platform.
+type LockRelease struct {
+	Repo      string                              `json:"repo"` // "can1357/oh-my-pi"
+	Tag       string                              `json:"tag"`  // "v18.6.1"
+	Artifacts map[PlatformKey]LockReleaseArtifact `json:"artifacts"`
+}
+
+// LockReleaseArtifact is one platform's locked release asset. SHA256 is the
+// upstream checksum file's digest AND the pool's cache address
+// (cache/sha256/<digest>) — one field carries both, and unlike
+// LockArchiveArtifact.SHA256 it is set at resolve time, never empty.
+type LockReleaseArtifact struct {
+	URL    string `json:"url"`
+	SHA256 string `json:"sha256"`
 }
 
 // NPMLock embeds the resolved npm dependency graph for one harness (§8.1):
@@ -248,6 +271,35 @@ func (l *Lock) Validate() error {
 					return fmt.Errorf("harness %q: %w", name, err)
 				}
 			}
+		}
+		if h.Release != nil {
+			if err := validateLockRelease(h.Release); err != nil {
+				return fmt.Errorf("harness %q: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateLockRelease checks a LockRelease's shape (omp-release-source.md
+// §3.3): non-empty repo and tag, and per artifact a valid platform key, an
+// https URL and a 64-lowercase-hex sha256.
+func validateLockRelease(r *LockRelease) error {
+	if r.Repo == "" {
+		return fmt.Errorf("release: repo must not be empty")
+	}
+	if r.Tag == "" {
+		return fmt.Errorf("release: tag must not be empty")
+	}
+	for key, a := range r.Artifacts {
+		if _, err := ParsePlatformKey(string(key)); err != nil {
+			return fmt.Errorf("release artifacts: %w", err)
+		}
+		if !strings.HasPrefix(a.URL, "https://") {
+			return fmt.Errorf("release artifact %s: url %q must be https", key, a.URL)
+		}
+		if !isLowerHexOfLen(a.SHA256, 64) {
+			return fmt.Errorf("release artifact %s: sha256 must be 64 lowercase hex characters", key)
 		}
 	}
 	return nil

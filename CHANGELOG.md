@@ -14,9 +14,39 @@ changed and anything an upgrade should know.
   failed with `ENODATA: Cache input stream was empty`. **Upgrade note:** a
   pool already hit by this keeps failing until the file is downloaded
   again — run `wraptool harness sync <harness>` once after upgrading.
+- **A pool-locked `claude` no longer updates itself in a container.** Claude
+  Code's self-updater ran `npm install -g`, which put a newer, unlocked and
+  unquarantined copy in any writable npm prefix in the image (the node
+  feature's, for example). That copy came first on `PATH`, ahead of the pool
+  binary. The `wraptool` Dev Container feature and the Guix runtime now set
+  `DISABLE_AUTOUPDATER=1`. **Upgrade note:** in an existing container,
+  remove the stray copy (`npm uninstall -g @anthropic-ai/claude-code`) and
+  rebuild the container with feature 1.2.0.
+- **The feature's MCP config is owner-only.** `connect.sh` wrote
+  `.mcp.json` (and the other harnesses' config files), which carry the bearer
+  token, world-readable. It now writes them `0600`, as `wraptool init` does,
+  and tightens an existing file on the next run.
 
 ### Added
 
+- **The `omp` (Oh My Pi) harness**, from a new pool source kind, `release`.
+  The pool downloads one `omp` binary per platform from a GitHub release and
+  locks it by the release's `SHA256SUMS.txt`. Versions and publish times come
+  from the npm packument, so `minimum_release_age` applies. It needs no guix,
+  docker, or podman, and no Node runtime.
+  - `omp` is pool-only: run `wraptool harness install omp` before
+    `wraptool up --harness omp`. `install`, `update`, and `sync` skip the
+    legacy step without a warning.
+  - `init --harness omp` writes `.omp/mcp.json` (global:
+    `~/.omp/agent/mcp.json`) with Streamable HTTP at `/mcp`. The `wraptool`
+    Dev Container feature is 1.2.0 and accepts `omp` as its `harness`.
+  - Releases before 17.2.10 publish no checksum file, so the pool cannot lock
+    them.
+  - `omp` reads other harnesses' configuration (`.claude`, `.cursor`,
+    `.codex`) from the shared pool HOME.
+- Downloads are platform-scoped: archive and Node runtime artifacts are fetched
+  only for the platform being realized, and `sync` records the cache addresses
+  it backfills. npm packages are still fetched for every platform.
 - `harness install`, `update`, and `sync` report each download on stderr:
   its size, then progress every 5 seconds. A claude update downloads several
   hundred megabytes, which used to look like a hang on a slow network.

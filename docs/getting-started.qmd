@@ -146,7 +146,7 @@ wraptool init --harness claude --harness opencode --url http://127.0.0.1:8717/ss
 ```
 
 This writes the MCP config block for each harness. Supported values:
-`agy`, `claude`, `opencode`, `pi`, or `all`.
+`agy`, `claude`, `omp`, `opencode`, `pi`, or `all`.
 
 `init` reads `auth_token_file` from your config and embeds the
 `Authorization: Bearer` header in every networked harness config — so an
@@ -155,7 +155,7 @@ provisions the default token file itself if none exists yet, so the header is
 written whenever a wraptool configuration exists (run `init` after the first
 `serve` or `up`, which scaffold one — the order this guide follows). On
 `unix`, with no `auth_token_file` configured, no header is written. `agy` (Antigravity) speaks Streamable HTTP, so its `serverUrl`
-targets `/mcp` rather than `/sse`; all others are written to the endpoint they
+targets `/mcp` rather than `/sse`; `omp` does the same with its `url`; all others are written to the endpoint they
 use.
 
 ::: {.callout-important}
@@ -328,6 +328,19 @@ review shared skills/configuration before using high-risk repositories, and
 remove or recreate the pool when you need a clean trust boundary. Choose a
 separate XDG data directory or OS account when projects must not share harness
 state.
+
+`omp` (Oh My Pi) exercises this trust domain actively. It imports rules, skills,
+and MCP servers from the `.claude`, `.cursor`, and `.codex` directories it
+finds. Inside the container, HOME is the shared pool `home/`, so `omp` reads
+the state other harnesses left there, not your host home. The boundary is the
+same one described above. `omp` crosses it on every start instead of
+incidentally.
+
+`omp` is a pool-only harness: it has no installer of its own. Run
+`wraptool harness install omp` once before `wraptool up --harness omp`. The
+download is a single binary of about 280 MB. With no active `omp` generation,
+the Guix runtime refuses to start the container. The dev container runtime
+prints a notice and continues, so the container starts without `omp`.
 
 The shell opens automatically when you run `up` from a terminal. Control it with
 `--shell`:

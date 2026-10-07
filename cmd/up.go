@@ -719,7 +719,13 @@ func resolveDevcontainerPoolPlan(in devcontainerPoolPlanInput) devcontainerPoolP
 // in.PoolLockable exactly as guixcontainer.go's legacyGuixPoolPlan does.
 func legacyDevcontainerPoolPlan(in devcontainerPoolPlanInput, notice string) devcontainerPoolPlan {
 	plan := devcontainerPoolPlan{}
-	if in.PoolLockable {
+	if in.PoolOnly {
+		// No per-image install exists to fall back to for a pool-only
+		// harness, so the generic notice's "per-image" wording would lie.
+		plan.notice = fmt.Sprintf("notice: %s has no active harness-pool generation and no other installer; "+
+			"run `wraptool harness install %s` (or `wraptool harness sync %s` if already installed)",
+			in.Harness, in.Harness, in.Harness)
+	} else if in.PoolLockable {
 		plan.notice = notice
 	}
 	return plan
@@ -1007,10 +1013,10 @@ func bringUpContainer(root, token, hname string, shell bool) error {
 Scaffold one, then re-run `+"`wraptool up`"+`:
 
   wraptool init devcontainer --lang go        # writes .devcontainer/devcontainer.json
-                                              # (--harness claude|opencode|pi|agy, --base, --lang; see --help)
+                                              # (--harness %s, --base, --lang; see --help)
 
 Or, with Guix installed, add a manifest.scm to the project root and wraptool
-uses the Guix container runtime instead — no dev container needed`, root)
+uses the Guix container runtime instead — no dev container needed`, root, strings.Join(harness.Names(), "|"))
 	}
 	if _, err := exec.LookPath("devcontainer"); err != nil {
 		return fmt.Errorf("the devcontainer CLI is not installed (npm i -g @devcontainers/cli); needed to bring up %s", root)
@@ -1054,6 +1060,7 @@ uses the Guix container runtime instead — no dev container needed`, root)
 	plan := resolveDevcontainerPoolPlan(devcontainerPoolPlanInput{poolPlanInput: poolPlanInput{
 		Harness:               hname,
 		PoolLockable:          desc.PoolLockable(),
+		PoolOnly:              poolOnly(desc),
 		PointerPath:           pointerPath,
 		RuntimeDir:            pool.RuntimeDir(),
 		RuntimeBinDir:         pool.RuntimeBinDir(),

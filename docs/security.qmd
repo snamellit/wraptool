@@ -269,7 +269,17 @@ operator reviews and approves out-of-band. This makes the policy
 - **Upstream MCP filtering is name-only.** Allowed tool arguments pass through
   unchanged, and `mcp_servers.*.working_dir` is not currently applied.
 - **Shared harness HOME persists across projects.** One project can alter state
-  observed by later projects using the same pool.
+  observed by later projects using the same pool. `omp` reads other harnesses'
+  configuration from that HOME on purpose.
+- **A release-source checksum shares its origin with the binary.** `omp` is
+  locked by the `SHA256SUMS.txt` file of its GitHub release, fetched over HTTPS
+  from the same place as the binary. A compromised release can ship a matching
+  binary and checksum, and no pool check detects that. Quarantine mitigates it:
+  the default `minimum_release_age` keeps the pool about a week behind
+  upstream. Signature or attestation verification is not implemented.
+- **`omp` has a larger built-in tool surface.** It includes browser automation
+  and tunnel tooling. wraptool does not mediate container network egress, so
+  this is easier to reach with `omp` than with other harnesses.
 
 These are current implementation limits, not planned guarantees. Track changes
 through [releases and repository history](releases.qmd).
