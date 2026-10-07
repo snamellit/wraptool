@@ -323,8 +323,27 @@ can run in parallel once WP1 lands.
    source cannot lock them, and Resolve's error says so ("not published yet or
    predates checksum publication"). The checksum file also lists darwin,
    windows and `omp-browser-relay-extension.zip`, which the parser ignores.
-3. **Signatures.** Still open: unverified, because the GitHub API was
-   rate-limited during research.
+3. **Signatures.** Answered (verified 2026-10-07): the release binaries are
+   unsigned, so there is nothing to verify beyond the checksum.
+   - The v18.8.0 assets are the binaries, `SHA256SUMS.txt`, `LICENSE`,
+     `THIRD-PARTY-NOTICES.txt` and the relay extension zip. There is no
+     `.sig`, `.asc`, `.pem`, sigstore `.bundle` or `.intoto.jsonl` file.
+   - The repository's attestations page (`github.com/can1357/oh-my-pi/attestations`)
+     lists zero attestations, so there is no GitHub artifact attestation
+     (`attest-build-provenance`).
+   - The public Rekor log (`rekor.sigstore.dev`) has no entry for the sha256
+     of `omp-linux-x64`, `omp-linux-arm64` or `SHA256SUMS.txt`.
+   - The npm package in the version feed (`@oh-my-pi/pi-coding-agent`) does
+     carry SLSA provenance from `.github/workflows/ci.yml` on `main`.
+     That provenance covers the npm tarball, not the release binaries,
+     so it does not authenticate what the release source downloads.
+
+   Integrity therefore rests on `SHA256SUMS.txt`, fetched over HTTPS from the
+   same release as the binaries. It detects corruption, but not a compromised
+   release, because an attacker who can replace a binary can replace the
+   checksum file too. The lock pins the sha256 at resolve time, so an asset
+   replaced after the lock is written is rejected. If upstream starts
+   publishing attestations, add verification to `Resolve`.
 4. **Resumable downloads.** Partly closed. The release source has a stall
    detector: a download aborts after 60 seconds without receiving any data
    (`downloadStallTimeout` in `internal/pool/source/release.go`), while the
