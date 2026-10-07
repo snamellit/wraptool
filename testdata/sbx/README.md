@@ -15,4 +15,5 @@ values in transcribed files are fake.
 | `ls.txt` | captured, sbx 0.47.0 | `sbx ls`: the table behind it (not parsed by wraptool) |
 | `mcp_ls_quiet.txt` | captured, sbx 0.47.0 | `sbx mcp ls --quiet` with nothing registered: empty |
 | `version.txt`, `version_old.txt` | transcribed | issue-report shape `sbx version: v0.45.0 <commit>` |
+| `settings_get_agent_forwarding.txt` | transcribed | `sbx settings get ssh.agentForwardingEnabled` at its default: the documented "evaluated value alone" shape |
 | `policy_check_allowed.txt`, `policy_check_denied.txt` | transcribed | documented `Allowed:`/`Denied:` plus a `Reason:` line |

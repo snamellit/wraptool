@@ -80,6 +80,8 @@ func healthySbxReply(t *testing.T, existing string) func(string) (string, error)
 			return readSbxFixture(t, "version.txt"), nil
 		case "ls --quiet":
 			return existing, nil
+		case "settings get ssh.agentForwardingEnabled":
+			return "false\n", nil
 		case "secret ls --global":
 			return "SCOPE TYPE NAME SECRET\n(global) service anthropic sk-x\n", nil
 		case "mcp ls --quiet":
@@ -350,6 +352,26 @@ func sbxTestCfg() *config.Config {
 	return &config.Config{MCP: config.MCPConfig{Transport: "sse", Listen: "127.0.0.1:8717"}}
 }
 
+func TestCheckSbxAgentForwardingSetting(t *testing.T) {
+	for _, c := range []struct {
+		out  string
+		pass bool
+		want string
+	}{
+		{"false\n", true, ""},
+		{"  FALSE \n", true, ""},
+		{"true\n", false, "sbx daemon restart"},
+		{"True", false, "forwards the host SSH agent"},
+		{"", false, "cannot confirm"},
+		{"unknown setting", false, "update sbx"},
+	} {
+		err := checkSbxAgentForwardingSetting(c.out)
+		if c.pass != (err == nil) || (err != nil && !strings.Contains(err.Error(), c.want)) {
+			t.Errorf("%q: err = %v", c.out, err)
+		}
+	}
+}
+
 func TestSbxNotSignedIn(t *testing.T) {
 	cases := []struct {
 		name, out, errOut string
@@ -380,7 +402,7 @@ func TestSbxPreflight(t *testing.T) {
 		if err != nil || res.Exists || res.Name != name {
 			t.Fatalf("%+v %v", res, err)
 		}
-		want := []string{"version", "ls --quiet", "secret ls --global", "mcp ls --quiet"}
+		want := []string{"version", "ls --quiet", "settings get ssh.agentForwardingEnabled", "secret ls --global", "mcp ls --quiet"}
 		if got := f.lines(); strings.Join(got, "|") != strings.Join(want, "|") {
 			t.Errorf("calls = %v", got)
 		}
@@ -429,6 +451,28 @@ func TestSbxPreflight(t *testing.T) {
 			}
 			return h(l)
 		}, true, false, "daemon down")
+	})
+	forwarding := func(t *testing.T, out string, err error) func(string) (string, error) {
+		h := healthySbxReply(t, "")
+		return func(l string) (string, error) {
+			if l == "settings get ssh.agentForwardingEnabled" {
+				return out, err
+			}
+			return h(l)
+		}
+	}
+	t.Run("agent forwarding enabled", func(t *testing.T) {
+		refuse(t, sbxTestCfg(), forwarding(t, readSbxFixture(t, "settings_get_agent_forwarding.txt"), nil), true, false,
+			"forwards the host SSH agent", "sbx settings set ssh.agentForwardingEnabled false && sbx daemon restart")
+	})
+	t.Run("agent forwarding setting unreadable", func(t *testing.T) {
+		refuse(t, sbxTestCfg(), forwarding(t, "yes\n", nil), true, false, "cannot confirm", "update sbx")
+	})
+	t.Run("agent forwarding setting unknown to sbx", func(t *testing.T) {
+		refuse(t, sbxTestCfg(), forwarding(t, "", errors.New("exit 1")), true, false, "sbx settings get ssh.agentForwardingEnabled", "update sbx")
+	})
+	t.Run("agent forwarding is not overridden by --allow-sbx-secrets", func(t *testing.T) {
+		refuse(t, sbxTestCfg(), forwarding(t, "true\n", nil), true, true, "forwards the host SSH agent")
 	})
 	secretReply := func(t *testing.T) func(string) (string, error) {
 		h := healthySbxReply(t, "")

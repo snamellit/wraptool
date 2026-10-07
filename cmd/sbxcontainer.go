@@ -395,14 +395,14 @@ func buildSbxAgentProbeArgs(name string) []string {
 }
 
 // checkSbxNoForwardedAgent refuses to enter a sandbox that has a live SSH agent
-// forwarded into it. Docker Sandboxes forwards the agent of whichever client
-// creates, starts or joins a sandbox; wraptool's own client never carries one
-// (D9), but a developer who starts the sandbox by hand (`sbx exec`, `sbx run`)
-// from a shell with SSH_AUTH_SOCK set hands the agent to every later session,
-// including this one — observed on sbx 0.47.0 (§14). Unsetting the variable in
-// the entry only hides the socket, so the probe asks the agent itself. Refusal
-// rather than an automatic stop: a stop would also kill another `wraptool up`
-// session already inside the same sandbox.
+// forwarded into it. The preflight has already required the host-wide off
+// switch (sbxAgentForwardingKey, R14); this probe is the verification that it
+// took effect — the daemon applies the setting only after `sbx daemon
+// restart`, and a sandbox that was started before the change can keep its
+// forwarder (observed on sbx 0.47.0, §14). Unsetting the variable in the entry
+// only hides the socket, so the probe asks the agent itself. Refusal rather
+// than an automatic stop: a stop would also kill another `wraptool up` session
+// already inside the same sandbox.
 func checkSbxNoForwardedAgent(name string) error {
 	out, errOut, err := sbxCapture(buildSbxAgentProbeArgs(name))
 	if err != nil {
@@ -415,7 +415,10 @@ func checkSbxNoForwardedAgent(name string) error {
 		case "none":
 			return nil
 		case "forwarded":
-			return fmt.Errorf("sandbox %s has a live SSH agent forwarded into it: it was started outside wraptool by an `sbx` client with SSH_AUTH_SOCK set (`sbx exec` or `sbx run` by hand); refusing to enter — run `wraptool down`, then `wraptool up --runtime=sbx` again, which restarts it from a client with no agent", name)
+			return fmt.Errorf("sandbox %s has a live SSH agent forwarded into it although %s is false; refusing to enter — "+
+				"the sandboxd daemon may still be running with the old setting, or the sandbox was started before it changed: "+
+				"run `wraptool down`, `sbx daemon restart`, then `wraptool up --runtime=sbx` again",
+				name, sbxAgentForwardingKey)
 		case "noverify":
 			return fmt.Errorf("sandbox %s has no `ssh-add` in its template, so wraptool cannot verify that no SSH agent is forwarded into it; use a template that includes the OpenSSH client tools", name)
 		}

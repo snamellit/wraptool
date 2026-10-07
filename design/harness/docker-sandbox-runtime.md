@@ -111,7 +111,9 @@ dropped: it nests two runtimes to gain nothing shape 1 lacks.
 - **D9. `sbx` runs with a minimal environment.** Same principle as the
   executor's child environment: an allowlist (PATH, HOME, TERM, COLORTERM,
   LANG/LC_*, XDG_*, `SBX_*`, `DOCKER_*` — exact set fixed by S5), never
-  `os.Environ()`. This is what removes `SSH_AUTH_SOCK`.
+  `os.Environ()`. This removes `SSH_AUTH_SOCK` from the client, which the
+  first real-host run showed is necessary but not sufficient against agent
+  forwarding (R14 has the real off switch).
 
 ## 5. Bring-up design
 
@@ -215,7 +217,7 @@ without going through policy.
 
 | Path | Default behaviour (docs) | wraptool's control | Verify |
 |---|---|---|---|
-| SSH agent forwarding | on whenever `SSH_AUTH_SOCK` is set "in the connecting client" | D9: `sbx` is spawned without `SSH_AUTH_SOCK`. If forwarding is decided by a long-lived `sbx` daemon instead of the client process, this is insufficient and needs a real off switch. | S4: `ssh-add -l` inside the sandbox must fail |
+| SSH agent forwarding | on whenever `SSH_AUTH_SOCK` is set "in the connecting client" — in practice served by the sandboxd daemon, so an agent-less client is not enough (§14, 2026-10-07) | Preflight requires the host-wide off switch, `sbx settings get ssh.agentForwardingEnabled` = `false`, and refuses otherwise with the remedy `sbx settings set ssh.agentForwardingEnabled false && sbx daemon restart` (R14). D9's agent-less client stays as hygiene. The in-sandbox probe (R13) then verifies the daemon applied it. | S4: `ssh-add -l` inside the sandbox must fail |
 | Global `sbx secret` entries (`github`, custom hosts, registry credentials scoped to all sandboxes) | injected by the proxy into matching outbound requests from **every** sandbox | Preflight `sbx secret ls`. Any global secret that is not a model-provider service fails `up` (D8), naming each entry and the two remedies: `sbx secret rm <name>`, or re-scope it with `--sandbox` to the sandboxes that should have it. | S5: output format; whether a global secret can be excluded for one sandbox |
 | Model-provider secrets (`anthropic`, `openai`, `google`, `cursor`) | same mechanism | Allowed. The agent can call its model API by definition; a proxy-held key is *less* exposure than the key in pool `home/`. | — |
 | MCP gateway | dynamic mode exposes `mcp-find`/`mcp-add` so the agent can attach any host-registered server; local stdio servers "run on the host, not inside the sandbox" | Must be off for wraptool sandboxes. The docs list gateway support for vendor agent kinds, not `shell`, so D3 may already exclude it. If not: create with an empty static set, or fail `up` when `sbx mcp ls` is non-empty. | S10 — a blocker if it cannot be disabled |
@@ -483,6 +485,19 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
   bad case is real: after that hand start, a `wraptool up` session can reach
   the agent via `SSH_AUTH_SOCK=/run/ssh-agent.sock ssh-add -l` (the entry
   only unsets the variable). Ruling R13.
+- S4, second run (2026-10-07, after R13 shipped): `wraptool down` (`sbx
+  stop`, "state preserved"), then `wraptool up --runtime=sbx --shell=always`
+  — the sandbox was started again by wraptool's own agent-less client, and
+  the R13 probe still reported a live agent, so `up` refused with a remedy
+  (`down`, then `up`) that had just been tried. Forwarding is therefore
+  decided by the host daemon, not per client, as the client-side reading
+  of the S4 control suggested; `sbx stop` is a suspend ("full state (memory
+  + disk) is preserved"), so the forwarder survives it. The documented
+  off switch is host-wide: `sbx settings set ssh.agentForwardingEnabled
+  false` followed by `sbx daemon restart` ("applies the change to existing
+  forwarders"). Upstream `docker/sbx-releases#115` reports forwarding with
+  `SSH_AUTH_SOCK` unset. Ruling R14; the preflight now requires the
+  setting, and R13's remedy names the daemon restart.
 - S3: `curl -N http://host.docker.internal:8717/sse` with the bearer token
   returns `event: endpoint` — the proxy's `Host` rewrite satisfies the
   server's guard; `sbx-host-allowlist` is not needed. `claude` connects to
@@ -541,9 +556,10 @@ Facts that change §3–§7:
 - **The skills store has an off switch**: `--skills off`.
 - **SSH agent forwarding** uses "the value from the client that creates,
   starts, or joins each sandbox", which supports D9. Two host-wide settings
-  matter and wraptool controls neither: `ssh.agentForwardingEnabled` (the
-  real off switch, needs `sbx daemon restart`) and `ssh.agentSocketPath`
-  (a fixed socket path, which would defeat D9).
+  matter: `ssh.agentForwardingEnabled` (the real off switch, needs `sbx
+  daemon restart`; required by the preflight since R14) and
+  `ssh.agentSocketPath` (a fixed socket path, which would defeat D9; not
+  checked).
 - **State and secrets on Linux** follow XDG (`~/.local/state/sandboxes`,
   `~/.config/sandboxes`), with secrets in the Secret Service when one is
   available. The minimal environment therefore needs the session bus
@@ -639,12 +655,32 @@ that confirms or replaces it.
   automatic `sbx stop`, because a stop would also end another `wraptool up`
   session in the same sandbox. Users must not start a wraptool sandbox with
   plain `sbx exec`/`sbx run`. (S4)
+  *Amended 2026-10-07:* the "decided by the client" explanation was wrong
+  (§14, second run); the probe stays as the verification that R14's
+  setting took effect, and its remedy is `wraptool down`, `sbx daemon
+  restart`, `wraptool up`.
+
+- **R14. The preflight requires `ssh.agentForwardingEnabled` to be
+  `false`.** The daemon serves agent forwarding and survives `sbx stop`, so
+  neither D9's agent-less client nor a stop/start cycle closes the path
+  (§14). `up` runs `sbx settings get ssh.agentForwardingEnabled` after the
+  sign-in check and refuses unless the evaluated value is `false`, naming
+  `sbx settings set ssh.agentForwardingEnabled false && sbx daemon
+  restart`; an unreadable or unknown setting is refused as unverifiable
+  (update sbx). The setting is host-wide, so it also turns forwarding off
+  for the developer's non-wraptool sandboxes — accepted, and recorded as
+  open question 7. `--allow-sbx-secrets` does not override it: a forwarded
+  agent is a signing oracle for every host key, not a scoped secret. (S4)
 
 Open question added to §12:
 
 6. Which of the non-GitHub built-in services count as model providers for
    D8? `copilot` authenticates with a GitHub token, so it is not obviously
    one.
+7. R14 turns SSH agent forwarding off for every sandbox on the host, not
+   only wraptool's. Acceptable as the price of the runtime, or should
+   wraptool offer `ssh.agentSocketPath` pointed at a dead path as a
+   wraptool-only alternative (undocumented behaviour, needs a test)?
 
 ## 17. First real-host run
 
@@ -654,8 +690,9 @@ Not built: `sbx-host-allowlist` (R10), the doctor checks, `test-sandbox.sh`,
 user documentation.
 
 Prerequisites on the host: `sbx` ≥ 0.47.0, `sbx login`, `sbx policy init
-balanced`, and `wraptool harness install claude` so an active generation
-exists for the host platform.
+balanced`, `sbx settings set ssh.agentForwardingEnabled false && sbx daemon
+restart` (R14), and `wraptool harness install claude` so an active
+generation exists for the host platform.
 
 Checks, in the order most likely to stop the run. Each answers an
 S-question; record the raw output in §14 and replace the transcribed
@@ -681,9 +718,13 @@ fixtures in `testdata/sbx/` with captures.
    "host.docker.internal:<port>"` in the server log mean the proxy preserves
    it and `sbx-host-allowlist` has to be built. (S3, R10)
 8. Does the SSE stream stay open through the proxy? (S2)
-9. Inside the sandbox: `ssh-add -l` fails; repeat after exporting
-   `SSH_AUTH_SOCK` on the host to confirm the test can fail. Check `sbx
-   settings` for `ssh.agentSocketPath`. (S4)
+9. `sbx settings get ssh.agentForwardingEnabled` prints the bare value
+   (`false` after the prerequisite); capture it and the `--json` record as
+   fixtures. Inside the sandbox: `ssh-add -l` fails; then set the setting
+   back to `true`, restart the daemon, and confirm the preflight refuses
+   and, with the preflight bypassed, that the probe can still fail. Does a
+   running sandbox lose its forwarder on `sbx daemon restart`, or only
+   after `sbx stop` + start? (S4, R14)
 10. Probe output for `localhost:22` and the review UI port. (S12)
 11. The workspace at its host absolute path, a write to the pool `runtime/`
     mount returning `EROFS`, the dispatcher running the harness, and sane

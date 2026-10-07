@@ -138,6 +138,37 @@ func checkSbxVersion(out string) (version, notice string, err error) {
 	return version, "", nil
 }
 
+// sbxAgentForwardingKey is the host-wide sbx setting that is the real off
+// switch for SSH agent forwarding (R14). D9's agent-less client is not enough:
+// the first real-host run (§14, 2026-10-07) stopped a sandbox with `wraptool
+// down` and started it again from wraptool's own client, and the probe still
+// found a live agent — forwarding is served by the sandboxd daemon, which
+// reads this setting (hence `sbx daemon restart`), not decided per client.
+// Upstream documents the same flow; docker/sbx-releases#115 reports the
+// forwarding-without-SSH_AUTH_SOCK behaviour.
+const sbxAgentForwardingKey = "ssh.agentForwardingEnabled"
+
+// sbxAgentForwardingRemedy is the one command sequence every refusal about
+// agent forwarding names.
+const sbxAgentForwardingRemedy = "sbx settings set " + sbxAgentForwardingKey + " false && sbx daemon restart"
+
+// checkSbxAgentForwardingSetting interprets `sbx settings get
+// ssh.agentForwardingEnabled`, which prints the evaluated value alone: "false"
+// passes; "true" is refused with the remedy; anything else is refused as
+// unverifiable. The output is quoted — a boolean setting carries no secret.
+func checkSbxAgentForwardingSetting(out string) error {
+	switch strings.ToLower(strings.TrimSpace(out)) {
+	case "false":
+		return nil
+	case "true":
+		return fmt.Errorf("refusing to start: sbx forwards the host SSH agent into every sandbox (%s is true), "+
+			"a credential path that bypasses wraptool's policy; turn it off host-wide with `%s`",
+			sbxAgentForwardingKey, sbxAgentForwardingRemedy)
+	}
+	return fmt.Errorf("`sbx settings get %s` printed %q, not true or false; wraptool cannot confirm that SSH agent "+
+		"forwarding is off (an older sbx may lack the setting — update sbx)", sbxAgentForwardingKey, strings.TrimSpace(out))
+}
+
 // sbxNoGlobalSecrets is the whole of `sbx secret ls --global`'s output when no
 // global secret exists (captured from sbx 0.47.0, testdata/sbx/secret_ls_global.txt).
 const sbxNoGlobalSecrets = `No secrets found for scope "(global)".`
@@ -269,6 +300,15 @@ func sbxPreflight(cfg *config.Config, root string, allowSecrets bool) (sbxPrefli
 		if strings.TrimSpace(line) == res.Name {
 			res.Exists = true
 		}
+	}
+
+	out, errOut, err = sbxCapture([]string{"settings", "get", sbxAgentForwardingKey})
+	if err != nil {
+		return res, fmt.Errorf("running `sbx settings get %s`: %w: %s — wraptool needs this setting to confirm that "+
+			"SSH agent forwarding is off; update sbx if it is unknown", sbxAgentForwardingKey, err, strings.TrimSpace(errOut+out))
+	}
+	if err := checkSbxAgentForwardingSetting(out); err != nil {
+		return res, err
 	}
 
 	out, _, err = sbxCapture([]string{"secret", "ls", "--global"})
