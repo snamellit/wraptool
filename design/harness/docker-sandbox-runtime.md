@@ -59,7 +59,7 @@ host before any code is written.
 | Question (`microvm-sandbox-runtime.md`) | Answer | Confidence |
 |---|---|---|
 | Extra mounts, including read-only | `sbx run AGENT PRIMARY EXTRA:ro …` — additional workspaces as extra positional arguments, `:ro` suffix for read-only, each "at its original absolute path inside the sandbox" | docs; EROFS behaviour unverified (S1) |
-| Host reachability | All outbound TCP goes through a host-side proxy. `host.docker.internal` is rewritten to the host's `localhost`; the destination must be allowed with `sbx policy allow network localhost:<port>`. `127.0.0.1` inside the VM is the VM. | docs; SSE/long-lived streams and the `Host` header unverified (S2, S3) |
+| Host reachability | All outbound TCP goes through a host-side proxy. `host.docker.internal` is rewritten to the host's `localhost`; the destination must be allowed with `sbx policy allow network localhost:<port>`. `127.0.0.1` inside the VM is the VM. | docs; long-lived SSE stream and the `Host` rewrite verified on a real host (S2, S3, §14) |
 | Credential proxy can be absent | "No credentials are available to the sandbox unless you provide them using `sbx secret` or environment variables." **But**: secrets are global by default, and the SSH agent is forwarded whenever `SSH_AUTH_SOCK` is set in the connecting client. Absent by default only on a host that never used `sbx` for anything else. | docs; enforcement design in §6 |
 | Custom agent contract | A built-in `shell` agent: "Bash login shell inside a sandbox with no pre-installed agent binary". Custom templates via `-t/--template <OCI ref>`. Kits (`docker/sandbox-kit-spec` v3) can define a workload with its own entrypoint, but also declare credentials and network authority. | docs |
 | Linux support | Ubuntu 24.04+ with KVM (amd64, arm64). Other distributions are untested and unsupported. No Docker Desktop required. | docs |
@@ -523,9 +523,11 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
 - S12: both loopback probes (review UI port, port 22) were silent, i.e.
   denied under `balanced`.
 - Re-entry: a second `up` found the sandbox and did not create again.
-- Open from this run: S2 (idle SSE stream ≥ 10 min), S6 partially (exec
-  into a stopped sandbox worked; exit code and resize not checked), S7, S8,
-  S11.
+- S2: the legacy SSE stream through the proxy stays open past the
+  10-minute idle mark (operator-reported; no transcript captured). The
+  Streamable HTTP fallback in §5.3 is not needed.
+- Open from this run: S6 partially (exec into a stopped sandbox worked;
+  exit code and resize not checked), S7, S8, S11.
 
 ## 15. CLI surface as read from the reference data (not run)
 
@@ -739,3 +741,39 @@ fixtures in `testdata/sbx/` with captures.
 11. The workspace at its host absolute path, a write to the pool `runtime/`
     mount returning `EROFS`, the dispatcher running the harness, and sane
     ownership of files written to pool `home/`. (S1, S9)
+
+### 17.1 S6 entry checks
+
+`test-sbx-entry.sh <sandbox>` runs every case below that can run unattended
+and keeps the raw transcripts for §14 (`--wraptool` adds part B; run it from
+the scratch repository that owns the sandbox). Interactive cases run under a
+`script(1)` pty, and resizes are applied to that pty with `stty -F`, so the
+sbx client gets SIGWINCH exactly as from a window resize. **Cold** means
+`sbx stop <name>` first: S6 is about entering a stopped sandbox.
+
+Part A drives `sbx exec` directly and decides the gate: A1, A2, A5, A6, A7
+and A8 must pass. A3 and A4 shape error and output handling only.
+
+| # | Check | Pass |
+|---|---|---|
+| A1 | cold, `sbx exec -i <name> bash -lc 'exit 3'` | exit status 3 |
+| A2 | cold, the same with `-it` | exit status 3 |
+| A3 | `-it`, `bash -lc 'kill -TERM $$'` | 143 (record otherwise) |
+| A4 | cold, `-i`, `echo out; echo err >&2` | stdout is exactly `out`; start-up chatter, if any, on stderr |
+| A5 | `echo hi \| sbx exec -i <name> cat` | prints `hi`, exits 0 on stdin EOF |
+| A6 | `-it`, `tty; stty size; echo $TERM` from a 30×100 pty | `/dev/pts/N`, `30 100`, a usable `TERM` |
+| A7 | `-it`, a `WINCH` trap printing `stty size`; resize to 40×120, then 25×90 | both sizes printed |
+| A8 | `-it`, `sleep` under an `INT` trap; Ctrl-C | sleep exits 130, the shell and the sbx client survive, no `sleep` left in the sandbox; `less` redraws on resize (manual) |
+
+Part B goes through `wraptool up --runtime=sbx --shell=always`. It does not
+block S6.
+
+| # | Check | Expected |
+|---|---|---|
+| B1 | cold, type `exit` | wraptool exits 0, no error text |
+| B2 | cold, type `exit 3` | today 1 with `exit status 3` printed: none of the three runtimes propagates the shell's status (`cmd/guixcontainer.go`, `cmd/up.go` and `sbxAttach` return the raw `*exec.ExitError`). Fixing it is a separate change across all three |
+| B3 | resize, run `claude`, resize, Ctrl-C (manual) | the TUI redraws; Ctrl-C reaches the harness, not wraptool |
+| B4 | `wraptool up --runtime=sbx --shell=always </dev/null` | `-i` path, the shell sees EOF, exit 0 without hanging |
+| B5 | close the terminal during B3, then look for `claude` in the sandbox (manual) | record what is left; informational |
+
+Captures of A1, A2 and A4 replace or join the `testdata/sbx/` fixtures.
