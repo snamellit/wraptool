@@ -19,7 +19,7 @@ reports both. Detached-server logs are under the wraptool XDG data
 directory, normally `~/.local/share/wraptool/logs/serve.log` on Linux. Treat the
 log as sensitive because it can contain the admin click-through token.
 
-## The container cannot connect
+## The container cannot connect {#container-connect}
 
 Container `127.0.0.1` is not the host's loopback. Let `wraptool up` and the Dev
 Container feature detect the gateway, or bind the MCP server to a reachable
@@ -27,6 +27,40 @@ gateway/wildcard address and require `auth_token_file`.
 
 Confirm the client uses `/sse` for legacy SSE or `/mcp` for Streamable HTTP.
 Antigravity generation targets `/mcp` automatically.
+
+### The connection times out
+
+A refused connection means nothing listens on that address. A timeout means a
+host firewall drops the packets. Distributions that deny all incoming traffic
+by default, such as Omarchy with `ufw`, do this to the docker bridge.
+
+1. Test the server port from inside the container:
+
+   ```bash
+   curl -sv -m 5 http://172.17.0.1:8717/sse
+   ```
+
+2. On the host, check the address the server listens on:
+
+   ```bash
+   ss -ltn | grep 8717
+   ```
+
+   Expect `0.0.0.0:8717` or the bridge address. The container cannot reach
+   `127.0.0.1:8717`.
+
+3. On the host, allow the server port on the docker bridge:
+
+   ```bash
+   sudo ufw allow in on docker0 to 172.17.0.1 port 8717 proto tcp
+   ```
+
+4. In the harness, reconnect the MCP server. In `claude`, run
+   `/mcp reconnect wraptool`.
+
+The rule opens only the server port, only from containers on the bridge.
+Change `docker0`, `172.17.0.1` and `8717` if your bridge or `mcp.listen` port
+differs. With another firewall, allow the same interface, address and port.
 
 ## Tools appear stale after an edit
 

@@ -83,6 +83,19 @@ wraptool config validate
 
 ## 5. Scaffold the devcontainer and launch
 
+::: {.callout-warning}
+Some distributions deny all incoming traffic by default, for example Omarchy
+with `ufw`. The container then cannot reach the server on the docker bridge.
+Allow the server port on the bridge before you run `wraptool up`:
+
+```bash
+sudo ufw allow in on docker0 to 172.17.0.1 port 8717 proto tcp
+```
+
+This opens only the server port, only from containers on the bridge. See
+[The container cannot connect](troubleshooting.qmd#container-connect).
+:::
+
 Install the harness into the shared pool once (it's the developer's toolbox,
 not the project's), pick your languages, scaffold, then bring it up:
 
