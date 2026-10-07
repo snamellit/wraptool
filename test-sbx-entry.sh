@@ -58,6 +58,13 @@ if ! timeout -k 10 60 sbx ls --quiet </dev/null 2>/dev/null | grep -qx -- "$NAME
   exit 2
 fi
 
+if [ $WITH_WRAPTOOL -eq 1 ] \
+  && ! "$WRAPTOOL_BIN" up --help 2>/dev/null </dev/null | grep -q 'or sbx'; then
+  echo "$WRAPTOOL_BIN has no sbx runtime; point WRAPTOOL_BIN at a feat/sbx-runtime build" >&2
+  echo "(as an environment variable: WRAPTOOL_BIN=... $0 ..., no semicolon)" >&2
+  exit 2
+fi
+
 GATE="A1 A2 A5 A6 A7 A8"
 gate_failed=0
 
@@ -76,6 +83,11 @@ wait_for() { # file fixed-string timeout-seconds
   local i=0
   while [ "$i" -lt $(($3 * 10)) ]; do
     grep -qF -- "$2" "$1" 2>/dev/null && return 0
+    # A pty session that has already exited will not print anything more.
+    if [ -n "${PTY_PID:-}" ] && ! kill -0 "$PTY_PID" 2>/dev/null; then
+      grep -qF -- "$2" "$1" 2>/dev/null
+      return
+    fi
     sleep 0.1
     i=$((i + 1))
   done
