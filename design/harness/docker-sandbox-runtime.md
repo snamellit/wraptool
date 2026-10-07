@@ -1,8 +1,11 @@
 # Design: Docker Sandboxes runtime for `wraptool up`
 
-Status: test implementation built on `feat/sbx-runtime` ahead of Phase 0
-(§16); never run against a real `sbx`. The first real-host run (§17) is the
-spike, and its findings decide whether the rulings in §16 stand.
+Status: decided. The Phase 0 gate passed on 2026-10-07 (sbx 0.47.0, Linux
+host): S1, S2, S4, S6, S9 and S10 all pass (§14). Phase 1 is built on
+`feat/sbx-runtime` as the §16 test implementation, amended by what the
+first real-host run (§17) found; Phase 2 (doctor, field test, user
+documentation) is not started. S7, S8 and S11 are still open and do not
+block.
 
 Supersedes the investigation note `design/harness/microvm-sandbox-runtime.md`,
 whose blocking questions are carried forward in §3 with their current answers.
@@ -535,8 +538,8 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
   or the sbx client, and leaves nothing behind. In the A6 transcript the
   `tty` and `stty size` outputs run together (`/dev/pts/030 100`), the
   line break between them lost somewhere on the way; harmless, but the
-  script matches positions loosely for it. Still manual: `less` redraw on
-  resize, and part B.
+  script matches positions loosely for it. Manually: `less` redraws on
+  resize. S6 passes. Part B (through `wraptool up`) has not been run.
 - Open from this run: S7, S8, S11.
 
 ## 15. CLI surface as read from the reference data (not run)
