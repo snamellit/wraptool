@@ -526,8 +526,18 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
 - S2: the legacy SSE stream through the proxy stays open past the
   10-minute idle mark (operator-reported; no transcript captured). The
   Streamable HTTP fallback in §5.3 is not needed.
-- Open from this run: S6 partially (exec into a stopped sandbox worked;
-  exit code and resize not checked), S7, S8, S11.
+- S6 (`test-sbx-entry.sh`, part A, 2026-10-07): every gate case passes.
+  Exit status survives a cold start under both `-i` and `-it` (3 → 3);
+  SIGTERM gives 143; a cold start keeps stdout clean; stdin EOF ends `-i`;
+  the sandbox pty is `/dev/pts/0`, inherits the client's 30×100 size and
+  `TERM=xterm-256color`; two resizes arrive as SIGWINCH; Ctrl-C reaches the
+  sandbox's foreground process (`sleep` exits 130) without ending the shell
+  or the sbx client, and leaves nothing behind. In the A6 transcript the
+  `tty` and `stty size` outputs run together (`/dev/pts/030 100`), the
+  line break between them lost somewhere on the way; harmless, but the
+  script matches positions loosely for it. Still manual: `less` redraw on
+  resize, and part B.
+- Open from this run: S7, S8, S11.
 
 ## 15. CLI surface as read from the reference data (not run)
 

@@ -21,6 +21,10 @@
 
 set -u
 
+# Every non-interactive sbx call reads </dev/null: timeout(1) runs its child
+# in its own process group, so a child that touches the terminal is stopped
+# by SIGTTIN and hangs the run.
+
 usage() {
   echo "usage: $0 [--wraptool] <sandbox-name>" >&2
   exit 2
@@ -49,7 +53,7 @@ case ${TERM:-dumb} in dumb|"") export TERM=xterm-256color ;; esac
 for t in sbx script stty timeout ps; do
   command -v "$t" >/dev/null 2>&1 || { echo "missing tool: $t" >&2; exit 2; }
 done
-if ! timeout 60 sbx ls --quiet 2>/dev/null | grep -qx -- "$NAME"; then
+if ! timeout -k 10 60 sbx ls --quiet </dev/null 2>/dev/null | grep -qx -- "$NAME"; then
   echo "sandbox $NAME not found in \`sbx ls --quiet\`" >&2
   exit 2
 fi
@@ -65,7 +69,7 @@ result() { # id status message
 }
 
 cold() {
-  timeout 120 sbx stop "$NAME" >/dev/null 2>&1 || true
+  timeout -k 10 120 sbx stop "$NAME" </dev/null >/dev/null 2>&1 || true
 }
 
 wait_for() { # file fixed-string timeout-seconds
@@ -129,13 +133,13 @@ pty_wait() {
 }
 
 echo "sandbox: $NAME   transcripts: $OUT"
-echo "sbx: $(timeout 30 sbx version 2>&1 | head -1)"
+echo "sbx: $(timeout -k 10 30 sbx version </dev/null 2>&1 | head -1)"
 echo
 
 # --- A. raw sbx exec ---------------------------------------------------------
 
 cold
-timeout 180 sbx exec -i "$NAME" bash -lc 'exit 3' </dev/null >"$OUT/A1.log" 2>&1
+timeout -k 10 180 sbx exec -i "$NAME" bash -lc 'exit 3' </dev/null >"$OUT/A1.log" 2>&1
 rc=$?
 [ $rc -eq 3 ] && result A1 PASS "cold -i exit 3 -> 3" || result A1 FAIL "cold -i exit 3 -> $rc"
 
@@ -149,7 +153,7 @@ pty_wait 60
 [ $PTY_RC -eq 143 ] && result A3 PASS "SIGTERM -> 143" || result A3 INFO "SIGTERM -> $PTY_RC (expected 143)"
 
 cold
-timeout 180 sbx exec -i "$NAME" bash -lc 'echo out; echo err >&2' </dev/null \
+timeout -k 10 180 sbx exec -i "$NAME" bash -lc 'echo out; echo err >&2' </dev/null \
   >"$OUT/A4.stdout" 2>"$OUT/A4.stderr"
 if [ "$(cat "$OUT/A4.stdout")" = out ]; then
   result A4 PASS "cold start keeps stdout clean"
@@ -157,7 +161,7 @@ else
   result A4 INFO "stdout carries more than the command's output, see A4.stdout"
 fi
 
-got=$(printf 'hi\n' | timeout 60 sbx exec -i "$NAME" cat 2>"$OUT/A5.stderr")
+got=$(printf 'hi\n' | timeout -k 10 60 sbx exec -i "$NAME" cat 2>"$OUT/A5.stderr")
 rc=$?
 if [ $rc -eq 0 ] && [ "$got" = hi ]; then
   result A5 PASS "stdin EOF ends the command"
@@ -167,9 +171,12 @@ fi
 
 pty_start A6 "stty rows 30 cols 100; exec sbx exec -it $NAME bash -lc 'tty; stty size; echo TERM=\$TERM'"
 pty_wait 60
-if grep -q '/dev/pts/' "$PTY_LOG" && grep -q '^30 100' "$PTY_LOG" \
-  && grep -q '^TERM=.' "$PTY_LOG" && ! grep -q '^TERM=dumb' "$PTY_LOG"; then
-  result A6 PASS "pty, 30x100 carried over, $(grep -o '^TERM=[^[:space:]]*' "$PTY_LOG")"
+# Match anywhere in a line: on sbx 0.47.0 the tty and size lines run
+# together ("/dev/pts/030 100").
+term=$(grep -o 'TERM=[^[:space:]]*' "$PTY_LOG" | head -1)
+if grep -q '/dev/pts/[0-9]' "$PTY_LOG" && grep -qE '30 100([^0-9]|$)' "$PTY_LOG" \
+  && [ -n "${term#TERM=}" ] && [ "$term" != TERM=dumb ]; then
+  result A6 PASS "pty, 30x100 carried over, $term"
 else
   result A6 FAIL "see $PTY_LOG"
 fi
@@ -193,8 +200,8 @@ if wait_for "$PTY_LOG" ready 60; then
   pty_send '\003'
 fi
 pty_wait 15
-left=$(timeout 60 sbx exec "$NAME" bash -c \
-  'for f in /proc/[0-9]*/cmdline; do tr "\0" " " <"$f"; echo; done 2>/dev/null | grep -c "^sleep 4242"')
+left=$(timeout -k 10 60 sbx exec "$NAME" bash -c \
+  'for f in /proc/[0-9]*/cmdline; do tr "\0" " " <"$f"; echo; done 2>/dev/null | grep -c "^sleep 4242"' </dev/null)
 if grep -q 'sleep-rc=130' "$PTY_LOG" && [ $PTY_RC -eq 0 ] && [ "${left:-x}" = 0 ]; then
   result A8 PASS "Ctrl-C reached the sandbox, shell survived, nothing left"
 else
@@ -235,7 +242,7 @@ if [ $WITH_WRAPTOOL -eq 1 ]; then
   esac
 
   cold
-  timeout 300 "$WRAPTOOL_BIN" up --runtime=sbx --shell=always </dev/null >"$OUT/B4.log" 2>&1
+  timeout -k 10 300 "$WRAPTOOL_BIN" up --runtime=sbx --shell=always </dev/null >"$OUT/B4.log" 2>&1
   rc=$?
   [ $rc -eq 0 ] && result B4 PASS "non-tty stdin -> 0" || result B4 FAIL "rc=$rc (124 = hung), see $OUT/B4.log"
 
