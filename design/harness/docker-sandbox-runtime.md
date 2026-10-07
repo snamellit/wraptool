@@ -176,6 +176,10 @@ All argv construction is in pure functions (`buildSbxCreateArgs`,
   rule if `sbx rm` leaves it behind (S8). `runDown` today hard-requires
   `docker`; it becomes a dispatch over what exists for this root (a sandbox
   by name when `sbx` is on PATH, dev containers by label when `docker` is).
+  *Ruled 2026-10-07:* that probe-everything dispatch stopped a session's
+  own Dev Container while a sandbox was being tested on the same root; a
+  worktree is now served by one runtime at a time and `down` acts on the
+  recorded one — `design/harness/one-runtime-per-worktree.md`.
 - **Nested-`up` guard:** `WRAPTOOL_CONTAINER=1` is set at creation and by
   the entry, so `inContainer` refuses as on the other runtimes.
 
@@ -498,6 +502,12 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
   forwarders"). Upstream `docker/sbx-releases#115` reports forwarding with
   `SSH_AUTH_SOCK` unset. Ruling R14; the preflight now requires the
   setting, and R13's remedy names the daemon restart.
+- Same run: `wraptool down` on the wraptool repository stopped both the
+  sandbox and the Dev Container the operator's session was running in, and
+  `up --runtime=sbx` rewrote that worktree's `.mcp.json` to the sandbox URL.
+  Decision: one runtime per worktree
+  (`design/harness/one-runtime-per-worktree.md`); runtime tests go in a
+  scratch repository, never in the wraptool checkout hosting the session.
 - S3: `curl -N http://host.docker.internal:8717/sse` with the bearer token
   returns `event: endpoint` — the proxy's `Host` rewrite satisfies the
   server's guard; `sbx-host-allowlist` is not needed. `claude` connects to
