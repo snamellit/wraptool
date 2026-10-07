@@ -474,19 +474,33 @@ First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
   pool `runtime/` mount fails with `Read-only file system`.
 - S9: HOME is the pool `home/` mount, writable; the `claude` dispatcher is
   found on PATH from `runtime/bin`.
-- S4: `ssh-add -l` fails (`communication with agent failed`) although the
-  sandbox has `SSH_AUTH_SOCK=/run/ssh-agent.sock` and
-  `SSH_AUTH_SOCK_GATEWAY=gateway.docker.internal:3129` set. Not yet
-  repeated with `SSH_AUTH_SOCK` set in a hand-run `sbx exec`.
+- S4: `ssh-add -l` fails (`communication with agent failed`) in a session
+  wraptool opened, although the sandbox has `SSH_AUTH_SOCK=/run/ssh-agent.sock`
+  and `SSH_AUTH_SOCK_GATEWAY=gateway.docker.internal:3129` set. Control:
+  `sbx stop`, then `sbx exec -it <name> ssh-add -l` from a host shell with an
+  agent **lists the host key** — forwarding is decided by the client that
+  starts the sandbox, so D9's agent-less client is what keeps it out. The
+  bad case is real: after that hand start, a `wraptool up` session can reach
+  the agent via `SSH_AUTH_SOCK=/run/ssh-agent.sock ssh-add -l` (the entry
+  only unsets the variable). Ruling R13.
+- S3: `curl -N http://host.docker.internal:8717/sse` with the bearer token
+  returns `event: endpoint` — the proxy's `Host` rewrite satisfies the
+  server's guard; `sbx-host-allowlist` is not needed. `claude` connects to
+  wraptool through the proxy (48 tools listed) and its OAuth login from pool
+  `home/` works.
+- S12 detail: `curl http://host.docker.internal:8718/` gets `403` **from
+  the proxy**, body `Approval required for localhost:8718. … sbx policy
+  approval ls` — under `balanced`, unknown destinations queue for developer
+  approval rather than being dropped. Port 22 the same.
 - S10: the `shell` sandbox environment carries the proxy placeholders listed
   in R12 and `MCP_GATEWAY_URL=http://mcp-gateway.docker.internal/mcp`; the
   gateway runs for `shell` too. No skills-store mount was looked for yet.
 - S12: both loopback probes (review UI port, port 22) were silent, i.e.
   denied under `balanced`.
 - Re-entry: a second `up` found the sandbox and did not create again.
-- Open from this run: S2 (SSE through the proxy), S3 (`Host` header), S6
-  partially (exec into a stopped sandbox worked; exit code and resize not
-  checked), S7, S8, S11.
+- Open from this run: S2 (idle SSE stream ≥ 10 min), S6 partially (exec
+  into a stopped sandbox worked; exit code and resize not checked), S7, S8,
+  S11.
 
 ## 15. CLI surface as read from the reference data (not run)
 
@@ -612,6 +626,19 @@ that confirms or replaces it.
   forecloses, for now, the Phase 3 "model-provider key held by the proxy"
   option (question 4): the entry would have to keep the placeholder for a
   service whose `SBX_CRED_<service>_MODE` is not `none`. (S10)
+
+- **R13. Entry is refused when an SSH agent answers inside the sandbox.**
+  Forwarding is decided by the client that creates, starts or joins (§14,
+  S4 control): a sandbox started by hand from a shell with an agent keeps
+  that agent for every later session, and unsetting the variable does not
+  close the socket. Before the interactive `exec`, `up` runs a probe inside
+  the sandbox (`ssh-add -l` against the agent socket; exit 0 or 1 means a
+  live agent) and refuses with `wraptool down` + `wraptool up` as the
+  remedy, which restarts the sandbox from wraptool's own client. A template
+  without `ssh-add` is refused too (cannot verify). Refusal, not an
+  automatic `sbx stop`, because a stop would also end another `wraptool up`
+  session in the same sandbox. Users must not start a wraptool sandbox with
+  plain `sbx exec`/`sbx run`. (S4)
 
 Open question added to §12:
 

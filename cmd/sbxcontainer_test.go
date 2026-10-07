@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -291,12 +292,15 @@ func TestBringUpSbxSequencing(t *testing.T) {
 		if err := bringUpSbxContainer(in); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"create --name", "policy allow network", "policy check network", "policy check network", "exec -it"}
+		want := []string{"create --name", "policy allow network", "policy check network", "policy check network", "exec " + name, "exec -it"}
 		if got := prefixes(f.lines()); !slices.Equal(got, want) {
 			t.Fatalf("sequence = %v\n%v", got, f.lines())
 		}
-		if !f.calls[4].attach || f.calls[0].attach {
-			t.Error("only exec is attached")
+		if !f.calls[5].attach || f.calls[4].attach || f.calls[0].attach {
+			t.Error("only the interactive exec is attached")
+		}
+		if got := f.calls[4].line(); got != "exec "+name+" sh -c "+sbxAgentProbe {
+			t.Errorf("agent probe = %s", got)
 		}
 		if got := f.calls[1].line(); got != "policy allow network --sandbox "+name+" localhost:8717" {
 			t.Errorf("pinhole = %s", got)
@@ -304,8 +308,8 @@ func TestBringUpSbxSequencing(t *testing.T) {
 		if f.calls[2].line() != "policy check network --sandbox "+name+" localhost:8718" || !strings.HasSuffix(f.calls[3].line(), "localhost:22") {
 			t.Errorf("probes = %v", f.lines()[2:4])
 		}
-		if !strings.Contains(f.calls[4].line(), "bash -lc ") {
-			t.Errorf("exec = %s", f.calls[4].line())
+		if !strings.Contains(f.calls[5].line(), "bash -lc ") {
+			t.Errorf("exec = %s", f.calls[5].line())
 		}
 		assertCleanCalls(t, f, in.Token)
 		cfg, err := os.ReadFile(filepath.Join(in.Root, ".mcp.json"))
@@ -324,7 +328,7 @@ func TestBringUpSbxSequencing(t *testing.T) {
 		if err := bringUpSbxContainer(in2); err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"policy allow network", "policy check network", "policy check network", "exec -it"}
+		want := []string{"policy allow network", "policy check network", "policy check network", "exec " + name, "exec -it"}
 		if got := prefixes(f.lines()); !slices.Equal(got, want) {
 			t.Fatalf("sequence = %v", got)
 		}
@@ -650,4 +654,69 @@ func TestBringUpSbxRefusalsNameRemovalScope(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBringUpSbxForwardedAgentRefuses pins the S4 finding: a sandbox started
+// by hand from a shell with an SSH agent carries that agent into every later
+// session, so entry is refused unless the in-sandbox probe says no agent
+// answers. Anything the probe does not say plainly is a refusal too.
+func TestBringUpSbxForwardedAgentRefuses(t *testing.T) {
+	in := bringUpFixture(t) // first-run path: create, then the probe, then enter
+	healthy := healthySbxReply(t, "")
+	withProbe := func(out string, err error) func(string) (string, error) {
+		return func(l string) (string, error) {
+			if strings.HasPrefix(l, "exec ") && strings.Contains(l, " sh -c ") {
+				return out, err
+			}
+			return healthy(l)
+		}
+	}
+	cases := []struct {
+		name, out string
+		err       error
+		want      string
+	}{
+		{"forwarded", "forwarded\n", nil, "live SSH agent forwarded"},
+		{"forwarded after sbx chatter", "Sandbox x started successfully\nforwarded\n", nil, "live SSH agent forwarded"},
+		{"no ssh-add", "noverify\n", nil, "cannot verify"},
+		{"garbage", "something else\n", nil, "not recognised"},
+		{"empty", "", nil, "not recognised"},
+		{"probe failed", "", errors.New("boom"), "forwarded SSH agent"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := installFakeSbx(t, withProbe(tc.out, tc.err))
+			err := bringUpSbxContainer(in)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want containing %q", err, tc.want)
+			}
+			for _, c := range f.calls {
+				if c.attach {
+					t.Errorf("entered the sandbox despite the refusal: %s", c.line())
+				}
+			}
+		})
+	}
+	t.Run("none answers enters", func(t *testing.T) {
+		f := installFakeSbx(t, withProbe("none\n", nil))
+		if err := bringUpSbxContainer(in); err != nil {
+			t.Fatal(err)
+		}
+		if last := f.calls[len(f.calls)-1]; !last.attach {
+			t.Errorf("last call not the interactive exec: %s", last.line())
+		}
+	})
+	t.Run("no shell means no probe", func(t *testing.T) {
+		f := installFakeSbx(t, withProbe("forwarded\n", nil))
+		noShell := in
+		noShell.Shell = false
+		if err := bringUpSbxContainer(noShell); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range f.lines() {
+			if strings.HasPrefix(l, "exec") {
+				t.Errorf("probe ran without a shell: %v", f.lines())
+			}
+		}
+	})
 }

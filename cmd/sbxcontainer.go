@@ -370,9 +370,57 @@ func bringUpSbxContainer(in sbxBringUpInput) error {
 		fmt.Printf("\nsandbox %s is ready. Enter it with:\n  wraptool up --runtime=sbx --shell=always\n", name)
 		return nil
 	}
+	// This exec also starts a stopped sandbox, from wraptool's own agent-less
+	// client — the clean start the check below then confirms.
+	if err := checkSbxNoForwardedAgent(name); err != nil {
+		return err
+	}
 	fmt.Printf("\nopening a shell in sandbox %s (re-enter with `wraptool up --runtime=sbx`)...\n", name)
 	entry := sbxEntry(in.Root, homeDir, plan.pathDirs, filepath.ToSlash)
 	return sbxAttach(buildSbxExecArgs(name, sbxStdinIsTTY(), entry))
+}
+
+// sbxAgentProbe runs inside the sandbox and prints one word: "forwarded" when
+// an SSH agent answers on the sandbox's agent socket (ssh-add exits 0 with
+// identities, 1 with none — both mean a live agent), "none" when nothing
+// answers, "noverify" when the template has no ssh-add. The socket path is
+// the one observed on sbx 0.47.0, used when the sandbox environment does not
+// name it.
+const sbxAgentProbe = `command -v ssh-add >/dev/null 2>&1 || { echo noverify; exit 0; }; ` +
+	`SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-/run/ssh-agent.sock}" ssh-add -l >/dev/null 2>&1; ` +
+	`case $? in 0|1) echo forwarded;; *) echo none;; esac`
+
+func buildSbxAgentProbeArgs(name string) []string {
+	return []string{"exec", name, "sh", "-c", sbxAgentProbe}
+}
+
+// checkSbxNoForwardedAgent refuses to enter a sandbox that has a live SSH agent
+// forwarded into it. Docker Sandboxes forwards the agent of whichever client
+// creates, starts or joins a sandbox; wraptool's own client never carries one
+// (D9), but a developer who starts the sandbox by hand (`sbx exec`, `sbx run`)
+// from a shell with SSH_AUTH_SOCK set hands the agent to every later session,
+// including this one — observed on sbx 0.47.0 (§14). Unsetting the variable in
+// the entry only hides the socket, so the probe asks the agent itself. Refusal
+// rather than an automatic stop: a stop would also kill another `wraptool up`
+// session already inside the same sandbox.
+func checkSbxNoForwardedAgent(name string) error {
+	out, errOut, err := sbxCapture(buildSbxAgentProbeArgs(name))
+	if err != nil {
+		return fmt.Errorf("probing sandbox %s for a forwarded SSH agent: %w: %s", name, err, strings.TrimSpace(errOut))
+	}
+	// sbx may print its own line ("Sandbox … started successfully") around
+	// the probe's word, so look for the word as a whole line anywhere.
+	for _, line := range strings.Split(out, "\n") {
+		switch strings.TrimSpace(line) {
+		case "none":
+			return nil
+		case "forwarded":
+			return fmt.Errorf("sandbox %s has a live SSH agent forwarded into it: it was started outside wraptool by an `sbx` client with SSH_AUTH_SOCK set (`sbx exec` or `sbx run` by hand); refusing to enter — run `wraptool down`, then `wraptool up --runtime=sbx` again, which restarts it from a client with no agent", name)
+		case "noverify":
+			return fmt.Errorf("sandbox %s has no `ssh-add` in its template, so wraptool cannot verify that no SSH agent is forwarded into it; use a template that includes the OpenSSH client tools", name)
+		}
+	}
+	return fmt.Errorf("probing sandbox %s for a forwarded SSH agent: unexpected output (format not recognised)", name)
 }
 
 // sbxPlaceholderUnset is the part of the entry that strips Docker Sandboxes'

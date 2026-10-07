@@ -88,6 +88,9 @@ func healthySbxReply(t *testing.T, existing string) func(string) (string, error)
 		if strings.HasPrefix(line, "policy check") {
 			return readSbxFixture(t, "policy_check_denied.txt"), nil
 		}
+		if strings.HasPrefix(line, "exec ") && strings.Contains(line, " sh -c ") {
+			return "Sandbox x started successfully\nnone\n", nil
+		}
 		return "", nil
 	}
 }
