@@ -375,15 +375,31 @@ func bringUpSbxContainer(in sbxBringUpInput) error {
 	return sbxAttach(buildSbxExecArgs(name, sbxStdinIsTTY(), entry))
 }
 
-// sbxEntry builds the in-VM entry script from host paths; the VM is Linux, so
-// every path is converted with toSlash (filepath.ToSlash in production, a
-// parameter so tests can exercise a separator that Linux hosts never see).
+// sbxPlaceholderUnset is the part of the entry that strips Docker Sandboxes'
+// credential placeholders before the harness starts. A `shell` sandbox is
+// born with ANTHROPIC_API_KEY=proxy-managed, GH_TOKEN=gho_sbxproxymanaged…,
+// an MCP gateway URL and a forwarded-agent SSH_AUTH_SOCK (observed on sbx
+// 0.47.0, design §14/§16 R12). The placeholders exist so the sandbox proxy
+// can swap in a host-held secret on the way out — the credential path this
+// runtime refuses (§6) — and left in place they break the harness outright:
+// an API-key variable overrides the OAuth login in the pool home/ with a
+// string the proxy will not replace. Known names are unset by name; the loop
+// catches any other placeholder by its value, since sbx adds services over
+// time. SBX_CRED_*_MODE stays (inert, and useful when debugging).
+const sbxPlaceholderUnset = "unset ANTHROPIC_API_KEY GH_TOKEN GITHUB_TOKEN MCP_GATEWAY_URL MCP_SENTINEL_TOKEN_NAME SSH_AUTH_SOCK SSH_AUTH_SOCK_GATEWAY" +
+	"; for v in $(env | grep -E '=(proxy-managed$|.*sbxproxymanaged)' | cut -d= -f1); do unset \"$v\"; done"
+
+// sbxEntry builds the in-VM entry script: the shared container entry
+// (buildContainerEntry — PATH append, HOME on the pool home/, cd into the
+// workspace) prefixed with the placeholder cleanup above. The VM is Linux, so
+// every host path is converted with toSlash (filepath.ToSlash in production,
+// a parameter so tests can exercise a separator Linux hosts never see).
 func sbxEntry(root, homeDir string, pathDirs []string, toSlash func(string) string) string {
 	dirs := make([]string, len(pathDirs))
 	for i, d := range pathDirs {
 		dirs[i] = toSlash(d)
 	}
-	return buildContainerEntry(toSlash(root), toSlash(homeDir), dirs)
+	return sbxPlaceholderUnset + "; " + buildContainerEntry(toSlash(root), toSlash(homeDir), dirs)
 }
 
 // probeSbxLoopback is R8: after the pinhole exists, ask sbx whether the

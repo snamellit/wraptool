@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -536,16 +537,57 @@ func TestSbxEntryConvertsSeparators(t *testing.T) {
 	// Windows-shaped input proves every path reaches the entry converted.
 	toSlash := func(s string) string { return strings.ReplaceAll(s, `\`, "/") }
 	got := sbxEntry(`C:\work\proj`, `C:\pool\home`, []string{`C:\pool\runtime\bin`}, toSlash)
-	want := buildContainerEntry("C:/work/proj", "C:/pool/home", []string{"C:/pool/runtime/bin"})
+	want := sbxPlaceholderUnset + "; " + buildContainerEntry("C:/work/proj", "C:/pool/home", []string{"C:/pool/runtime/bin"})
 	if got != want {
 		t.Errorf("entry =\n%s\nwant\n%s", got, want)
 	}
 	if strings.Contains(got, `\`) {
 		t.Errorf("backslash in entry: %s", got)
 	}
-	// Slash-only input is byte-identical to the unwrapped builder.
-	if got, want := sbxEntry("/w/p", "/h", []string{"/r/bin"}, filepath.ToSlash), buildContainerEntry("/w/p", "/h", []string{"/r/bin"}); got != want {
+	// Slash-only input is the unwrapped builder behind the placeholder cleanup.
+	if got, want := sbxEntry("/w/p", "/h", []string{"/r/bin"}, filepath.ToSlash), sbxPlaceholderUnset+"; "+buildContainerEntry("/w/p", "/h", []string{"/r/bin"}); got != want {
 		t.Errorf("entry = %s, want %s", got, want)
+	}
+}
+
+// TestSbxEntryStripsPlaceholders runs the entry's cleanup prefix in a real
+// bash against the environment observed inside an sbx 0.47.0 shell sandbox:
+// every proxy placeholder must be gone and ordinary variables untouched.
+func TestSbxEntryStripsPlaceholders(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not on PATH")
+	}
+	entry := strings.TrimSuffix(sbxEntry("/w", "/h", nil, filepath.ToSlash), "exec bash -l") + "env"
+	cmd := exec.Command(bash, "-c", entry)
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"HOME=/x",
+		"ANTHROPIC_API_KEY=proxy-managed",
+		"GH_TOKEN=gho_sbxproxymanaged000000000000000000000",
+		"XAI_API_KEY=xai-sbxproxymanaged0000", // unobserved service: caught by value
+		"MCP_GATEWAY_URL=http://mcp-gateway.docker.internal/mcp",
+		"MCP_SENTINEL_TOKEN_NAME=proxy-managed",
+		"SSH_AUTH_SOCK=/run/ssh-agent.sock",
+		"SSH_AUTH_SOCK_GATEWAY=gateway.docker.internal:3129",
+		"SBX_CRED_ANTHROPIC_MODE=none",
+		"KEEP_ME=proxy-managed-but-not-exactly",
+		"WRAPTOOL_TOKEN=tok",
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("entry failed: %v\n%s", err, out)
+	}
+	env := string(out)
+	for _, gone := range []string{"ANTHROPIC_API_KEY=", "GH_TOKEN=", "XAI_API_KEY=", "MCP_GATEWAY_URL=", "MCP_SENTINEL_TOKEN_NAME=", "SSH_AUTH_SOCK=", "SSH_AUTH_SOCK_GATEWAY="} {
+		if strings.Contains(env, gone) {
+			t.Errorf("%s survived the entry:\n%s", gone, env)
+		}
+	}
+	for _, kept := range []string{"SBX_CRED_ANTHROPIC_MODE=none", "KEEP_ME=proxy-managed-but-not-exactly", "WRAPTOOL_TOKEN=tok", "HOME=/h", "WRAPTOOL_CONTAINER=1"} {
+		if !strings.Contains(env, kept) {
+			t.Errorf("%s missing after the entry:\n%s", kept, env)
+		}
 	}
 }
 

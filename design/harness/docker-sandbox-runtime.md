@@ -462,7 +462,31 @@ Docker documentation, read 2026-10-06:
 
 ## 14. Spike evidence
 
-Empty until Phase 0 runs.
+First real-host run, 2026-10-07, sbx 0.47.0 (Linux host). Captures in
+`testdata/sbx/` where noted.
+
+- `sbx secret ls --global` with no global secret prints
+  `No secrets found for scope "(global)".` — a prose line, not an empty
+  table (captured; the parser refused it first, R3 amended).
+- `sbx ls --quiet` lists stopped sandboxes (captured). `sbx mcp ls --quiet`
+  prints nothing with no server registered (captured).
+- S1: the workspace is mounted at its host absolute path; a write to the
+  pool `runtime/` mount fails with `Read-only file system`.
+- S9: HOME is the pool `home/` mount, writable; the `claude` dispatcher is
+  found on PATH from `runtime/bin`.
+- S4: `ssh-add -l` fails (`communication with agent failed`) although the
+  sandbox has `SSH_AUTH_SOCK=/run/ssh-agent.sock` and
+  `SSH_AUTH_SOCK_GATEWAY=gateway.docker.internal:3129` set. Not yet
+  repeated with `SSH_AUTH_SOCK` set in a hand-run `sbx exec`.
+- S10: the `shell` sandbox environment carries the proxy placeholders listed
+  in R12 and `MCP_GATEWAY_URL=http://mcp-gateway.docker.internal/mcp`; the
+  gateway runs for `shell` too. No skills-store mount was looked for yet.
+- S12: both loopback probes (review UI port, port 22) were silent, i.e.
+  denied under `balanced`.
+- Re-entry: a second `up` found the sandbox and did not create again.
+- Open from this run: S2 (SSE through the proxy), S3 (`Host` header), S6
+  partially (exec into a stopped sandbox worked; exit code and resize not
+  checked), S7, S8, S11.
 
 ## 15. CLI surface as read from the reference data (not run)
 
@@ -575,6 +599,19 @@ that confirms or replaces it.
 - **R11. Fixtures in `testdata/sbx/` are transcribed from documentation**,
   not captured, and a README in that directory says so. Phase 0 replaces
   them.
+
+- **R12. The entry strips the sandbox's credential placeholders.** A
+  `shell` sandbox on sbx 0.47.0 starts with `ANTHROPIC_API_KEY=proxy-managed`,
+  `GH_TOKEN=gho_sbxproxymanaged…`, `MCP_GATEWAY_URL`,
+  `MCP_SENTINEL_TOKEN_NAME`, `SSH_AUTH_SOCK=/run/ssh-agent.sock` and
+  `SSH_AUTH_SOCK_GATEWAY` set, plus one `SBX_CRED_<service>_MODE=none` per
+  service (§14). The placeholders are the proxy's injection hooks (§6) and
+  they break the harness: an API-key variable overrides the OAuth login in
+  pool `home/`. `sbxEntry` unsets the known names and sweeps any other
+  variable whose value is a placeholder before `exec bash -l`. This also
+  forecloses, for now, the Phase 3 "model-provider key held by the proxy"
+  option (question 4): the entry would have to keep the placeholder for a
+  service whose `SBX_CRED_<service>_MODE` is not `none`. (S10)
 
 Open question added to §12:
 
