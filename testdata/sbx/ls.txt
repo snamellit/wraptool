@@ -1,0 +1,3 @@
+SANDBOX                 AGENT    STATUS    PORTS   WORKSPACE
+claude-docker-sbx-bin   claude   stopped           /home/pti/src/docker-sbx-bin
+claude-wraptool         claude   stopped           /home/pti/src/wraptool

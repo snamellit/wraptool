@@ -1,15 +1,18 @@
 # sbx fixtures
 
-These files are **transcribed from Docker's documentation and CLI reference
-data** (`design/harness/docker-sandbox-runtime.md` §15), not captured from a
-running `sbx`. Nothing here has been verified against real output; the
-table spacing, the `Reason:` text and the version line are illustrative.
-Phase 0 of the design replaces them with captures (R11). The secret values
-are fake.
+Two kinds of file live here, and the distinction matters: a **captured** file
+is real output from a running `sbx` (version noted), and a **transcribed**
+file is reconstructed from Docker's documentation and CLI reference data
+(`design/harness/docker-sandbox-runtime.md` §15) with nothing verified. The
+design's Phase 0 replaces every transcribed file with a capture (R11). Secret
+values in transcribed files are fake.
 
-| File | Source |
-|---|---|
-| `secret_ls_global.txt` | the documented `SCOPE TYPE NAME SECRET` table; the `github` row is the documented example, the others are invented rows of the same shape (including a sandbox-scoped one) |
-| `version.txt`, `version_old.txt` | issue-report shape `sbx version: v0.45.0 <commit>` |
-| `ls_quiet.txt` | `sbx ls --quiet`: "Only display sandbox names", one per line |
-| `policy_check_allowed.txt`, `policy_check_denied.txt` | documented `Allowed:`/`Denied:` plus a `Reason:` line |
+| File | Kind | Content |
+|---|---|---|
+| `secret_ls_global.txt` | captured, sbx 0.47.0 | `sbx secret ls --global` with no global secret: a prose line, not an empty table |
+| `secret_ls_global_table.txt` | transcribed | the documented `SCOPE TYPE NAME SECRET` table; the `github` row is the documented example, the others are invented rows of the same shape |
+| `ls_quiet.txt` | captured, sbx 0.47.0 | `sbx ls --quiet`: one name per line; stopped sandboxes are listed |
+| `ls.txt` | captured, sbx 0.47.0 | `sbx ls`: the table behind it (not parsed by wraptool) |
+| `mcp_ls_quiet.txt` | captured, sbx 0.47.0 | `sbx mcp ls --quiet` with nothing registered: empty |
+| `version.txt`, `version_old.txt` | transcribed | issue-report shape `sbx version: v0.45.0 <commit>` |
+| `policy_check_allowed.txt`, `policy_check_denied.txt` | transcribed | documented `Allowed:`/`Denied:` plus a `Reason:` line |

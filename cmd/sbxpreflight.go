@@ -138,6 +138,10 @@ func checkSbxVersion(out string) (version, notice string, err error) {
 	return version, "", nil
 }
 
+// sbxNoGlobalSecrets is the whole of `sbx secret ls --global`'s output when no
+// global secret exists (captured from sbx 0.47.0, testdata/sbx/secret_ls_global.txt).
+const sbxNoGlobalSecrets = `No secrets found for scope "(global)".`
+
 // sbxModelProviders is D8/R3's allowed set of global service secrets.
 var sbxModelProviders = map[string]bool{"anthropic": true, "openai": true, "google": true, "cursor": true}
 
@@ -149,16 +153,21 @@ func (e sbxSecretEntry) String() string { return e.Scope + "/" + e.Type + "/" + 
 
 // classifySbxSecrets parses `sbx secret ls --global` (documented table
 // SCOPE TYPE NAME SECRET; further columns are tolerated) into allowed and
-// offending entries. A header with no rows means no secrets. Anything else the
-// parser does not recognise is a parse error — callers treat it as a refusal:
+// offending entries. A header with no rows means no secrets, and so does the
+// one prose line sbx 0.47.0 was seen to print instead of an empty table
+// (sbxNoGlobalSecrets, matched whole). Anything else the parser does not
+// recognise is a parse error — callers treat it as a refusal:
 // empty or whitespace-only output (sbx may have written the table elsewhere),
 // no header, a row too short to name scope/type/name, a row whose field count
 // differs from the header's, and any row whose scope is not exactly "(global)"
 // (the command asked for --global, so such a row is output we do not
 // understand, including trailing prose). The error text never quotes the input.
 func classifySbxSecrets(out string) (allowed, offending []sbxSecretEntry, err error) {
-	if strings.TrimSpace(out) == "" {
+	switch strings.TrimSpace(out) {
+	case "":
 		return nil, nil, errors.New("`sbx secret ls --global` printed nothing (cannot tell whether secrets exist)")
+	case sbxNoGlobalSecrets:
+		return nil, nil, nil
 	}
 	var headerSeen bool
 	var headerLen int

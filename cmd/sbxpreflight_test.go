@@ -181,8 +181,36 @@ func entryNames(es []sbxSecretEntry) []string {
 	return n
 }
 
-func TestClassifySbxSecretsFixture(t *testing.T) {
+// TestClassifySbxSecretsCaptured drives the classifier with real sbx 0.47.0
+// output: the no-secrets case is a prose line, not an empty table, and must be
+// matched whole — any extra text around it is still a refusal.
+func TestClassifySbxSecretsCaptured(t *testing.T) {
 	out := readSbxFixture(t, "secret_ls_global.txt")
+	allowed, offending, err := classifySbxSecrets(out)
+	if err != nil || len(allowed) != 0 || len(offending) != 0 {
+		t.Fatalf("captured no-secrets output: allowed=%v offending=%v err=%v", allowed, offending, err)
+	}
+	for _, variant := range []string{
+		"  " + sbxNoGlobalSecrets + "\n\n", // surrounding whitespace only
+	} {
+		if _, _, err := classifySbxSecrets(variant); err != nil {
+			t.Errorf("%q: %v", variant, err)
+		}
+	}
+	for _, variant := range []string{
+		sbxNoGlobalSecrets + "\nUse `sbx secret set` to add one.",
+		`No secrets found for scope "sandbox:x".`,
+		"no secrets found for scope \"(global)\".",
+		"No secrets found.",
+	} {
+		if _, _, err := classifySbxSecrets(variant); err == nil {
+			t.Errorf("%q: want refusal", variant)
+		}
+	}
+}
+
+func TestClassifySbxSecretsFixture(t *testing.T) {
+	out := readSbxFixture(t, "secret_ls_global_table.txt")
 	allowed, offending, err := classifySbxSecrets(out)
 	if err != nil {
 		t.Fatal(err)
@@ -403,7 +431,7 @@ func TestSbxPreflight(t *testing.T) {
 		h := healthySbxReply(t, "")
 		return func(l string) (string, error) {
 			if l == "secret ls --global" {
-				return readSbxFixture(t, "secret_ls_global.txt"), nil
+				return readSbxFixture(t, "secret_ls_global_table.txt"), nil
 			}
 			return h(l)
 		}
