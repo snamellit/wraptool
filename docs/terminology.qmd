@@ -48,7 +48,7 @@ specifically about credentials rather than about privilege in general.
 |---------------|------------------------------------------------------------------------------------------------------------------------------|
 | **server**    | The wraptool MCP server process. Agent-facing. Started by `wraptool serve`, or by `wraptool up` on your behalf               |
 | **review UI** | The operator-facing web interface for approving and denying capability requests. Host-facing, loopback only, never agent-facing |
-| **runtime**   | The container the harness runs in: the Guix runtime or the Dev Container runtime                                             |
+| **runtime**   | Where the harness runs: the Guix runtime, the Dev Container runtime, or the experimental Docker Sandboxes runtime (`--runtime=sbx`, a microVM rather than a container) |
 
 Write **review UI**. Do not write "Web UI", "admin UI", or "admin listener" —
 the first is vague about who it is for, and the other two suggest a general
