@@ -21,7 +21,6 @@ import (
 	"github.com/pti/wraptool/internal/harness"
 	"github.com/pti/wraptool/internal/paths"
 	"github.com/pti/wraptool/internal/pool"
-	"github.com/pti/wraptool/internal/webui"
 
 	"github.com/spf13/cobra"
 )
@@ -180,10 +179,10 @@ func runUp(opts upOptions) error {
 		if err := ensureServerFn(cfg, configPath); err != nil {
 			return err
 		}
+		// Name the command, never the token: up's output ends up in terminal
+		// scrollback, logs and pasted transcripts. Same line as `server status`.
 		if cfg.Admin.Listen != "" && cfg.Admin.AuthTokenFile != "" {
-			if adminToken, err := webui.LoadToken(cfg.Admin.AuthTokenFile); err == nil {
-				fmt.Printf("review UI: %s\n", webURL(cfg.Admin.Listen, adminToken))
-			}
+			fmt.Println("review UI: wraptool admin open")
 		}
 	}
 

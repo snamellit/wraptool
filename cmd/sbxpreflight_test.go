@@ -544,10 +544,23 @@ func TestSbxPreflight(t *testing.T) {
 // isolated; returns the error and how often the server seam was hit.
 func runUpSbxHarness(t *testing.T, opts upOptions) (int, error) {
 	t.Helper()
+	return runUpSbxHarnessWith(t, opts, nil)
+}
+
+// runUpSbxHarnessWith is runUpSbxHarness with a server seam that also runs
+// serve (when non-nil) — the stand-in for what the real server provisions.
+func runUpSbxHarnessWith(t *testing.T, opts upOptions, serve func(*config.Config, string) error) (int, error) {
+	t.Helper()
 	origIsInContainer, origServer := isInContainer, ensureServerFn
 	isInContainer = func() bool { return false }
 	served := 0
-	ensureServerFn = func(*config.Config, string) error { served++; return nil }
+	ensureServerFn = func(cfg *config.Config, path string) error {
+		served++
+		if serve != nil {
+			return serve(cfg, path)
+		}
+		return nil
+	}
 	t.Cleanup(func() { isInContainer, ensureServerFn = origIsInContainer, origServer })
 	withIsolatedXDG(t, "XDG_RUNTIME_DIR")
 	withIsolatedXDG(t, "XDG_CONFIG_HOME")
@@ -584,5 +597,30 @@ func TestRunUpSbxGating(t *testing.T) {
 	_, _ = runUpSbxHarness(t, upOptions{runtime: "guix", noServer: true})
 	if len(f.calls) != 0 {
 		t.Errorf("guix runtime called sbx: %v", f.lines())
+	}
+}
+
+// up names `wraptool admin open` for the review UI and never prints the admin
+// token: its output lands in scrollback and pasted transcripts.
+func TestRunUpReviewUILineHasNoToken(t *testing.T) {
+	installFakeSbx(t, healthySbxReply(t, ""))
+	const token = "SECRET-ADMIN-TOKEN-do-not-print"
+	var err error
+	out := captureStdout(t, func() {
+		_, err = runUpSbxHarnessWith(t, upOptions{runtime: "sbx", noContainer: true}, func(cfg *config.Config, _ string) error {
+			if err := os.MkdirAll(filepath.Dir(cfg.Admin.AuthTokenFile), 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(cfg.Admin.AuthTokenFile, []byte(token+"\n"), 0o600)
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "review UI: wraptool admin open") {
+		t.Errorf("output lacks the review UI hint:\n%s", out)
+	}
+	if strings.Contains(out, token) {
+		t.Errorf("output leaks the admin token:\n%s", out)
 	}
 }
