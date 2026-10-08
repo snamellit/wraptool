@@ -4,7 +4,10 @@ Release tags (`wraptool-vX.Y.Z`) are the sole version source; binaries for
 each tag are published by CI with SHA-256 checksums. Notes here cover what
 changed and anything an upgrade should know.
 
-## Unreleased
+## 0.9.0 — 2026-10-08
+
+A third, experimental runtime (Docker Sandboxes), the `omp` harness, and a
+smaller harness set: every remaining harness is a CLI from the harness pool.
 
 ### Fixed
 
@@ -33,9 +36,39 @@ changed and anything an upgrade should know.
   **Upgrade note:** if `up` output was saved or shared anywhere, rotate the
   token: write a new random value to the file `admin.auth_token_file` names
   and restart the server.
+- **`wraptool up` no longer mistakes `/dev/null` for a terminal.** Its
+  terminal check accepted any character device, so with stdin on
+  `/dev/null`, `--shell=auto` opened a shell on every runtime, and
+  `--shell=always` on the Docker Sandboxes runtime failed with
+  `inspect exec: context deadline exceeded`. It now asks the terminal for its
+  window size.
 
 ### Added
 
+- **The Docker Sandboxes runtime, experimental.** `wraptool up --runtime=sbx`
+  runs the harness in a Docker Sandboxes microVM instead of a container. It
+  is opt-in only: `--runtime=auto` never selects it. The pool's `runtime/`
+  is mounted read-only and its `home/` read-write, and the sandbox reaches
+  the server through the sandbox proxy on one allowed loopback port.
+  `wraptool down` stops the sandbox, and `down --rm` removes it.
+  - Needs `sbx` 0.47.0 or later, `sbx login`, a network policy
+    (`sbx policy init balanced`), and SSH agent forwarding off host-wide:
+    `sbx settings set ssh.agentForwardingEnabled false && sbx daemon restart`.
+    The setting also applies to your other sandboxes.
+  - `up` refuses to start while sbx could hand the sandbox a credential that
+    bypasses wraptool's policy: SSH agent forwarding is on, an agent is
+    reachable in the sandbox, sbx has host MCP servers registered, or a
+    global sbx secret exists that is not a model-provider key.
+    `--allow-sbx-secrets` overrides only the last check.
+  - `--sandbox-template` (or `WRAPTOOL_SANDBOX_TEMPLATE`) picks the OCI image
+    the sandbox starts from.
+  - **Known limitation:** one runtime per worktree is not enforced yet.
+    `wraptool down` stops every runtime it finds for the worktree, including
+    a Dev Container that another session is using, and
+    `up --runtime=sbx` points the worktree's `.mcp.json` at the sandbox, which
+    a Dev Container on the same worktree cannot reach. Test it in a scratch
+    repository. Design: `design/harness/docker-sandbox-runtime.md`; the
+    fix: `design/harness/one-runtime-per-worktree.md`.
 - **The `omp` (Oh My Pi) harness**, from a new pool source kind, `release`.
   The pool downloads one `omp` binary per platform from a GitHub release and
   locks it by the release's `SHA256SUMS.txt`. Versions and publish times come
