@@ -26,6 +26,13 @@ changed and anything an upgrade should know.
   `.mcp.json` (and the other harnesses' config files), which carry the bearer
   token, world-readable. It now writes them `0600`, as `wraptool init` does,
   and tightens an existing file on the next run.
+- **`wraptool up` no longer prints the admin token.** Its review UI line was
+  a login URL with the token in the query, which ended up in terminal
+  scrollback, captured logs and pasted transcripts. It now prints
+  `review UI: wraptool admin open`, as `wraptool server status` does.
+  **Upgrade note:** if `up` output was saved or shared anywhere, rotate the
+  token: write a new random value to the file `admin.auth_token_file` names
+  and restart the server.
 
 ### Added
 
