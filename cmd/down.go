@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,19 +19,20 @@ func newDownCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "down",
-		Short: "Stop this project's dev container",
-		Long: `Stop the dev container for the current project (the counterpart to ` + "`up`" + `).
+		Short: "Stop this project's sandbox and dev container",
+		Long: `Stop what ` + "`up`" + ` started for the current project (the counterpart to ` + "`up`" + `).
 
-Finds the container by its dev-container workspace label and stops it. The shared
-wraptool server is left running (it serves other projects/worktrees) — stop it
-separately with ` + "`wraptool server stop`" + `.`,
+Looks for a Docker Sandboxes sandbox (by its name, when ` + "`sbx`" + ` is on PATH) and for
+dev containers (by their dev-container workspace label, when ` + "`docker`" + ` is on PATH)
+and stops whatever exists. The shared wraptool server is left running (it serves
+other projects/worktrees) — stop it separately with ` + "`wraptool server stop`" + `.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDown(workspace, remove)
 		},
 	}
 
 	cmd.Flags().StringVar(&workspace, "workspace", "", "workspace root (default: the git worktree root of the current directory)")
-	cmd.Flags().BoolVar(&remove, "rm", false, "remove the container as well, not just stop it (forces a fresh create + postCreate on next up)")
+	cmd.Flags().BoolVar(&remove, "rm", false, "remove the sandbox/container as well, not just stop it (forces a fresh create on next up)")
 
 	return cmd
 }
@@ -46,11 +48,54 @@ func runDown(workspace string, remove bool) error {
 	}
 	root, _ = filepath.Abs(root)
 
-	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("docker not found; needed to stop the dev container")
+	sbx, docker := hasSbx(), hasDocker()
+	if !sbx && !docker {
+		return errors.New("neither `sbx` nor `docker` found on PATH; there is nothing `down` can stop")
 	}
 
-	ids, err := devcontainerIDs(root)
+	// Each side runs regardless of the other's outcome: a failed sandbox stop
+	// must not leave a dev container running, and vice versa.
+	var errs []error
+	if sbx {
+		if err := downSandbox(root, remove); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if docker {
+		if err := downDevContainers(root, remove); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// hasDocker reports whether the docker CLI is on PATH. A var, like hasGuix, so
+// tests stub it.
+var hasDocker = func() bool { _, err := exec.LookPath("docker"); return err == nil }
+
+// dockerRunner is the process boundary for the two docker calls down makes.
+type dockerRunner interface {
+	// PS lists the IDs of dev containers labelled with root (running and stopped).
+	PS(root string) ([]string, error)
+	// Run executes `docker <args...>` with output passed through.
+	Run(args []string) error
+}
+
+var dockerRun dockerRunner = execDockerRunner{}
+
+type execDockerRunner struct{}
+
+func (execDockerRunner) PS(root string) ([]string, error) { return devcontainerIDs(root) }
+
+func (execDockerRunner) Run(args []string) error {
+	c := exec.Command("docker", args...)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
+}
+
+func downDevContainers(root string, remove bool) error {
+	ids, err := dockerRun.PS(root)
 	if err != nil {
 		return err
 	}
@@ -71,11 +116,113 @@ func runDown(workspace string, remove bool) error {
 	}
 	args = append(args, ids...)
 
-	c := exec.Command("docker", args...)
-	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
-	if err := c.Run(); err != nil {
+	if err := dockerRun.Run(args); err != nil {
 		return fmt.Errorf("docker %s: %w", dockerCmd, err)
+	}
+	return nil
+}
+
+// downSandbox stops (or, with remove, deletes) this workspace's sandbox and the
+// wraptool-side state that belongs to it.
+func downSandbox(root string, remove bool) error {
+	name := sbxSandboxName(root)
+
+	out, errOut, err := sbxCapture([]string{"ls", "--quiet"})
+	// The signed-out check comes before the error check, like the preflight's:
+	// an exit-0 not-signed-in listing has no names in it, and reading that as
+	// "no sandbox" would delete the state of a sandbox that still exists.
+	signedOut := sbxNotSignedIn(out, errOut)
+	if err != nil || signedOut {
+		// With no state file wraptool never created a sandbox here, so a failing
+		// sbx must not make down fail for a developer who only uses dev containers.
+		if _, statErr := os.Stat(sbxStatePath(name)); statErr != nil {
+			if signedOut {
+				fmt.Println("notice: sbx is not signed in; sandbox check skipped (run `sbx login` if this workspace uses the sbx runtime)")
+			} else {
+				fmt.Printf("notice: `sbx ls --quiet` failed (%v); sandbox check skipped (no wraptool sandbox state for this workspace)\n", err)
+			}
+			return nil
+		}
+		if signedOut {
+			return fmt.Errorf("sbx is not signed in, so the sandbox for %s cannot be checked; run `sbx login`", root)
+		}
+		return fmt.Errorf("running `sbx ls --quiet`: %w: %s", err, strings.TrimSpace(errOut+out))
+	}
+	found := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == name {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Deleted by path, not gated on a successful read: a corrupt file is
+		// exactly what `down --rm` is the advertised remedy for.
+		if _, statErr := os.Stat(sbxStatePath(name)); remove && statErr == nil {
+			// A readable file may still name a rule; a corrupt one cannot.
+			if st, ok, readErr := readSbxState(name); readErr == nil && ok {
+				removePinhole(name, st.PinholeResource)
+			}
+			if err := removeSbxState(name); err != nil {
+				return fmt.Errorf("removing stale sandbox state for %s: %w", name, err)
+			}
+			fmt.Printf("no sandbox found for %s; removed stale state for %s\n", root, name)
+			return nil
+		}
+		fmt.Printf("no sandbox found for %s\n", root)
+		return nil
+	}
+
+	if !remove {
+		fmt.Printf("stopping sandbox %s for %s\n", name, root)
+		return sbxRunChecked([]string{"stop", name})
+	}
+
+	// Read before removing the file: the pinhole resource lives only there. An
+	// unreadable file must not block removal (up tells the developer to run
+	// `down --rm` for exactly that case); it only costs the policy cleanup.
+	st, haveState, readErr := readSbxState(name)
+	if readErr != nil {
+		fmt.Printf("notice: sandbox state file for %s is unreadable (%v); the network rule for the MCP port could not be identified and may need removing by hand: `sbx policy ls %s`, then `sbx policy rm network --sandbox %s --resource localhost:<port>`\n", name, readErr, name, name)
+	}
+
+	fmt.Printf("removing sandbox %s for %s\n", name, root)
+	if err := sbxRunChecked([]string{"rm", "--force", name}); err != nil {
+		return err // state kept: the sandbox still exists
+	}
+	// Runs before the state-removal error can return, so a failed delete does
+	// not also leak the rule.
+	if haveState {
+		removePinhole(name, st.PinholeResource)
+	}
+	if err := removeSbxState(name); err != nil {
+		return fmt.Errorf("removing sandbox state for %s: %w", name, err)
+	}
+	return nil
+}
+
+// removePinhole drops the sandbox-scoped network rule. Whether `sbx rm` already
+// drops it is unconfirmed (spec S8), so this is best-effort and never fails down.
+func removePinhole(name, resource string) {
+	if resource == "" {
+		return
+	}
+	argv := []string{"policy", "rm", "network", "--sandbox", name, "--resource", resource, "--force"}
+	if err := sbxRunChecked(argv); err != nil {
+		fmt.Printf("notice: could not remove the network rule for %s (it may already be gone): %v\n", resource, err)
+	}
+}
+
+// sbxRunChecked runs one sbx command through the seam, echoing its output and
+// wrapping a failure with the command line and stderr.
+func sbxRunChecked(argv []string) error {
+	out, errOut, err := sbxCapture(argv)
+	if s := strings.TrimSpace(out); s != "" {
+		fmt.Println(s)
+	}
+	if err != nil {
+		return fmt.Errorf("running `sbx %s`: %w: %s", strings.Join(argv, " "), err, strings.TrimSpace(errOut))
 	}
 	return nil
 }

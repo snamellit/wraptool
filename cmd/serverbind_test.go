@@ -175,6 +175,15 @@ func TestAdjustServerBindForRuntime(t *testing.T) {
 		t.Error("guix runtime must get a default token file")
 	}
 
+	// sbx: the bind stays loopback (D7); reachability is the proxy pinhole.
+	sb := &config.Config{MCP: config.MCPConfig{Transport: "sse", Listen: "127.0.0.1:8717"}}
+	if err := adjustServerBindForRuntime(sb, runtimeSbx); err != nil {
+		t.Fatal(err)
+	}
+	if sb.MCP.Listen != "127.0.0.1:8717" {
+		t.Errorf("sbx bind must be untouched, got %q", sb.MCP.Listen)
+	}
+
 	// An operator-configured token file is never overridden.
 	set := &config.Config{MCP: config.MCPConfig{Transport: "sse", Listen: "127.0.0.1:8717", AuthTokenFile: "/my/token"}}
 	if err := adjustServerBindForRuntime(set, runtimeGuix); err != nil {
