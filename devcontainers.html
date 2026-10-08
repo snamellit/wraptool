@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Dev containers for harnesses – wraptool</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-de86e1e1b5352011120a2621addc2162.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-b74a66b68bf9cdfac717fed95312c151.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="dark">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": true,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">wraptool</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="./index.html" aria-current="page"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-getting-started" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Getting Started</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-getting-started">    
+        <li>
+    <a class="dropdown-item" href="./getting-started.html">
+ <span class="dropdown-text">Getting started</span></a>
+  </li>  
+        <li><hr class="dropdown-divider"></li>
+        <li>
+    <a class="dropdown-item" href="./platform-linux.html">
+ <span class="dropdown-text">Linux setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-guix.html">
+ <span class="dropdown-text">Guix setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-macos.html">
+ <span class="dropdown-text">macOS setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-windows.html">
+ <span class="dropdown-text">Windows setup</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Reference</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-reference">    
+        <li>
+    <a class="dropdown-item" href="./installation.html">
+ <span class="dropdown-text">Installation</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./configuration.html">
+ <span class="dropdown-text">Configuration reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./cli-reference.html">
+ <span class="dropdown-text">CLI reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./mcp-integration.html">
+ <span class="dropdown-text">MCP integration</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./doctor.html">
+ <span class="dropdown-text">wraptool doctor</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./terminology.html">
+ <span class="dropdown-text">Terminology</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./security.html"> 
+<span class="menu-text">Security</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-operations" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Operations</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-operations">    
+        <li>
+    <a class="dropdown-item" href="./examples.html">
+ <span class="dropdown-text">Practical examples</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./troubleshooting.html">
+ <span class="dropdown-text">Troubleshooting</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./hot-reload.html">
+ <span class="dropdown-text">Hot-reload &amp; capability requests</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./web-ui.html">
+ <span class="dropdown-text">Review UI</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./harness-pool.html">
+ <span class="dropdown-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </li>  
+    </ul>
+  </li>
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool"> <i class="bi bi-git" role="img" aria-label="Wraptool source repository">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item">Dev containers for harnesses</li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The privilege line for agentic development</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Start</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Getting started</span></a>
+  </div>
+</li>
+          <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false">
+ <span class="menu-text">Platform setup</span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth2 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-linux.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Linux setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-guix.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Guix setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-macos.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">macOS setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-windows.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Windows setup</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./configuration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Configuration reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cli-reference.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">CLI reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./mcp-integration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">MCP integration</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./doctor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool doctor</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./terminology.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Terminology</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Trust boundary</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./architecture.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Architecture and trust boundaries</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./security.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Security model</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./isolated-environments.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Isolated Development Environments with wraptool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./git-hardening.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hardening <code>git</code> as a wrapped tool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./comparison.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool vs.&nbsp;Docker Sandboxes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Operate</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./examples.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Practical examples</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./hot-reload.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hot-reload &amp; capability requests</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./web-ui.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Review UI</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./harness-pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./troubleshooting.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Troubleshooting</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Project</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./contributing.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Contributing</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./releases.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Releases and changes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#anatomy-of-a-devcontainer.json" id="toc-anatomy-of-a-devcontainer.json" class="nav-link active" data-scroll-target="#anatomy-of-a-devcontainer.json">Anatomy of a <code>devcontainer.json</code></a></li>
+  <li><a href="#prefer-a-base-image-language-features" id="toc-prefer-a-base-image-language-features" class="nav-link" data-scroll-target="#prefer-a-base-image-language-features">Prefer a base image + language features</a></li>
+  <li><a href="#the-wraptool-feature" id="toc-the-wraptool-feature" class="nav-link" data-scroll-target="#the-wraptool-feature">The <code>wraptool</code> feature</a></li>
+  <li><a href="#scaffold-it" id="toc-scaffold-it" class="nav-link" data-scroll-target="#scaffold-it">Scaffold it</a></li>
+  <li><a href="#a-complete-example" id="toc-a-complete-example" class="nav-link" data-scroll-target="#a-complete-example">A complete example</a></li>
+  <li><a href="#bringing-it-up-and-down-with-wraptool" id="toc-bringing-it-up-and-down-with-wraptool" class="nav-link" data-scroll-target="#bringing-it-up-and-down-with-wraptool">Bringing it up and down with <code>wraptool</code></a>
+  <ul class="collapse">
+  <li><a href="#wraptool-up" id="toc-wraptool-up" class="nav-link" data-scroll-target="#wraptool-up"><code>wraptool up</code></a></li>
+  <li><a href="#wraptool-down" id="toc-wraptool-down" class="nav-link" data-scroll-target="#wraptool-down"><code>wraptool down</code></a></li>
+  </ul></li>
+  <li><a href="#compile-test-and-edit-inside-the-container" id="toc-compile-test-and-edit-inside-the-container" class="nav-link" data-scroll-target="#compile-test-and-edit-inside-the-container">Compile, test, and edit — inside the container</a></li>
+  <li><a href="#where-to-go-next" id="toc-where-to-go-next" class="nav-link" data-scroll-target="#where-to-go-next">Where to go next</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Dev containers for harnesses</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>A <a href="https://containers.dev">dev container</a> is a description of a throwaway development environment — a base image plus a list of <em>features</em> — that your editor builds and drops you into. Your project source is bind-mounted in; the toolchain, the harness, and everything else live in the container and can be rebuilt from scratch at any time.</p>
+<p>For AI-assisted development this is exactly the shape you want:</p>
+<ul>
+<li><strong>The harness runs in the container</strong>, not on your laptop. Claude Code, Antigravity, or whatever agent you use only ever sees the container’s filesystem and the container’s tools.</li>
+<li><strong>Compile and test happen in the container too</strong>, so the agent’s edits are validated against the same toolchain your editor uses — no “works on my machine” gap between the human and the agent.</li>
+<li><strong>Credentials stay on the host.</strong> With the <a href="#the-wraptool-feature"><code>wraptool</code> feature</a>, the agent reaches git, gcloud, and kubectl through wraptool over MCP — it never holds a token or an SSH key.</li>
+</ul>
+<p>This page is a short tour of how to assemble such a container. If you just want to get coding, <code>wraptool up</code> builds and enters one for you — see <a href="./getting-started.html#one-command-per-project-wraptool-up">Getting started</a>.</p>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Note
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><strong>On a Guix host, <code>wraptool up</code> doesn’t use a dev container at all</strong> — it uses a native Guix container built from your <code>manifest.scm</code> (no Docker, no image build). This page covers the devcontainer path, which <code>up</code> falls back to off Guix (Arch, macOS, …) or under <code>--runtime=devcontainer</code>. The isolation guarantees are the same; only the mechanism differs.</p>
+</div>
+</div>
+<section id="anatomy-of-a-devcontainer.json" class="level2">
+<h2 class="anchored" data-anchor-id="anatomy-of-a-devcontainer.json">Anatomy of a <code>devcontainer.json</code></h2>
+<p>A dev container is one JSON file at <code>.devcontainer/devcontainer.json</code> in your repo. The two fields that matter most:</p>
+<pre class="jsonc"><code>{
+  "name": "myproject",
+  // The base image: an OS + maybe a preinstalled runtime.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  // Composable add-ons, each pulled from an OCI registry.
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {}
+  }
+}</code></pre>
+<p>Open it with <strong>VS Code → “Reopen in Container”</strong>, the JetBrains dev container support, or the CLI:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">devcontainer</span> up <span class="at">--workspace-folder</span> .</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The image is built once and cached; features layer on top of it.</p>
+</section>
+<section id="prefer-a-base-image-language-features" class="level2">
+<h2 class="anchored" data-anchor-id="prefer-a-base-image-language-features">Prefer a base image + language features</h2>
+<p>You <em>can</em> pick a fat, batteries-included image (<code>.../devcontainers/go:1-bookworm</code> ships Go preinstalled). But the pattern that scales better across projects is:</p>
+<blockquote class="blockquote">
+<p><strong>Start from <code>mcr.microsoft.com/devcontainers/base:ubuntu</code> and add the languages you need as features.</strong></p>
+</blockquote>
+<pre class="jsonc"><code>{
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/java:1": {
+      "version": "21",
+      "jdkDistro": "tem"
+    }
+  }
+}</code></pre>
+<p>Why this way:</p>
+<ul>
+<li><strong>One base, many stacks.</strong> A polyglot repo (a Go service with a Java client, say) is just two feature lines — no hunting for an image that happens to bundle both.</li>
+<li><strong>Pinned, explicit versions.</strong> <code>"version": "1.22"</code> in the feature options is clearer and easier to bump than a buried image tag.</li>
+<li><strong>Consistent tooling.</strong> Every project starts from the same well-maintained Ubuntu base, so shell, user, and <code>common-utils</code> behave the same everywhere.</li>
+</ul>
+<p>The <a href="https://github.com/devcontainers/features">devcontainers/features</a> collection maintains language features for Go, Java, Node, Python, Rust, and more. Each feature’s <code>README</code> lists its options (version, distribution, extra tools):</p>
+<ul>
+<li>Go — <a href="https://github.com/devcontainers/features/tree/main/src/go" class="uri">https://github.com/devcontainers/features/tree/main/src/go</a></li>
+<li>Java — <a href="https://github.com/devcontainers/features/tree/main/src/java" class="uri">https://github.com/devcontainers/features/tree/main/src/java</a></li>
+</ul>
+<div class="callout callout-style-default callout-tip callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Tip
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Features are ordered by their dependencies, not by their position in the file. If you need a specific install order, use the <code>overrideFeatureInstallOrder</code> property. For most language + tool combinations the defaults are fine.</p>
+</div>
+</div>
+</section>
+<section id="the-wraptool-feature" class="level2">
+<h2 class="anchored" data-anchor-id="the-wraptool-feature">The <code>wraptool</code> feature</h2>
+<p>The feature is <strong>wiring only</strong> (major <code>:1</code> — see <a href="https://forge.snamellit.com/pti/wraptool/src/branch/main/design/harness/unified-harness-pool.md"><code>design/harness/unified-harness-pool.md</code></a> §12.3): it installs no harness binary. The binary comes from the <strong>shared harness pool</strong>’s <code>runtime/</code> tree instead — version-locked and built once per developer with <code>wraptool harness install &lt;name&gt;</code> on the host, then mounted <strong>read-only</strong> into every project container. The feature is keyed on a single <code>harness</code> choice, so the name can’t drift between two places:</p>
+<ul>
+<li><strong><code>harness</code></strong> (default <code>claude</code>) — selects which MCP config shape <code>connect</code> writes; no longer selects an installer.</li>
+<li><strong><code>connect</code></strong> (default <code>true</code>) — wires the container to a <strong>host-side wraptool</strong> MCP server, so the agent’s git/gcloud/kubectl calls execute on the host, where the credentials live, while the container itself stays credential-free. Set <code>false</code> to wire it yourself.</li>
+</ul>
+<pre class="jsonc"><code>{
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {},
+    // Wire the container to the host wraptool. No binary is installed here —
+    // it comes from the runtime mount below.
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
+  },
+  // Host workspace path, so the server scopes tools to this worktree.
+  "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
+  // The token is a secret → remoteEnv keeps it out of image layers.
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+  // Share the host harness pool: home/ (state) read-write, runtime/ (binaries)
+  // read-only.
+  "mounts": [
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
+  ]
+}</code></pre>
+<div class="callout callout-style-default callout-important callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Important
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>The <code>~/.local/share/...</code> mount sources are the <strong>Linux</strong> pool location. Match them to your OS or the bind mount fails on a non-existent source. <code>${localEnv:HOME}</code> works on all three OSes — the pool root always lives under the user’s home directory, just at a different relative path per OS. Use forward slashes under <code>${localEnv:HOME}</code> on every OS (backslashes are invalid in a JSON string): <strong>macOS</strong> <code>${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}</code>, <strong>Windows</strong> <code>${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}</code> (<code>%LOCALAPPDATA%</code> is itself <code>%USERPROFILE%\AppData\Local</code>). The Windows-specific caveat isn’t the mount source, it’s that <code>HOME</code> isn’t set by default there (only <code>USERPROFILE</code>) — see <a href="./platform-windows.html">Windows</a> for the one-time <code>setx HOME %USERPROFILE%</code> fix. <code>wraptool init devcontainer</code> and <code>wraptool up</code> write/mount the platform-correct paths for you; only a hand-written <code>devcontainer.json</code> needs this adjustment.</p>
+<p>The <strong>runtime mount must stay the string form</strong> shown above, ending in <code>,readonly</code>. The devcontainer CLI’s object-form mounts (<code>{"source":..., "target":...}</code>) have no read-only field at all, so a <code>"readonly": true</code> key on an object-form entry is silently dropped and the mount comes up read-write — which would let this ONE project’s container rewrite the pool binaries every OTHER project’s container runs. The home mount has no such requirement (it is read-write either way), so object form is fine there.</p>
+</div>
+</div>
+<p><code>connect</code> is <strong>image-agnostic</strong>: it adds no tools of its own, only the MCP client config. At container-create it writes <code>.mcp.json</code> pointing at wraptool, auto-detecting the host as the container’s default-route gateway — so there’s no <code>host.docker.internal</code> or <code>--add-host</code> to manage, and it works across docker networks and git worktrees.</p>
+<p>The feature reads two environment variables from the top-level config (it can’t inject them itself, because feature-level <code>containerEnv</code> is not variable-substituted):</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 17%">
+<col style="width: 24%">
+<col style="width: 27%">
+<col style="width: 31%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Var</th>
+<th>Where</th>
+<th>Set to</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>WRAPTOOL_TOKEN</code></td>
+<td><code>remoteEnv</code></td>
+<td><code>${localEnv:WRAPTOOL_TOKEN}</code></td>
+<td>Bearer token (secret → <code>remoteEnv</code>, not baked into the image).</td>
+</tr>
+<tr class="even">
+<td><code>WRAPTOOL_CWD</code></td>
+<td><code>containerEnv</code></td>
+<td><code>${localWorkspaceFolder}</code></td>
+<td>Host workspace path, sent to the server as <code>?cwd=</code> so it scopes tools to this worktree.</td>
+</tr>
+</tbody>
+</table>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Note
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><strong>No harness needs a node feature in the image any more.</strong> The runtime mount bundles its own pinned node for npm-sourced harnesses (claude/opencode/pi); the feature’s own scripts are POSIX sh with no npm/node dependency. Add <code>ghcr.io/devcontainers/features/node:1</code> only if your <em>project</em> code needs node. <code>agy</code> installs via its own channel. <code>omp</code> is a single release binary and needs no node or bun either.</p>
+</div>
+</div>
+<p>See the <a href="https://forge.snamellit.com/pti/wraptool/src/branch/main/features/src/wraptool/devcontainer-feature.json">feature definition</a> for every option, and <a href="./isolated-environments.html">Isolated environments</a> for the threat model. The old per-image-provisioning major (<code>:0</code>, with <code>provision</code>/ <code>version</code> options) remains published for existing configs but is deprecated — new setups should pin <code>:1</code> explicitly. The older, pre-merge <code>wraptool-connect</code> feature (wiring only) is sunset: its source is retired and it is no longer published, but already-published registry artifacts (<code>:0</code>, <code>0.1.x</code>) keep working for existing configs indefinitely.</p>
+<div class="callout callout-style-default callout-important callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Important
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>For container use the server must listen where the container can reach it — bind the docker gateway or <code>0.0.0.0</code> (e.g.&nbsp;<code>listen: 0.0.0.0:8717</code>), <strong>not</strong> <code>127.0.0.1</code>.</p>
+</div>
+</div>
+</section>
+<section id="scaffold-it" class="level2">
+<h2 class="anchored" data-anchor-id="scaffold-it">Scaffold it</h2>
+<p>Rather than hand-write the config, generate a starting point:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> init devcontainer <span class="at">--harness</span> claude <span class="at">--lang</span> go,java</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>It writes <code>.devcontainer/devcontainer.json</code> from the <code>base:ubuntu</code> + features model above: the language features you list, the wiring-only <code>wraptool</code> feature with your harness, and the <code>WRAPTOOL_*</code> env + both shared-pool mounts (home read-write, runtime read-only) prefilled. It writes a fresh file and refuses to clobber an existing one (pass <code>--force</code>); it does <strong>not</strong> merge into a hand-authored config. Edit the result freely — it’s a starting point. Install the harness itself once, on the host, before opening the container:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> harness install claude</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="a-complete-example" class="level2">
+<h2 class="anchored" data-anchor-id="a-complete-example">A complete example</h2>
+<p>Putting the pieces together — an Ubuntu base, Go and Java toolchains, and a credential-isolated Claude Code (this is what the scaffolder emits, plus editor extensions):</p>
+<pre class="jsonc"><code>{
+  "name": "polyglot-agent-box",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": { "version": "1.22" },
+    "ghcr.io/devcontainers/features/java:1": { "version": "21" },
+
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
+  },
+
+  "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+
+  "mounts": [
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
+  ],
+
+  // Editor integration: install the language extensions in the container.
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go", "redhat.java"]
+    }
+  }
+}</code></pre>
+</section>
+<section id="bringing-it-up-and-down-with-wraptool" class="level2">
+<h2 class="anchored" data-anchor-id="bringing-it-up-and-down-with-wraptool">Bringing it up and down with <code>wraptool</code></h2>
+<p>You <em>can</em> drive the container with the raw dev container tooling — but that means starting the host server, minting a token, exporting it, and running <code>devcontainer up</code> yourself. wraptool bundles the whole dance into two commands.</p>
+<section id="wraptool-up" class="level3">
+<h3 class="anchored" data-anchor-id="wraptool-up"><code>wraptool up</code></h3>
+<p>Run it from the repository root (or any git worktree):</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up          <span class="co"># running bare `wraptool` in a repo does the same</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>It is idempotent and does three things:</p>
+<ol type="1">
+<li><strong>Ensures the shared host server is running.</strong> If the server isn’t up, it starts it detached (pidfile + lock under <code>$XDG_RUNTIME_DIR</code>, auto-generating the auth token) and waits for it to become reachable.</li>
+<li><strong>Brings up this project’s container</strong> — a native Guix container on a Guix host, else <code>devcontainer up</code> — injecting the connection info the <code>wraptool</code> feature needs: the auth token (<code>WRAPTOOL_TOKEN</code>) and this worktree’s host path (<code>WRAPTOOL_CWD</code>), so <code>.mcp.json</code> is wired correctly without you exporting anything. It also bind-mounts the shared harness-pool <code>home/</code> into the container — but <strong>defers</strong> when the <code>devcontainer.json</code> already declares that mount (e.g.&nbsp;one written by <code>wraptool init devcontainer</code>), so the two never collide on a duplicate-mount error. The read-only <code>runtime/</code> mount (the harness binary) can’t be injected the same way — the devcontainer CLI’s <code>--mount</code> flag has no read-only field — so <code>up</code> only <strong>verifies</strong> it: it checks the selected harness is pool-locked and that <code>devcontainer.json</code> declares the mount correctly, and prints the exact snippet to add when it’s missing.</li>
+<li><strong>Drops you into a shell</strong> in the container, ready to code. Exiting the shell leaves the container running; re-enter any time by running <code>wraptool up</code> again.</li>
+</ol>
+<p>Control the shell behaviour with <code>--shell</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up <span class="at">--shell</span><span class="op">=</span>always   <span class="co"># always open a shell</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up <span class="at">--shell</span><span class="op">=</span>never    <span class="co"># just bring the container up (scripts / CI)</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="wraptool-down" class="level3">
+<h3 class="anchored" data-anchor-id="wraptool-down"><code>wraptool down</code></h3>
+<p>Stop this worktree’s container when you’re finished:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> down          <span class="co"># stop this project's dev container</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> down <span class="at">--rm</span>     <span class="co"># ...and remove it (next `up` recreates it fresh)</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>down</code> deliberately <strong>leaves the shared server running</strong>, since one server backs every project and worktree. Manage that server directly when you need to:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server status</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server stop</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Several worktrees can each use <code>wraptool up</code>; their generated connections send different host paths. This is routing, not automatic isolation: configure <code>mcp.allowed_cwd_roots</code> to reject a client that supplies another path.</p>
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Note
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>wraptool up</code> is the recommended path — the raw <code>export WRAPTOOL_TOKEN=… &amp;&amp; devcontainer up</code> / VS Code “Reopen in Container” flow still works and is covered in <a href="./getting-started.html#one-command-per-project-wraptool-up">Getting started</a> for when you want to drive the container yourself.</p>
+</div>
+</div>
+</section>
+</section>
+<section id="compile-test-and-edit-inside-the-container" class="level2">
+<h2 class="anchored" data-anchor-id="compile-test-and-edit-inside-the-container">Compile, test, and edit — inside the container</h2>
+<p>Once you’re in, your editor’s language servers, build tasks, and test runners all use the container’s toolchain. The <code>go</code> and <code>java</code> features put compilers on <code>PATH</code>, and the <code>customizations.vscode.extensions</code> list installs the matching editor extensions in the container so IntelliSense, debugging, and test gutters work out of the box:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">go</span> build ./...        <span class="co"># the container's Go, not your laptop's</span></span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">go</span> test ./...</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The harness runs beside them:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">claude</span>                <span class="co"># or:  agy</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>When the agent needs to touch a credential-guarded tool — commit and push, inspect a cluster — it calls wraptool over MCP and the command executes on the host. Confirm the isolation any time from inside the container:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">cat</span> ~/.ssh/id_ed25519       <span class="co"># fails — no keys in the container</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> push                    <span class="co"># only works via the wrapped MCP tool</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="where-to-go-next" class="level2">
+<h2 class="anchored" data-anchor-id="where-to-go-next">Where to go next</h2>
+<ul>
+<li><a href="./getting-started.html">Getting started</a> — configure and run the host server.</li>
+<li><a href="./isolated-environments.html">Isolated environments</a> — Guix, Docker, Podman, and Unix-socket variants, plus the full security checklist.</li>
+<li><a href="./configuration.html">Configuration reference</a> — every policy field.</li>
+</ul>
+
+
+</section>
+
+<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a></main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/pti\.pages\.snamellit\.com\/wraptool\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+            // target, if specified
+            link.setAttribute("target", "_blank");
+            if (link.getAttribute("rel") === null) {
+              link.setAttribute("rel", "noopener");
+            }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+<p>Wraptool is GPLv3-licensed software.</p>
+</div>   
+    <div class="nav-footer-center">
+      &nbsp;
+    </div>
+    <div class="nav-footer-right">
+      <ul class="footer-items list-unstyled">
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool">
+<p>Source</p>
+</a>
+  </li>  
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool/issues">
+<p>Issues</p>
+</a>
+  </li>  
+</ul>
+    </div>
+  </div>
+</footer>
+
+
+
+
+<script src="site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

@@ -1,0 +1,1242 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="description" content="Commands and flags validated against the current Cobra command tree.">
+
+<title>CLI reference – wraptool</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<link href="./mcp-integration.html" rel="next">
+<link href="./configuration.html" rel="prev">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-de86e1e1b5352011120a2621addc2162.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-b74a66b68bf9cdfac717fed95312c151.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="dark">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": true,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">wraptool</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="./index.html" aria-current="page"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-getting-started" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Getting Started</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-getting-started">    
+        <li>
+    <a class="dropdown-item" href="./getting-started.html">
+ <span class="dropdown-text">Getting started</span></a>
+  </li>  
+        <li><hr class="dropdown-divider"></li>
+        <li>
+    <a class="dropdown-item" href="./platform-linux.html">
+ <span class="dropdown-text">Linux setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-guix.html">
+ <span class="dropdown-text">Guix setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-macos.html">
+ <span class="dropdown-text">macOS setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-windows.html">
+ <span class="dropdown-text">Windows setup</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Reference</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-reference">    
+        <li>
+    <a class="dropdown-item" href="./installation.html">
+ <span class="dropdown-text">Installation</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./configuration.html">
+ <span class="dropdown-text">Configuration reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./cli-reference.html">
+ <span class="dropdown-text">CLI reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./mcp-integration.html">
+ <span class="dropdown-text">MCP integration</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./doctor.html">
+ <span class="dropdown-text">wraptool doctor</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./terminology.html">
+ <span class="dropdown-text">Terminology</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./security.html"> 
+<span class="menu-text">Security</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-operations" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Operations</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-operations">    
+        <li>
+    <a class="dropdown-item" href="./examples.html">
+ <span class="dropdown-text">Practical examples</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./troubleshooting.html">
+ <span class="dropdown-text">Troubleshooting</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./hot-reload.html">
+ <span class="dropdown-text">Hot-reload &amp; capability requests</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./web-ui.html">
+ <span class="dropdown-text">Review UI</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./harness-pool.html">
+ <span class="dropdown-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </li>  
+    </ul>
+  </li>
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool"> <i class="bi bi-git" role="img" aria-label="Wraptool source repository">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./configuration.html">Reference</a></li><li class="breadcrumb-item"><a href="./cli-reference.html">CLI reference</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The privilege line for agentic development</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Start</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Getting started</span></a>
+  </div>
+</li>
+          <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false">
+ <span class="menu-text">Platform setup</span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth2 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-linux.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Linux setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-guix.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Guix setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-macos.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">macOS setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-windows.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Windows setup</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./configuration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Configuration reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cli-reference.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">CLI reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./mcp-integration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">MCP integration</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./doctor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool doctor</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./terminology.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Terminology</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Trust boundary</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./architecture.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Architecture and trust boundaries</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./security.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Security model</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./isolated-environments.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Isolated Development Environments with wraptool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./git-hardening.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hardening <code>git</code> as a wrapped tool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./comparison.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool vs.&nbsp;Docker Sandboxes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Operate</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./examples.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Practical examples</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./hot-reload.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hot-reload &amp; capability requests</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./web-ui.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Review UI</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./harness-pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./troubleshooting.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Troubleshooting</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Project</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./contributing.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Contributing</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./releases.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Releases and changes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#top-level" id="toc-top-level" class="nav-link active" data-scroll-target="#top-level">Top level</a></li>
+  <li><a href="#server-and-container-lifecycle" id="toc-server-and-container-lifecycle" class="nav-link" data-scroll-target="#server-and-container-lifecycle">Server and container lifecycle</a>
+  <ul class="collapse">
+  <li><a href="#serve" id="toc-serve" class="nav-link" data-scroll-target="#serve"><code>serve</code></a></li>
+  <li><a href="#up" id="toc-up" class="nav-link" data-scroll-target="#up"><code>up</code></a></li>
+  <li><a href="#down" id="toc-down" class="nav-link" data-scroll-target="#down"><code>down</code></a></li>
+  <li><a href="#server" id="toc-server" class="nav-link" data-scroll-target="#server"><code>server</code></a></li>
+  </ul></li>
+  <li><a href="#client-configuration" id="toc-client-configuration" class="nav-link" data-scroll-target="#client-configuration">Client configuration</a>
+  <ul class="collapse">
+  <li><a href="#init" id="toc-init" class="nav-link" data-scroll-target="#init"><code>init</code></a></li>
+  <li><a href="#init-devcontainer" id="toc-init-devcontainer" class="nav-link" data-scroll-target="#init-devcontainer"><code>init devcontainer</code></a></li>
+  <li><a href="#harness" id="toc-harness" class="nav-link" data-scroll-target="#harness"><code>harness</code></a></li>
+  </ul></li>
+  <li><a href="#requests-and-validation" id="toc-requests-and-validation" class="nav-link" data-scroll-target="#requests-and-validation">Requests and validation</a></li>
+  <li><a href="#diagnostics" id="toc-diagnostics" class="nav-link" data-scroll-target="#diagnostics">Diagnostics</a>
+  <ul class="collapse">
+  <li><a href="#doctor" id="toc-doctor" class="nav-link" data-scroll-target="#doctor"><code>doctor</code></a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./configuration.html">Reference</a></li><li class="breadcrumb-item"><a href="./cli-reference.html">CLI reference</a></li></ol></nav>
+<div class="quarto-title">
+<h1 class="title">CLI reference</h1>
+</div>
+
+<div>
+  <div class="description">
+    Commands and flags validated against the current Cobra command tree.
+  </div>
+</div>
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>This reference is validated against the Cobra command tree in <code>cmd/</code> and the output of <code>go run . &lt;command&gt; --help</code>. <code>wraptool --help</code> remains authoritative for the binary you have installed.</p>
+<section id="top-level" class="level2">
+<h2 class="anchored" data-anchor-id="top-level">Top level</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>wraptool</code></td>
+<td>In a Git repository, run <code>up</code> with defaults; outside one, show help</td>
+</tr>
+<tr class="even">
+<td><code>wraptool serve</code></td>
+<td>Start the MCP server</td>
+</tr>
+<tr class="odd">
+<td><code>wraptool up</code></td>
+<td>Ensure the shared server and enter a project container</td>
+</tr>
+<tr class="even">
+<td><code>wraptool down</code></td>
+<td>Stop or remove this worktree’s Dev Container</td>
+</tr>
+<tr class="odd">
+<td><code>wraptool init</code></td>
+<td>Generate harness MCP configuration</td>
+</tr>
+<tr class="even">
+<td><code>wraptool init devcontainer</code></td>
+<td>Scaffold a new Dev Container config</td>
+</tr>
+<tr class="odd">
+<td><code>wraptool harness</code></td>
+<td>Manage the version-locked harness pool</td>
+</tr>
+<tr class="even">
+<td><code>wraptool requests</code></td>
+<td>Review capability requests</td>
+</tr>
+<tr class="odd">
+<td><code>wraptool server</code></td>
+<td>Inspect or stop the shared server</td>
+</tr>
+<tr class="even">
+<td><code>wraptool config validate</code></td>
+<td>Strictly decode and validate configuration</td>
+</tr>
+<tr class="odd">
+<td><code>wraptool doctor</code></td>
+<td>Run the operator-facing preflight report</td>
+</tr>
+<tr class="even">
+<td><code>wraptool version</code></td>
+<td>Print build version, revision, dirty state, and Go version</td>
+</tr>
+<tr class="odd">
+<td><code>wraptool completion</code></td>
+<td>Generate shell completion for bash, fish, PowerShell, or zsh</td>
+</tr>
+</tbody>
+</table>
+<p><code>--version</code> prints the compact version. <code>version</code> prints the fuller build identity.</p>
+</section>
+<section id="server-and-container-lifecycle" class="level2">
+<h2 class="anchored" data-anchor-id="server-and-container-lifecycle">Server and container lifecycle</h2>
+<section id="serve" class="level3">
+<h3 class="anchored" data-anchor-id="serve"><code>serve</code></h3>
+<pre class="text"><code>wraptool serve [-c|--config PATH]</code></pre>
+<p>Config path precedence is flag, <code>WRAPTOOL_CONFIG</code>, then the XDG default. The configured transport determines whether the process uses a TCP HTTP listener or a Unix socket.</p>
+</section>
+<section id="up" class="level3">
+<h3 class="anchored" data-anchor-id="up"><code>up</code></h3>
+<pre class="text"><code>wraptool up [--config PATH] [--no-server] [--no-container]
+            [--runtime auto|guix|devcontainer]
+            [--shell auto|always|never] [--workspace PATH]
+            [--harness NAME]</code></pre>
+<p><code>--runtime</code> defaults to <code>auto</code>; it selects Guix only when <code>guix</code> is on <code>PATH</code> and the worktree contains <code>manifest.scm</code>, otherwise Dev Container. <code>--harness</code> defaults to <code>claude</code>. Orchestration currently requires <code>mcp.transport: sse</code>.</p>
+</section>
+<section id="down" class="level3">
+<h3 class="anchored" data-anchor-id="down"><code>down</code></h3>
+<pre class="text"><code>wraptool down [--workspace PATH] [--rm]</code></pre>
+<p>This finds a Dev Container by its workspace label. <code>--rm</code> removes it with force; without the flag it is stopped. Guix containers are transient and are not managed by <code>down</code>. The shared wraptool server remains running.</p>
+</section>
+<section id="server" class="level3">
+<h3 class="anchored" data-anchor-id="server"><code>server</code></h3>
+<pre class="text"><code>wraptool server status [-c|--config PATH]
+wraptool server stop</code></pre>
+<p><code>status</code> combines PID-file liveness with TCP reachability. <code>stop</code> sends SIGTERM to the process recorded by the shared PID file.</p>
+</section>
+</section>
+<section id="client-configuration" class="level2">
+<h2 class="anchored" data-anchor-id="client-configuration">Client configuration</h2>
+<section id="init" class="level3">
+<h3 class="anchored" data-anchor-id="init"><code>init</code></h3>
+<pre class="text"><code>wraptool init --harness NAME[,NAME...] [--transport sse|unix]
+              [--url URL] [--socket PATH] [--global] [--config PATH]</code></pre>
+<p><code>--harness</code> is required and repeatable; comma-separated values and <code>all</code> are accepted. Known names are <code>agy</code>, <code>claude</code>, <code>omp</code>, <code>opencode</code>, and <code>pi</code>. Project output is merged into each harness’s JSON file when that file contains valid JSON.</p>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Warning
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Unix client generation is incomplete: <code>--socket</code> does not create a bridge and most listed harnesses expect an HTTP URL. Use an explicit bridge such as <code>socat</code> or choose TCP.</p>
+</div>
+</div>
+</section>
+<section id="init-devcontainer" class="level3">
+<h3 class="anchored" data-anchor-id="init-devcontainer"><code>init devcontainer</code></h3>
+<pre class="text"><code>wraptool init devcontainer [--harness claude|opencode|pi|agy|omp]
+  [--lang go,node,java,python,rust] [--base ubuntu|debian|alpine|IMAGE]
+  [--out PATH] [--name NAME] [--force]</code></pre>
+<p>The command writes a new JSONC file and refuses to overwrite by default. npm harnesses automatically add the Node feature. It is a scaffold, not a merger.</p>
+</section>
+<section id="harness" class="level3">
+<h3 class="anchored" data-anchor-id="harness"><code>harness</code></h3>
+<pre class="text"><code>wraptool harness list
+wraptool harness install HARNESS [--constraint EXPR] [--backend auto|guix|oci]
+                                 [--allow-young --reason TEXT]
+wraptool harness refresh [HARNESS]
+wraptool harness update [HARNESS] [--backend auto|guix|oci]
+                                  [--allow-young --reason TEXT]
+wraptool harness sync [HARNESS] [--platform KEY] [--backend auto|guix|oci]
+wraptool harness rollback HARNESS [--to VERSION] [--platform KEY]
+wraptool harness gc [--dry-run] [--legacy]
+wraptool harness policy set [--harness NAME]
+                            [--minimum-release-age DURATION]
+                            [--minimum-observation-age DURATION]
+                            [--allow-prereleases]</code></pre>
+<p>These commands manage harnesses in the developer <a href="./harness-pool.html">harness pool</a>, shared by every project. <code>claude</code>, <code>opencode</code>, <code>pi</code>, <code>agy</code>, and <code>omp</code> are locked and realized in the pool.</p>
+<p><code>omp</code> is a pool-only harness: it has no legacy installer, so <code>install</code>, <code>update</code>, and <code>sync</code> skip that step without a warning, and a realize failure fails the command. It needs no guix, docker, or podman: the pool downloads one release binary per platform and checks it against the release’s <code>SHA256SUMS.txt</code>. The <code>sync --platform</code> option downloads only the named platform. Run <code>wraptool harness install omp</code> before <code>wraptool up --harness omp</code>. The release source locks only versions whose release publishes a checksum file, which starts at <code>omp</code> 17.2.10.</p>
+<p><code>manifest.yaml</code> records which harnesses you want and their version constraints. <code>harness-lock.json</code> records the exact versions they resolved to. A version moves through refresh (candidate metadata), resolve (the lock), fetch (downloads), and realize (an offline-built generation). Activation then points the pool at that generation.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Command</th>
+<th>Network</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>list</code></td>
+<td>none</td>
+<td>Show each harness’s constraint, locked, active, latest, and eligible versions, and remaining quarantine</td>
+</tr>
+<tr class="even">
+<td><code>install</code></td>
+<td>yes</td>
+<td>Record intent, then refresh, resolve, fetch, and realize; keeps an existing lock</td>
+</tr>
+<tr class="odd">
+<td><code>refresh</code></td>
+<td>metadata only</td>
+<td>Record candidate versions in <code>observations.json</code>; no download, no lock change</td>
+</tr>
+<tr class="even">
+<td><code>update</code></td>
+<td>yes</td>
+<td>Lock the newest eligible candidate already refreshed, then fetch and realize it</td>
+</tr>
+<tr class="odd">
+<td><code>sync</code></td>
+<td>downloads only</td>
+<td>Fetch missing or empty downloads for the current lock, then realize it; never resolves</td>
+</tr>
+<tr class="even">
+<td><code>rollback</code></td>
+<td>none</td>
+<td>Activate a previously realized generation; the lock is not changed</td>
+</tr>
+<tr class="odd">
+<td><code>gc</code></td>
+<td>none</td>
+<td>Remove unreferenced generations, downloads, and staging directories</td>
+</tr>
+<tr class="even">
+<td><code>policy set</code></td>
+<td>none</td>
+<td>Edit quarantine and prerelease policy in <code>manifest.yaml</code>, keeping comments</td>
+</tr>
+</tbody>
+</table>
+<p>Without a <code>HARNESS</code> argument, <code>refresh</code> and <code>update</code> act on every harness in <code>manifest.yaml</code>, and <code>sync</code> on every harness in the lock.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+<col style="width: 25%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Flag</th>
+<th>Commands</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>--constraint EXPR</code></td>
+<td><code>install</code></td>
+<td>keep existing, else stable</td>
+<td>Version constraint, such as <code>'&gt;=2 &lt;3'</code> or <code>'=2.1.220'</code></td>
+</tr>
+<tr class="even">
+<td><code>--backend</code></td>
+<td><code>install</code>, <code>update</code>, <code>sync</code></td>
+<td><code>auto</code></td>
+<td><code>auto</code> uses Guix when it can build the target, else Docker or Podman</td>
+</tr>
+<tr class="odd">
+<td><code>--allow-young</code></td>
+<td><code>install</code>, <code>update</code></td>
+<td>off</td>
+<td>Bypass quarantine; requires <code>--reason</code>, which goes to the pool audit log</td>
+</tr>
+<tr class="even">
+<td><code>--platform KEY</code></td>
+<td><code>sync</code>, <code>rollback</code></td>
+<td>this host</td>
+<td><code>linux-amd64-glibc</code>, <code>linux-arm64-glibc</code>, <code>linux-amd64-musl</code>, or <code>linux-arm64-musl</code></td>
+</tr>
+<tr class="odd">
+<td><code>--to VERSION</code></td>
+<td><code>rollback</code></td>
+<td>newest other generation</td>
+<td>Exact version to activate</td>
+</tr>
+<tr class="even">
+<td><code>--dry-run</code></td>
+<td><code>gc</code></td>
+<td>off</td>
+<td>Report what would be removed</td>
+</tr>
+<tr class="odd">
+<td><code>--legacy</code></td>
+<td><code>gc</code></td>
+<td>off</td>
+<td>Also remove the pre-generation <code>bin/</code> and <code>lib/</code> trees; refused unless every harness is active</td>
+</tr>
+<tr class="even">
+<td><code>--harness NAME</code></td>
+<td><code>policy set</code></td>
+<td>pool-wide</td>
+<td>Apply the policy to one harness</td>
+</tr>
+</tbody>
+</table>
+<p><code>--backend guix</code> fails for a target architecture other than the host’s. <code>--backend oci</code> fails when neither <code>docker</code> nor <code>podman</code> is on <code>PATH</code>.</p>
+<p>Each download prints its size, then progress every five seconds, on stderr. An interrupted <code>install</code> or <code>update</code> reuses downloads that already finished. <code>update</code> does not fetch when the lock is already current, so use <code>sync</code> to repair a missing or empty download.</p>
+<p>A later <code>sync</code>, <code>update</code>, or <code>install</code> can re-activate the lock’s own generation and undo a <code>rollback</code>.</p>
+</section>
+</section>
+<section id="requests-and-validation" class="level2">
+<h2 class="anchored" data-anchor-id="requests-and-validation">Requests and validation</h2>
+<pre class="text"><code>wraptool requests list [--status pending|approved|denied|""]
+wraptool requests approve REQUEST_ID [--apply]
+wraptool requests deny REQUEST_ID [--reason TEXT]
+wraptool admin open [--print]
+wraptool config validate [PATH]
+wraptool config validate --config PATH</code></pre>
+<p>The default request-list filter is <code>pending</code>; an empty status displays all. <code>admin open</code> opens the <a href="./web-ui.html">review UI</a> in the default browser, logged in via its token; <code>--print</code> prints the login URL instead. <code>approve --apply</code> first records approval, then attempts the atomic config edit. If editing fails, request status remains approved while policy remains unchanged.</p>
+<p>The positional config path and <code>--config</code> cannot be used together. Validation strictly rejects unknown YAML keys and performs the same semantic checks used by <code>serve</code>, without starting a server or wrapped tools.</p>
+</section>
+<section id="diagnostics" class="level2">
+<h2 class="anchored" data-anchor-id="diagnostics">Diagnostics</h2>
+<section id="doctor" class="level3">
+<h3 class="anchored" data-anchor-id="doctor"><code>doctor</code></h3>
+<pre class="text"><code>wraptool doctor [-c|--config PATH] [--workspace DIR] [--json]
+                [--only CHECK,...] [--skip CHECK,...] [--strict]
+                [--no-probe] [--verify-pool]</code></pre>
+<p>An operator-facing preflight report: host dependencies, configuration integrity, deployment posture, and policy content. Safe to run before any configuration exists. Exit code <code>0</code> means no <code>fail</code> finding, <code>1</code> means at least one, and <code>2</code> means doctor could not complete. See <a href="./doctor.html">wraptool doctor</a> for the full report format, check groups, severity model, and suppression syntax.</p>
+
+
+</section>
+</section>
+
+<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a></main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/pti\.pages\.snamellit\.com\/wraptool\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+            // target, if specified
+            link.setAttribute("target", "_blank");
+            if (link.getAttribute("rel") === null) {
+              link.setAttribute("rel", "noopener");
+            }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="./configuration.html" class="pagination-link" aria-label="Configuration reference">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Configuration reference</span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="./mcp-integration.html" class="pagination-link" aria-label="MCP integration">
+        <span class="nav-page-text">MCP integration</span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+<p>Wraptool is GPLv3-licensed software.</p>
+</div>   
+    <div class="nav-footer-center">
+      &nbsp;
+    </div>
+    <div class="nav-footer-right">
+      <ul class="footer-items list-unstyled">
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool">
+<p>Source</p>
+</a>
+  </li>  
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool/issues">
+<p>Issues</p>
+</a>
+  </li>  
+</ul>
+    </div>
+  </div>
+</footer>
+
+
+
+
+<script src="site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

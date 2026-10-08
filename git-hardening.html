@@ -1,0 +1,1515 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Hardening git as a wrapped tool – wraptool</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<link href="./comparison.html" rel="next">
+<link href="./isolated-environments.html" rel="prev">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-de86e1e1b5352011120a2621addc2162.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-b74a66b68bf9cdfac717fed95312c151.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="dark">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": true,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">wraptool</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="./index.html" aria-current="page"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-getting-started" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Getting Started</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-getting-started">    
+        <li>
+    <a class="dropdown-item" href="./getting-started.html">
+ <span class="dropdown-text">Getting started</span></a>
+  </li>  
+        <li><hr class="dropdown-divider"></li>
+        <li>
+    <a class="dropdown-item" href="./platform-linux.html">
+ <span class="dropdown-text">Linux setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-guix.html">
+ <span class="dropdown-text">Guix setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-macos.html">
+ <span class="dropdown-text">macOS setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-windows.html">
+ <span class="dropdown-text">Windows setup</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Reference</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-reference">    
+        <li>
+    <a class="dropdown-item" href="./installation.html">
+ <span class="dropdown-text">Installation</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./configuration.html">
+ <span class="dropdown-text">Configuration reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./cli-reference.html">
+ <span class="dropdown-text">CLI reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./mcp-integration.html">
+ <span class="dropdown-text">MCP integration</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./doctor.html">
+ <span class="dropdown-text">wraptool doctor</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./terminology.html">
+ <span class="dropdown-text">Terminology</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./security.html"> 
+<span class="menu-text">Security</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-operations" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Operations</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-operations">    
+        <li>
+    <a class="dropdown-item" href="./examples.html">
+ <span class="dropdown-text">Practical examples</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./troubleshooting.html">
+ <span class="dropdown-text">Troubleshooting</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./hot-reload.html">
+ <span class="dropdown-text">Hot-reload &amp; capability requests</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./web-ui.html">
+ <span class="dropdown-text">Review UI</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./harness-pool.html">
+ <span class="dropdown-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </li>  
+    </ul>
+  </li>
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool"> <i class="bi bi-git" role="img" aria-label="Wraptool source repository">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./architecture.html">Trust boundary</a></li><li class="breadcrumb-item"><a href="./git-hardening.html">Hardening <code>git</code> as a wrapped tool</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The privilege line for agentic development</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Start</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Getting started</span></a>
+  </div>
+</li>
+          <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false">
+ <span class="menu-text">Platform setup</span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth2 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-linux.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Linux setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-guix.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Guix setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-macos.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">macOS setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-windows.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Windows setup</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./configuration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Configuration reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cli-reference.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">CLI reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./mcp-integration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">MCP integration</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./doctor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool doctor</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./terminology.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Terminology</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Trust boundary</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./architecture.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Architecture and trust boundaries</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./security.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Security model</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./isolated-environments.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Isolated Development Environments with wraptool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./git-hardening.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">Hardening <code>git</code> as a wrapped tool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./comparison.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool vs.&nbsp;Docker Sandboxes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Operate</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./examples.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Practical examples</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./hot-reload.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hot-reload &amp; capability requests</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./web-ui.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Review UI</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./harness-pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./troubleshooting.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Troubleshooting</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Project</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./contributing.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Contributing</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./releases.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Releases and changes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#why-git-deserves-its-own-page" id="toc-why-git-deserves-its-own-page" class="nav-link active" data-scroll-target="#why-git-deserves-its-own-page">Why <code>git</code> deserves its own page</a></li>
+  <li><a href="#split-execution-model" id="toc-split-execution-model" class="nav-link" data-scroll-target="#split-execution-model">Split execution model</a>
+  <ul class="collapse">
+  <li><a href="#run-in-the-container-no-wraptool-needed" id="toc-run-in-the-container-no-wraptool-needed" class="nav-link" data-scroll-target="#run-in-the-container-no-wraptool-needed">Run in the container (no wraptool needed)</a></li>
+  <li><a href="#run-on-the-host-through-wraptool-need-credentials" id="toc-run-on-the-host-through-wraptool-need-credentials" class="nav-link" data-scroll-target="#run-on-the-host-through-wraptool-need-credentials">Run on the host through wraptool (need credentials)</a></li>
+  <li><a href="#local-only-but-with-caveats" id="toc-local-only-but-with-caveats" class="nav-link" data-scroll-target="#local-only-but-with-caveats">“Local-only” — but with caveats</a></li>
+  <li><a href="#the-split-is-a-policy-boundary-not-a-preference" id="toc-the-split-is-a-policy-boundary-not-a-preference" class="nav-link" data-scroll-target="#the-split-is-a-policy-boundary-not-a-preference">The split is a policy boundary, not a preference</a></li>
+  </ul></li>
+  <li><a href="#threats-from-a-hostile-working-tree" id="toc-threats-from-a-hostile-working-tree" class="nav-link" data-scroll-target="#threats-from-a-hostile-working-tree">Threats from a hostile working tree</a>
+  <ul class="collapse">
+  <li><a href="#buried-bare-repositories" id="toc-buried-bare-repositories" class="nav-link" data-scroll-target="#buried-bare-repositories">Buried bare repositories</a></li>
+  <li><a href="#core.fsmonitor-as-a-code-execution-trigger" id="toc-core.fsmonitor-as-a-code-execution-trigger" class="nav-link" data-scroll-target="#core.fsmonitor-as-a-code-execution-trigger"><code>core.fsmonitor</code> as a code-execution trigger</a></li>
+  <li><a href="#hook-execution" id="toc-hook-execution" class="nav-link" data-scroll-target="#hook-execution">Hook execution</a></li>
+  <li><a href="#safe.directory-ownership-check" id="toc-safe.directory-ownership-check" class="nav-link" data-scroll-target="#safe.directory-ownership-check"><code>safe.directory</code> ownership check</a></li>
+  <li><a href="#protocol-allowlist" id="toc-protocol-allowlist" class="nav-link" data-scroll-target="#protocol-allowlist">Protocol allowlist</a></li>
+  </ul></li>
+  <li><a href="#config-keys-that-can-execute-code" id="toc-config-keys-that-can-execute-code" class="nav-link" data-scroll-target="#config-keys-that-can-execute-code">Config keys that can execute code</a></li>
+  <li><a href="#config-precedence-matters" id="toc-config-precedence-matters" class="nav-link" data-scroll-target="#config-precedence-matters">Config precedence matters</a></li>
+  <li><a href="#hardened-environment-for-wraptool" id="toc-hardened-environment-for-wraptool" class="nav-link" data-scroll-target="#hardened-environment-for-wraptool">Hardened environment for wraptool</a></li>
+  <li><a href="#constrain-the-remote-destination" id="toc-constrain-the-remote-destination" class="nav-link" data-scroll-target="#constrain-the-remote-destination">Constrain the remote destination</a></li>
+  <li><a href="#hooks-validation-and-git-lfs" id="toc-hooks-validation-and-git-lfs" class="nav-link" data-scroll-target="#hooks-validation-and-git-lfs">Hooks, validation, and Git LFS</a></li>
+  <li><a href="#cve-awareness" id="toc-cve-awareness" class="nav-link" data-scroll-target="#cve-awareness">CVE awareness</a></li>
+  <li><a href="#scope-what-wraptool-does-and-does-not-enforce" id="toc-scope-what-wraptool-does-and-does-not-enforce" class="nav-link" data-scroll-target="#scope-what-wraptool-does-and-does-not-enforce">Scope: what wraptool does and does not enforce</a></li>
+  <li><a href="#references" id="toc-references" class="nav-link" data-scroll-target="#references">References</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./architecture.html">Trust boundary</a></li><li class="breadcrumb-item"><a href="./git-hardening.html">Hardening <code>git</code> as a wrapped tool</a></li></ol></nav>
+<div class="quarto-title">
+<h1 class="title">Hardening <code>git</code> as a wrapped tool</h1>
+<p class="subtitle lead">Operator notes for safely exposing <code>git</code> through wraptool</p>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<div class="callout callout-style-default callout-note callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Note
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>This page describes git-specific concerns that affect any operator wrapping <code>git</code> through wraptool. The configuration knobs discussed here live in <code>gitconfig</code> and the environment given to the wrapped <code>git</code> process; wraptool itself does not interpret them today.</p>
+</div>
+</div>
+<section id="why-git-deserves-its-own-page" class="level2">
+<h2 class="anchored" data-anchor-id="why-git-deserves-its-own-page">Why <code>git</code> deserves its own page</h2>
+<p>Most tools wraptool exposes are essentially a verb plus arguments. <code>git</code> is different on three axes:</p>
+<ol type="1">
+<li><strong>Repos contain executable configuration.</strong> A repository’s <code>.git/config</code>, <code>.gitattributes</code>, and <code>.gitmodules</code> can configure programs that <code>git</code> will execute on routine commands such as <code>status</code>, <code>checkout</code>, <code>add</code>, or <code>commit</code>. Cloning, opening, or even auto-discovering an untrusted tree therefore yields arbitrary code execution unless the surrounding environment is hardened.</li>
+<li><strong>Auto-discovery walks parent directories.</strong> Running <code>git</code> from anywhere inside a working tree causes it to walk up the directory hierarchy looking for <code>.git</code>. A hostile parent dir (or a “buried bare repo” anywhere on that path) can capture the invocation.</li>
+<li><strong>Hooks fire on many local-looking operations.</strong> <code>post-checkout</code>, <code>post-merge</code>, <code>post-rewrite</code>, filter drivers, diff drivers, and merge drivers are <strong>not</strong> suppressed by <code>--no-verify</code>. Hooks run in the environment of the calling process.</li>
+</ol>
+<p>For a tool wrapper that may run in a host environment holding SSH keys, GPG keys, kubeconfigs, and cloud credentials, those three properties combine into a serious threat surface.</p>
+</section>
+<section id="split-execution-model" class="level2">
+<h2 class="anchored" data-anchor-id="split-execution-model">Split execution model</h2>
+<p>You do not need wraptool to mediate every <code>git</code> invocation. Many operations are local-only and can run perfectly well inside the agent’s unprivileged container (which holds no secrets). Restrict wraptool’s surface to the operations that actually need host credentials.</p>
+<section id="run-in-the-container-no-wraptool-needed" class="level3">
+<h3 class="anchored" data-anchor-id="run-in-the-container-no-wraptool-needed">Run in the container (no wraptool needed)</h3>
+<p>These touch only the local working tree. They are still affected by hostile repo configuration (see below), but the blast radius is limited to the container.</p>
+<div class="callout callout-style-default callout-tip callout-titled" title="Generally safe inside the container">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Tip</span>Generally safe inside the container
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>status</code> · <code>log</code> · <code>show</code> · <code>diff</code> · <code>add</code> · <code>rm</code> · <code>mv</code> · <code>commit</code> (unsigned) · <code>branch</code> · <code>tag</code> (lightweight) · <code>reset</code> · <code>stash</code> · <code>cherry-pick</code> · <code>revert</code> · <code>rebase</code> (non-interactive, no <code>--exec</code>) · <code>format-patch</code> · <code>apply</code> · <code>bisect</code> · <code>reflog</code> · <code>gc</code> · <code>fsck</code> · <code>cat-file</code> · <code>rev-parse</code> · <code>ls-files</code> · <code>ls-tree</code></p>
+</div>
+</div>
+</section>
+<section id="run-on-the-host-through-wraptool-need-credentials" class="level3">
+<h3 class="anchored" data-anchor-id="run-on-the-host-through-wraptool-need-credentials">Run on the host through wraptool (need credentials)</h3>
+<p>These need <code>ssh</code>, <code>gcloud</code>, GitHub tokens, or other host-only secrets.</p>
+<div class="callout callout-style-default callout-warning callout-titled" title="Wrap these through wraptool">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Warning</span>Wrap these through wraptool
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>clone</code> · <code>fetch</code> · <code>pull</code> · <code>push</code> · <code>ls-remote</code> · <code>remote update</code> · <code>submodule update --remote</code> · <code>submodule sync</code> · <code>archive --remote=...</code> · <code>bundle fetch</code> · <code>lfs fetch|pull|push</code></p>
+</div>
+</div>
+</section>
+<section id="local-only-but-with-caveats" class="level3">
+<h3 class="anchored" data-anchor-id="local-only-but-with-caveats">“Local-only” — but with caveats</h3>
+<p>These look local but can still execute attacker-controlled commands through <code>.gitattributes</code> filters, hooks, signature programs, or the configured editor/pager. Treat them with the same caution as any other code-execution path:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 57%">
+<col style="width: 42%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Operation</th>
+<th>Vector</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>checkout</code>, <code>switch</code>, <code>restore</code>, <code>read-tree</code>, <code>merge</code>, <code>apply</code>, <code>add</code>, <code>archive</code></td>
+<td><code>filter.&lt;driver&gt;.{clean,smudge,process}</code> and <code>diff.&lt;driver&gt;.textconv</code> via <code>.gitattributes</code></td>
+</tr>
+<tr class="even">
+<td><code>commit</code>, <code>merge</code>, <code>rebase</code>, <code>checkout</code>, <code>am</code></td>
+<td><code>post-*</code> hooks (not blocked by <code>--no-verify</code>)</td>
+</tr>
+<tr class="odd">
+<td><code>commit -S</code>, <code>tag -s</code>, <code>log --show-signature</code>, <code>merge --verify-signatures</code></td>
+<td><code>gpg.program</code>, <code>gpg.ssh.program</code></td>
+</tr>
+<tr class="even">
+<td><code>rebase -i</code>, <code>commit --amend</code>, <code>tag -a</code>, <code>git config --edit</code></td>
+<td><code>core.editor</code>, <code>sequence.editor</code></td>
+</tr>
+<tr class="odd">
+<td><code>log</code>, <code>diff</code>, <code>show</code>, <code>blame</code></td>
+<td><code>core.pager</code></td>
+</tr>
+<tr class="even">
+<td><code>submodule init</code> / <code>update</code></td>
+<td><code>submodule.&lt;name&gt;.update = !cmd</code> (gated by <code>submodule.update.command</code> policy)</td>
+</tr>
+<tr class="odd">
+<td><code>fetch</code> from a partial clone</td>
+<td>lazy fetches honour the <strong>source</strong> repo’s config and hooks</td>
+</tr>
+<tr class="even">
+<td><code>help</code></td>
+<td><code>man.viewer</code>, <code>help.browser</code></td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="the-split-is-a-policy-boundary-not-a-preference" class="level3">
+<h3 class="anchored" data-anchor-id="the-split-is-a-policy-boundary-not-a-preference">The split is a policy boundary, not a preference</h3>
+<p>The three lists above are not advice about where each command feels more natural to run. They divide the subcommands that genuinely need host credentials from those that do not, and only policy enforces that division.</p>
+<p>A subcommand that needs no host credentials but is allowed anyway costs nothing to remove and gives an attacker a foothold for free. <code>checkout</code> and <code>switch</code> are the clearest case. Both run <code>filter.&lt;driver&gt;.clean</code>, <code>.smudge</code>, and <code>.process</code> whenever a repository’s <code>.gitattributes</code> selects a driver. The command-scope settings below close the hook path through <code>core.hooksPath</code> and the fsmonitor path through <code>core.fsmonitor=false</code>, but neither suppresses filter drivers, and no single wildcard disables them. Allowing <code>checkout</code> on the host therefore reopens a code-execution path that the environment recipe does not address, in exchange for a capability the agent already holds inside its own container.</p>
+<p>Write the boundary into policy:</p>
+<ul>
+<li>Allow on the host only the subcommands from the transport list above.</li>
+<li>Add an explicit <code>deny</code> entry for the local subcommands, so the intent survives a later edit that adds an allow rule. Deny is evaluated first and takes absolute precedence over allow.</li>
+<li>Leave the rest to the container’s own <code>git</code>, which operates on the same worktree and holds no credentials.</li>
+</ul>
+<p>The worked example under <a href="#hardened-environment-for-wraptool">Hardened environment for wraptool</a> applies exactly this split: it allows <code>fetch</code>, <code>push</code>, and <code>ls-remote</code>, and denies <code>pull</code>, <code>submodule</code>, <code>config</code>, <code>credential</code>, and the <code>remote</code> subcommands that rewrite a destination.</p>
+<div class="callout callout-style-default callout-warning callout-titled" title="Audit the deployed policy, not only this recipe">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Warning</span>Audit the deployed policy, not only this recipe
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>The common drift from this page is a policy that accumulated <code>checkout</code>, <code>switch</code>, or <code>branch</code> over time, usually because a local operation was easier to allow than to move into the container. Neither the environment recipe below nor the protocol allowlist detects that drift. Confirm what is actually exposed with the <code>wraptool_discover</code> tool, which reports the allowed subcommands as the agent sees them, rather than reading the configuration and assuming the two agree.</p>
+</div>
+</div>
+</section>
+</section>
+<section id="threats-from-a-hostile-working-tree" class="level2">
+<h2 class="anchored" data-anchor-id="threats-from-a-hostile-working-tree">Threats from a hostile working tree</h2>
+<section id="buried-bare-repositories" class="level3">
+<h3 class="anchored" data-anchor-id="buried-bare-repositories">Buried bare repositories</h3>
+<p>A repository can contain another bare repository as a subdirectory. Default-configured <code>git</code> discovers it during parent-walking and honours its <code>config</code> — including <code>core.fsmonitor</code>, hooks, and filter drivers. The attack vector and its mitigation are described in detail by Justin Steven’s <a href="https://github.com/justinsteven/advisories/blob/main/2022_git_buried_bare_repos_and_fsmonitor_various_abuses.md">2022 advisory on buried bare repos</a>.</p>
+<p><strong>Mitigation:</strong> Set <code>safe.bareRepository = explicit</code>. <code>git</code> will then refuse to operate on bare repos discovered via traversal; only repos named explicitly via <code>--git-dir</code> or <code>GIT_DIR</code> are honoured. Available since Git <strong>2.38</strong> (2022-10-03). See <a href="https://git-scm.com/docs/git-config"><code>git-config(1)</code></a> under <code>safe.bareRepository</code>.</p>
+</section>
+<section id="core.fsmonitor-as-a-code-execution-trigger" class="level3">
+<h3 class="anchored" data-anchor-id="core.fsmonitor-as-a-code-execution-trigger"><code>core.fsmonitor</code> as a code-execution trigger</h3>
+<p>When <code>core.fsmonitor</code> is set to a string, <code>git</code> executes it on <code>status</code>, <code>add</code>, <code>commit</code>, <code>diff</code>, and other working-tree-touching commands. A hostile <code>.git/config</code> setting this value yields immediate RCE on the next <code>git status</code> — which IDEs and shell prompts often run automatically.</p>
+<p>There is no CVE against upstream Git for this — the project considers the configuration “working as intended”. Several CVEs have been filed against downstream tools that auto-invoke <code>git</code> on untrusted paths (VS Code: CVE-2021-43891; JetBrains: CVE-2022-24345; fish: CVE-2022-20001).</p>
+<p><strong>Mitigation:</strong> Set <code>core.fsmonitor=false</code> at command scope, not merely in global config. Use <code>git -c core.fsmonitor=false &lt;cmd&gt;</code> or the <code>GIT_CONFIG_COUNT</code> recipe below. Git 2.35.1 and older may treat <code>false</code> as a hook pathname, so require a current patched Git version.</p>
+</section>
+<section id="hook-execution" class="level3">
+<h3 class="anchored" data-anchor-id="hook-execution">Hook execution</h3>
+<p><code>core.hooksPath</code> overrides the default <code>$GIT_DIR/hooks</code> directory. A hostile repo can point it at a path it controls. A command-scope override can instead point it at an empty read-only directory, where <code>git</code> silently finds no executables. There is no <code>GIT_HOOKS_PATH</code> environment variable; the supported override is <code>-c core.hooksPath=...</code> or a config entry.</p>
+<p>Note that <code>--no-verify</code> only suppresses <code>pre-commit</code>, <code>commit-msg</code>, <code>pre-merge-commit</code>, <code>pre-push</code>, and <code>p4-changelist</code>. It does <strong>not</strong> suppress <code>post-checkout</code>, <code>post-merge</code>, <code>post-rewrite</code>, filter drivers, or any of the diff/merge drivers.</p>
+<p><strong>Mitigation:</strong></p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="fu">git</span> <span class="at">-c</span> core.hooksPath=/etc/wraptool/empty-hooks <span class="op">&lt;</span>cmd<span class="op">&gt;</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A global <code>core.hooksPath</code> is insufficient because local config has higher precedence. The command-scope setting must be mandatory and unavailable to the caller.</p>
+<p>See <a href="https://git-scm.com/docs/githooks"><code>githooks(5)</code></a> and <a href="https://git-scm.com/docs/git-config"><code>git-config(1)</code></a>.</p>
+</section>
+<section id="safe.directory-ownership-check" class="level3">
+<h3 class="anchored" data-anchor-id="safe.directory-ownership-check"><code>safe.directory</code> ownership check</h3>
+<p>Since Git 2.35.2 (the fix for <strong>CVE-2022-24765</strong>), <code>git</code> refuses to operate on a repository whose directory is not owned by the current effective UID, unless the path is listed in <code>safe.directory</code>. The literal <code>*</code> disables the check globally. <code>safe.directory</code> is only honored from protected system, global, or command config (never from a per-repo <code>.git/config</code>), so a hostile repo cannot whitelist itself.</p>
+<p>For wraptool deployments that run <code>git</code> as a service user against repositories owned by a different UID, you must whitelist the working tree paths explicitly in the hardened global config.</p>
+<p>References: <a href="https://nvd.nist.gov/vuln/detail/CVE-2022-24765">NVD CVE-2022-24765</a>, <a href="https://github.com/git/git/security/advisories/GHSA-j342-m5hw-rr3v">GHSA-j342-m5hw-rr3v (CVE-2022-29187 bypass)</a>.</p>
+</section>
+<section id="protocol-allowlist" class="level3">
+<h3 class="anchored" data-anchor-id="protocol-allowlist">Protocol allowlist</h3>
+<p>The <code>git-remote-ext</code> helper runs arbitrary shell when a URL of the form <code>ext::sh -c "..."</code> is fetched. Default-deny is in place since the CVE-2017-1000117 family of submodule URL exploits, gated by:</p>
+<ul>
+<li><code>protocol.allow</code> — default policy.</li>
+<li><code>protocol.&lt;name&gt;.allow</code> — per-protocol override.</li>
+<li>The <code>GIT_PROTOCOL_FROM_USER=1</code> distinction: for indirect operations (submodule init, recursive fetch) the protocol must be explicitly allow-listed; user-typed top-level commands implicitly carry user trust.</li>
+</ul>
+<p><strong>Do not relax</strong> <code>protocol.ext.allow=always</code> or <code>protocol.file.allow=always</code>. See <a href="https://git-scm.com/docs/git-remote-ext"><code>git-remote-ext(1)</code></a> and the <code>protocol.allow</code> entry in <code>git-config(1)</code>.</p>
+</section>
+</section>
+<section id="config-keys-that-can-execute-code" class="level2">
+<h2 class="anchored" data-anchor-id="config-keys-that-can-execute-code">Config keys that can execute code</h2>
+<p>Treat any of these as a code-execution channel when present in <code>.git/config</code> of an untrusted repository:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 26%">
+<col style="width: 73%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Key</th>
+<th>Triggered by</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>core.sshCommand</code></td>
+<td>any remote op over ssh</td>
+</tr>
+<tr class="even">
+<td><code>core.editor</code>, <code>sequence.editor</code></td>
+<td><code>commit</code>, <code>rebase -i</code>, <code>tag -a</code>, <code>config --edit</code></td>
+</tr>
+<tr class="odd">
+<td><code>core.pager</code>, <code>pager.&lt;cmd&gt;</code></td>
+<td>any pager-using command</td>
+</tr>
+<tr class="even">
+<td><code>core.askPass</code> (and <code>GIT_ASKPASS</code>)</td>
+<td>credential prompt</td>
+</tr>
+<tr class="odd">
+<td><code>core.fsmonitor</code></td>
+<td><code>status</code>, <code>add</code>, <code>commit</code>, …</td>
+</tr>
+<tr class="even">
+<td><code>credential.helper</code></td>
+<td>credential prompt; <code>!cmd</code> runs shell</td>
+</tr>
+<tr class="odd">
+<td><code>alias.&lt;name&gt;</code> (when value starts with <code>!</code>)</td>
+<td>the alias</td>
+</tr>
+<tr class="even">
+<td><code>gpg.program</code>, <code>gpg.ssh.program</code>, <code>gpg.&lt;format&gt;.program</code></td>
+<td>signing / verification</td>
+</tr>
+<tr class="odd">
+<td><code>diff.&lt;driver&gt;.command</code>, <code>diff.&lt;driver&gt;.textconv</code>, <code>diff.external</code></td>
+<td>gated by <code>.gitattributes</code></td>
+</tr>
+<tr class="even">
+<td><code>merge.&lt;driver&gt;.driver</code></td>
+<td>gated by <code>.gitattributes</code></td>
+</tr>
+<tr class="odd">
+<td><code>filter.&lt;driver&gt;.clean</code>, <code>filter.&lt;driver&gt;.smudge</code>, <code>filter.&lt;driver&gt;.process</code></td>
+<td>gated by <code>.gitattributes</code>; fires on <strong><code>checkout</code>, <code>add</code>, <code>archive</code></strong></td>
+</tr>
+<tr class="even">
+<td><code>submodule.&lt;name&gt;.update = !cmd</code></td>
+<td><code>submodule update</code> (constrained by <code>submodule.update.command</code> policy since 2018)</td>
+</tr>
+<tr class="odd">
+<td><code>url.&lt;base&gt;.insteadOf</code></td>
+<td>not direct exec; can redirect to <code>ext::</code> if protocol allow permits</td>
+</tr>
+<tr class="even">
+<td><code>include.path</code>, <code>includeIf.*.path</code></td>
+<td>not direct exec; pulls in additional config from arbitrary paths</td>
+</tr>
+<tr class="odd">
+<td><code>interactive.diffFilter</code></td>
+<td>interactive patch operations</td>
+</tr>
+<tr class="even">
+<td><code>mergetool.&lt;tool&gt;.cmd</code>, <code>difftool.&lt;tool&gt;.cmd</code></td>
+<td>explicit merge/diff tool invocation</td>
+</tr>
+<tr class="odd">
+<td><code>tar.&lt;format&gt;.command</code></td>
+<td><code>archive</code> with the named format</td>
+</tr>
+<tr class="even">
+<td><code>gc.recentObjectsHook</code></td>
+<td>garbage collection and cruft processing</td>
+</tr>
+<tr class="odd">
+<td><code>uploadpack.packObjectsHook</code></td>
+<td>server-side only; modern git ignores it when read from per-repo config</td>
+</tr>
+</tbody>
+</table>
+<p>This list is intentionally not exhaustive. Git adds new integrations over time, and arbitrary driver names selected by <code>.gitattributes</code> cannot be disabled with one wildcard setting. Use the transport-only split above instead of treating this table as a complete denylist.</p>
+</section>
+<section id="config-precedence-matters" class="level2">
+<h2 class="anchored" data-anchor-id="config-precedence-matters">Config precedence matters</h2>
+<p>Git reads system, global, local, worktree, then command-scope configuration. Later values normally win; multi-valued settings may accumulate. Consequently, a curated global config isolates the wrapped process from the developer’s normal preferences, but it does <strong>not</strong> override a malicious <code>.git/config</code>.</p>
+<p>Security invariants such as <code>core.hooksPath</code> and <code>core.fsmonitor</code> must be set at command scope. Git provides two mechanisms:</p>
+<ul>
+<li>fixed <code>git -c name=value</code> arguments before the subcommand;</li>
+<li><code>GIT_CONFIG_COUNT</code> plus indexed <code>GIT_CONFIG_KEY_n</code> and <code>GIT_CONFIG_VALUE_n</code> environment variables.</li>
+</ul>
+<p>The environment form fits wraptool’s current <code>tools.&lt;name&gt;.env</code> model. Explicit command-line <code>git -c</code> still has higher precedence, so policy must never put caller-controlled <code>-c</code>, <code>--config-env</code>, <code>-C</code>, <code>--git-dir</code>, or <code>--work-tree</code> before the allowed subcommand.</p>
+</section>
+<section id="hardened-environment-for-wraptool" class="level2">
+<h2 class="anchored" data-anchor-id="hardened-environment-for-wraptool">Hardened environment for wraptool</h2>
+<p>Use a dedicated HOME and global config to remove ambient host preferences. Keep settings that Git only accepts from protected config there, such as <code>safe.bareRepository</code>. Put settings that must defeat repository-local config in command scope through <code>GIT_CONFIG_COUNT</code>.</p>
+<p>Create an empty, read-only hooks directory and an operator-owned Git HOME. For example, the global config can contain non-executable defaults:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode ini code-with-copy"><code class="sourceCode ini"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># /etc/wraptool/git-home/.gitconfig</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="kw">[safe]</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="dt">    bareRepository </span><span class="ot">=</span><span class="st"> explicit</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="dt">    directory      </span><span class="ot">=</span><span class="st"> /var/lib/wraptool/work</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Then configure wrapped execution. This SSH-oriented example permits only transport operations and applies security-sensitive values at command scope:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="fu">tools</span><span class="kw">:</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">git</span><span class="kw">:</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">binary</span><span class="kw">:</span><span class="at"> /usr/bin/git</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">timeout</span><span class="kw">:</span><span class="at"> 60s</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">env</span><span class="kw">:</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">HOME</span><span class="kw">:</span><span class="at"> /etc/wraptool/git-home</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_NOSYSTEM</span><span class="kw">:</span><span class="at"> </span><span class="st">"1"</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_GLOBAL</span><span class="kw">:</span><span class="at"> /etc/wraptool/git-home/.gitconfig</span></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_PAGER</span><span class="kw">:</span><span class="at"> cat</span></span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_TERMINAL_PROMPT</span><span class="kw">:</span><span class="at"> </span><span class="st">"0"</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_ASKPASS</span><span class="kw">:</span><span class="at"> /usr/bin/false</span></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">SSH_ASKPASS</span><span class="kw">:</span><span class="at"> /usr/bin/false</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_EDITOR</span><span class="kw">:</span><span class="at"> /usr/bin/false</span></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_SEQUENCE_EDITOR</span><span class="kw">:</span><span class="at"> /usr/bin/false</span></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="co">      # This profile is SSH-only. HTTPS needs separate hardening below.</span></span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_ALLOW_PROTOCOL</span><span class="kw">:</span><span class="at"> ssh</span></span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_SSH_COMMAND</span><span class="kw">:</span><span class="at"> /usr/local/libexec/wraptool-git-ssh</span></span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a><span class="co">      # Command scope: overrides local and worktree config.</span></span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_COUNT</span><span class="kw">:</span><span class="at"> </span><span class="st">"14"</span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_0</span><span class="kw">:</span><span class="at"> safe.bareRepository</span></span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_0</span><span class="kw">:</span><span class="at"> explicit</span></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_1</span><span class="kw">:</span><span class="at"> core.hooksPath</span></span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_1</span><span class="kw">:</span><span class="at"> /etc/wraptool/empty-hooks</span></span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_2</span><span class="kw">:</span><span class="at"> core.fsmonitor</span></span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_2</span><span class="kw">:</span><span class="at"> </span><span class="st">"false"</span></span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_3</span><span class="kw">:</span><span class="at"> maintenance.auto</span></span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_3</span><span class="kw">:</span><span class="at"> </span><span class="st">"false"</span></span>
+<span id="cb3-29"><a href="#cb3-29" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_4</span><span class="kw">:</span><span class="at"> gc.auto</span></span>
+<span id="cb3-30"><a href="#cb3-30" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_4</span><span class="kw">:</span><span class="at"> </span><span class="st">"0"</span></span>
+<span id="cb3-31"><a href="#cb3-31" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_5</span><span class="kw">:</span><span class="at"> credential.helper</span></span>
+<span id="cb3-32"><a href="#cb3-32" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_5</span><span class="kw">:</span><span class="at"> </span><span class="st">""</span></span>
+<span id="cb3-33"><a href="#cb3-33" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_6</span><span class="kw">:</span><span class="at"> push.gpgSign</span></span>
+<span id="cb3-34"><a href="#cb3-34" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_6</span><span class="kw">:</span><span class="at"> </span><span class="st">"false"</span></span>
+<span id="cb3-35"><a href="#cb3-35" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_7</span><span class="kw">:</span><span class="at"> transfer.fsckObjects</span></span>
+<span id="cb3-36"><a href="#cb3-36" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_7</span><span class="kw">:</span><span class="at"> </span><span class="st">"true"</span></span>
+<span id="cb3-37"><a href="#cb3-37" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_8</span><span class="kw">:</span><span class="at"> fetch.fsckObjects</span></span>
+<span id="cb3-38"><a href="#cb3-38" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_8</span><span class="kw">:</span><span class="at"> </span><span class="st">"true"</span></span>
+<span id="cb3-39"><a href="#cb3-39" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_9</span><span class="kw">:</span><span class="at"> receive.fsckObjects</span></span>
+<span id="cb3-40"><a href="#cb3-40" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_9</span><span class="kw">:</span><span class="at"> </span><span class="st">"true"</span></span>
+<span id="cb3-41"><a href="#cb3-41" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_10</span><span class="kw">:</span><span class="at"> fetch.recurseSubmodules</span></span>
+<span id="cb3-42"><a href="#cb3-42" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_10</span><span class="kw">:</span><span class="at"> </span><span class="st">"false"</span></span>
+<span id="cb3-43"><a href="#cb3-43" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_11</span><span class="kw">:</span><span class="at"> push.recurseSubmodules</span></span>
+<span id="cb3-44"><a href="#cb3-44" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_11</span><span class="kw">:</span><span class="at"> </span><span class="st">"false"</span></span>
+<span id="cb3-45"><a href="#cb3-45" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_12</span><span class="kw">:</span><span class="at"> submodule.recurse</span></span>
+<span id="cb3-46"><a href="#cb3-46" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_12</span><span class="kw">:</span><span class="at"> </span><span class="st">"false"</span></span>
+<span id="cb3-47"><a href="#cb3-47" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_KEY_13</span><span class="kw">:</span><span class="at"> core.alternateRefsCommand</span></span>
+<span id="cb3-48"><a href="#cb3-48" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="fu">GIT_CONFIG_VALUE_13</span><span class="kw">:</span><span class="at"> /usr/bin/false</span></span>
+<span id="cb3-49"><a href="#cb3-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-50"><a href="#cb3-50" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">allow</span><span class="kw">:</span></span>
+<span id="cb3-51"><a href="#cb3-51" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">fetch</span><span class="kw">]</span></span>
+<span id="cb3-52"><a href="#cb3-52" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--prune"</span><span class="kw">]</span></span>
+<span id="cb3-53"><a href="#cb3-53" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">deny_flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--help"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--upload-pack"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--exec"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--recurse-submodules"</span><span class="kw">]</span></span>
+<span id="cb3-54"><a href="#cb3-54" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">arg_constraints</span><span class="kw">:</span></span>
+<span id="cb3-55"><a href="#cb3-55" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">positional_max</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
+<span id="cb3-56"><a href="#cb3-56" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">push</span><span class="kw">]</span></span>
+<span id="cb3-57"><a href="#cb3-57" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--set-upstream"</span><span class="kw">]</span></span>
+<span id="cb3-58"><a href="#cb3-58" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">deny_flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--help"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--force"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--force-with-lease"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--receive-pack"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--exec"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--recurse-submodules"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--signed"</span><span class="kw">]</span></span>
+<span id="cb3-59"><a href="#cb3-59" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">arg_constraints</span><span class="kw">:</span></span>
+<span id="cb3-60"><a href="#cb3-60" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">positional_max</span><span class="kw">:</span><span class="at"> </span><span class="dv">2</span></span>
+<span id="cb3-61"><a href="#cb3-61" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">ls-remote</span><span class="kw">]</span></span>
+<span id="cb3-62"><a href="#cb3-62" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--heads"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--tags"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--refs"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--symref"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--exit-code"</span><span class="kw">]</span></span>
+<span id="cb3-63"><a href="#cb3-63" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">deny_flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--help"</span><span class="kw">]</span></span>
+<span id="cb3-64"><a href="#cb3-64" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">arg_constraints</span><span class="kw">:</span></span>
+<span id="cb3-65"><a href="#cb3-65" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">positional_max</span><span class="kw">:</span><span class="at"> </span><span class="dv">1</span></span>
+<span id="cb3-66"><a href="#cb3-66" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">deny</span><span class="kw">:</span></span>
+<span id="cb3-67"><a href="#cb3-67" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">pull</span><span class="kw">]</span></span>
+<span id="cb3-68"><a href="#cb3-68" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">submodule</span><span class="kw">]</span></span>
+<span id="cb3-69"><a href="#cb3-69" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">config</span><span class="kw">]</span></span>
+<span id="cb3-70"><a href="#cb3-70" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">credential</span><span class="kw">]</span></span>
+<span id="cb3-71"><a href="#cb3-71" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">remote</span><span class="kw">,</span><span class="at"> set-url</span><span class="kw">]</span></span>
+<span id="cb3-72"><a href="#cb3-72" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">remote</span><span class="kw">,</span><span class="at"> add</span><span class="kw">]</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Notes:</p>
+<ul>
+<li><code>GIT_CONFIG_NOSYSTEM=1</code> skips <code>/etc/gitconfig</code>.</li>
+<li><code>GIT_CONFIG_GLOBAL=&lt;path&gt;</code> skips both <code>~/.gitconfig</code> and <code>$XDG_CONFIG_HOME/git/config</code> in favour of the curated file. Setting it to <code>/dev/null</code> skips global config entirely.</li>
+<li><code>GIT_TERMINAL_PROMPT=0</code> prevents <code>git</code> from blocking on a credential prompt; failed auth becomes a fast error instead of a hang.</li>
+<li><code>GIT_PAGER=cat</code> overrides repository pager configuration. MCP output remains unchanged.</li>
+<li><code>--help</code> is denied because Git may invoke configured man or browser viewers; ordinary <code>-h</code> usage output remains available.</li>
+<li><code>GIT_ALLOW_PROTOCOL=ssh</code> overrides existing protocol configuration and excludes <code>ext</code>, <code>file</code>, HTTP(S), native unauthenticated <code>git</code>, and custom helpers.</li>
+<li>An empty command-scope <code>credential.helper</code> resets helpers accumulated from lower-precedence config. For HTTPS, add one trusted absolute helper as the next indexed value and increase <code>GIT_CONFIG_COUNT</code>.</li>
+<li><code>core.hooksPath</code> points to an existing empty read-only directory. Do not point it back into the project.</li>
+<li><code>core.fsmonitor=false</code> requires modern Git. Git 2.35.1 and older may interpret <code>false</code> as a hook pathname; keep every wrapped Git installation patched.</li>
+<li>Command-scope recursion settings disable ordinary defaults, but a per-submodule <code>submodule.&lt;name&gt;.fetchRecurseSubmodules</code> setting can still take priority. Strict fetch isolation requires an operator-owned launcher that always injects <code>--no-recurse-submodules</code>; current wraptool policy cannot force a flag to be present.</li>
+<li><code>core.alternateRefsCommand=/usr/bin/false</code> prevents repository config from selecting a shell command to enumerate refs from object alternates. Repositories that depend on such a command may fail and should be handled in the container.</li>
+<li><code>--upload-pack</code> and <code>--receive-pack</code> are explicit denies because they let the client name an arbitrary executable on the server side — harmless for typical clients, but unnecessary attack surface. Local <code>remote.&lt;name&gt;.uploadpack</code> and <code>remote.&lt;name&gt;.receivepack</code> can request the same behavior, so the SSH transport wrapper must permit only expected Git service commands.</li>
+</ul>
+<div class="callout callout-style-default callout-important callout-titled" title="Push policy still needs server protection">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Important</span>Push policy still needs server protection
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Wraptool currently limits positional argument count, not positional content. A caller can therefore supply force (<code>+src:dst</code>) or deletion (<code>:dst</code>) refspecs, and repository config can set <code>remote.&lt;name&gt;.mirror=true</code>. <code>deny_flags</code> does not neutralize those forms. Protect important branches on the remote server. If client-side prevention is also required, expose push through an operator-owned launcher that fixes the remote, rejects force/delete refspecs, and overrides that remote’s mirror, upload-pack, and receive-pack settings. Do not describe the generic policy above as a complete non-destructive push boundary.</p>
+</div>
+</div>
+<div class="callout callout-style-default callout-warning callout-titled" title="Interim protection, not a complete profile">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Warning</span>Interim protection, not a complete profile
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Wraptool applies <code>tools.git.env</code> to normal tool calls, but current introspection runs the binary without that curated environment. Wraptool also cannot inject fixed arguments before every subcommand or constrain positional remote URLs. Run the server from a trusted directory, keep its ambient Git configuration trusted, and treat this recipe as defense in depth until built-in Git hardening uses one launch path for execution and introspection.</p>
+</div>
+</div>
+</section>
+<section id="constrain-the-remote-destination" class="level2">
+<h2 class="anchored" data-anchor-id="constrain-the-remote-destination">Constrain the remote destination</h2>
+<p>Protocol restriction does not constrain hostnames. A malicious project can change <code>remote.origin.url</code> or use <code>url.*.insteadOf</code> to redirect an allowed fetch or push.</p>
+<p>For SSH, make <code>GIT_SSH_COMMAND</code> an operator-owned wrapper, not merely an unrestricted <code>ssh -F</code> invocation. It should accept only approved host/user patterns, use fixed identities and strict host-key checking, reject <code>ProxyCommand</code> and agent forwarding, and permit only expected Git service commands.</p>
+<p>Do not add <code>https</code> to the SSH recipe’s protocol list. Repository config can select client certificates and keys, cookie files, proxies, extra headers, and per-URL TLS behavior. A separate HTTPS profile must reset repository credential helpers and override every file- and credential-bearing HTTP setting, then add one trusted helper scoped to approved origins. If those invariants cannot be enforced reliably, prefer an authenticated host transport proxy over giving repository-aware Git direct credential access.</p>
+</section>
+<section id="hooks-validation-and-git-lfs" class="level2">
+<h2 class="anchored" data-anchor-id="hooks-validation-and-git-lfs">Hooks, validation, and Git LFS</h2>
+<p>Disabling host-side hooks means project <code>pre-push</code> checks do not run through wraptool. Run validation explicitly in the container or rely on CI before the wrapped push. This makes project code execution visible and keeps it away from host credentials.</p>
+<p>Git LFS needs special handling: its normal <code>pre-push</code> hook uploads LFS objects. Skipping it can push commits whose LFS objects are absent remotely. Either:</p>
+<ul>
+<li>provide an operator-managed read-only hooks directory containing only a trusted LFS <code>pre-push</code> hook that invokes an absolute <code>git-lfs</code> binary; or</li>
+<li>expose a separate constrained <code>git lfs push</code> capability.</li>
+</ul>
+<p>Do not restore the project’s general hooks directory merely to support LFS.</p>
+</section>
+<section id="cve-awareness" class="level2">
+<h2 class="anchored" data-anchor-id="cve-awareness">CVE awareness</h2>
+<p>Wrappers do not make <code>git</code> itself secure. Keep the wrapped <code>git</code> binary patched. The advisories below are worth tracking because each one ends in code execution on a clone or local operation against a hostile tree:</p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>CVE</th>
+<th>Fixed in</th>
+<th>One-liner</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><a href="https://nvd.nist.gov/vuln/detail/CVE-2022-24765">CVE-2022-24765</a></td>
+<td>2.35.2</td>
+<td>Bare-repo discovery in foreign-owned dir; introduced <code>safe.directory</code>.</td>
+</tr>
+<tr class="even">
+<td><a href="https://github.com/git/git/security/advisories/GHSA-j342-m5hw-rr3v">CVE-2022-29187</a></td>
+<td>2.30.5 / 2.37.1</td>
+<td>Bypass of CVE-2022-24765 for root in self-owned dir.</td>
+</tr>
+<tr class="odd">
+<td><a href="https://github.com/git/git/security/advisories/GHSA-mvxm-9j2h-qjx7">CVE-2022-39253</a></td>
+<td>2.30.6 / 2.38.1</td>
+<td>Symlinks in <code>--local</code> clone leak files into clone.</td>
+</tr>
+<tr class="even">
+<td><a href="https://github.com/git/git/security/advisories/GHSA-8h77-4q3w-gfgv">CVE-2024-32002</a></td>
+<td>2.39.4 / 2.40.2 / 2.41.1 / 2.42.2 / 2.43.4 / 2.44.1 / 2.45.1</td>
+<td>Submodule writes into <code>.git/hooks</code> via symlink on case-insensitive FS → RCE on recursive clone.</td>
+</tr>
+<tr class="odd">
+<td><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-32004">CVE-2024-32004</a></td>
+<td>same fixed set</td>
+<td>Crafted local clone triggers hooks → RCE on multi-user host.</td>
+</tr>
+<tr class="even">
+<td><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-32020">CVE-2024-32020</a></td>
+<td>same fixed set</td>
+<td>Local clone hardlinks across UIDs → other user can rewrite objects.</td>
+</tr>
+<tr class="odd">
+<td><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-32021">CVE-2024-32021</a></td>
+<td>same fixed set</td>
+<td>Local-clone symlink TOCTOU hardlinks arbitrary readable files.</td>
+</tr>
+<tr class="even">
+<td><a href="https://nvd.nist.gov/vuln/detail/CVE-2024-32465">CVE-2024-32465</a></td>
+<td>same fixed set</td>
+<td><code>.zip</code>-archived clone bypasses CVE-2024-32002/4 fixes.</td>
+</tr>
+<tr class="odd">
+<td>CVE-2024-50349 / 52006</td>
+<td>2.48.1</td>
+<td>Credential-helper ANSI/CR injection.</td>
+</tr>
+<tr class="even">
+<td><a href="https://github.blog/open-source/git/git-security-vulnerabilities-announced-6/">CVE-2025-48384</a></td>
+<td>2.43.7 / 2.44.4 / 2.45.4 / 2.46.4 / 2.47.3 / 2.48.2 / 2.49.1 / 2.50.1</td>
+<td>CR-mismatch in config read vs write → checkout to wrong path → RCE on recursive clone. <strong>Listed in CISA KEV (Aug 2025), actively exploited.</strong></td>
+</tr>
+<tr class="odd">
+<td>CVE-2025-48385 / 48386</td>
+<td>same fixed set</td>
+<td>Bundle URI validation bypass; Wincred buffer overflow (Windows).</td>
+</tr>
+<tr class="even">
+<td>CVE-2023-25652 / 29007</td>
+<td>2.40.1</td>
+<td><code>git apply --reject</code> arbitrary write; submodule URL config injection → RCE.</td>
+</tr>
+</tbody>
+</table>
+<p>Aggregated upstream announcements live at the <a href="https://github.blog/open-source/git/">GitHub blog “Git security vulnerabilities announced” series</a>.</p>
+</section>
+<section id="scope-what-wraptool-does-and-does-not-enforce" class="level2">
+<h2 class="anchored" data-anchor-id="scope-what-wraptool-does-and-does-not-enforce">Scope: what wraptool does and does not enforce</h2>
+<p>Today, wraptool enforces <strong>policy and credential isolation at the command boundary</strong>. It does not:</p>
+<ul>
+<li>inspect repository configuration before launching <code>git</code>,</li>
+<li>reject <code>.git/config</code> containing <code>core.fsmonitor</code>,</li>
+<li>run static analysis on <code>.gitattributes</code>,</li>
+<li>prevent <code>git</code> from auto-discovering a bare repository in a parent directory of the working tree,</li>
+<li>apply mandatory Git command-scope configuration of its own,</li>
+<li>constrain remote destination hosts, or</li>
+<li>apply the configured tool environment to introspection.</li>
+</ul>
+<p>The fifth point has one deliberate exception. The starter config that <code>wraptool up</code> and <code>wraptool serve</code> scaffold on first run ships <code>GIT_CONFIG_COUNT</code> and the indexed <code>GIT_CONFIG_KEY_n</code> / <code>GIT_CONFIG_VALUE_n</code> pairs in the git tool’s <code>env</code>, pinning <code>core.hooksPath</code> at an empty directory and <code>core.fsmonitor</code> to <code>false</code>. Those are command scope, so they outrank a hostile <code>.git/config</code>, and they close the hook and fsmonitor execution channels for the wrapped <code>git pull</code> that the scaffold allows.</p>
+<p>That is configuration, not enforcement, and the difference decides who is covered:</p>
+<ul>
+<li>A configuration written before this shipped does not have the settings. <code>EnsureConfigFile</code> never overwrites an existing file, so upgrading wraptool does not add them to a config you already have — copy them in by hand.</li>
+<li>An operator can delete them. Nothing re-adds them and nothing checks for them at load.</li>
+<li>An explicit <code>git -c key=value</code> still outranks them, which is why <code>-c</code>, <code>--config-env</code>, <code>-C</code>, <code>--git-dir</code>, and <code>--work-tree</code> must never appear in an allow rule’s flags.</li>
+<li>They close the hook and fsmonitor channels only — not <code>.gitattributes</code> filter and merge drivers, and not bare-repository discovery.</li>
+</ul>
+<p>The split execution model is the primary boundary. The environment recipe closes known execution channels for normal wrapped calls, but is not proof against every Git integration or future vulnerability. Built-in enforcement is planned in <code>design/git-execution-hardening.md</code>.</p>
+</section>
+<section id="references" class="level2">
+<h2 class="anchored" data-anchor-id="references">References</h2>
+<ul>
+<li><a href="https://git-scm.com/docs/git-config"><code>git-config(1)</code></a> — authoritative reference for every setting named on this page.</li>
+<li><a href="https://git-scm.com/docs/git#_security"><code>git(1)</code> security section</a> — upstream trust model for configuration, hooks, and untrusted <code>.git</code> directories.</li>
+<li><a href="https://git-scm.com/docs/githooks"><code>githooks(5)</code></a> — which events fire which hooks and when.</li>
+<li><a href="https://git-scm.com/docs/gitattributes"><code>gitattributes(5)</code></a> — filters, external diff drivers, and merge drivers selected by tracked files.</li>
+<li><a href="https://git-scm.com/docs/gitcredentials"><code>gitcredentials(7)</code></a> — helper command execution and empty-value helper reset.</li>
+<li><a href="https://git-scm.com/docs/git-remote-ext"><code>git-remote-ext(1)</code></a> — why <code>protocol.ext.allow</code> matters.</li>
+<li><a href="https://github.com/justinsteven/advisories/blob/main/2022_git_buried_bare_repos_and_fsmonitor_various_abuses.md">Justin Steven, “Buried bare repos and <code>core.fsmonitor</code> various abuses” (2022)</a> — in-depth writeup of the bare-repo + <code>fsmonitor</code> attack chain.</li>
+<li><a href="https://github.blog/open-source/git/">GitHub Blog: Git security vulnerabilities announced (series)</a> — upstream advisories for each batch of CVEs.</li>
+<li>NVD CVE lookups: <code>https://nvd.nist.gov/vuln/detail/CVE-YYYY-NNNNN</code>.</li>
+</ul>
+
+
+</section>
+
+<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a></main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/pti\.pages\.snamellit\.com\/wraptool\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+            // target, if specified
+            link.setAttribute("target", "_blank");
+            if (link.getAttribute("rel") === null) {
+              link.setAttribute("rel", "noopener");
+            }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="./isolated-environments.html" class="pagination-link" aria-label="Isolated Development Environments with wraptool">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Isolated Development Environments with wraptool</span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="./comparison.html" class="pagination-link" aria-label="wraptool vs. Docker Sandboxes">
+        <span class="nav-page-text">wraptool vs.&nbsp;Docker Sandboxes</span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+<p>Wraptool is GPLv3-licensed software.</p>
+</div>   
+    <div class="nav-footer-center">
+      &nbsp;
+    </div>
+    <div class="nav-footer-right">
+      <ul class="footer-items list-unstyled">
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool">
+<p>Source</p>
+</a>
+  </li>  
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool/issues">
+<p>Issues</p>
+</a>
+  </li>  
+</ul>
+    </div>
+  </div>
+</footer>
+
+
+
+
+<script src="site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

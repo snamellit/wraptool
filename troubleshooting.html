@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Troubleshooting – wraptool</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<link href="./contributing.html" rel="next">
+<link href="./harness-pool.html" rel="prev">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-de86e1e1b5352011120a2621addc2162.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-b74a66b68bf9cdfac717fed95312c151.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="dark">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": true,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">wraptool</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="./index.html" aria-current="page"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-getting-started" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Getting Started</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-getting-started">    
+        <li>
+    <a class="dropdown-item" href="./getting-started.html">
+ <span class="dropdown-text">Getting started</span></a>
+  </li>  
+        <li><hr class="dropdown-divider"></li>
+        <li>
+    <a class="dropdown-item" href="./platform-linux.html">
+ <span class="dropdown-text">Linux setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-guix.html">
+ <span class="dropdown-text">Guix setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-macos.html">
+ <span class="dropdown-text">macOS setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-windows.html">
+ <span class="dropdown-text">Windows setup</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Reference</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-reference">    
+        <li>
+    <a class="dropdown-item" href="./installation.html">
+ <span class="dropdown-text">Installation</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./configuration.html">
+ <span class="dropdown-text">Configuration reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./cli-reference.html">
+ <span class="dropdown-text">CLI reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./mcp-integration.html">
+ <span class="dropdown-text">MCP integration</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./doctor.html">
+ <span class="dropdown-text">wraptool doctor</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./terminology.html">
+ <span class="dropdown-text">Terminology</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./security.html"> 
+<span class="menu-text">Security</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-operations" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Operations</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-operations">    
+        <li>
+    <a class="dropdown-item" href="./examples.html">
+ <span class="dropdown-text">Practical examples</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./troubleshooting.html">
+ <span class="dropdown-text">Troubleshooting</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./hot-reload.html">
+ <span class="dropdown-text">Hot-reload &amp; capability requests</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./web-ui.html">
+ <span class="dropdown-text">Review UI</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./harness-pool.html">
+ <span class="dropdown-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </li>  
+    </ul>
+  </li>
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool"> <i class="bi bi-git" role="img" aria-label="Wraptool source repository">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./examples.html">Operate</a></li><li class="breadcrumb-item"><a href="./troubleshooting.html">Troubleshooting</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The privilege line for agentic development</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Start</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Getting started</span></a>
+  </div>
+</li>
+          <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false">
+ <span class="menu-text">Platform setup</span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth2 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-linux.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Linux setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-guix.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Guix setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-macos.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">macOS setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-windows.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Windows setup</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./configuration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Configuration reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cli-reference.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">CLI reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./mcp-integration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">MCP integration</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./doctor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool doctor</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./terminology.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Terminology</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Trust boundary</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./architecture.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Architecture and trust boundaries</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./security.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Security model</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./isolated-environments.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Isolated Development Environments with wraptool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./git-hardening.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hardening <code>git</code> as a wrapped tool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./comparison.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool vs.&nbsp;Docker Sandboxes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Operate</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./examples.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Practical examples</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./hot-reload.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hot-reload &amp; capability requests</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./web-ui.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Review UI</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./harness-pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./troubleshooting.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">Troubleshooting</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Project</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./contributing.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Contributing</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./releases.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Releases and changes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#up-cannot-find-or-start-the-server" id="toc-up-cannot-find-or-start-the-server" class="nav-link active" data-scroll-target="#up-cannot-find-or-start-the-server"><code>up</code> cannot find or start the server</a></li>
+  <li><a href="#container-connect" id="toc-container-connect" class="nav-link" data-scroll-target="#container-connect">The container cannot connect</a>
+  <ul class="collapse">
+  <li><a href="#the-connection-times-out" id="toc-the-connection-times-out" class="nav-link" data-scroll-target="#the-connection-times-out">The connection times out</a></li>
+  </ul></li>
+  <li><a href="#tools-appear-stale-after-an-edit" id="toc-tools-appear-stale-after-an-edit" class="nav-link" data-scroll-target="#tools-appear-stale-after-an-edit">Tools appear stale after an edit</a></li>
+  <li><a href="#a-flag-has-the-wrong-mcp-type" id="toc-a-flag-has-the-wrong-mcp-type" class="nav-link" data-scroll-target="#a-flag-has-the-wrong-mcp-type">A flag has the wrong MCP type</a></li>
+  <li><a href="#a-wrapped-command-cannot-find-a-helper" id="toc-a-wrapped-command-cannot-find-a-helper" class="nav-link" data-scroll-target="#a-wrapped-command-cannot-find-a-helper">A wrapped command cannot find a helper</a></li>
+  <li><a href="#guix-was-not-selected" id="toc-guix-was-not-selected" class="nav-link" data-scroll-target="#guix-was-not-selected">Guix was not selected</a></li>
+  <li><a href="#down-did-not-stop-a-guix-environment" id="toc-down-did-not-stop-a-guix-environment" class="nav-link" data-scroll-target="#down-did-not-stop-a-guix-environment"><code>down</code> did not stop a Guix environment</a></li>
+  <li><a href="#request-approval-did-not-change-policy" id="toc-request-approval-did-not-change-policy" class="nav-link" data-scroll-target="#request-approval-did-not-change-policy">Request approval did not change policy</a></li>
+  <li><a href="#a-harness-install-or-update-seems-stuck" id="toc-a-harness-install-or-update-seems-stuck" class="nav-link" data-scroll-target="#a-harness-install-or-update-seems-stuck">A harness install or update seems stuck</a></li>
+  <li><a href="#realize-fails-with-cache-input-stream-was-empty" id="toc-realize-fails-with-cache-input-stream-was-empty" class="nav-link" data-scroll-target="#realize-fails-with-cache-input-stream-was-empty">Realize fails with <code>Cache input stream was empty</code></a></li>
+  <li><a href="#doctor-reports-a-symlinked-config" id="toc-doctor-reports-a-symlinked-config" class="nav-link" data-scroll-target="#doctor-reports-a-symlinked-config"><code>doctor</code> reports a symlinked config</a></li>
+  <li><a href="#doctor-reports-the-servers-bind-differs-from-the-config" id="toc-doctor-reports-the-servers-bind-differs-from-the-config" class="nav-link" data-scroll-target="#doctor-reports-the-servers-bind-differs-from-the-config"><code>doctor</code> reports the server’s bind differs from the config</a></li>
+  <li><a href="#doctor-reports-a-stale-policy" id="toc-doctor-reports-a-stale-policy" class="nav-link" data-scroll-target="#doctor-reports-a-stale-policy"><code>doctor</code> reports a stale policy</a></li>
+  <li><a href="#doctor-reports-a-token-file-problem" id="toc-doctor-reports-a-token-file-problem" class="nav-link" data-scroll-target="#doctor-reports-a-token-file-problem"><code>doctor</code> reports a token file problem</a></li>
+  <li><a href="#doctor-reports-a-writable-tool-binary-path" id="toc-doctor-reports-a-writable-tool-binary-path" class="nav-link" data-scroll-target="#doctor-reports-a-writable-tool-binary-path"><code>doctor</code> reports a writable tool binary path</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./examples.html">Operate</a></li><li class="breadcrumb-item"><a href="./troubleshooting.html">Troubleshooting</a></li></ol></nav>
+<div class="quarto-title">
+<h1 class="title">Troubleshooting</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="up-cannot-find-or-start-the-server" class="level2">
+<h2 class="anchored" data-anchor-id="up-cannot-find-or-start-the-server"><code>up</code> cannot find or start the server</h2>
+<p>Validate the same config path first:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> config validate</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server status</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>A missing config is not the cause: <code>up</code> scaffolds a starter one and continues. The failures that do stop it are a config that exists but does not load — invalid YAML, or a value the validator rejects — and an <code>mcp.transport</code> that is not <code>sse</code>, which its server orchestration requires. <code>wraptool config validate</code> reports both. Detached-server logs are under the wraptool XDG data directory, normally <code>~/.local/share/wraptool/logs/serve.log</code> on Linux. Treat the log as sensitive because it can contain the admin click-through token.</p>
+</section>
+<section id="container-connect" class="level2">
+<h2 class="anchored" data-anchor-id="container-connect">The container cannot connect</h2>
+<p>Container <code>127.0.0.1</code> is not the host’s loopback. Let <code>wraptool up</code> and the Dev Container feature detect the gateway, or bind the MCP server to a reachable gateway/wildcard address and require <code>auth_token_file</code>.</p>
+<p>Confirm the client uses <code>/sse</code> for legacy SSE or <code>/mcp</code> for Streamable HTTP. Antigravity generation targets <code>/mcp</code> automatically.</p>
+<section id="the-connection-times-out" class="level3">
+<h3 class="anchored" data-anchor-id="the-connection-times-out">The connection times out</h3>
+<p>A refused connection means nothing listens on that address. A timeout means a host firewall drops the packets. Distributions that deny all incoming traffic by default, such as Omarchy with <code>ufw</code>, do this to the docker bridge.</p>
+<ol type="1">
+<li><p>Test the server port from inside the container:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">curl</span> <span class="at">-sv</span> <span class="at">-m</span> 5 http://172.17.0.1:8717/sse</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div></li>
+<li><p>On the host, check the address the server listens on:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">ss</span> <span class="at">-ltn</span> <span class="kw">|</span> <span class="fu">grep</span> 8717</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Expect <code>0.0.0.0:8717</code> or the bridge address. The container cannot reach <code>127.0.0.1:8717</code>.</p></li>
+<li><p>On the host, allow the server port on the docker bridge:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">sudo</span> ufw allow in on docker0 to 172.17.0.1 port 8717 proto tcp</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div></li>
+<li><p>In the harness, reconnect the MCP server. In <code>claude</code>, run <code>/mcp reconnect wraptool</code>.</p></li>
+</ol>
+<p>The rule opens only the server port, only from containers on the bridge. Change <code>docker0</code>, <code>172.17.0.1</code> and <code>8717</code> if your bridge or <code>mcp.listen</code> port differs. With another firewall, allow the same interface, address and port.</p>
+</section>
+</section>
+<section id="tools-appear-stale-after-an-edit" class="level2">
+<h2 class="anchored" data-anchor-id="tools-appear-stale-after-an-edit">Tools appear stale after an edit</h2>
+<p>An invalid edit is rejected and the old policy remains active. Check server logs and run:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> config validate</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Clients that do not honor <code>notifications/tools/list_changed</code> need to reconnect. Listener, auth, CWD-root, admin, and request-log changes require a server restart.</p>
+</section>
+<section id="a-flag-has-the-wrong-mcp-type" class="level2">
+<h2 class="anchored" data-anchor-id="a-flag-has-the-wrong-mcp-type">A flag has the wrong MCP type</h2>
+<p>Set an explicit <code>flag_constraints.&lt;flag&gt;.type</code> in policy. Introspection is syntactic and can be ambiguous when CLI help omits value placeholders. You can also supply an <code>introspection.overrides_file</code>; changing it, the binary, policy, or wraptool binary invalidates the relevant cache stamp.</p>
+</section>
+<section id="a-wrapped-command-cannot-find-a-helper" class="level2">
+<h2 class="anchored" data-anchor-id="a-wrapped-command-cannot-find-a-helper">A wrapped command cannot find a helper</h2>
+<p>Wraptool prepends the configured binary’s directory to the server’s inherited <code>PATH</code>. Start the server with a <code>PATH</code> containing genuine runtime dependencies, or use absolute tool-specific configuration. Other parent environment variables are not inherited, except host <code>HOME</code>; declare required values in <code>env</code> or <code>env_files</code>.</p>
+</section>
+<section id="guix-was-not-selected" class="level2">
+<h2 class="anchored" data-anchor-id="guix-was-not-selected">Guix was not selected</h2>
+<p><code>--runtime=auto</code> chooses Guix only when both <code>guix</code> is on <code>PATH</code> and the worktree contains <code>manifest.scm</code>. Otherwise it chooses Dev Container. Use <code>--runtime=guix</code> to request Guix explicitly and receive the direct failure.</p>
+</section>
+<section id="down-did-not-stop-a-guix-environment" class="level2">
+<h2 class="anchored" data-anchor-id="down-did-not-stop-a-guix-environment"><code>down</code> did not stop a Guix environment</h2>
+<p><code>down</code> manages persistent Docker/Dev Containers. A Guix container exists only while its shell command runs. Also note that <code>up --shell=never</code> on Guix realizes the profile but does not leave a container running.</p>
+</section>
+<section id="request-approval-did-not-change-policy" class="level2">
+<h2 class="anchored" data-anchor-id="request-approval-did-not-change-policy">Request approval did not change policy</h2>
+<p><code>requests approve ID --apply</code> records approval before editing the config. A deny conflict, unknown tool, or invalid resulting config can leave the request marked approved without changing policy. Correct the YAML and rely on hot reload, or submit/review a new request.</p>
+</section>
+<section id="a-harness-install-or-update-seems-stuck" class="level2">
+<h2 class="anchored" data-anchor-id="a-harness-install-or-update-seems-stuck">A harness install or update seems stuck</h2>
+<p>A harness download can be large. A <code>claude</code> update fetches several hundred megabytes. wraptool prints each download and its progress on stderr:</p>
+<pre class="text"><code>fetching @anthropic-ai/claude-code-linux-x64 (102.3 MiB)
+  @anthropic-ai/claude-code-linux-x64: 41.0 MiB / 102.3 MiB (40%, 862.4 KiB/s)</code></pre>
+<p>If the progress lines keep moving, wait. If you must stop, press Ctrl-C. Run the same command again later. Finished downloads are reused, not fetched again.</p>
+</section>
+<section id="realize-fails-with-cache-input-stream-was-empty" class="level2">
+<h2 class="anchored" data-anchor-id="realize-fails-with-cache-input-stream-was-empty">Realize fails with <code>Cache input stream was empty</code></h2>
+<p>Older wraptool versions could empty a downloaded npm tarball while realizing a harness. The next realize then fails with <code>npm error code ENODATA</code>.</p>
+<ol type="1">
+<li>Upgrade wraptool.</li>
+<li>Run <code>wraptool harness sync &lt;harness&gt;</code>.</li>
+</ol>
+<p><code>sync</code> downloads the damaged file again and realizes the harness. Do not use <code>update</code> for this repair. When the lock is already current, <code>update</code> does not download anything.</p>
+</section>
+<section id="doctor-reports-a-symlinked-config" class="level2">
+<h2 class="anchored" data-anchor-id="doctor-reports-a-symlinked-config"><code>doctor</code> reports a symlinked config</h2>
+<p>Run <code>wraptool doctor</code>. If it reports <code>config.symlinked</code>, hot-reload will not see edits you make to the file.</p>
+<p>Hot-reload resolves <code>config.yaml</code>’s path with <code>filepath.Abs</code>, not through the symlink, then watches the <strong>link’s</strong> directory. A common dotfiles layout — <code>~/.config/wraptool/config.yaml</code> symlinked to a file tracked elsewhere — puts the real file in a different directory, so edits to it never trigger a reload. The server keeps enforcing whatever policy it last loaded.</p>
+<p>Do one of the following after each edit:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="bu">kill</span> <span class="at">-HUP</span> <span class="va">$(</span><span class="fu">pidof</span> wraptool<span class="va">)</span>   <span class="co"># reload now</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Or restart the server:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server stop</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Or store <code>config.yaml</code> directly at the configured path instead of symlinking it, so the watch and the file agree.</p>
+</section>
+<section id="doctor-reports-the-servers-bind-differs-from-the-config" class="level2">
+<h2 class="anchored" data-anchor-id="doctor-reports-the-servers-bind-differs-from-the-config"><code>doctor</code> reports the server’s bind differs from the config</h2>
+<p>Run <code>wraptool doctor</code>. If it reports <code>runtime.bind-divergence</code>, the running server is not listening where <code>config.yaml</code> says.</p>
+<p><code>wraptool up</code>’s Dev Container runtime widens a loopback <code>mcp.listen</code> to <code>0.0.0.0</code> in memory before starting the server, so the container can reach it, and never writes that change back to <code>config.yaml</code>. Reading the file alone shows a safe loopback bind while the server actually listens off-host.</p>
+<p>There is a second cause, and doctor says so in the finding itself: the recorded server state does not include the configuration it was started from, so the check compares against whichever configuration the <em>running</em> server used. A shared server started by <code>wraptool up</code> from your XDG configuration, audited with <code>wraptool doctor --config ./project.yaml</code>, diverges by design.</p>
+<p>Check the severity doctor gave the finding:</p>
+<ul>
+<li><p><strong>FAIL</strong> — the running server is an unauthenticated listener reachable off-host. Fix this one: anyone who can route to that port reaches the wrapped tools. This shape means the running process predates the current auth-by-default behavior — an <code>sse</code> listener now auto-provisions <code>mcp.auth_token_file</code> when unset, so a fresh start is never unauthenticated. Restart the server so it comes up with a provisioned token:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server stop</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>If a client then gets 401, its generated config still carries the old (or no) token: re-run <code>wraptool init</code> for that harness, or <code>wraptool up</code>, which rewrites it.</p></li>
+<li><p><strong>warn</strong> — everything else, including <code>up</code>’s Dev Container adjustment (loopback widened to <code>0.0.0.0</code> on the same port, with a token configured), which is expected and needs no action.</p></li>
+</ul>
+<p>For a warn, read the address doctor prints before restarting anything. If the running server was started from the configuration you are auditing, restart it so it picks up the configured bind:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server stop</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>If it was started from a different configuration, the divergence is expected and stopping the server would interrupt whatever is using it. Audit that server with the configuration it was started from instead.</p>
+</section>
+<section id="doctor-reports-a-stale-policy" class="level2">
+<h2 class="anchored" data-anchor-id="doctor-reports-a-stale-policy"><code>doctor</code> reports a stale policy</h2>
+<p>Run <code>wraptool doctor</code>. If it reports <code>runtime.stale-policy</code>, the server is enforcing an older policy than the one on disk.</p>
+<p>A reload advances the server’s recorded load time only when it succeeds. If an earlier edit had a syntax error or failed validation, the server logged the failure and kept the previous policy — but the file on disk is clean now, so reading it alone looks fine. <code>doctor</code> catches the mismatch by comparing the config file’s modification time to the server’s last successful load.</p>
+<p>Check the server log for the reload error, fix the configuration, then reload:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="bu">kill</span> <span class="at">-HUP</span> <span class="va">$(</span><span class="fu">pidof</span> wraptool<span class="va">)</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="doctor-reports-a-token-file-problem" class="level2">
+<h2 class="anchored" data-anchor-id="doctor-reports-a-token-file-problem"><code>doctor</code> reports a token file problem</h2>
+<p>Run <code>wraptool doctor</code>. Two checks cover <code>mcp.auth_token_file</code> and <code>admin.auth_token_file</code>.</p>
+<p><code>exposure.token-perms</code> (<strong>FAIL</strong>) fires when the token file has any group or other permission bit set — anyone else on the host can read the bearer credential. Fix the permissions:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="fu">chmod</span> 600 /path/to/token-file</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>exposure.token-weak</code> (<strong>warn</strong>) fires when the token’s content is empty, under 32 bytes, or matches a known placeholder such as <code>changeme</code> or <code>secret</code>. Replace it with a long random value:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">openssl</span> rand <span class="at">-hex</span> 32 <span class="op">&gt;</span> /path/to/token-file</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Restart the server after replacing a token. wraptool reads the token file once at startup and does not watch it for changes.</p>
+</section>
+<section id="doctor-reports-a-writable-tool-binary-path" class="level2">
+<h2 class="anchored" data-anchor-id="doctor-reports-a-writable-tool-binary-path"><code>doctor</code> reports a writable tool binary path</h2>
+<p>Run <code>wraptool doctor</code>. If it reports <code>tools.binary-writable</code>, a configured tool’s binary — or a directory leading to it — is group- or other-writable. Anyone with write access to that path could substitute a different binary for the one wraptool is about to run inside the credential boundary.</p>
+<p>A directory with the sticky bit set, such as Guix’s <code>/gnu/store</code>, is exempt and never produces this finding: the sticky bit already stops anyone but the owner from replacing an entry inside it. If <code>doctor</code> reports <code>tools.binary-writable</code>, the flagged directory is not sticky, and the path is genuinely substitutable.</p>
+<p>The one accepted exception is Intel-macOS Homebrew’s <code>/usr/local</code>, which is group-writable by design; doctor’s own message says so when it applies, and no action is needed there.</p>
+<p>Otherwise, tighten permissions on the flagged directory:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="fu">chmod</span> go-w /path/to/directory</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Or move the tool’s binary to a path with no group- or other-writable segment, and update <code>tools.&lt;name&gt;.binary</code> in the configuration to match.</p>
+
+
+</section>
+
+<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a></main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/pti\.pages\.snamellit\.com\/wraptool\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+            // target, if specified
+            link.setAttribute("target", "_blank");
+            if (link.getAttribute("rel") === null) {
+              link.setAttribute("rel", "noopener");
+            }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="./harness-pool.html" class="pagination-link" aria-label="Harness pool: quarantine and scheduled refresh">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Harness pool: quarantine and scheduled refresh</span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="./contributing.html" class="pagination-link" aria-label="Contributing">
+        <span class="nav-page-text">Contributing</span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+<p>Wraptool is GPLv3-licensed software.</p>
+</div>   
+    <div class="nav-footer-center">
+      &nbsp;
+    </div>
+    <div class="nav-footer-right">
+      <ul class="footer-items list-unstyled">
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool">
+<p>Source</p>
+</a>
+  </li>  
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool/issues">
+<p>Issues</p>
+</a>
+  </li>  
+</ul>
+    </div>
+  </div>
+</footer>
+
+
+
+
+<script src="site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>

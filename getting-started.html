@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.9.38">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Getting started – wraptool</title>
+<style>
+/* Default styles provided by pandoc.
+** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+*/
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="site_libs/quarto-nav/headroom.min.js"></script>
+<script src="site_libs/clipboard/clipboard.min.js"></script>
+<script src="site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="site_libs/quarto-search/fuse.min.js"></script>
+<script src="site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="./">
+<link href="./platform-linux.html" rel="next">
+<link href="./index.html" rel="prev">
+<script src="site_libs/quarto-html/quarto.js" type="module"></script>
+<script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="site_libs/quarto-html/popper.min.js"></script>
+<script src="site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="site_libs/quarto-html/anchor.min.js"></script>
+<link href="site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="site_libs/quarto-html/quarto-syntax-highlighting-dark-de86e1e1b5352011120a2621addc2162.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="site_libs/bootstrap/bootstrap-b74a66b68bf9cdfac717fed95312c151.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="dark">
+<script id="quarto-search-options" type="application/json">{
+  "location": "navbar",
+  "copy-button": true,
+  "collapse-after": 3,
+  "panel-placement": "end",
+  "type": "overlay",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<style>html{ scroll-behavior: smooth; }</style>
+<script src="site_libs/quarto-diagram/mermaid.min.js"></script>
+<script src="site_libs/quarto-diagram/mermaid-init.js"></script>
+<link href="site_libs/quarto-diagram/mermaid.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar docked nav-fixed quarto-light">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+    <nav class="navbar navbar-expand-lg " data-bs-theme="dark">
+      <div class="navbar-container container-fluid">
+      <div class="navbar-brand-container mx-auto">
+    <a class="navbar-brand" href="./index.html">
+    <span class="navbar-title">wraptool</span>
+    </a>
+  </div>
+            <div id="quarto-search" class="" title="Search"></div>
+          <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarCollapse" aria-controls="navbarCollapse" role="menu" aria-expanded="false" aria-label="Toggle navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+  <span class="navbar-toggler-icon"></span>
+</button>
+          <div class="collapse navbar-collapse" id="navbarCollapse">
+            <ul class="navbar-nav navbar-nav-scroll me-auto">
+  <li class="nav-item">
+    <a class="nav-link active" href="./index.html" aria-current="page"> 
+<span class="menu-text">Home</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-getting-started" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Getting Started</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-getting-started">    
+        <li>
+    <a class="dropdown-item" href="./getting-started.html">
+ <span class="dropdown-text">Getting started</span></a>
+  </li>  
+        <li><hr class="dropdown-divider"></li>
+        <li>
+    <a class="dropdown-item" href="./platform-linux.html">
+ <span class="dropdown-text">Linux setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-guix.html">
+ <span class="dropdown-text">Guix setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-macos.html">
+ <span class="dropdown-text">macOS setup</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./platform-windows.html">
+ <span class="dropdown-text">Windows setup</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-reference" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Reference</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-reference">    
+        <li>
+    <a class="dropdown-item" href="./installation.html">
+ <span class="dropdown-text">Installation</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./configuration.html">
+ <span class="dropdown-text">Configuration reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./cli-reference.html">
+ <span class="dropdown-text">CLI reference</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./mcp-integration.html">
+ <span class="dropdown-text">MCP integration</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./doctor.html">
+ <span class="dropdown-text">wraptool doctor</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./terminology.html">
+ <span class="dropdown-text">Terminology</span></a>
+  </li>  
+    </ul>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link" href="./security.html"> 
+<span class="menu-text">Security</span></a>
+  </li>  
+  <li class="nav-item dropdown ">
+    <a class="nav-link dropdown-toggle" href="#" id="nav-menu-operations" role="link" data-bs-toggle="dropdown" aria-expanded="false">
+ <span class="menu-text">Operations</span>
+    </a>
+    <ul class="dropdown-menu" aria-labelledby="nav-menu-operations">    
+        <li>
+    <a class="dropdown-item" href="./examples.html">
+ <span class="dropdown-text">Practical examples</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./troubleshooting.html">
+ <span class="dropdown-text">Troubleshooting</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./hot-reload.html">
+ <span class="dropdown-text">Hot-reload &amp; capability requests</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./web-ui.html">
+ <span class="dropdown-text">Review UI</span></a>
+  </li>  
+        <li>
+    <a class="dropdown-item" href="./harness-pool.html">
+ <span class="dropdown-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </li>  
+    </ul>
+  </li>
+</ul>
+            <ul class="navbar-nav navbar-nav-scroll ms-auto">
+  <li class="nav-item compact">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool"> <i class="bi bi-git" role="img" aria-label="Wraptool source repository">
+</i> 
+<span class="menu-text"></span></a>
+  </li>  
+</ul>
+          </div> <!-- /navcollapse -->
+            <div class="quarto-navbar-tools">
+</div>
+      </div> <!-- /container-fluid -->
+    </nav>
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./getting-started.html">Start</a></li><li class="breadcrumb-item"><a href="./getting-started.html">Getting started</a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article page-navbar">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation docked overflow-auto">
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The privilege line for agentic development</span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Start</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./getting-started.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text">Getting started</span></a>
+  </div>
+</li>
+          <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false">
+ <span class="menu-text">Platform setup</span></a>
+          <a class="sidebar-item-toggle text-start collapsed" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="false" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth2 ">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-linux.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Linux setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-guix.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Guix setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-macos.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">macOS setup</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./platform-windows.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Windows setup</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./installation.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Reference</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./configuration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Configuration reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./cli-reference.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">CLI reference</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./mcp-integration.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">MCP integration</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./doctor.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool doctor</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./terminology.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Terminology</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Trust boundary</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./architecture.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Architecture and trust boundaries</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./security.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Security model</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./isolated-environments.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Isolated Development Environments with wraptool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./git-hardening.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hardening <code>git</code> as a wrapped tool</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./comparison.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">wraptool vs.&nbsp;Docker Sandboxes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Operate</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./examples.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Practical examples</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./hot-reload.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Hot-reload &amp; capability requests</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./web-ui.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Review UI</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./harness-pool.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Harness pool: quarantine and scheduled refresh</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./troubleshooting.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Troubleshooting</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Project</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./contributing.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Contributing</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./releases.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Releases and changes</span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">On this page</h2>
+   
+  <ul>
+  <li><a href="#the-recommended-path-wraptool-up" id="toc-the-recommended-path-wraptool-up" class="nav-link active" data-scroll-target="#the-recommended-path-wraptool-up">The recommended path: <code>wraptool up</code></a></li>
+  <li><a href="#build-manual-path" id="toc-build-manual-path" class="nav-link" data-scroll-target="#build-manual-path">1. Build (manual path)</a></li>
+  <li><a href="#create-a-config" id="toc-create-a-config" class="nav-link" data-scroll-target="#create-a-config">2. Create a config</a></li>
+  <li><a href="#start-the-server" id="toc-start-the-server" class="nav-link" data-scroll-target="#start-the-server">3. Start the server</a></li>
+  <li><a href="#connect-your-coding-agent" id="toc-connect-your-coding-agent" class="nav-link" data-scroll-target="#connect-your-coding-agent">4. Connect your coding agent</a></li>
+  <li><a href="#smoke-test" id="toc-smoke-test" class="nav-link" data-scroll-target="#smoke-test">5. Smoke test</a></li>
+  <li><a href="#one-command-per-project-wraptool-up" id="toc-one-command-per-project-wraptool-up" class="nav-link" data-scroll-target="#one-command-per-project-wraptool-up">6. One command per project: <code>wraptool up</code></a>
+  <ul class="collapse">
+  <li><a href="#which-container-runtime" id="toc-which-container-runtime" class="nav-link" data-scroll-target="#which-container-runtime">Which container runtime?</a></li>
+  <li><a href="#guix-convenience-versus-isolation" id="toc-guix-convenience-versus-isolation" class="nav-link" data-scroll-target="#guix-convenience-versus-isolation">Guix: convenience versus isolation</a></li>
+  <li><a href="#wiring-the-container-the-wraptool-feature" id="toc-wiring-the-container-the-wraptool-feature" class="nav-link" data-scroll-target="#wiring-the-container-the-wraptool-feature">Wiring the container: the <code>wraptool</code> feature</a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="./getting-started.html">Start</a></li><li class="breadcrumb-item"><a href="./getting-started.html">Getting started</a></li></ol></nav>
+<div class="quarto-title">
+<h1 class="title">Getting started</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<div class="callout callout-style-default callout-tip callout-titled" title="Just want the shortest path for your OS?">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Tip</span>Just want the shortest path for your OS?
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>Follow the focused platform guide, then come back here for the full model: <a href="./platform-linux.html">Linux</a> · <a href="./platform-guix.html">Guix</a> · <a href="./platform-macos.html">macOS</a> · <a href="./platform-windows.html">Windows</a>. Each covers the prerequisites, install, and — importantly — <strong>where your config file lives on that OS</strong> (macOS in particular puts it under <code>~/Library/Application Support</code>, not <code>~/.config</code>).</p>
+</div>
+</div>
+<section id="the-recommended-path-wraptool-up" class="level2">
+<h2 class="anchored" data-anchor-id="the-recommended-path-wraptool-up">The recommended path: <code>wraptool up</code></h2>
+<p>Once wraptool is installed, you don’t wire anything by hand. In any git repo:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb1"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>That one command starts the shared server (auto-generating the auth token), <strong>auto-provisions your coding agent’s MCP config</strong> with the connection URL and <code>Authorization</code> header, brings up an <strong>isolated container</strong> (no credentials), and drops you into a shell. Bare <code>wraptool</code> in a repo does the same. Full detail in <a href="#one-command-per-project-wraptool-up">§6 below</a>.</p>
+<p><code>up</code> needs <strong>nothing up front</strong>. If no config exists at the resolved path it writes a commented starter there first, logs where it landed, and carries on — it never overwrites a config you already have. That starter is deny-by-default and allows exactly one thing, <code>git pull</code>, so the very first run comes up working and already demonstrates a credentialed action the AI cannot perform itself.</p>
+<p>Editing that policy to expose the tools you actually want is the next step, not a prerequisite: see <a href="#create-a-config">Create a config</a>.</p>
+<p>The sections below are the <strong>manual / from-scratch</strong> path — how the pieces fit when you want to build, configure, and connect a harness yourself. If you just ran <code>up</code>, skip to <a href="#one-command-per-project-wraptool-up">§6</a> for its details, and read <a href="#create-a-config">§2</a> when you are ready to widen the policy.</p>
+</section>
+<section id="build-manual-path" class="level2">
+<h2 class="anchored" data-anchor-id="build-manual-path">1. Build (manual path)</h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb2"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">go</span> build <span class="at">-o</span> wraptool .</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>On Guix systems, the bundled manifest gives you a reproducible toolchain:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb3"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">guix</span> time-machine <span class="at">-C</span> channels.scm <span class="at">--</span> shell <span class="at">-m</span> manifest.scm <span class="at">--</span> go build <span class="at">-o</span> wraptool .</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="create-a-config" class="level2">
+<h2 class="anchored" data-anchor-id="create-a-config">2. Create a config</h2>
+<p><code>wraptool</code> reads YAML from <code>~/.config/wraptool/config.yaml</code> (XDG, with <code>--config</code> / <code>WRAPTOOL_CONFIG</code> overrides).</p>
+<p>You usually don’t write this from scratch: on first run both <code>wraptool up</code> and <code>wraptool serve</code> <strong>scaffold</strong> a commented starter config at that path if none exists (never overwriting one that does) and log where it landed. The starter enables two privileged operations — <code>git pull</code> and <code>git fetch</code> — so the server comes up immediately; you then edit the file to expose the tools you want. <code>push</code> ships commented out and <code>clone</code> is deliberately absent; the scaffold explains why at each.</p>
+<p>Only wrap commands that actually need wraptool. <code>git pull</code>, <code>git fetch</code>, and <code>git push</code> reach the network with your host credentials — which the agent never sees — so they must go through wraptool. Read-only local git (<code>status</code>, <code>log</code>, <code>diff</code>) only touches the working <code>.git</code>, needs no credentials, and the agent can run it itself, so there is nothing to gain by wrapping it. A fuller policy:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb4"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">mcp</span><span class="kw">:</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">transport</span><span class="kw">:</span><span class="at"> sse</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">listen</span><span class="kw">:</span><span class="at"> 127.0.0.1:8717</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="fu">tools</span><span class="kw">:</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">git</span><span class="kw">:</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">binary</span><span class="kw">:</span><span class="at"> /usr/bin/git</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">timeout</span><span class="kw">:</span><span class="at"> 30s</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">allow</span><span class="kw">:</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">pull</span><span class="kw">]</span></span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--ff-only"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--rebase"</span><span class="kw">]</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">fetch</span><span class="kw">]</span></span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--prune"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--all"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--depth"</span><span class="kw">]</span></span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flag_constraints</span><span class="kw">:</span></span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a><span class="at">          </span><span class="fu">"--depth"</span><span class="kw">:</span><span class="at"> </span><span class="kw">{</span><span class="at"> </span><span class="fu">type</span><span class="kw">:</span><span class="at"> integer</span><span class="kw">,</span><span class="at"> </span><span class="fu">max</span><span class="kw">:</span><span class="at"> </span><span class="dv">100</span><span class="at"> </span><span class="kw">}</span></span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">push</span><span class="kw">]</span></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--set-upstream"</span><span class="kw">]</span></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="at">        </span><span class="fu">deny_flags</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="st">"--force"</span><span class="kw">,</span><span class="at"> </span><span class="st">"--force-with-lease"</span><span class="kw">]</span></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a><span class="at">    </span><span class="fu">deny</span><span class="kw">:</span></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a><span class="at">      </span><span class="kw">-</span><span class="at"> </span><span class="fu">subcommand</span><span class="kw">:</span><span class="at"> </span><span class="kw">[</span><span class="at">remote</span><span class="kw">,</span><span class="at"> set-url</span><span class="kw">]</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>This policy wraps a CLI binary. Wraptool can also spawn credentialed local stdio MCP servers and expose selected tool names; see <a href="./mcp-integration.html#proxy-local-mcp-servers">Proxy local MCP servers</a>. Both capability sources appear on the same client-facing MCP connection.</p>
+<p>See <a href="./configuration.html">Configuration reference</a> for every field.</p>
+</section>
+<section id="start-the-server" class="level2">
+<h2 class="anchored" data-anchor-id="start-the-server">3. Start the server</h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb5"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server start</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>The available transports:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 37%">
+<col style="width: 27%">
+<col style="width: 34%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Transport</th>
+<th>Config</th>
+<th>Use case</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>sse</code></td>
+<td><code>transport: sse</code>, <code>listen: host:port</code></td>
+<td>Independent process, TCP</td>
+</tr>
+<tr class="even">
+<td><code>unix</code></td>
+<td><code>transport: unix</code>, <code>listen: /path/to.sock</code></td>
+<td>Independent process, Unix socket</td>
+</tr>
+</tbody>
+</table>
+<p>The TCP listener (<code>sse</code>/<code>unix</code>) serves <strong>both</strong> MCP HTTP transports on one port: legacy SSE at <code>/sse</code> (Claude Code, OpenCode) and Streamable HTTP at <code>/mcp</code> (the 2025-03 transport — Antigravity and other clients that POST <code>initialize</code> to the URL). One Bearer-auth wrapper guards both; you don’t choose — each harness’s generated config points at the endpoint it speaks.</p>
+<p>On <code>sse</code>, an auth token is mandatory, not optional. Leave <code>auth_token_file</code> unset and <code>wraptool server start</code> generates one at <code>~/.config/wraptool/mcp-token</code> (mode 0600) and prints where it went. On <code>unix</code>, whose filesystem socket is already restricted to mode 0600, a token stays optional.</p>
+<p>To use your own token instead, set the path and write the token yourself:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode yaml code-with-copy"><code class="sourceCode yaml"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">mcp</span><span class="kw">:</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">transport</span><span class="kw">:</span><span class="at"> sse</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">listen</span><span class="kw">:</span><span class="at"> 127.0.0.1:8717</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="at">  </span><span class="fu">auth_token_file</span><span class="kw">:</span><span class="at"> ~/.config/wraptool/auth_token</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb7"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span> <span class="at">-c</span> 32 /dev/urandom <span class="kw">|</span> <span class="fu">base64</span> <span class="op">&gt;</span> ~/.config/wraptool/auth_token</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+<section id="connect-your-coding-agent" class="level2">
+<h2 class="anchored" data-anchor-id="connect-your-coding-agent">4. Connect your coding agent</h2>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb8"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> init <span class="at">--harness</span> claude <span class="at">--harness</span> opencode <span class="at">--url</span> http://127.0.0.1:8717/sse</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>This writes the MCP config block for each harness. Supported values: <code>agy</code>, <code>claude</code>, <code>omp</code>, <code>opencode</code>, <code>pi</code>, or <code>all</code>.</p>
+<p><code>init</code> reads <code>auth_token_file</code> from your config and embeds the <code>Authorization: Bearer</code> header in every networked harness config — so an auth-enabled server works out of the box, no hand-editing. On <code>sse</code>, <code>init</code> provisions the default token file itself if none exists yet, so the header is written whenever a wraptool configuration exists (run <code>init</code> after the first <code>serve</code> or <code>up</code>, which scaffold one — the order this guide follows). On <code>unix</code>, with no <code>auth_token_file</code> configured, no header is written. <code>agy</code> (Antigravity) speaks Streamable HTTP, so its <code>serverUrl</code> targets <code>/mcp</code> rather than <code>/sse</code>; <code>omp</code> does the same with its <code>url</code>; all others are written to the endpoint they use.</p>
+<div class="callout callout-style-default callout-important callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Important
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><strong>A harness running inside a container</strong> (e.g.&nbsp;Antigravity in its own container) cannot reach the server at <code>127.0.0.1</code> — that’s the container’s own loopback. Use the host’s docker-gateway address instead (typically <code>172.17.0.1</code>), and bind the server where the container can reach it (<code>listen: 0.0.0.0:8717</code> or the gateway), not <code>127.0.0.1</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb9"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> init <span class="at">--harness</span> agy <span class="at">--url</span> http://172.17.0.1:8717/sse</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>wraptool up</code>’s devcontainer feature auto-detects this gateway for you; the manual <code>init</code> above is only needed when you wire a container-side harness yourself.</p>
+</div>
+</div>
+</section>
+<section id="smoke-test" class="level2">
+<h2 class="anchored" data-anchor-id="smoke-test">5. Smoke test</h2>
+<div class="cell" data-layout-align="default">
+<div class="cell-output-display">
+<div>
+<p></p><figure class="figure"><p></p>
+<div>
+<pre class="mermaid mermaid-js">sequenceDiagram
+  participant AI as AI assistant
+  participant W  as wraptool
+  participant G  as git
+  AI-&gt;&gt;W: tools/call git_pull
+  W-&gt;&gt;W: policy.Evaluate
+  W-&gt;&gt;G: exec /usr/bin/git pull (with host credentials)
+  G--&gt;&gt;W: stdout
+  W-&gt;&gt;W: scrub credentials
+  W--&gt;&gt;AI: ToolResult
+</pre>
+</div>
+<p></p></figure><p></p>
+</div>
+</div>
+</div>
+<p>Trigger any allowed subcommand from your agent. The wraptool log prints one line per executed command with status and duration.</p>
+</section>
+<section id="one-command-per-project-wraptool-up" class="level2">
+<h2 class="anchored" data-anchor-id="one-command-per-project-wraptool-up">6. One command per project: <code>wraptool up</code></h2>
+<p>You don’t start things by hand. In any git repository (or worktree) root:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb10"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Running bare <code>wraptool</code> in a repository does the same thing. <code>up</code> is idempotent and does three things:</p>
+<ol type="1">
+<li><strong>Ensures the shared server is running</strong> — if it isn’t, it starts <code>wraptool serve</code> detached (pidfile + lock under <code>$XDG_RUNTIME_DIR</code>, auto-generating the auth token), and waits for it to become reachable. It also brings up the <strong>review UI</strong> at <code>127.0.0.1:8718</code> with its own generated token (so you can approve the agent’s capability requests) and prints its URL — disable with <code>--no-admin</code>. The review UI is host-facing and always stays on loopback.</li>
+<li><strong>Brings up the project’s container</strong>, injecting the connection info: the auth token and this worktree’s host path. On a Guix host it uses a <strong>native Guix container</strong> built from your project’s <code>manifest.scm</code>; elsewhere it falls back to <code>devcontainer up</code> (see below).</li>
+<li><strong>Drops you into a shell</strong> in the container so you can start developing immediately. Exiting the shell leaves the container running; re-enter with <code>wraptool up</code>.</li>
+</ol>
+<section id="which-container-runtime" class="level3">
+<h3 class="anchored" data-anchor-id="which-container-runtime">Which container runtime?</h3>
+<p><code>up</code> auto-selects (and prints) the backend:</p>
+<ul>
+<li><strong><code>guix</code></strong> — when <code>guix</code> is on <code>PATH</code> and the worktree has a <code>manifest.scm</code>. It runs <code>guix shell --container --network -m manifest.scm</code>: no Docker, no image build, and the container gets the <strong>same toolchain you develop with</strong> (from <code>manifest.scm</code>), so the agent can compile, test, and analyze locally. The harness itself installs <strong>once</strong> into the shared pool (<code>$XDG_DATA_HOME/wraptool/harness-pool/home</code>, mounted to <code>/home/wraptool-harness</code>) — its login and skills persist there across every project, so you don’t re-authenticate per box.</li>
+<li><strong><code>devcontainer</code></strong> — the fallback for non-Guix hosts (Arch, macOS, …); see <a href="./devcontainers.html">Dev Containers</a>.</li>
+</ul>
+<p>Force one with <code>--runtime=guix|devcontainer|auto</code>.</p>
+<p>The runtime also determines how the server is bound, so the container can actually reach it — you don’t configure this per platform:</p>
+<ul>
+<li><strong><code>guix</code></strong> shares the host network namespace, so a loopback bind (<code>127.0.0.1:8717</code>) is reachable from inside the container. <code>up</code> leaves it as configured — no LAN exposure. The auth token is still auto-generated: a loopback bind is not a boundary against a browser, so <code>sse</code> requires a token either way.</li>
+<li><strong><code>devcontainer</code></strong> runs on a bridge network, where the container reaches the host via the bridge <strong>gateway</strong>, not the host’s loopback. So <code>up</code> rebinds a loopback <code>mcp.listen</code> to <code>0.0.0.0</code> (same port) and, since a non-loopback bind is reachable off-host, <strong>auto-generates an MCP auth token</strong> (defaulting <code>mcp.auth_token_file</code> if unset). The container’s harness config is wired to the detected gateway with that token. A direct <code>wraptool serve</code> on a non-loopback bind requires <code>mcp.auth_token_file</code> — it will not start unauthenticated.</li>
+</ul>
+<p>Host CLI credentials never enter the container either way — the isolation is the mount/user namespace (your normal <code>$HOME</code>, SSH keys, kubeconfig, and cloud tokens are not mounted). git is available inside for local work (status/diff/commit/branch), but anything needing credentials (push, private fetch) goes through wraptool’s policed MCP git tool on the host. The Guix runtime intentionally shares the harness pool and host network as described below. See <a href="https://forge.snamellit.com/pti/wraptool/src/branch/main/design/harness/guix-container-runtime.md"><code>design/harness/guix-container-runtime.md</code></a>.</p>
+</section>
+<section id="guix-convenience-versus-isolation" class="level3">
+<h3 class="anchored" data-anchor-id="guix-convenience-versus-isolation">Guix: convenience versus isolation</h3>
+<p>The Guix defaults deliberately retain three conveniences that weaken isolation. They avoid a separate environment definition, repeated harness setup, and a Docker Compose stack for every local service. Understand these boundaries before running untrusted projects.</p>
+<section id="approve-executable-guix-inputs-with-direnv" class="level4">
+<h4 class="anchored" data-anchor-id="approve-executable-guix-inputs-with-direnv">Approve executable Guix inputs with direnv</h4>
+<p><code>manifest.scm</code> and <code>channels.scm</code> are executable Scheme, not inert lock files. Guix evaluates them on the host while constructing the environment. A container can modify the writable worktree, including <code>manifest.scm</code>, so use direnv’s required-file approval before <code>use guix</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb11"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="ex">require_allowed</span> manifest.scm</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> <span class="kw">[[</span> <span class="ot">-f</span> channels.scm <span class="kw">]];</span> <span class="cf">then</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>  <span class="ex">require_allowed</span> channels.scm</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="cf">fi</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a><span class="ex">use</span> guix</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>require_allowed</code> watches the files and records their content as part of <code>direnv allow</code>. If either changes, direnv refuses to run <code>use guix</code> again until you review the change and explicitly run:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb12"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">direnv</span> allow</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>This adds no prompt when the files are unchanged and one normal direnv approval after an intentional edit. It protects the direnv workflow only: direct <code>guix shell -m manifest.scm</code>, automation, and the current implementation of <code>wraptool up</code> do not consult direnv’s approval database. Use a direnv release that provides <code>require_allowed</code>; do not replace it with an unconditional custom <code>use_guix</code> wrapper.</p>
+</section>
+<section id="host-localhost-is-reachable" class="level4">
+<h4 class="anchored" data-anchor-id="host-localhost-is-reachable">Host localhost is reachable</h4>
+<p>The Guix runtime uses <code>--network</code>, which shares the host network namespace. Processes in the container can therefore connect to services bound only to host loopback, including local PostgreSQL, Redis, MongoDB, and test HTTP servers. This is intentional: those services can be reused directly without constructing a per-project Docker Compose environment.</p>
+<p>Loopback is consequently a reachability boundary, not an authorization boundary. Assume untrusted project code can probe and use every host localhost service:</p>
+<ul>
+<li>Require authentication where the service supports it.</li>
+<li>Do not keep production data or privileged unauthenticated admin endpoints on ports reachable during a session.</li>
+<li>Use separate test databases and least-privilege test accounts.</li>
+<li>Keep wraptool’s review UI authenticated; its token is intentionally not passed to the container.</li>
+</ul>
+</section>
+<section id="harness-home-is-shared-and-writable" class="level4">
+<h4 class="anchored" data-anchor-id="harness-home-is-shared-and-writable">Harness HOME is shared and writable</h4>
+<p>Every project receives the same writable harness HOME from <code>$XDG_DATA_HOME/wraptool/harness-pool/home</code>. This is also intentional: harness login, configuration, history, and skills are maintained once and persist across projects. Harness binaries and libraries are mounted read-only, but HOME state is read-write.</p>
+<p>The consequence is that all projects using the pool form one harness-state trust domain. A compromised project can read or alter that state and leave persistent configuration for later projects. Keep unrelated credentials out of the pool, review shared skills/configuration before using high-risk repositories, and remove or recreate the pool when you need a clean trust boundary. Choose a separate XDG data directory or OS account when projects must not share harness state.</p>
+<p><code>omp</code> (Oh My Pi) exercises this trust domain actively. It imports rules, skills, and MCP servers from the <code>.claude</code>, <code>.cursor</code>, and <code>.codex</code> directories it finds. Inside the container, HOME is the shared pool <code>home/</code>, so <code>omp</code> reads the state other harnesses left there, not your host home. The boundary is the same one described above. <code>omp</code> crosses it on every start instead of incidentally.</p>
+<p><code>omp</code> is a pool-only harness: it has no installer of its own. Run <code>wraptool harness install omp</code> once before <code>wraptool up --harness omp</code>. The download is a single binary of about 280 MB. With no active <code>omp</code> generation, the Guix runtime refuses to start the container. The dev container runtime prints a notice and continues, so the container starts without <code>omp</code>.</p>
+<p>The shell opens automatically when you run <code>up</code> from a terminal. Control it with <code>--shell</code>:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb13"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up <span class="at">--shell</span><span class="op">=</span>always   <span class="co"># always open a shell</span></span>
+<span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> up <span class="at">--shell</span><span class="op">=</span>never    <span class="co"># just bring the container up (e.g. in scripts/CI)</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>One shared server can serve multiple projects and worktrees. The generated connection sends each host path as <code>?cwd=</code>, but the client controls that value; configure <code>mcp.allowed_cwd_roots</code> when the server must enforce a path boundary.</p>
+<p>Shut the project’s container down again with the counterpart command:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb14"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> down          <span class="co"># stop this worktree's dev container</span></span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> down <span class="at">--rm</span>     <span class="co"># ...and remove it (next `up` recreates it fresh)</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>Manage the shared server (left running by <code>down</code>, since it serves other projects):</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb15"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server status</span>
+<span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> server stop</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</section>
+</section>
+<section id="wiring-the-container-the-wraptool-feature" class="level3">
+<h3 class="anchored" data-anchor-id="wiring-the-container-the-wraptool-feature">Wiring the container: the <code>wraptool</code> feature</h3>
+<p>The container side is handled by the single <strong>wraptool</strong> dev container feature, published to the Forgejo OCI registry. It is <strong>wiring only</strong> (major <code>:1</code>): it writes the MCP client config that points the container at the host wraptool and pins <code>HOME</code>/<code>PATH</code>, but it installs no harness binary — that comes from the shared harness pool’s <code>runtime/</code> tree, built once per developer with <code>wraptool harness install &lt;name&gt;</code> on the host and mounted <strong>read-only</strong> into every project container. It layers onto any base image. See <a href="./harness-pool.html">Harness pool: quarantine and scheduled refresh</a> for keeping that pool’s candidate metadata current with a periodic <code>wraptool harness refresh</code>.</p>
+<p>Rather than hand-write the <code>.devcontainer/devcontainer.json</code>, scaffold it:</p>
+<div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb16"><pre class="sourceCode bash code-with-copy"><code class="sourceCode bash"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="ex">wraptool</span> init devcontainer <span class="at">--harness</span> claude <span class="at">--lang</span> go,java</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p>That writes the committed config from the <code>base:ubuntu</code> + language-features model: the languages you list, the <code>wraptool</code> feature with your harness, the <code>WRAPTOOL_*</code> env, and both shared-pool mounts (<code>home/</code> read-write, <code>runtime/</code> read-only) — all prefilled. It writes a fresh file and <strong>refuses to clobber</strong> an existing one (pass <code>--force</code>); edit the result freely. The emitted config looks like:</p>
+<pre class="jsonc"><code>{
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {},
+    // Wiring only — no binary installed here.
+    "forge.snamellit.com/pti/wraptool/wraptool:1": { "harness": "claude" }
+  },
+  // Host workspace path (so the server scopes tools to this worktree).
+  "containerEnv": { "WRAPTOOL_CWD": "${localWorkspaceFolder}" },
+  // Token is a secret → remoteEnv keeps it out of image layers.
+  "remoteEnv": { "WRAPTOOL_TOKEN": "${localEnv:WRAPTOOL_TOKEN}" },
+  // Share the host harness pool. runtime/ MUST be the string form ending in
+  // ",readonly": string form is CSV-parsed by the devcontainer CLI (so an
+  // interior space, e.g. macOS's own ~/Library/Application Support, survives
+  // intact) and it is the ONLY form the CLI honors a read-only flag on —
+  // object-form mounts have no read-only field at all in its schema and
+  // silently come up read-write regardless of any "readonly" key. home/ is
+  // read-write either way, so it stays object form purely for readability.
+  "mounts": [
+    { "source": "${localEnv:HOME}/.local/share/wraptool/harness-pool/home", "target": "/home/wraptool-harness", "type": "bind" },
+    "source=${localEnv:HOME}/.local/share/wraptool/harness-pool/runtime,target=/opt/wraptool-harness/runtime,type=bind,readonly"
+  ]
+}</code></pre>
+<p><code>init devcontainer</code> writes both mount sources for your <strong>host OS</strong> — the <code>.local/share</code> above is the Linux form; on macOS it is <code>${localEnv:HOME}/Library/Application Support/wraptool/harness-pool/{home,runtime}</code>, on Windows <code>${localEnv:HOME}/AppData/Local/wraptool/harness-pool/{home,runtime}</code>. <code>${localEnv:HOME}</code> works on all three OSes — <code>%LOCALAPPDATA%</code> is itself <code>%USERPROFILE%\AppData\Local</code>, just a different relative path than the Linux/macOS defaults. The Windows-specific step is setting <code>HOME</code> at all (only <code>USERPROFILE</code> is set by default there) — see <a href="./platform-windows.html">Windows</a>. This matches where <code>wraptool up</code> creates the pool, so the bind never targets a missing directory. Install the harness once, on the host, before opening the container: <code>wraptool harness install claude</code>.</p>
+<p>At container create the feature writes the MCP client config pointing at the host wraptool, auto-detecting the host as the container’s default-route gateway — so it works across docker networks and worktrees with no <code>host.docker.internal</code> or <code>--add-host</code>. See <a href="./devcontainers.html">Dev Containers</a> for every option, including the deprecated <code>:0</code> per-image-provisioning major, which remains published for existing configs.</p>
+<div class="callout callout-style-default callout-important callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Important
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p>For container use the server must listen where the container can reach it — bind the docker gateway or <code>0.0.0.0</code> (e.g.&nbsp;<code>listen: 0.0.0.0:8717</code>), <strong>not</strong> <code>127.0.0.1</code>. See <a href="./isolated-environments.html">Isolated environments</a>.</p>
+</div>
+</div>
+
+
+</section>
+</section>
+
+<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a></main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp("https:\/\/pti\.pages\.snamellit\.com\/wraptool\/");
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+            // target, if specified
+            link.setAttribute("target", "_blank");
+            if (link.getAttribute("rel") === null) {
+              link.setAttribute("rel", "noopener");
+            }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="./index.html" class="pagination-link" aria-label="The privilege line for agentic development">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">The privilege line for agentic development</span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="./platform-linux.html" class="pagination-link" aria-label="Linux setup">
+        <span class="nav-page-text">Linux setup</span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav>
+</div> <!-- /content -->
+<footer class="footer">
+  <div class="nav-footer">
+    <div class="nav-footer-left">
+<p>Wraptool is GPLv3-licensed software.</p>
+</div>   
+    <div class="nav-footer-center">
+      &nbsp;
+    </div>
+    <div class="nav-footer-right">
+      <ul class="footer-items list-unstyled">
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool">
+<p>Source</p>
+</a>
+  </li>  
+    <li class="nav-item">
+    <a class="nav-link" href="https://forge.snamellit.com/pti/wraptool/issues">
+<p>Issues</p>
+</a>
+  </li>  
+</ul>
+    </div>
+  </div>
+</footer>
+
+
+
+
+<script src="site_libs/quarto-html/zenscroll-min.js"></script>
+</body></html>
